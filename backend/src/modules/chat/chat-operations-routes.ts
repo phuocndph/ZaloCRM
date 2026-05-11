@@ -11,6 +11,7 @@ import { requireZaloAccess } from '../zalo/zalo-access-middleware.js';
 import { zaloOps, ZaloOpError } from '../../shared/zalo-operations.js';
 import { eventBuffer } from '../../shared/event-buffer.js';
 import { logger } from '../../shared/utils/logger.js';
+import { applyContactAggregateFromMessage, applyContactInteraction, applyFriendAggregate } from '../contacts/contact-aggregate.js';
 
 interface ResolvedMessageRefs {
   messageId: string;
@@ -40,8 +41,19 @@ async function resolveMessageRefs(conversationId: string, messageId: string, use
   };
 }
 
-// Emoji aliases for reactions
+// Frontend reaction key → Zalo zca-js Reactions enum string code.
+// Reactions enum (zca-js): HEART="/-heart", LIKE="/-strong", HAHA=":>",
+// WOW=":o", CRY=":-((", ANGRY=":-h", ...
 const REACTION_MAP: Record<string, string> = {
+  heart: '/-heart',
+  like: '/-strong',
+  haha: ':>',
+  wow: ':o',
+  sad: ':-((',
+  angry: ':-h',
+};
+// Reverse map cho Socket.io broadcast (display emoji) + DB lưu emoji thân thiện
+const REACTION_DISPLAY: Record<string, string> = {
   heart: '❤️',
   like: '👍',
   haha: '😆',
@@ -52,6 +64,9 @@ const REACTION_MAP: Record<string, string> = {
 
 function mapReaction(r: string): string {
   return REACTION_MAP[r.toLowerCase()] ?? r;
+}
+function reactionDisplay(r: string): string {
+  return REACTION_DISPLAY[r.toLowerCase()] ?? r;
 }
 
 // Shared conversation lookup — returns 404 reply when missing
@@ -88,20 +103,26 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
 
     try {
       const threadType = conv.threadType === 'group' ? 1 : 0;
+      // zca-js addReaction signature: (icon, dest) where dest = {data: {msgId, cliMsgId}, threadId, type}
       const result = await zaloOps.addReaction(
         conv.zaloAccountId,
         mapReaction(reaction),
-        { msgId: refs.zaloMsgId, cliMsgId: refs.cliMsgId, threadId: conv.externalThreadId || '', threadType },
+        {
+          data: { msgId: refs.zaloMsgId, cliMsgId: refs.cliMsgId },
+          threadId: conv.externalThreadId || '',
+          type: threadType,
+        },
       );
       eventBuffer.recordReaction(id, refs.messageId, user.id, user.email, reaction, 'add');
+      const displayEmoji = reactionDisplay(reaction);
       await prisma.messageReaction.upsert({
         where: { messageId_reactorId: { messageId: refs.messageId, reactorId: user.id } },
-        update: { emoji: mapReaction(reaction) },
+        update: { emoji: displayEmoji },
         create: {
           id: randomUUID(),
           messageId: refs.messageId,
           reactorId: user.id,
-          emoji: mapReaction(reaction),
+          emoji: displayEmoji,
         },
       });
       const io = (app as any).io as Server;
@@ -109,7 +130,13 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
         conversationId: id,
         messageId: refs.messageId,
         msgId: refs.messageId,
-        reactions: [{ userId: user.id, userName: user.email, reaction: mapReaction(reaction), action: 'add' }],
+        reactions: [{ userId: user.id, userName: user.email, reaction: displayEmoji, action: 'add' }],
+      });
+      void applyContactInteraction({
+        conversationId: id,
+        type: `reaction_${reaction}`,
+        occurredAt: new Date(),
+        payload: { messageId: refs.messageId, reactorUserId: user.id },
       });
       return { success: true, result };
     } catch (err) { return handleError(err, reply); }
@@ -296,7 +323,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
       const threadType = conv.threadType === 'group' ? 1 : 0;
       const result = await zaloOps.sendSticker(conv.zaloAccountId, stickerId, conv.externalThreadId || '', threadType);
 
-      await prisma.message.create({
+      const created = await prisma.message.create({
         data: {
           id: randomUUID(),
           conversationId: id,
@@ -309,6 +336,21 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
           repliedByUserId: user.id,
         },
       });
+      {
+        const aggInput = {
+          conversationId: id,
+          message: {
+            id: created.id,
+            content: created.content,
+            contentType: created.contentType,
+            sentAt: created.sentAt,
+            senderType: 'self' as const,
+          },
+          outboundUserId: user.id,
+        };
+        void applyContactAggregateFromMessage(aggInput);
+        void applyFriendAggregate(aggInput);
+      }
 
       return { success: true, result };
     } catch (err) { return handleError(err, reply); }
@@ -329,7 +371,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
       const threadType = conv.threadType === 'group' ? 1 : 0;
       const result = await zaloOps.sendLink(conv.zaloAccountId, conv.externalThreadId || '', threadType, { link: url });
 
-      await prisma.message.create({
+      const created = await prisma.message.create({
         data: {
           id: randomUUID(),
           conversationId: id,
@@ -342,6 +384,21 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
           repliedByUserId: user.id,
         },
       });
+      {
+        const aggInput = {
+          conversationId: id,
+          message: {
+            id: created.id,
+            content: created.content,
+            contentType: created.contentType,
+            sentAt: created.sentAt,
+            senderType: 'self' as const,
+          },
+          outboundUserId: user.id,
+        };
+        void applyContactAggregateFromMessage(aggInput);
+        void applyFriendAggregate(aggInput);
+      }
 
       return { success: true, result };
     } catch (err) { return handleError(err, reply); }
@@ -362,7 +419,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
       const threadType = conv.threadType === 'group' ? 1 : 0;
       const result = await zaloOps.sendCard(conv.zaloAccountId, conv.externalThreadId || '', threadType, contactId);
 
-      await prisma.message.create({
+      const created = await prisma.message.create({
         data: {
           id: randomUUID(),
           conversationId: id,
@@ -375,6 +432,21 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
           repliedByUserId: user.id,
         },
       });
+      {
+        const aggInput = {
+          conversationId: id,
+          message: {
+            id: created.id,
+            content: created.content,
+            contentType: created.contentType,
+            sentAt: created.sentAt,
+            senderType: 'self' as const,
+          },
+          outboundUserId: user.id,
+        };
+        void applyContactAggregateFromMessage(aggInput);
+        void applyFriendAggregate(aggInput);
+      }
 
       return { success: true, result };
     } catch (err) { return handleError(err, reply); }

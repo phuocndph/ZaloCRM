@@ -12,12 +12,18 @@ import { prisma } from '../../shared/database/prisma-client.js';
 import { logger } from '../../shared/utils/logger.js';
 import { attachZaloListener, type UserInfoCacheEntry } from './zalo-listener-factory.js';
 import { emitWebhook } from '../api/webhook-service.js';
+import { imageMetadataGetter } from '../../shared/utils/image-metadata.js';
 import { startMessageSync, stopMessageSync } from './zalo-message-sync.js';
 
 // zca-js has no reliable ESM type exports — load via CJS interop
 const require = createRequire(import.meta.url);
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const { Zalo } = require('zca-js') as { Zalo: new (opts: { logging: boolean; selfListen?: boolean }) => any };
+interface ZaloOptions {
+  logging: boolean;
+  selfListen?: boolean;
+  imageMetadataGetter?: (filePath: string) => Promise<{ width: number; height: number; size: number } | null>;
+}
+const { Zalo } = require('zca-js') as { Zalo: new (opts: ZaloOptions) => any };
 
 interface ZaloCredentials {
   cookie: any;
@@ -48,7 +54,7 @@ class ZaloAccountPool {
 
   // Initiate QR-based login; emits QR events to frontend via Socket.IO
   async loginQR(accountId: string): Promise<void> {
-    const zalo = new Zalo({ logging: false, selfListen: true });
+    const zalo = new Zalo({ logging: false, selfListen: true, imageMetadataGetter });
     this.instances.set(accountId, { zalo, api: null, status: 'qr_pending', lastActivity: new Date() });
 
     try {
@@ -121,7 +127,7 @@ class ZaloAccountPool {
 
   // Reconnect using previously saved session credentials
   async reconnect(accountId: string, credentials: ZaloCredentials): Promise<void> {
-    const zalo = new Zalo({ logging: false, selfListen: true });
+    const zalo = new Zalo({ logging: false, selfListen: true, imageMetadataGetter });
     this.instances.set(accountId, { zalo, api: null, status: 'connecting', lastActivity: new Date() });
 
     try {
