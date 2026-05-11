@@ -35,9 +35,12 @@ interface ConversationMessage {
 export interface ReplyMessageRef {
   msgId: string;
   cliMsgId?: string;
+  /** Nội dung tin nhắn gốc — Zalo lưu trong field 'msg'; FE map thành 'content' */
   content: string;
   msgType: string;
   uidFrom: string;
+  /** Tên người gửi gốc — Zalo lưu trong 'fromD'; FE map thành 'senderName' */
+  senderName: string;
   ts: string;
   propertyExt?: Record<string, unknown>;
   ttl?: number;
@@ -160,9 +163,29 @@ export function useChat() {
       counts.set(reaction.emoji, (counts.get(reaction.emoji) || 0) + 1);
     }
     const { reactions, quote, ...base } = message;
+
+    // Normalize quote: Zalo lưu với field 'msg' + 'fromD' thay vì 'content' + 'senderName'.
+    // Map sang ReplyMessageRef chuẩn để MessageBubble render đúng.
+    let reply: ReplyMessageRef | null = null;
+    if (quote) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const q = quote as any;
+      reply = {
+        msgId: String(q.msgId || q.msg_id || q.globalMsgId || ''),
+        cliMsgId: q.cliMsgId,
+        content: String(q.msg ?? q.content ?? ''),
+        senderName: String(q.fromD ?? q.senderName ?? q.fromName ?? ''),
+        msgType: String(q.msgType ?? ''),
+        uidFrom: String(q.uidFrom ?? q.uid_from ?? ''),
+        ts: String(q.ts ?? ''),
+        propertyExt: q.propertyExt,
+        ttl: q.ttl,
+      };
+    }
+
     return {
       ...base,
-      reply: quote ?? null,
+      reply,
       reactions: Array.from(counts.entries()).map(([emoji, count]) => ({ emoji, count, reacted: false })),
     };
   }

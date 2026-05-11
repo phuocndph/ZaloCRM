@@ -208,45 +208,92 @@
           @cancel="onCancelReplyEdit"
         />
 
+        <!-- Compact toolbar (Zalo-style): chỉ 6 nút chức năng cốt lõi -->
         <div class="input-toolbar-top">
-          <EmojiPicker @pick="onPickEmoji" />
-          <button class="icon-tool" title="Sticker" @click="todoToast('Sticker')">🎴</button>
-          <button class="icon-tool spacer-after" title="GIF" @click="todoToast('GIF')">🎞</button>
-          <button class="icon-tool" title="Đính kèm file" @click="todoToast('Attach file')">📎</button>
-          <button class="icon-tool" title="Hình ảnh" @click="todoToast('Upload hình')">🖼</button>
-          <button class="icon-tool" title="Voice" @click="todoToast('Voice recording')">🎤</button>
-          <button class="icon-tool spacer-after" title="Video" @click="todoToast('Video')">🎥</button>
-          <button class="icon-tool" title="Template (gõ /)" @click="openTemplatePopup">⚡</button>
-          <button class="icon-tool" title="Tin nhắn nhanh" @click="todoToast('Tin nhắn nhanh')">💬</button>
-          <button class="icon-tool" title="Card BĐS" @click="todoToast('Card BĐS')">🏠</button>
-          <button class="icon-tool" title="Card KH" @click="todoToast('Card KH')">👤</button>
-          <button class="icon-tool spacer-after" title="Vị trí" @click="onLinkClick">📍</button>
-          <button class="icon-tool ai-btn" title="AI compose" :disabled="aiSuggestionLoading" @click="$emit('ask-ai')">✨</button>
-          <button class="icon-tool" title="Dịch" @click="todoToast('Dịch tin nhắn')">🌐</button>
+          <button class="icon-tool" title="Gửi sticker" @click="todoToast('Sticker')">
+            <v-icon size="18">mdi-sticker-emoji</v-icon>
+          </button>
+          <button class="icon-tool" title="Gửi ảnh" @click="onPickImage">
+            <v-icon size="18">mdi-image-outline</v-icon>
+          </button>
+          <button class="icon-tool" title="Gửi file" @click="onPickFile">
+            <v-icon size="18">mdi-paperclip</v-icon>
+          </button>
+          <button class="icon-tool" title="Gửi danh thiếp" @click="todoToast('Danh thiếp')">
+            <v-icon size="18">mdi-account-box-outline</v-icon>
+          </button>
+          <button class="icon-tool" title="Định dạng văn bản" @click="toggleFormat">
+            <v-icon size="18">mdi-format-text</v-icon>
+          </button>
+          <button class="icon-tool" title="Tạo nhắc hẹn" @click="todoToast('Nhắc hẹn')">
+            <v-icon size="18">mdi-calendar-clock</v-icon>
+          </button>
+          <button class="icon-tool" title="Template tin nhắn (gõ /)" @click="openTemplatePopup">
+            <v-icon size="18">mdi-flash-outline</v-icon>
+          </button>
+          <button class="icon-tool ai-btn" title="AI compose" :disabled="aiSuggestionLoading" @click="$emit('ask-ai')">
+            <v-icon size="18">mdi-creation</v-icon>
+          </button>
         </div>
 
         <div class="input-row">
-          <QuickTemplatePopup
-            :visible="showTemplatePopup"
-            :query="templateQuery"
-            :templates="templates"
-            :contact="conversation.contact"
-            @select="onTemplateSelect"
-            @close="showTemplatePopup = false"
+          <!-- Avatar nick đang gửi (thụt vào để input thẳng hàng) -->
+          <Avatar
+            v-if="conversation.zaloAccount"
+            :src="conversation.zaloAccount.avatarUrl"
+            :name="conversation.zaloAccount.displayName || 'Nick'"
+            :size="34"
+            :gradient-seed="conversation.zaloAccount.id"
+            platform="zalo"
+            :title="`Đang gửi từ nick: ${conversation.zaloAccount.displayName || ''}`"
+            class="sender-nick-avatar"
           />
-          <RichTextEditor
-            ref="editorRef"
-            v-model="inputText"
-            :placeholder="inputPlaceholder"
-            class="input-editor"
-            @submit="handleSend"
-            @typing="onTypingEvent"
-          />
+
+          <div class="editor-wrap">
+            <QuickTemplatePopup
+              :visible="showTemplatePopup"
+              :query="templateQuery"
+              :templates="templates"
+              :contact="conversation.contact"
+              @select="onTemplateSelect"
+              @close="showTemplatePopup = false"
+            />
+            <RichTextEditor
+              ref="editorRef"
+              v-model="inputText"
+              :placeholder="inputPlaceholder"
+              class="input-editor"
+              @submit="handleSend"
+              @typing="onTypingEvent"
+              @paste-image="onPasteImage"
+            />
+          </div>
+
+          <!-- Emoji picker (hover) — sát nút Gửi -->
+          <EmojiPicker @pick="onPickEmoji" />
+
           <button class="send-btn" :disabled="!inputText.trim() || sending" @click="handleSend" title="Gửi (Enter)">
             <v-icon v-if="sending" size="20">mdi-loading mdi-spin</v-icon>
-            <span v-else>➤</span>
+            <v-icon v-else size="20">mdi-send</v-icon>
           </button>
         </div>
+
+        <!-- Hidden file inputs cho upload ảnh / file -->
+        <input
+          ref="imageInputRef"
+          type="file"
+          accept="image/*"
+          multiple
+          style="display: none"
+          @change="onImageFilesPicked"
+        />
+        <input
+          ref="fileInputRef"
+          type="file"
+          multiple
+          style="display: none"
+          @change="onFileFilesPicked"
+        />
       </div>
     </template>
 
@@ -486,8 +533,9 @@ function onOpenNote() {
   toast.push('Mở ghi chú nhanh ở panel bên phải');
 }
 const inputPlaceholder = computed(() => {
-  const nick = props.conversation?.zaloAccount?.displayName || 'Zalo';
-  return `Đang nhắn từ nick: ${nick}\nGõ "/" để chèn template, "@" mention, "#" tag…`;
+  // Bỏ "Đang nhắn từ nick" vì đã có avatar nick bên trái input — gọn hơn.
+  // Hint phím tắt giữ ngắn gọn.
+  return 'Gõ tin nhắn… ("/" template, "@" mention, "#" tag)';
 });
 
 function onCareStatusChange(value: string) {
@@ -515,6 +563,50 @@ function todoToast(label: string) {
 
 function onPickEmoji(emoji: string) {
   editorRef.value?.insertText(emoji);
+}
+
+// ── File / image upload ─────────────────────────────────────────────────────
+const imageInputRef = ref<HTMLInputElement | null>(null);
+const fileInputRef = ref<HTMLInputElement | null>(null);
+
+function onPickImage() { imageInputRef.value?.click(); }
+function onPickFile() { fileInputRef.value?.click(); }
+
+function onImageFilesPicked(e: Event) {
+  const files = Array.from((e.target as HTMLInputElement).files || []);
+  if (files.length) handleImageFiles(files);
+  if (imageInputRef.value) imageInputRef.value.value = '';
+}
+function onFileFilesPicked(e: Event) {
+  const files = Array.from((e.target as HTMLInputElement).files || []);
+  if (files.length) handleFiles(files);
+  if (fileInputRef.value) fileInputRef.value.value = '';
+}
+function onPasteImage(files: File[]) {
+  // Bắt được khi user Ctrl+V image vào editor
+  handleImageFiles(files);
+}
+
+function handleImageFiles(files: File[]) {
+  // MOCK: chờ backend POST /conversations/:id/upload-image
+  // Hiện hiển thị toast + log; sale sẽ thấy ngay để biết feature có ghi nhận.
+  toast.push(`📷 Đã nhận ${files.length} ảnh — chờ wire endpoint upload`, 'warning');
+  // TODO: FormData upload → response { url } → send as image message
+}
+function handleFiles(files: File[]) {
+  toast.push(`📎 Đã nhận ${files.length} file — chờ wire endpoint upload`, 'warning');
+  // TODO: similar upload flow
+}
+
+// ── Format toggle (HTML formatting toolbar of RichTextEditor) ────────────────
+const formatBarVisible = ref(false);
+function toggleFormat() {
+  formatBarVisible.value = !formatBarVisible.value;
+  // RichTextEditor toolbar tự show khi focus; click button này để focus + toggle CSS class
+  if (formatBarVisible.value) {
+    editorRef.value?.focus();
+    toast.push('Bôi đen text rồi dùng Ctrl+B / Ctrl+I / Ctrl+U');
+  }
 }
 
 // ── Display item types (album grouping + date dividers) ─────────────────────
@@ -606,18 +698,6 @@ function onDelete() { if (contextMsg.value) emit('delete-message', contextMsg.va
 function onUndo() { if (contextMsg.value) emit('undo-message', contextMsg.value.id); }
 function onPin() { emit('pin-conversation'); }
 
-async function onLinkClick() {
-  const url = window.prompt('Nhập URL hoặc địa chỉ vị trí để gửi');
-  if (!url?.trim() || !props.conversation) return;
-  try {
-    await api.post(`/conversations/${props.conversation.id}/link`, { url: url.trim() });
-    emit('refresh-thread');
-    toast.success('Đã gửi link');
-  } catch (err) {
-    console.error('Failed to send link:', err);
-    toast.error('Gửi link thất bại');
-  }
-}
 
 function onForward(targetIds: string[]) {
   if (contextMsg.value) emit('forward-message', contextMsg.value.id, targetIds);
@@ -1000,20 +1080,45 @@ watch(() => props.conversation?.id, async () => {
 .icon-tool.ai-btn { color: #9c27b0; }
 
 .input-row {
-  display: flex; align-items: flex-end; gap: 7px;
+  display: flex; align-items: flex-end; gap: 8px;
   position: relative;
 }
-.input-editor { flex: 1; min-width: 0; }
+.sender-nick-avatar {
+  margin-bottom: 4px; /* căn đáy với textarea */
+  flex-shrink: 0;
+}
+.editor-wrap {
+  flex: 1; min-width: 0;
+  position: relative;
+}
+.input-editor { width: 100%; }
 
 .send-btn {
   background: var(--smax-primary);
   color: white;
-  width: 42px; height: 42px;
-  border-radius: 9px; border: none;
-  cursor: pointer; font-size: 18px;
+  width: 40px; height: 40px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
+  margin-bottom: 1px;
 }
 .send-btn:hover:not(:disabled) { background: var(--smax-primary-hover); }
-.send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.send-btn:disabled { opacity: 0.4; cursor: not-allowed; background: var(--smax-grey-300); }
+
+/* EmojiPicker trigger — emoji icon next to send button */
+.input-row :deep(.emoji-trigger) {
+  width: 36px; height: 36px;
+  display: flex; align-items: center; justify-content: center;
+  border: none; background: transparent;
+  font-size: 22px;
+  cursor: pointer;
+  border-radius: 50%;
+  margin-bottom: 3px;
+  flex-shrink: 0;
+}
+.input-row :deep(.emoji-trigger:hover) {
+  background: var(--smax-grey-100);
+}
 </style>

@@ -408,9 +408,7 @@ const callContent = computed(() => {
 const replySenderLabel = computed(() => {
   const r = props.reply;
   if (!r) return '';
-  // Hiện tại ReplyMessageRef không có senderName — chỉ có uidFrom.
-  // Sau khi backend bổ sung sẽ map trực tiếp. Tạm để trống.
-  return '';
+  return r.senderName ? r.senderName : '';
 });
 
 const replyPreviewText = computed(() => {

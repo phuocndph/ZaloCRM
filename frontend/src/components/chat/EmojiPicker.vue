@@ -1,7 +1,14 @@
 <template>
-  <v-menu v-model="open" :close-on-content-click="false" location="top">
+  <v-menu
+    v-model="open"
+    :close-on-content-click="false"
+    open-on-hover
+    :open-delay="120"
+    :close-delay="200"
+    location="top"
+  >
     <template #activator="{ props: act }">
-      <button class="icon-tool" v-bind="act" title="Emoji">😊</button>
+      <button class="icon-tool emoji-trigger" v-bind="act" title="Emoji">😊</button>
     </template>
     <v-card class="emoji-card pa-2">
       <!-- Category tabs -->

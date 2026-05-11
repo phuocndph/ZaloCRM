@@ -80,6 +80,7 @@ const emit = defineEmits<{
   'update:modelValue': [value: string];
   submit: [];
   typing: [];
+  'paste-image': [files: File[]];
 }>();
 
 const isFocused = ref(false);
@@ -100,6 +101,24 @@ const editor = useEditor({
       if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
         emit('submit');
+        return true;
+      }
+      return false;
+    },
+    handlePaste(_view, event) {
+      // Bắt paste image từ clipboard (Ctrl+V hình ảnh)
+      const items = event.clipboardData?.items;
+      if (!items) return false;
+      const imgFiles: File[] = [];
+      for (const item of Array.from(items)) {
+        if (item.kind === 'file' && item.type.startsWith('image/')) {
+          const f = item.getAsFile();
+          if (f) imgFiles.push(f);
+        }
+      }
+      if (imgFiles.length) {
+        event.preventDefault();
+        emit('paste-image', imgFiles);
         return true;
       }
       return false;
