@@ -15,21 +15,24 @@
     />
     <span v-else class="av-initials" :style="initialsStyle">{{ initials }}</span>
 
-    <!-- Group sticker (góc phải trên) — nhiều user nhỏ để biết là nhóm -->
-    <svg
+    <!-- Group sticker (góc phải trên) — 3-people silhouette theo Flaticon 1769041 -->
+    <span
       v-if="isGroup"
       class="av-group-sticker"
       :style="stickerStyle"
-      viewBox="0 0 24 24"
-      fill="white"
-      xmlns="http://www.w3.org/2000/svg"
     >
-      <!-- 3 stylized people heads — clean, simple -->
-      <circle cx="8" cy="9" r="3.2" />
-      <circle cx="16" cy="9" r="3.2" />
-      <circle cx="12" cy="7.5" r="3.5" />
-      <path d="M2 20 Q12 14, 22 20 L22 24 L2 24 Z" />
-    </svg>
+      <svg viewBox="0 0 32 32" fill="white" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <!-- Center person (taller, behind) -->
+        <circle cx="16" cy="9" r="4" />
+        <path d="M9 26 c0-4 3-7 7-7 s7 3 7 7 v4 H9 z" />
+        <!-- Left person (shorter, in front) -->
+        <circle cx="6" cy="13" r="3.2" />
+        <path d="M0.5 28 c0-3.2 2.4-5.5 5.5-5.5 c1.4 0 2.6 0.4 3.5 1.2 v6.3 H0.5 z" />
+        <!-- Right person (shorter, in front) -->
+        <circle cx="26" cy="13" r="3.2" />
+        <path d="M22.5 23.7 c0.9-0.8 2.1-1.2 3.5-1.2 c3.1 0 5.5 2.3 5.5 5.5 v2.3 H22.5 z" />
+      </svg>
+    </span>
 
     <!-- Group member count badge (optional) -->
     <span v-if="isGroup && groupMembersCount" class="av-members" :style="membersBadgeStyle">
@@ -125,8 +128,16 @@ const initialsStyle = computed(() => ({
 }));
 
 const stickerStyle = computed(() => {
-  const sz = Math.round(props.size * 0.42);
-  return { width: `${sz}px`, height: `${sz}px` };
+  // 20% nhỏ hơn so với bản trước (factor 0.42 → 0.34)
+  const sz = Math.round(props.size * 0.34);
+  // 2/3 sticker nằm NGOÀI vòng tròn avatar, 1/3 chồng lên
+  const offset = Math.round(sz * 0.66);
+  return {
+    width: `${sz}px`,
+    height: `${sz}px`,
+    top: `-${offset}px`,
+    right: `-${offset}px`,
+  };
 });
 const membersBadgeStyle = computed(() => ({
   fontSize: `${Math.max(8, Math.round(props.size * 0.25))}px`,
@@ -181,23 +192,28 @@ const platformBadgeStyle = computed(() => {
 /* ════════ Group treatment ════════ */
 .smax-av.is-group .av-img,
 .smax-av.is-group .av-initials {
-  /* Viền đen rõ ràng — đặc trưng cho group */
-  outline: 2px solid #1a1a1a;
+  /* Vòng viền xanh đậm — đặc trưng cho group */
+  outline: 2px solid #0D47A1;
   outline-offset: -1px;
   box-shadow: 0 0 0 1px var(--smax-bg, white);
 }
 
-/* Group sticker (góc phải trên) — nhiều user mini */
+/* Group sticker (góc phải trên) — 3-people silhouette nền xanh đậm.
+   Position: 2/3 outside avatar circle, 1/3 overlapping — set inline qua stickerStyle. */
 .av-group-sticker {
   position: absolute;
-  top: -3px; right: -3px;
-  background: #1a1a1a;
+  background: #0D47A1;
   border-radius: 50%;
-  padding: 2px;
+  padding: 14%;
   border: 2px solid var(--smax-bg, white);
-  box-sizing: content-box;
+  box-sizing: border-box;
   z-index: 2;
   pointer-events: none;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.av-group-sticker svg {
+  width: 100%; height: 100%;
+  display: block;
 }
 
 /* Member count badge (dưới sticker) */
