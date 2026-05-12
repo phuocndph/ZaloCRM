@@ -11,6 +11,7 @@ import { zaloRateLimiter } from '../zalo/zalo-rate-limiter.js';
 import { logger } from '../../shared/utils/logger.js';
 import { randomUUID } from 'node:crypto';
 import type { Server } from 'socket.io';
+import { applyContactAggregateFromMessage, applyFriendAggregate } from '../contacts/contact-aggregate.js';
 
 type QueryParams = Record<string, string>;
 
@@ -43,21 +44,8 @@ function buildReplyQuote(message: {
   sentAt: Date;
 }) {
   if (!message.zaloMsgId || !message.senderUid) return null;
-  // For attachment types, content is a JSON blob with our internal URLs — extract a human-readable
-  // label so the Zalo quote preview doesn't leak localhost URLs to the recipient.
-  let quoteContent = message.content ?? '';
-  if (['image', 'video', 'file'].includes(message.contentType) && quoteContent.startsWith('{')) {
-    try {
-      const p = JSON.parse(quoteContent);
-      if (message.contentType === 'image') quoteContent = '[Hình ảnh]';
-      else if (message.contentType === 'video') quoteContent = '[Video]';
-      else quoteContent = `[Tệp] ${p.name || ''}`.trim();
-    } catch {
-      quoteContent = `[${message.contentType}]`;
-    }
-  }
   return {
-    content: quoteContent,
+    content: message.content ?? '',
     msgType: mapReplyMsgType(message.contentType),
     propertyExt: {},
     uidFrom: message.senderUid,
@@ -180,8 +168,10 @@ export async function chatRoutes(app: FastifyInstance) {
       prisma.conversation.findMany({
         where,
         include: {
-          contact: { select: { id: true, fullName: true, crmName: true, phone: true, avatarUrl: true, zaloUid: true } },
-          zaloAccount: { select: { id: true, displayName: true, zaloUid: true } },
+          // Contact: full include thay vì select hẹp — tránh race khi list refresh
+          // overwrite mất gender/totals/birthDate/... đã load ở /conversations/:id detail.
+          contact: true,
+          zaloAccount: { select: { id: true, displayName: true, avatarUrl: true, zaloUid: true } },
           pins: { select: { id: true } },
           messages: {
             take: 1,
@@ -196,8 +186,30 @@ export async function chatRoutes(app: FastifyInstance) {
       prisma.conversation.count({ where }),
     ]);
 
+    // Batch fetch Friend records cho user threads để FE biết friendship state
+    const userPairs = conversations
+      .filter(c => c.threadType === 'user' && c.contactId)
+      .map(c => ({ zaloAccountId: c.zaloAccountId, contactId: c.contactId! }));
+    let friendMap = new Map<string, { relationshipKind: string; friendshipStatus: string; becameFriendAt: Date | null; firstMessageAt: Date | null }>();
+    if (userPairs.length) {
+      const friends = await prisma.friend.findMany({
+        where: { OR: userPairs.map(p => ({ AND: [{ zaloAccountId: p.zaloAccountId }, { contactId: p.contactId }] })) },
+        select: { zaloAccountId: true, contactId: true, relationshipKind: true, friendshipStatus: true, becameFriendAt: true, firstMessageAt: true },
+      });
+      friendMap = new Map(friends.map(f => [`${f.zaloAccountId}:${f.contactId}`, {
+        relationshipKind: f.relationshipKind,
+        friendshipStatus: f.friendshipStatus,
+        becameFriendAt: f.becameFriendAt,
+        firstMessageAt: f.firstMessageAt,
+      }]));
+    }
+
     return {
-      conversations: conversations.map((conversation) => ({ ...conversation, isPinned: conversation.pins.length > 0 })),
+      conversations: conversations.map((c) => ({
+        ...c,
+        isPinned: c.pins.length > 0,
+        friendship: c.contactId ? friendMap.get(`${c.zaloAccountId}:${c.contactId}`) || null : null,
+      })),
       total,
       page: parseInt(page),
       limit: Math.min(parseInt(limit), 200),
@@ -213,13 +225,22 @@ export async function chatRoutes(app: FastifyInstance) {
       where: { id, orgId: user.orgId },
       include: {
         contact: true,
-        zaloAccount: { select: { id: true, displayName: true, zaloUid: true, status: true } },
+        zaloAccount: { select: { id: true, displayName: true, avatarUrl: true, zaloUid: true, status: true } },
         pins: { select: { id: true } },
       },
     });
     if (!conversation) return reply.status(404).send({ error: 'Not found' });
 
-    return { ...conversation, isPinned: conversation.pins.length > 0 };
+    let friendship: { relationshipKind: string; friendshipStatus: string; becameFriendAt: Date | null; firstMessageAt: Date | null } | null = null;
+    if (conversation.threadType === 'user' && conversation.contactId) {
+      const f = await prisma.friend.findUnique({
+        where: { zaloAccountId_contactId: { zaloAccountId: conversation.zaloAccountId, contactId: conversation.contactId } },
+        select: { relationshipKind: true, friendshipStatus: true, becameFriendAt: true, firstMessageAt: true },
+      });
+      friendship = f;
+    }
+
+    return { ...conversation, isPinned: conversation.pins.length > 0, friendship };
   });
 
   // ── List messages for a conversation (paginated, newest first) ──────────
@@ -251,6 +272,10 @@ export async function chatRoutes(app: FastifyInstance) {
           sentAt: true,
           isDeleted: true,
           quote: true,
+          attachments: true,
+          albumKey: true,
+          albumIndex: true,
+          albumTotal: true,
           reactions: { select: { emoji: true, reactorId: true } },
         },
       }),
@@ -305,8 +330,14 @@ export async function chatRoutes(app: FastifyInstance) {
 
       zaloRateLimiter.recordSend(conversation.zaloAccountId);
       const sendResult = await instance.api.sendMessage(quote ? { msg: content, quote } : { msg: content }, threadId, threadType);
-      // Extract zaloMsgId from sendMessage response for dedup with selfListen
-      const zaloMsgId = String(sendResult?.msgId || sendResult?.data?.msgId || '');
+      // zca-js trả về { message: { msgId } | null, attachment: [{ msgId }] }
+      // Extract zaloMsgId từ message (text) hoặc attachment[0] (media) để dedup với selfListen
+      const sr = sendResult as unknown as { message?: { msgId?: number | string } | null; attachment?: Array<{ msgId?: number | string }> };
+      const rawId = sr?.message?.msgId ?? sr?.attachment?.[0]?.msgId ?? '';
+      const zaloMsgId = String(rawId || '');
+      if (!zaloMsgId) {
+        logger.warn(`[chat] sendMessage không trả msgId — shape=${JSON.stringify(sendResult).slice(0, 200)}`);
+      }
 
       const message = await prisma.message.create({
         data: {
@@ -329,6 +360,20 @@ export async function chatRoutes(app: FastifyInstance) {
         data: { lastMessageAt: new Date(), isReplied: true, unreadCount: 0 },
       });
 
+      const aggInput = {
+        conversationId: id,
+        message: {
+          id: message.id,
+          content: message.content,
+          contentType: message.contentType,
+          sentAt: message.sentAt,
+          senderType: 'self' as const,
+        },
+        outboundUserId: user.id,
+      };
+      void applyContactAggregateFromMessage(aggInput);
+      void applyFriendAggregate(aggInput);
+
       const io = (app as any).io as Server;
       io?.emit('chat:message', { accountId: conversation.zaloAccountId, message, conversationId: id });
 
@@ -336,6 +381,132 @@ export async function chatRoutes(app: FastifyInstance) {
     } catch (err) {
       logger.error('[chat] Send message error:', err);
       return reply.status(500).send({ error: 'Failed to send message' });
+    }
+  });
+
+  // ── Upload image(s) and send qua Zalo (paste image / nút Gửi ảnh) ────────
+  app.post('/api/v1/conversations/:id/upload-image', { preHandler: requireZaloAccess('chat') }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = request.user!;
+    const { id } = request.params as { id: string };
+
+    const conversation = await prisma.conversation.findFirst({
+      where: { id, orgId: user.orgId },
+      include: { zaloAccount: true },
+    });
+    if (!conversation) return reply.status(404).send({ error: 'Conversation not found' });
+    if (!conversation.externalThreadId) return reply.status(400).send({ error: 'No external thread ID' });
+
+    const instance = zaloPool.getInstance(conversation.zaloAccountId);
+    if (!instance?.api) return reply.status(400).send({ error: 'Zalo account not connected' });
+
+    const limits = await zaloRateLimiter.checkLimits(conversation.zaloAccountId);
+    if (!limits.allowed) return reply.status(429).send({ error: limits.reason });
+
+    const path = await import('node:path');
+    const os = await import('node:os');
+    const fs = await import('node:fs');
+    const { pipeline } = await import('node:stream/promises');
+
+    const tmpFiles: string[] = [];
+    try {
+      const parts = (request as unknown as { parts(): AsyncIterable<{ type: string; file: NodeJS.ReadableStream; filename: string }> }).parts();
+      for await (const part of parts) {
+        if (part.type === 'file' && part.file) {
+          const safeName = (part.filename || 'image').replace(/[^a-zA-Z0-9._-]/g, '_');
+          const tmpPath = path.join(os.tmpdir(), `zalo-upload-${randomUUID()}-${safeName}`);
+          await pipeline(part.file, fs.createWriteStream(tmpPath));
+          tmpFiles.push(tmpPath);
+        }
+      }
+      if (!tmpFiles.length) return reply.status(400).send({ error: 'No files uploaded' });
+
+      const threadType = conversation.threadType === 'group' ? 1 : 0;
+      zaloRateLimiter.recordSend(conversation.zaloAccountId);
+
+      // Bước 1: upload lên Zalo CDN trước để lấy URLs thật (hdUrl/normalUrl/thumbUrl)
+      // Phải làm trước vì sendMessage chỉ trả {msgId}, không lộ URLs.
+      const uploadResults = await instance.api.uploadAttachment(tmpFiles, conversation.externalThreadId, threadType);
+
+      // Bước 2: send message — zca-js sẽ re-upload (chấp nhận để có URLs đúng từ bước 1)
+      const sendResult = await instance.api.sendMessage(
+        { msg: '', attachments: tmpFiles },
+        conversation.externalThreadId,
+        threadType,
+      );
+
+      // zca-js trả { message, attachment: [{msgId}, ...] } — match với uploadResults theo index
+      const sr = sendResult as unknown as {
+        message?: { msgId?: number | string } | null;
+        attachment?: Array<{ msgId?: number | string }>;
+      };
+
+      // Tạo Message rows với URLs thật từ uploadResults
+      const createdMessages = [];
+      for (let i = 0; i < uploadResults.length; i++) {
+        const up = uploadResults[i] as unknown as {
+          fileType: 'image' | 'video' | 'others';
+          hdUrl?: string; normalUrl?: string; thumbUrl?: string;
+          fileUrl?: string; fileName?: string; totalSize?: number;
+          width?: number; height?: number;
+        };
+        const zaloMsgId = String(sr.attachment?.[i]?.msgId || '');
+
+        let content: string;
+        let contentType: string;
+        if (up.fileType === 'image') {
+          content = JSON.stringify({
+            hdUrl: up.hdUrl || up.normalUrl || '',
+            href: up.normalUrl || up.hdUrl || '',
+            thumb: up.thumbUrl || up.normalUrl || '',
+            thumbUrl: up.thumbUrl || '',
+            normalUrl: up.normalUrl || '',
+            width: up.width, height: up.height,
+          });
+          contentType = 'image';
+        } else if (up.fileType === 'video') {
+          content = JSON.stringify({ href: up.fileUrl || '', fileName: up.fileName, totalSize: up.totalSize });
+          contentType = 'video';
+        } else {
+          content = JSON.stringify({ href: up.fileUrl || '', fileName: up.fileName, totalSize: up.totalSize });
+          contentType = 'file';
+        }
+
+        const msg = await prisma.message.create({
+          data: {
+            id: randomUUID(),
+            conversationId: id,
+            zaloMsgId: zaloMsgId || null,
+            senderType: 'self',
+            senderUid: conversation.zaloAccount.zaloUid || '',
+            senderName: 'Staff',
+            content,
+            contentType,
+            sentAt: new Date(),
+            repliedByUserId: user.id,
+          },
+        });
+        createdMessages.push(msg);
+      }
+
+      await prisma.conversation.update({
+        where: { id },
+        data: { lastMessageAt: new Date(), isReplied: true, unreadCount: 0 },
+      });
+
+      const io = (app as any).io as Server;
+      for (const m of createdMessages) {
+        io?.emit('chat:message', { accountId: conversation.zaloAccountId, message: m, conversationId: id });
+      }
+
+      return { success: true, count: tmpFiles.length, messages: createdMessages };
+    } catch (err) {
+      logger.error('[chat] Upload image error:', err);
+      return reply.status(500).send({ error: 'Upload failed', detail: String(err) });
+    } finally {
+      // Cleanup tmp files
+      for (const f of tmpFiles) {
+        fs.promises.unlink(f).catch(() => { /* ignore */ });
+      }
     }
   });
 

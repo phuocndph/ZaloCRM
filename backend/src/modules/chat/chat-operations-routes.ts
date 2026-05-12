@@ -11,6 +11,7 @@ import { requireZaloAccess } from '../zalo/zalo-access-middleware.js';
 import { zaloOps, ZaloOpError } from '../../shared/zalo-operations.js';
 import { eventBuffer } from '../../shared/event-buffer.js';
 import { logger } from '../../shared/utils/logger.js';
+import { applyContactAggregateFromMessage, applyContactInteraction, applyFriendAggregate } from '../contacts/contact-aggregate.js';
 
 interface ResolvedMessageRefs {
   messageId: string;
@@ -40,8 +41,19 @@ async function resolveMessageRefs(conversationId: string, messageId: string, use
   };
 }
 
-// Emoji aliases for reactions
+// Frontend reaction key → Zalo zca-js Reactions enum string code.
+// Reactions enum (zca-js): HEART="/-heart", LIKE="/-strong", HAHA=":>",
+// WOW=":o", CRY=":-((", ANGRY=":-h", ...
 const REACTION_MAP: Record<string, string> = {
+  heart: '/-heart',
+  like: '/-strong',
+  haha: ':>',
+  wow: ':o',
+  sad: ':-((',
+  angry: ':-h',
+};
+// Reverse map cho Socket.io broadcast (display emoji) + DB lưu emoji thân thiện
+const REACTION_DISPLAY: Record<string, string> = {
   heart: '❤️',
   like: '👍',
   haha: '😆',
@@ -52,6 +64,9 @@ const REACTION_MAP: Record<string, string> = {
 
 function mapReaction(r: string): string {
   return REACTION_MAP[r.toLowerCase()] ?? r;
+}
+function reactionDisplay(r: string): string {
+  return REACTION_DISPLAY[r.toLowerCase()] ?? r;
 }
 
 // Shared conversation lookup — returns 404 reply when missing
@@ -88,20 +103,35 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
 
     try {
       const threadType = conv.threadType === 'group' ? 1 : 0;
+      // zca-js addReaction signature: (icon, dest) where dest = {data: {msgId, cliMsgId}, threadId, type}
       const result = await zaloOps.addReaction(
         conv.zaloAccountId,
         mapReaction(reaction),
-        { msgId: refs.zaloMsgId, cliMsgId: refs.cliMsgId, threadId: conv.externalThreadId || '', threadType },
+        {
+          data: { msgId: refs.zaloMsgId, cliMsgId: refs.cliMsgId },
+          threadId: conv.externalThreadId || '',
+          type: threadType,
+        },
       );
       eventBuffer.recordReaction(id, refs.messageId, user.id, user.email, reaction, 'add');
+      const displayEmoji = reactionDisplay(reaction);
+      // Multi-emoji: upsert keyed theo (messageId, reactorId, emoji) — cùng user có thể có nhiều emoji
       await prisma.messageReaction.upsert({
-        where: { messageId_reactorId: { messageId: refs.messageId, reactorId: user.id } },
-        update: { emoji: mapReaction(reaction) },
+        where: {
+          messageId_reactorId_emoji: {
+            messageId: refs.messageId,
+            reactorId: user.id,
+            emoji: displayEmoji,
+          },
+        },
+        update: {}, // đã tồn tại — không cần update gì
         create: {
           id: randomUUID(),
           messageId: refs.messageId,
           reactorId: user.id,
-          emoji: mapReaction(reaction),
+          reactorSource: 'crm',
+          reactorName: user.email,
+          emoji: displayEmoji,
         },
       });
       const io = (app as any).io as Server;
@@ -109,10 +139,43 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
         conversationId: id,
         messageId: refs.messageId,
         msgId: refs.messageId,
-        reactions: [{ userId: user.id, userName: user.email, reaction: mapReaction(reaction), action: 'add' }],
+        reactions: [{ userId: user.id, userName: user.email, reaction: displayEmoji, action: 'add' }],
+      });
+      void applyContactInteraction({
+        conversationId: id,
+        type: `reaction_${reaction}`,
+        occurredAt: new Date(),
+        payload: { messageId: refs.messageId, reactorUserId: user.id },
       });
       return { success: true, result };
     } catch (err) { return handleError(err, reply); }
+  });
+
+  // ── DELETE /reactions ────────────────────────────────────────────────────────
+  // Toggle off: user gỡ 1 emoji cụ thể khỏi tin (chỉ xoá row local — không gọi Zalo)
+  app.delete('/api/v1/conversations/:id/reactions', chatAccess, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = request.user!;
+    const { id } = request.params as { id: string };
+    const { msgId, reaction } = request.body as { msgId: string; reaction: string };
+    if (!msgId || !reaction) return reply.status(400).send({ error: 'msgId and reaction required' });
+
+    const conv = await getConversation(id, user.orgId, reply);
+    if (!conv) return;
+    const refs = await resolveMessageRefs(id, msgId, user.orgId);
+    if (!refs) return reply.status(404).send({ error: 'Message not found' });
+
+    const displayEmoji = reactionDisplay(reaction);
+    await prisma.messageReaction.deleteMany({
+      where: { messageId: refs.messageId, reactorId: user.id, emoji: displayEmoji },
+    });
+    const io = (app as any).io as Server;
+    io?.emit('chat:reactions', {
+      conversationId: id,
+      messageId: refs.messageId,
+      msgId: refs.messageId,
+      reactions: [{ userId: user.id, userName: user.email, reaction: displayEmoji, action: 'remove' }],
+    });
+    return { success: true };
   });
 
   // ── POST /typing ─────────────────────────────────────────────────────────────
@@ -282,10 +345,13 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
   });
 
   // ── POST /sticker ────────────────────────────────────────────────────────────
+  // Body: { stickerId, cateId, type } — đúng shape zca-js SendStickerPayload
   app.post('/api/v1/conversations/:id/sticker', chatAccess, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = request.user!;
     const { id } = request.params as { id: string };
-    const { stickerId } = request.body as { stickerId: number };
+    const { stickerId, cateId, type } = request.body as {
+      stickerId: number; cateId?: number; type?: number;
+    };
 
     if (!stickerId) return reply.status(400).send({ error: 'stickerId required' });
 
@@ -294,21 +360,54 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
 
     try {
       const threadType = conv.threadType === 'group' ? 1 : 0;
-      const result = await zaloOps.sendSticker(conv.zaloAccountId, stickerId, conv.externalThreadId || '', threadType);
+      const stickerPayload = { id: stickerId, cateId: cateId || 0, type: type || 0 };
+      const result = await zaloOps.sendSticker(
+        conv.zaloAccountId,
+        stickerPayload,
+        conv.externalThreadId || '',
+        threadType,
+      );
 
-      await prisma.message.create({
+      // Extract zaloMsgId từ sendSticker result để dedup với selfListen echo
+      // (cũ: zaloMsgId undefined → selfListen tạo row 2 → double sticker UI)
+      const sr = result as unknown as {
+        message?: { msgId?: number | string } | null;
+        msgId?: number | string;
+      };
+      const rawId = sr?.message?.msgId ?? sr?.msgId ?? '';
+      const zaloMsgId = String(rawId || '');
+
+      const created = await prisma.message.create({
         data: {
           id: randomUUID(),
           conversationId: id,
+          zaloMsgId: zaloMsgId || null,
           senderType: 'self',
           senderUid: '',
           senderName: 'Staff',
-          content: String(stickerId),
+          // Lưu content shape JSON như Zalo native ({id, catId, type}) → frontend
+          // dùng metadata endpoint render đúng (animated CSS sprite hoặc static)
+          content: JSON.stringify({ id: stickerId, catId: cateId || 0, type: type || 0 }),
           contentType: 'sticker',
           sentAt: new Date(),
           repliedByUserId: user.id,
         },
       });
+      {
+        const aggInput = {
+          conversationId: id,
+          message: {
+            id: created.id,
+            content: created.content,
+            contentType: created.contentType,
+            sentAt: created.sentAt,
+            senderType: 'self' as const,
+          },
+          outboundUserId: user.id,
+        };
+        void applyContactAggregateFromMessage(aggInput);
+        void applyFriendAggregate(aggInput);
+      }
 
       return { success: true, result };
     } catch (err) { return handleError(err, reply); }
@@ -329,7 +428,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
       const threadType = conv.threadType === 'group' ? 1 : 0;
       const result = await zaloOps.sendLink(conv.zaloAccountId, conv.externalThreadId || '', threadType, { link: url });
 
-      await prisma.message.create({
+      const created = await prisma.message.create({
         data: {
           id: randomUUID(),
           conversationId: id,
@@ -342,6 +441,21 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
           repliedByUserId: user.id,
         },
       });
+      {
+        const aggInput = {
+          conversationId: id,
+          message: {
+            id: created.id,
+            content: created.content,
+            contentType: created.contentType,
+            sentAt: created.sentAt,
+            senderType: 'self' as const,
+          },
+          outboundUserId: user.id,
+        };
+        void applyContactAggregateFromMessage(aggInput);
+        void applyFriendAggregate(aggInput);
+      }
 
       return { success: true, result };
     } catch (err) { return handleError(err, reply); }
@@ -362,7 +476,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
       const threadType = conv.threadType === 'group' ? 1 : 0;
       const result = await zaloOps.sendCard(conv.zaloAccountId, conv.externalThreadId || '', threadType, contactId);
 
-      await prisma.message.create({
+      const created = await prisma.message.create({
         data: {
           id: randomUUID(),
           conversationId: id,
@@ -375,6 +489,21 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
           repliedByUserId: user.id,
         },
       });
+      {
+        const aggInput = {
+          conversationId: id,
+          message: {
+            id: created.id,
+            content: created.content,
+            contentType: created.contentType,
+            sentAt: created.sentAt,
+            senderType: 'self' as const,
+          },
+          outboundUserId: user.id,
+        };
+        void applyContactAggregateFromMessage(aggInput);
+        void applyFriendAggregate(aggInput);
+      }
 
       return { success: true, result };
     } catch (err) { return handleError(err, reply); }

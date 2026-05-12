@@ -1,7 +1,7 @@
 <template>
-  <div class="rich-text-editor" :class="{ focused: isFocused }">
-    <!-- Toolbar -->
-    <div v-if="showToolbar" class="editor-toolbar d-flex align-center ga-1 pa-1">
+  <div class="rich-text-editor" :class="{ focused: isFocused, 'has-content': !!modelValue }">
+    <!-- Toolbar — chỉ hiện khi focus hoặc đang có nội dung (CSS animate) -->
+    <div v-if="showToolbar" class="editor-toolbar d-flex align-center ga-1">
       <v-btn
         icon size="x-small" variant="text"
         :color="editor?.isActive('bold') ? 'primary' : undefined"
@@ -53,7 +53,6 @@
       >
         <v-icon size="16">mdi-code-braces</v-icon>
       </v-btn>
-      <slot name="toolbar-extra" />
     </div>
 
     <!-- Editor content -->
@@ -81,6 +80,7 @@ const emit = defineEmits<{
   'update:modelValue': [value: string];
   submit: [];
   typing: [];
+  'paste-image': [files: File[]];
 }>();
 
 const isFocused = ref(false);
@@ -101,6 +101,24 @@ const editor = useEditor({
       if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
         emit('submit');
+        return true;
+      }
+      return false;
+    },
+    handlePaste(_view, event) {
+      // Bắt paste image từ clipboard (Ctrl+V hình ảnh)
+      const items = event.clipboardData?.items;
+      if (!items) return false;
+      const imgFiles: File[] = [];
+      for (const item of Array.from(items)) {
+        if (item.kind === 'file' && item.type.startsWith('image/')) {
+          const f = item.getAsFile();
+          if (f) imgFiles.push(f);
+        }
+      }
+      if (imgFiles.length) {
+        event.preventDefault();
+        emit('paste-image', imgFiles);
         return true;
       }
       return false;
@@ -135,32 +153,58 @@ function focus() {
   editor.value?.commands.focus();
 }
 
-defineExpose({ clear, focus });
+/** Insert plain text/emoji at cursor position */
+function insertText(text: string) {
+  if (!text) return;
+  editor.value?.chain().focus().insertContent(text).run();
+}
+
+defineExpose({ clear, focus, insertText });
 
 onBeforeUnmount(() => { editor.value?.destroy(); });
 </script>
 
 <style scoped>
 .rich-text-editor {
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.03);
-  transition: border-color 0.2s;
+  border: 1.5px solid var(--smax-grey-200, #ebedf0);
+  border-radius: 9px;
+  background: var(--smax-bg, #fff);
+  transition: border-color 0.2s, box-shadow 0.2s;
+  position: relative;
 }
-.rich-text-editor.focused {
-  border-color: rgba(0, 242, 255, 0.4);
+.rich-text-editor.focused,
+.rich-text-editor:focus-within {
+  border-color: var(--smax-primary, #2962ff);
+  box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.10);
 }
+
+/* ── Toolbar collapsible — ẩn default, slide in khi focus hoặc đang gõ ── */
 .editor-toolbar {
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  padding: 0 4px;
+  border-bottom: 1px solid transparent;
+  transition: max-height 0.18s ease, opacity 0.15s, padding 0.15s, border-color 0.15s;
 }
+.rich-text-editor:focus-within .editor-toolbar,
+.rich-text-editor.focused .editor-toolbar,
+.rich-text-editor.has-content .editor-toolbar {
+  max-height: 40px;
+  opacity: 1;
+  padding: 4px;
+  border-bottom-color: var(--smax-grey-100, #f5f6fa);
+}
+
 .editor-content :deep(.tiptap-input) {
-  padding: 8px 12px;
-  min-height: 36px;
-  max-height: 120px;
+  padding: 9px 13px;
+  min-height: 42px;
+  max-height: 140px;
   overflow-y: auto;
   outline: none;
-  font-size: 0.875rem;
+  font-size: 14px;
   line-height: 1.5;
+  color: var(--smax-text, #212121);
 }
 .editor-content :deep(.tiptap-input p) {
   margin: 0;
@@ -168,21 +212,24 @@ onBeforeUnmount(() => { editor.value?.destroy(); });
 .editor-content :deep(.tiptap-input p.is-editor-empty:first-child::before) {
   content: attr(data-placeholder);
   float: left;
-  color: rgba(255, 255, 255, 0.3);
+  color: var(--smax-grey-300, #d4d8de);
+  font-style: italic;
   pointer-events: none;
   height: 0;
 }
 .editor-content :deep(.tiptap-input code) {
-  background: rgba(0, 242, 255, 0.08);
-  padding: 2px 4px;
+  background: var(--smax-primary-soft, #e3f2fd);
+  color: var(--smax-primary, #2962ff);
+  padding: 2px 5px;
   border-radius: 4px;
-  font-size: 0.85em;
+  font-size: 0.9em;
+  font-family: ui-monospace, "Cascadia Code", Menlo, monospace;
 }
 .editor-content :deep(.tiptap-input pre) {
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--smax-grey-100, #f5f6fa);
   padding: 8px 12px;
-  border-radius: 6px;
-  font-family: monospace;
+  border-radius: 7px;
+  font-family: ui-monospace, "Cascadia Code", Menlo, monospace;
   margin: 4px 0;
 }
 </style>

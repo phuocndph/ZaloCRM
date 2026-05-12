@@ -3,6 +3,7 @@ import { prisma } from '../../../shared/database/prisma-client.js';
 import { renderMessageTemplate } from '../template-renderer.js';
 import { zaloPool } from '../../zalo/zalo-pool.js';
 import { zaloRateLimiter } from '../../zalo/zalo-rate-limiter.js';
+import { applyContactAggregateFromMessage, applyFriendAggregate } from '../../contacts/contact-aggregate.js';
 
 export async function sendTemplateAction(input: {
   templateId: string;
@@ -39,7 +40,7 @@ export async function sendTemplateAction(input: {
   const sendResult = await instance.api.sendMessage({ msg: content }, input.threadId, threadType);
   const zaloMsgId = String(sendResult?.msgId || sendResult?.data?.msgId || '');
 
-  return prisma.message.create({
+  const created = await prisma.message.create({
     data: {
       id: randomUUID(),
       conversationId: input.conversationId,
@@ -52,4 +53,19 @@ export async function sendTemplateAction(input: {
       sentAt: new Date(),
     },
   });
+
+  const aggInput = {
+    conversationId: input.conversationId,
+    message: {
+      id: created.id,
+      content: created.content,
+      contentType: created.contentType,
+      sentAt: created.sentAt,
+      senderType: 'self' as const,
+    },
+  };
+  void applyContactAggregateFromMessage(aggInput);
+  void applyFriendAggregate(aggInput);
+
+  return created;
 }

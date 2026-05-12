@@ -16,17 +16,50 @@
       <v-tab value="all">Tất cả</v-tab>
     </v-tabs>
 
-    <!-- "Tất cả" tab: status filter -->
-    <div v-if="activeTab === 'all'" class="mb-3">
+    <!-- Source filter chips — phân biệt Zalo vs Manual -->
+    <div class="d-flex align-center gap-2 mb-3 flex-wrap">
+      <v-chip
+        :variant="filters.source === 'all' ? 'flat' : 'outlined'"
+        :color="filters.source === 'all' ? 'primary' : undefined"
+        @click="filters.source = 'all'; fetchAppointments()"
+      >
+        Tất cả
+        <v-chip size="x-small" class="ml-1" variant="flat">
+          {{ (sourceCounts.manual || 0) + (sourceCounts.zalo || 0) }}
+        </v-chip>
+      </v-chip>
+      <v-chip
+        :variant="filters.source === 'zalo' ? 'flat' : 'outlined'"
+        :color="filters.source === 'zalo' ? 'info' : undefined"
+        prepend-icon="mdi-bell-ring"
+        @click="filters.source = 'zalo'; fetchAppointments()"
+      >
+        Zalo
+        <v-chip size="x-small" class="ml-1" variant="flat">{{ sourceCounts.zalo || 0 }}</v-chip>
+      </v-chip>
+      <v-chip
+        :variant="filters.source === 'manual' ? 'flat' : 'outlined'"
+        :color="filters.source === 'manual' ? 'secondary' : undefined"
+        prepend-icon="mdi-pencil-outline"
+        @click="filters.source = 'manual'; fetchAppointments()"
+      >
+        Thủ công
+        <v-chip size="x-small" class="ml-1" variant="flat">{{ sourceCounts.manual || 0 }}</v-chip>
+      </v-chip>
+
+      <!-- Status filter chỉ hiện ở tab "Tất cả" -->
       <v-select
+        v-if="activeTab === 'all'"
         v-model="filters.status"
         :items="APPOINTMENT_STATUS_OPTIONS"
         item-title="text"
         item-value="value"
         label="Trạng thái"
         clearable
-        style="max-width: 220px"
+        style="max-width: 200px"
         hide-details
+        density="compact"
+        class="ml-2"
         @update:model-value="fetchAppointments()"
       />
     </div>
@@ -38,10 +71,38 @@
       :loading="loading"
       item-value="id"
       hover
+      @click:row="onRowClick"
     >
+      <!-- Source badge -->
+      <template #item.source="{ item }">
+        <v-chip
+          v-if="item.source === 'zalo'"
+          color="info"
+          size="x-small"
+          variant="tonal"
+          prepend-icon="mdi-bell-ring"
+        >
+          {{ item.emoji || '🔔' }} Zalo
+        </v-chip>
+        <v-chip
+          v-else
+          color="grey"
+          size="x-small"
+          variant="tonal"
+          prepend-icon="mdi-pencil-outline"
+        >
+          Thủ công
+        </v-chip>
+      </template>
+
       <!-- Date -->
       <template #item.appointmentDate="{ item }">
         {{ formatDate(item.appointmentDate) }}
+      </template>
+
+      <!-- Time (timezone-aware từ appointmentDate, không trust appointmentTime string DB) -->
+      <template #item.time="{ item }">
+        {{ formatTime(item.appointmentDate) }}
       </template>
 
       <!-- Contact name -->
@@ -55,11 +116,16 @@
         {{ typeLabel(item.type) }}
       </template>
 
-      <!-- Status chip -->
+      <!-- Status chip + audit info -->
       <template #item.status="{ item }">
         <v-chip :color="statusChipColor(item.status)" size="small" variant="tonal">
           {{ statusLabel(item.status) }}
         </v-chip>
+        <div v-if="item.statusChangedBy && item.status !== 'scheduled' && item.status !== 'overdue'" class="text-caption text-grey mt-1">
+          <v-icon size="11">mdi-account-check-outline</v-icon>
+          {{ item.statusChangedBy.fullName || item.statusChangedBy.email }}
+          <span v-if="item.statusChangedAt"> · {{ formatRelativeTime(item.statusChangedAt) }}</span>
+        </div>
       </template>
 
       <!-- Notes -->
@@ -67,29 +133,37 @@
         <span class="text-body-2">{{ item.notes ?? '—' }}</span>
       </template>
 
-      <!-- Quick actions -->
+      <!-- Quick actions: 1-click status change cho appointment chưa có outcome -->
       <template #item.actions="{ item }">
-        <div class="d-flex gap-1">
+        <div class="d-flex gap-1 flex-wrap">
+          <template v-if="item.status === 'scheduled' || item.status === 'overdue'">
+            <v-btn
+              size="x-small"
+              variant="tonal"
+              color="success"
+              prepend-icon="mdi-check"
+              title="Hoàn thành"
+              @click.stop="onMarkComplete(item.id)"
+            >Xong</v-btn>
+            <v-btn
+              size="x-small"
+              variant="tonal"
+              color="error"
+              prepend-icon="mdi-account-cancel-outline"
+              title="Khách không đến"
+              @click.stop="onNoShow(item.id)"
+            >Vắng</v-btn>
+            <v-btn
+              size="x-small"
+              variant="text"
+              color="grey"
+              prepend-icon="mdi-close"
+              title="Huỷ"
+              @click.stop="onCancel(item.id)"
+            >Huỷ</v-btn>
+          </template>
           <v-btn
-            v-if="item.status === 'scheduled'"
-            size="small"
-            variant="text"
-            color="success"
-            icon="mdi-check"
-            title="Hoàn thành"
-            @click.stop="onMarkComplete(item.id)"
-          />
-          <v-btn
-            v-if="item.status === 'scheduled'"
-            size="small"
-            variant="text"
-            color="grey"
-            icon="mdi-cancel"
-            title="Huỷ"
-            @click.stop="onCancel(item.id)"
-          />
-          <v-btn
-            size="small"
+            size="x-small"
             variant="text"
             color="error"
             icon="mdi-delete"
@@ -152,6 +226,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue';
+import { useRouter } from 'vue-router';
 import {
   useAppointments,
   APPOINTMENT_STATUS_OPTIONS,
@@ -161,11 +236,12 @@ import {
 } from '@/composables/use-appointments';
 import type { Appointment } from '@/composables/use-appointments';
 
+const router = useRouter();
 const {
   appointments, todayAppointments, upcomingAppointments,
-  loading, saving, filters,
+  loading, saving, filters, sourceCounts,
   fetchAppointments, fetchToday, fetchUpcoming,
-  createAppointment, deleteAppointment, markComplete, cancelAppointment,
+  createAppointment, deleteAppointment, markComplete, cancelAppointment, markNoShow,
 } = useAppointments();
 
 const activeTab = ref<'today' | 'upcoming' | 'all'>('today');
@@ -188,14 +264,23 @@ const createForm = ref<CreateForm>({
 });
 
 const headers = [
+  { title: 'Nguồn', key: 'source', sortable: false, width: '110px' },
   { title: 'Ngày', key: 'appointmentDate', sortable: true },
-  { title: 'Giờ', key: 'appointmentTime', sortable: true },
+  { title: 'Giờ', key: 'time', sortable: false }, // computed từ appointmentDate (timezone-aware)
   { title: 'Khách hàng', key: 'contact', sortable: false },
   { title: 'Loại', key: 'type', sortable: false },
   { title: 'Trạng thái', key: 'status', sortable: false },
   { title: 'Ghi chú', key: 'notes', sortable: false },
   { title: '', key: 'actions', sortable: false, width: '120px' },
 ];
+
+// Click row Zalo → mở conversation tại message reminder gốc
+function onRowClick(_event: MouseEvent, row: { item: Appointment }) {
+  const item = row.item;
+  if (item.source === 'zalo' && item.conversationId) {
+    router.push(`/chat/${item.conversationId}`);
+  }
+}
 
 const activeList = computed<Appointment[]>(() => {
   switch (activeTab.value) {
@@ -208,6 +293,12 @@ const activeList = computed<Appointment[]>(() => {
 function formatDate(date: string) {
   if (!date) return '';
   return new Date(date).toLocaleDateString('vi-VN');
+}
+
+function formatTime(date: string) {
+  if (!date) return '';
+  const d = new Date(date);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
 function typeLabel(type: string) {
@@ -224,9 +315,27 @@ async function onCancel(id: string) {
   refreshActive();
 }
 
+async function onNoShow(id: string) {
+  await markNoShow(id);
+  refreshActive();
+}
+
 async function onDelete(id: string) {
   await deleteAppointment(id);
   refreshActive();
+}
+
+function formatRelativeTime(iso: string): string {
+  const then = new Date(iso).getTime();
+  const now = Date.now();
+  const diffMin = Math.floor((now - then) / 60000);
+  if (diffMin < 1) return 'vừa xong';
+  if (diffMin < 60) return `${diffMin} phút trước`;
+  const diffH = Math.floor(diffMin / 60);
+  if (diffH < 24) return `${diffH} giờ trước`;
+  const diffD = Math.floor(diffH / 24);
+  if (diffD < 7) return `${diffD} ngày trước`;
+  return new Date(iso).toLocaleDateString('vi-VN');
 }
 
 async function onCreateSave() {
@@ -257,5 +366,6 @@ watch(activeTab, () => refreshActive());
 onMounted(() => {
   fetchToday();
   fetchUpcoming();
+  fetchAppointments(); // load để có sourceCounts cho chip badges
 });
 </script>

@@ -212,9 +212,14 @@ async function sendImage(accountId: string, threadId: string, threadType: 0 | 1,
     (api) => api.sendMessage({ attachments }, threadId, threadType));
 }
 
-async function sendSticker(accountId: string, stickerId: number, threadId: string, threadType: 0 | 1) {
+async function sendSticker(
+  accountId: string,
+  sticker: { id: number; cateId: number; type: number },
+  threadId: string,
+  threadType: 0 | 1,
+) {
   return exec({ accountId, category: 'message', operation: 'sendSticker' },
-    (api) => api.sendSticker(stickerId, null, threadId, threadType));
+    (api) => api.sendSticker(sticker, threadId, threadType));
 }
 
 async function sendLink(accountId: string, threadId: string, threadType: 0 | 1, link: any) {
@@ -253,9 +258,14 @@ async function forwardMessage(accountId: string, msgId: string, threadId: string
 }
 
 // ─── Chat Actions ───────────────────────────────────────────────────────────
-async function addReaction(accountId: string, reaction: any, msgData: { msgId: string; cliMsgId?: string; threadId: string; threadType: 0 | 1 }) {
+// zca-js v2 expects nested dest: { data: {msgId, cliMsgId}, threadId, type }
+async function addReaction(
+  accountId: string,
+  reaction: any,
+  dest: { data: { msgId: string; cliMsgId: string }; threadId: string; type: 0 | 1 },
+) {
   return exec({ accountId, category: 'reaction', operation: 'addReaction' },
-    (api) => api.addReaction(reaction, msgData));
+    (api) => api.addReaction(reaction, dest));
 }
 
 async function sendTypingEvent(accountId: string, threadId: string, threadType: 0 | 1) {

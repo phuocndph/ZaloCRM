@@ -4,9 +4,100 @@
  * Extracted from ZaloAccountPool to keep zalo-pool.ts under 200 lines.
  */
 import type { Server } from 'socket.io';
+import { randomUUID } from 'node:crypto';
 import { logger } from '../../shared/utils/logger.js';
+import { prisma } from '../../shared/database/prisma-client.js';
 import { handleIncomingMessage, handleMessageUndo } from '../chat/message-handler.js';
 import { detectContentType, extractAlbumInfo, updateContactAvatar } from './zalo-message-helpers.js';
+import { handleFriendEvent } from './friend-event-handler.js';
+
+// Map Zalo Reactions enum code → display emoji (cùng map với chat-operations-routes)
+const ZALO_REACTION_DISPLAY: Record<string, string> = {
+  '/-heart': '❤️',
+  '/-strong': '👍',
+  ':>': '😆',
+  ':o': '😮',
+  ':-((': '😭',
+  ':-h': '😡',
+  '/-rose': '🌹',
+  '/-break': '💔',
+  '/-weak': '👎',
+};
+
+async function handleZaloReaction(accountId: string, io: Server | null, reaction: any) {
+  try {
+    const data = reaction?.data;
+    const threadId = reaction?.threadId;
+    if (!data || !threadId) return;
+
+    // Reactor info: uidFrom là Zalo UID của người thả; rIcon là emoji code, rType=0 thường nghĩa "add"
+    const reactorZaloUid: string = String(data.uidFrom || '');
+    const rawIcon: string = String(data.content?.rIcon || '');
+    const rType: number = Number(data.content?.rType || 0);
+    // Target message: gMsgID là Zalo msgId của tin bị react
+    const targetZaloMsgId: string = String(data.content?.rMsg?.[0]?.gMsgID || data.msgId || '');
+    if (!targetZaloMsgId || !reactorZaloUid) return;
+
+    // Tìm conversation theo externalThreadId + accountId
+    const conversation = await prisma.conversation.findFirst({
+      where: { zaloAccountId: accountId, externalThreadId: threadId },
+      select: { id: true },
+    });
+    if (!conversation) return;
+
+    // Tìm Message theo zaloMsgId
+    const message = await prisma.message.findFirst({
+      where: { conversationId: conversation.id, zaloMsgId: targetZaloMsgId },
+      select: { id: true },
+    });
+    if (!message) return;
+
+    const displayEmoji = ZALO_REACTION_DISPLAY[rawIcon] || rawIcon || '👍';
+    const reactorName = String(data.dName || '');
+
+    // rIcon rỗng = remove, có icon = add (Zalo gửi cùng 1 event cho cả 2 — phân biệt qua rIcon empty)
+    if (!rawIcon || rType < 0) {
+      // Remove tất cả emoji của reactor này trên message (Zalo client chỉ giữ 1 emoji per user)
+      await prisma.messageReaction.deleteMany({
+        where: { messageId: message.id, reactorId: reactorZaloUid, reactorSource: 'zalo' },
+      });
+    } else {
+      await prisma.messageReaction.upsert({
+        where: {
+          messageId_reactorId_emoji: {
+            messageId: message.id,
+            reactorId: reactorZaloUid,
+            emoji: displayEmoji,
+          },
+        },
+        update: { reactorName: reactorName || undefined },
+        create: {
+          id: randomUUID(),
+          messageId: message.id,
+          reactorId: reactorZaloUid,
+          reactorSource: 'zalo',
+          reactorName: reactorName || null,
+          emoji: displayEmoji,
+        },
+      });
+    }
+
+    io?.emit('chat:reactions', {
+      conversationId: conversation.id,
+      messageId: message.id,
+      msgId: message.id,
+      reactions: [{
+        userId: reactorZaloUid,
+        userName: reactorName,
+        reaction: displayEmoji,
+        action: (!rawIcon || rType < 0) ? 'remove' : 'add',
+        source: 'zalo',
+      }],
+    });
+  } catch (err) {
+    logger.warn(`[zalo:${accountId}] reaction handler error:`, err);
+  }
+}
 
 // Cached user info entry with 5-minute TTL
 export interface UserInfoCacheEntry {
@@ -54,15 +145,26 @@ async function resolveZaloName(
   return { zaloName: '', avatar: '' };
 }
 
-// Fetch group display name from the zca-js API
-async function resolveGroupName(api: any, groupId: string): Promise<string> {
+interface ResolvedGroup {
+  name: string;
+  avatar: string;
+  membersCount: number | null;
+}
+
+// Fetch group display name + avatar + member count from the zca-js API
+async function resolveGroupInfo(api: any, groupId: string): Promise<ResolvedGroup> {
   try {
     const result = await api.getGroupInfo(groupId);
     const info = result?.gridInfoMap?.[groupId];
-    return info?.name || '';
+    const members = info?.memVerList || info?.memList || info?.members;
+    return {
+      name: info?.name || '',
+      avatar: info?.avt || info?.fullAvt || info?.avatar || '',
+      membersCount: Array.isArray(members) ? members.length : (info?.totalMember || null),
+    };
   } catch (err) {
     logger.warn(`[zalo] getGroupInfo failed for ${groupId}:`, err);
-    return '';
+    return { name: '', avatar: '', membersCount: null };
   }
 }
 
@@ -107,10 +209,15 @@ export function attachZaloListener(ctx: ListenerContext): void {
         }
       }
 
-      // Resolve group name for group threads
+      // Resolve group info for group threads (name + avatar + members count)
       let groupName: string | undefined;
+      let groupAvatarUrl: string | undefined;
+      let groupMembersCount: number | undefined;
       if (isGroup && message.threadId) {
-        groupName = await resolveGroupName(api, message.threadId);
+        const groupInfo = await resolveGroupInfo(api, message.threadId);
+        groupName = groupInfo.name || undefined;
+        groupAvatarUrl = groupInfo.avatar || undefined;
+        groupMembersCount = groupInfo.membersCount ?? undefined;
       }
 
       const rawContent = message.data?.content;
@@ -131,6 +238,8 @@ export function attachZaloListener(ctx: ListenerContext): void {
         threadId: message.threadId || '',
         threadType: isGroup ? 'group' : 'user',
         groupName,
+        groupAvatarUrl,
+        groupMembersCount,
         attachments: [],
         quote: message.data?.quote,
         albumKey: album.albumKey,
@@ -158,6 +267,29 @@ export function attachZaloListener(ctx: ListenerContext): void {
     }
   });
 
+  // Reactions thả từ Zalo client → sync vào DB + emit socket
+  listener.on('reaction', async (reaction: any) => {
+    await handleZaloReaction(accountId, io, reaction);
+  });
+
+  // Backfill reactions trên reconnect (đã thả khi CRM offline)
+  listener.on('old_reactions', async (reactions: any[]) => {
+    if (!Array.isArray(reactions)) return;
+    logger.info(`[zalo:${accountId}] Backfill ${reactions.length} old reactions`);
+    for (const r of reactions) {
+      await handleZaloReaction(accountId, io, r);
+    }
+  });
+
+  listener.on('friend_event', async (event: any) => {
+    try {
+      await handleFriendEvent(accountId, event);
+      io?.emit('friend:event', { accountId, type: event.type, threadId: event.threadId });
+    } catch (err) {
+      logger.error(`[zalo:${accountId}] friend_event handler error:`, err);
+    }
+  });
+
   // Backfill messages delivered on reconnect (missed while disconnected)
   listener.on('old_messages', async (messages: any[], type: number) => {
     const threadType = type === 1 ? 'group' : 'user';
@@ -175,8 +307,13 @@ export function attachZaloListener(ctx: ListenerContext): void {
         }
 
         let groupName: string | undefined;
+        let groupAvatarUrl: string | undefined;
+        let groupMembersCount: number | undefined;
         if (threadType === 'group' && message.threadId) {
-          groupName = await resolveGroupName(api, message.threadId);
+          const groupInfo = await resolveGroupInfo(api, message.threadId);
+          groupName = groupInfo.name || undefined;
+          groupAvatarUrl = groupInfo.avatar || undefined;
+          groupMembersCount = groupInfo.membersCount ?? undefined;
         }
 
         const rawContent = message.data?.content;
@@ -197,6 +334,8 @@ export function attachZaloListener(ctx: ListenerContext): void {
           threadId: message.threadId || '',
           threadType,
           groupName,
+          groupAvatarUrl,
+          groupMembersCount,
           attachments: [],
           quote: message.data?.quote,
           albumKey: album.albumKey,

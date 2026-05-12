@@ -1,235 +1,115 @@
 <template>
-  <div class="conversation-list d-flex flex-column" style="width: 100%; border-right: 1px solid var(--border-glow, rgba(0,242,255,0.1)); height: 100%;">
-    <!-- Account filter + Search -->
-    <div class="pa-2">
-      <v-select
-        v-model="selectedAccountId"
-        :items="accountOptions"
-        item-title="text"
-        item-value="value"
-        label="Tất cả Zalo"
-        density="compact"
-        variant="solo-filled"
-        hide-details
-        clearable
-        class="mb-2"
-        @update:model-value="$emit('filter-account', $event)"
+  <div class="conv-list">
+    <!-- ════════ Header: search + label chip + tabs ════════ -->
+    <div class="cl-header">
+      <input
+        class="cl-search"
+        :value="search"
+        placeholder="Tìm theo tên, SĐT, nội dung tin nhắn…"
+        @input="onSearchInput"
       />
-      <v-text-field
-        :model-value="search"
-        @update:model-value="$emit('update:search', $event)"
-        placeholder="Tìm kiếm..."
-        prepend-inner-icon="mdi-magnify"
-        variant="solo-filled"
-        density="compact"
-        hide-details
-        clearable
-      />
+
+      <!-- Label chip bar (filter theo tag CRM) -->
+      <div v-if="availableTags.length" class="cl-label-bar">
+        <span
+          v-for="tag in availableTags"
+          :key="tag"
+          class="cl-label-chip"
+          :class="{ active: filters.tags.includes(tag) }"
+          :data-color="colorOfTag(tag)"
+          @click="toggleTag(tag)"
+        >{{ tag }}</span>
+
+        <button
+          v-if="filters.tags.length"
+          class="clear-tags"
+          @click="filters.tags = []"
+          title="Xoá lọc tag"
+        >×</button>
+      </div>
+
+      <!-- Tab Main / Other (giữ business logic) -->
+      <div class="cl-tabs">
+        <button
+          class="cl-tab"
+          :class="{ active: activeTab === 'main' }"
+          @click="activeTab = 'main'"
+        >Chính<span class="cl-tab-count">{{ counts.total - 0 }}</span></button>
+        <button
+          class="cl-tab"
+          :class="{ active: activeTab === 'other' }"
+          @click="activeTab = 'other'"
+        >Khác</button>
+      </div>
     </div>
 
-    <!-- Tab switcher: Main / Other -->
-    <div class="d-flex px-2 pb-1">
-      <v-btn-toggle v-model="activeTab" mandatory density="compact" color="primary" class="w-100">
-        <v-btn value="main" size="small" class="flex-grow-1">Chính</v-btn>
-        <v-btn value="other" size="small" class="flex-grow-1">Khác</v-btn>
-      </v-btn-toggle>
-    </div>
+    <!-- ════════ Conv items ════════ -->
+    <div class="conv-scroll">
+      <div v-if="loading" class="loading">Đang tải…</div>
 
-    <!-- Filter bar -->
-    <div class="d-flex flex-wrap gap-1 px-2 pb-2">
-      <v-chip
-        :variant="filters.unread ? 'elevated' : 'outlined'"
-        color="primary"
-        size="small"
-        class="filter-chip"
-        @click="toggleFilter('unread')"
-      >
-        <v-icon icon="mdi-email-outline" start size="14" />
-        Chưa đọc
-        <v-badge
-          v-if="counts.unread > 0"
-          :content="counts.unread > 99 ? '99+' : counts.unread"
-          color="error"
-          inline
-          class="ml-1"
-        />
-      </v-chip>
-
-      <v-chip
-        :variant="filters.unreplied ? 'elevated' : 'outlined'"
-        color="warning"
-        size="small"
-        class="filter-chip"
-        @click="toggleFilter('unreplied')"
-      >
-        <v-icon icon="mdi-reply-outline" start size="14" />
-        Chưa trả lời
-        <v-badge
-          v-if="counts.unreplied > 0"
-          :content="counts.unreplied > 99 ? '99+' : counts.unreplied"
-          color="warning"
-          inline
-          class="ml-1"
-        />
-      </v-chip>
-
-      <!-- Date range filter -->
-      <v-menu v-model="showDateMenu" :close-on-content-click="false" location="bottom start">
-        <template #activator="{ props: menuProps }">
-          <v-chip
-            v-bind="menuProps"
-            :variant="hasDateFilter ? 'elevated' : 'outlined'"
-            color="secondary"
-            size="small"
-            class="filter-chip"
-          >
-            <v-icon icon="mdi-calendar-range" start size="14" />
-            {{ dateLabel }}
-          </v-chip>
-        </template>
-        <v-card min-width="280" class="pa-3">
-          <div class="text-subtitle-2 mb-2">Lọc theo thời gian</div>
-          <v-text-field
-            v-model="filters.from"
-            label="Từ ngày"
-            type="date"
-            density="compact"
-            variant="outlined"
-            hide-details
-            class="mb-2"
-          />
-          <v-text-field
-            v-model="filters.to"
-            label="Đến ngày"
-            type="date"
-            density="compact"
-            variant="outlined"
-            hide-details
-            class="mb-2"
-          />
-          <div class="d-flex gap-2 justify-end">
-            <v-btn size="small" variant="text" @click="clearDateFilter">Xóa</v-btn>
-            <v-btn size="small" color="primary" @click="showDateMenu = false">Áp dụng</v-btn>
-          </div>
-        </v-card>
-      </v-menu>
-
-      <!-- Tag filter -->
-      <v-menu v-model="showTagMenu" :close-on-content-click="false" location="bottom start">
-        <template #activator="{ props: menuProps }">
-          <v-chip
-            v-bind="menuProps"
-            :variant="filters.tags.length > 0 ? 'elevated' : 'outlined'"
-            color="success"
-            size="small"
-            class="filter-chip"
-          >
-            <v-icon icon="mdi-tag-outline" start size="14" />
-            Tags
-            <span v-if="filters.tags.length > 0" class="ml-1">({{ filters.tags.length }})</span>
-          </v-chip>
-        </template>
-        <v-card min-width="220" max-height="300" class="overflow-y-auto">
-          <v-list density="compact" select-strategy="leaf" v-model:selected="filters.tags">
-            <v-list-subheader>Chọn tags</v-list-subheader>
-            <div v-if="availableTags.length === 0" class="text-caption text-grey pa-3">
-              Chưa có tags nào
-            </div>
-            <v-list-item
-              v-for="tag in availableTags"
-              :key="tag"
-              :value="tag"
-            >
-              <template #prepend="{ isSelected }">
-                <v-checkbox-btn :model-value="isSelected" density="compact" />
-              </template>
-              <v-list-item-title>{{ tag }}</v-list-item-title>
-            </v-list-item>
-          </v-list>
-          <v-divider />
-          <div class="pa-2 d-flex justify-end">
-            <v-btn size="small" variant="text" @click="filters.tags = []">Xóa tất cả</v-btn>
-          </div>
-        </v-card>
-      </v-menu>
-
-      <!-- Clear all filters -->
-      <v-chip
-        v-if="hasAnyFilter"
-        variant="text"
-        color="error"
-        size="small"
-        class="filter-chip"
-        @click="clearAllFilters"
-      >
-        <v-icon icon="mdi-close-circle-outline" start size="14" />
-        Xóa lọc
-      </v-chip>
-    </div>
-
-    <!-- List -->
-    <v-list class="flex-grow-1 overflow-y-auto pa-0" density="compact">
-      <v-progress-linear v-if="loading" indeterminate color="primary" />
-
-      <v-list-item
+      <div
         v-for="conv in conversations"
         :key="conv.id"
-        :active="conv.id === selectedId"
+        class="conv-item"
+        :class="{
+          active: conv.id === selectedId,
+          unread: conv.unreadCount > 0 && conv.id !== selectedId,
+          'is-group': conv.threadType === 'group',
+        }"
         @click="$emit('select', conv.id)"
         @contextmenu.prevent="openContextMenu($event, conv)"
-        class="py-2"
-        :class="{ 'conversation-active': conv.id === selectedId, 'bg-blue-lighten-5': conv.unreadCount > 0 && conv.id !== selectedId }"
       >
-        <template #prepend>
-          <v-avatar size="40" color="grey-lighten-2">
-            <v-icon v-if="conv.threadType === 'group'" icon="mdi-account-group" />
-            <v-img v-else-if="conv.contact?.avatarUrl" :src="conv.contact.avatarUrl" />
-            <v-icon v-else icon="mdi-account" />
-          </v-avatar>
-        </template>
+        <Avatar
+          :src="avatarSrcOf(conv)"
+          :name="displayName(conv)"
+          :size="41"
+          :is-group="conv.threadType === 'group'"
+          :platform="conv.threadType === 'user' ? 'zalo' : null"
+          :gradient-seed="conv.id"
+        />
 
-        <v-list-item-title class="d-flex align-center">
-          <span class="text-truncate" :class="{ 'font-weight-bold': conv.unreadCount > 0 }">
-            {{ conv.threadType === 'group' ? (conv.contact?.fullName || 'Nhóm') : (conv.contact?.crmName || conv.contact?.fullName || 'Unknown') }}
-          </span>
-          <v-chip v-if="conv.threadType === 'group'" size="x-small" color="info" variant="tonal" class="ml-1">Nhóm</v-chip>
-          <v-spacer />
-          <span class="text-caption text-grey ml-1">{{ formatTime(conv.lastMessageAt) }}</span>
-        </v-list-item-title>
 
-        <v-list-item-subtitle class="d-flex align-center">
-          <span class="text-truncate" style="max-width: 200px;" :class="{ 'font-weight-medium': conv.unreadCount > 0 }">
-            {{ lastMessagePreview(conv) }}
-          </span>
-          <v-spacer />
-          <AiSentimentBadge v-if="parseSentiment(conv)" :sentiment="parseSentiment(conv)" class="mr-2" />
-          <v-badge
-            v-if="conv.unreadCount > 0"
-            :content="conv.unreadCount"
-            color="error"
-            inline
-          />
-        </v-list-item-subtitle>
+        <div class="ci-body">
+          <div class="ci-name-row">
+            <div class="ci-name">
+              <span v-if="conv.threadType === 'group'" class="group-icon">👥</span>
+              {{ displayName(conv) }}
+            </div>
+            <div class="ci-meta-right">
+              <div class="ci-time">{{ formatTime(conv.lastMessageAt) }}</div>
+              <div
+                v-if="conv.unreadCount > 0 && conv.id !== selectedId"
+                class="ci-unread-count"
+              >{{ conv.unreadCount > 5 ? '5+' : conv.unreadCount }}</div>
+            </div>
+          </div>
 
-        <!-- Zalo account indicator -->
-        <template #append>
-          <span v-if="conv.zaloAccount?.displayName" class="text-caption text-grey-darken-1 ml-1" style="font-size: 0.65rem; max-width: 60px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">
-            {{ conv.zaloAccount.displayName }}
-          </span>
-        </template>
-      </v-list-item>
+          <div class="ci-preview">{{ lastMessagePreview(conv) }}</div>
 
-      <div v-if="!loading && conversations.length === 0" class="text-center pa-8 text-grey">
-        Chưa có cuộc trò chuyện nào
+          <!-- Tag row luôn render (kể cả rỗng) để giữ layout cố định -->
+          <div class="ci-tag-row">
+            <span
+              v-for="tag in (conv.contact?.tags || []).slice(0, 2)"
+              :key="tag"
+              class="tag-mini"
+              :style="`background:${tagBgColor(tag)}`"
+            >{{ tag }}</span>
+            <span v-if="friendshipStatus(conv)" :class="['status-pill', friendshipPillClass(conv)]">
+              {{ friendshipStatus(conv) }}
+            </span>
+          </div>
+        </div>
+
+        <AiSentimentBadge v-if="parseSentiment(conv)" :sentiment="parseSentiment(conv)" class="sentiment" />
       </div>
-    </v-list>
 
-    <!-- Context menu for tab actions -->
-    <v-menu
-      v-model="contextMenu.show"
-      :target="[contextMenu.x, contextMenu.y]"
-      location="end"
-    >
+      <div v-if="!loading && conversations.length === 0" class="empty-state">
+        Chưa có hội thoại nào
+      </div>
+    </div>
+
+    <!-- Context menu (right-click) -->
+    <v-menu v-model="contextMenu.show" :target="[contextMenu.x, contextMenu.y]" location="end">
       <v-list density="compact">
         <v-list-item
           v-if="activeTab === 'main'"
@@ -251,12 +131,13 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, watch, onMounted } from 'vue';
+import { ref, reactive, watch, onMounted } from 'vue';
 import type { Conversation, AiSentiment } from '@/composables/use-chat';
 import { api } from '@/api/index';
 import AiSentimentBadge from '@/components/ai/ai-sentiment-badge.vue';
+import Avatar from '@/components/ui/Avatar.vue';
 
-defineProps<{
+const props = defineProps<{
   conversations: Conversation[];
   selectedId: string | null;
   loading: boolean;
@@ -273,78 +154,89 @@ const emit = defineEmits<{
 }>();
 
 // ── Tab state ──────────────────────────────────────────────────────────────
-const activeTab = ref('main');
+const activeTab = ref<'main' | 'other'>('main');
 
 // ── Context menu state ─────────────────────────────────────────────────────
-const contextMenu = reactive({
-  show: false,
-  x: 0,
-  y: 0,
-  convId: '',
-});
-
-// ── Account selector ────────────────────────────────────────────────────────
-const accountOptions = ref<{ text: string; value: string }[]>([]);
-const selectedAccountId = ref<string | null>(null);
+const contextMenu = reactive({ show: false, x: 0, y: 0, convId: '' });
 
 // ── Filter state ────────────────────────────────────────────────────────────
 const filters = reactive({
-  unread: false,
-  unreplied: false,
-  from: null as string | null,
-  to: null as string | null,
   tags: [] as string[],
 });
 
 const counts = reactive({ unread: 0, unreplied: 0, total: 0 });
 const availableTags = ref<string[]>([]);
-const showDateMenu = ref(false);
-const showTagMenu = ref(false);
 
-// ── Computed helpers ────────────────────────────────────────────────────────
-const hasDateFilter = computed(() => !!(filters.from || filters.to));
+// ── Helpers ────────────────────────────────────────────────────────────────
+function onSearchInput(e: Event) {
+  emit('update:search', (e.target as HTMLInputElement).value);
+}
 
-const hasAnyFilter = computed(
-  () => filters.unread || filters.unreplied || hasDateFilter.value || filters.tags.length > 0
-);
-
-const dateLabel = computed(() => {
-  if (!hasDateFilter.value) return 'Thời gian';
-  if (filters.from && filters.to) {
-    return `${formatDateShort(filters.from)} – ${formatDateShort(filters.to)}`;
+function toggleTag(tag: string) {
+  if (filters.tags.includes(tag)) {
+    filters.tags = filters.tags.filter(t => t !== tag);
+  } else {
+    filters.tags.push(tag);
   }
-  if (filters.from) return `Từ ${formatDateShort(filters.from)}`;
-  return `Đến ${formatDateShort(filters.to!)}`;
-});
-
-// ── Filter actions ──────────────────────────────────────────────────────────
-function toggleFilter(key: 'unread' | 'unreplied') {
-  filters[key] = !filters[key];
-}
-
-function clearDateFilter() {
-  filters.from = null;
-  filters.to = null;
-  showDateMenu.value = false;
-}
-
-function clearAllFilters() {
-  filters.unread = false;
-  filters.unreplied = false;
-  filters.from = null;
-  filters.to = null;
-  filters.tags = [];
 }
 
 function buildFilterParams(): Record<string, string> {
-  const params: Record<string, string> = {};
-  if (filters.unread) params.unread = 'true';
-  if (filters.unreplied) params.unreplied = 'true';
-  if (filters.from) params.from = filters.from;
-  if (filters.to) params.to = filters.to;
+  const params: Record<string, string> = { tab: activeTab.value };
   if (filters.tags.length > 0) params.tags = filters.tags.join(',');
-  params.tab = activeTab.value;
   return params;
+}
+
+// CRM label color map (từ mockup chat-smax-v3)
+const TAG_COLOR_MAP: Record<string, string> = {
+  'TTAVIO': 'red',
+  'EGD': 'purple',
+  'EBV': 'blue',
+  'phiền': 'orange',
+  'ấm': 'yellow',
+  'nóng': 'red',
+  'có tương tác': 'green',
+  'lạnh': 'blue',
+  'đàm phán': 'green',
+  'vip': 'orange',
+};
+function colorOfTag(tag: string): string {
+  return TAG_COLOR_MAP[tag] || TAG_COLOR_MAP[tag.toLowerCase()] || 'grey';
+}
+function tagBgColor(tag: string): string {
+  const color = colorOfTag(tag);
+  const map: Record<string, string> = {
+    red: '#ef5350', purple: '#6f48d9', orange: '#ff9800',
+    yellow: '#f9a825', green: '#43a047', blue: '#1976d2', grey: '#9e9e9e',
+  };
+  return map[color] || '#9e9e9e';
+}
+
+// ── Conversation display ───────────────────────────────────────────────────
+function displayName(conv: Conversation): string {
+  if (conv.threadType === 'group') {
+    return (conv as Conversation & { groupName?: string }).groupName
+      || conv.contact?.fullName
+      || 'Nhóm Zalo';
+  }
+  return conv.contact?.crmName || conv.contact?.fullName || 'Unknown';
+}
+function avatarSrcOf(conv: Conversation): string | null {
+  if (conv.threadType === 'group') {
+    return (conv as Conversation & { groupAvatarUrl?: string }).groupAvatarUrl || null;
+  }
+  return conv.contact?.avatarUrl || null;
+}
+
+function friendshipStatus(conv: Conversation): string | null {
+  // Best-effort heuristic until we expose friendshipKind on conversation payload.
+  // Mockup chip values: ✓ Bạn bè / 📤 Đã gửi mời / 💬 Đang nhắn (lạ).
+  if (!conv.contact?.zaloUid) return null;
+  // Treat groups as no chip
+  if (conv.threadType === 'group') return null;
+  return null;
+}
+function friendshipPillClass(_conv: Conversation): string {
+  return 'pill-success';
 }
 
 // ── Context menu ───────────────────────────────────────────────────────────
@@ -369,62 +261,48 @@ async function moveConversation(convId: string, targetTab: string) {
 async function fetchCounts() {
   try {
     const params: Record<string, string> = { tab: activeTab.value };
-    if (selectedAccountId.value) params.accountId = selectedAccountId.value;
     const res = await api.get('/conversations/counts', { params });
     counts.unread = res.data.unread ?? 0;
     counts.unreplied = res.data.unreplied ?? 0;
     counts.total = res.data.total ?? 0;
   } catch {
-    // Non-critical — badges just won't show counts
+    /* non-critical */
   }
 }
 
-// ── Available tags fetch ────────────────────────────────────────────────────
 async function fetchAvailableTags() {
   try {
     const res = await api.get('/contacts', { params: { limit: '200', fields: 'tags' } });
-    const contacts: any[] = Array.isArray(res.data) ? res.data : res.data.contacts || [];
+    const contacts: Array<{ tags?: string[] }> = Array.isArray(res.data) ? res.data : res.data.contacts || [];
     const tagSet = new Set<string>();
     for (const c of contacts) {
-      const tags = Array.isArray(c.tags) ? c.tags : [];
-      tags.forEach((t: string) => tagSet.add(t));
+      (c.tags || []).forEach(t => tagSet.add(t));
     }
-    availableTags.value = Array.from(tagSet).sort();
+    // Whitelist: bỏ tag system mặc định (Tag N), prefix auto:, độ dài < 2, hoặc rỗng.
+    // Sale chỉ thấy tag có nghĩa.
+    const SYSTEM_TAG_RE = /^(Tag\s*\d+|tag\d+)$/i;
+    availableTags.value = Array.from(tagSet)
+      .filter(t => {
+        const trimmed = t.trim();
+        if (trimmed.length < 2) return false;
+        if (SYSTEM_TAG_RE.test(trimmed)) return false;
+        if (trimmed.startsWith('auto:')) return false;
+        return true;
+      })
+      .sort();
   } catch {
-    // Non-critical — tag filter will show empty list
+    /* non-critical */
   }
 }
 
-// ── Watchers ────────────────────────────────────────────────────────────────
-watch(
-  filters,
-  () => emit('update:filters', buildFilterParams()),
-  { deep: true }
-);
-
+watch(filters, () => emit('update:filters', buildFilterParams()), { deep: true });
 watch(activeTab, () => {
   emit('tab-changed', activeTab.value);
   emit('update:filters', buildFilterParams());
   fetchCounts();
 });
 
-watch(selectedAccountId, () => {
-  fetchCounts();
-});
-
-// ── Lifecycle ───────────────────────────────────────────────────────────────
 onMounted(async () => {
-  try {
-    const res = await api.get('/zalo-accounts');
-    const accounts = Array.isArray(res.data) ? res.data : res.data.accounts || [];
-    accountOptions.value = accounts.map((a: any) => ({
-      text: a.displayName || a.zaloUid || a.id,
-      value: a.id,
-    }));
-  } catch {
-    // Non-critical — filter just won't show accounts
-  }
-
   await Promise.all([fetchCounts(), fetchAvailableTags()]);
 });
 
@@ -435,41 +313,81 @@ function lastMessagePreview(conv: Conversation): string {
   if (msg.isDeleted) return '(đã thu hồi)';
   const prefix = msg.senderType === 'self' ? 'Bạn: ' : '';
 
+  // Parse JSON content (nếu có) để extract title / action
+  let parsed: Record<string, unknown> | null = null;
+  if (msg.content?.startsWith('{')) {
+    try { parsed = JSON.parse(msg.content); } catch { /* not JSON */ }
+  }
+  const action = typeof parsed?.action === 'string' ? parsed.action : '';
+  const titleText = typeof parsed?.title === 'string' ? parsed.title.trim() : '';
+
+  // Call message (stored as contact_card + action recommened.calltime/misscall)
+  if (action.includes('calltime') || action.includes('misscall')) {
+    const params = typeof parsed?.params === 'string'
+      ? safeParseLocal(parsed.params as string)
+      : (parsed?.params as Record<string, unknown> | undefined);
+    const isVideo = params?.calltype === 1;
+    const isMissed = action.includes('misscall');
+    const icon = isVideo ? '📹' : '📞';
+    if (isMissed) return prefix + `${icon} Cuộc gọi nhỡ`;
+    const dur = Number(params?.duration ?? 0);
+    if (dur > 0) {
+      const m = Math.floor(dur / 60);
+      const s = dur % 60;
+      return prefix + `${icon} Cuộc gọi ${m}:${s.toString().padStart(2, '0')}`;
+    }
+    return prefix + `${icon} Cuộc gọi`;
+  }
+
+  // Reminder (action-based)
+  if (action === 'msginfo.actionlist' && titleText) {
+    return prefix + '📅 ' + truncate(titleText, 50);
+  }
+
+  // Rich content có title → preview bằng title thật, không phải "Tin đặc biệt"
+  if (msg.contentType === 'rich' && titleText) {
+    return prefix + truncate(titleText.replace(/\n/g, ' · '), 60);
+  }
+
+  // Per content-type
   switch (msg.contentType) {
     case 'image': return prefix + '📷 Hình ảnh';
-    case 'sticker': return prefix + '🏷️ Sticker';
+    case 'sticker': return prefix + '🎴 Sticker';
     case 'video': return prefix + '🎥 Video';
-    case 'voice': return prefix + '🎤 Tin nhắn thoại';
-    case 'gif': return prefix + 'GIF';
-    case 'file': return prefix + '📎 Tệp đính kèm';
-    case 'link': return prefix + '🔗 Liên kết';
-    case 'bank_transfer': return prefix + '🏦 Chuyển khoản';
+    case 'voice': return prefix + '🎤 Voice';
+    case 'gif': return prefix + '🎞️ GIF';
+    case 'file': return prefix + '📎 ' + (titleText ? truncate(titleText, 40) : 'Tệp đính kèm');
+    case 'link': return prefix + '🔗 ' + (titleText ? truncate(titleText, 40) : 'Liên kết');
+    case 'bank_transfer': return prefix + '🏦 Tài khoản ngân hàng';
     case 'call': return prefix + '📞 Cuộc gọi';
     case 'qr_code': return prefix + '📱 Mã QR';
-    case 'reminder': return prefix + '📅 Nhắc hẹn';
-    case 'poll': return prefix + '📊 Bình chọn';
-    case 'note': return prefix + '📝 Ghi chú';
-    case 'forwarded': return prefix + '↩️ Chuyển tiếp';
-    case 'contact_card': return prefix + '👤 Danh thiếp';
-    case 'rich': return prefix + '📋 Tin nhắn đặc biệt';
+    case 'reminder': return prefix + '📅 ' + (titleText ? truncate(titleText, 40) : 'Nhắc hẹn');
+    case 'poll': return prefix + '📊 ' + (titleText ? truncate(titleText, 40) : 'Bình chọn');
+    case 'note': return prefix + '📝 ' + (titleText ? truncate(titleText, 40) : 'Ghi chú');
+    case 'forwarded': return prefix + '↩️ ' + (titleText ? truncate(titleText, 40) : 'Chuyển tiếp');
+    case 'location': {
+      const desc = typeof parsed?.description === 'string' ? parsed.description.trim() : '';
+      const label = titleText || desc || 'Vị trí';
+      return prefix + '📍 ' + truncate(label, 50);
+    }
+    case 'contact_card': return prefix + (titleText ? truncate(titleText, 40) : '👤 Danh thiếp');
+    case 'rich': return prefix + '📋 Tin đặc biệt';
   }
 
-  // Reminder/calendar messages (legacy — before contentType was set)
-  if (msg.content) {
-    try {
-      const p = JSON.parse(msg.content);
-      if (p.action === 'msginfo.actionlist' && p.title) {
-        return prefix + '📅 ' + p.title.slice(0, 50);
-      }
-    } catch { /* not JSON */ }
-  }
-
+  // Plain text
   const text = msg.content || '';
-  return prefix + (text.length > 50 ? text.slice(0, 50) + '...' : text);
+  return prefix + truncate(text, 50);
+}
+
+function safeParseLocal(s: string): Record<string, unknown> | null {
+  try { return JSON.parse(s); } catch { return null; }
+}
+function truncate(s: string, n: number): string {
+  return s.length > n ? s.slice(0, n) + '…' : s;
 }
 
 function parseSentiment(conv: Conversation): AiSentiment | null {
-  const raw = (conv.contact as any)?.metadata?.aiSentiment;
+  const raw = (conv.contact as { metadata?: { aiSentiment?: AiSentiment | string } } | null)?.metadata?.aiSentiment;
   if (!raw) return null;
   try {
     return typeof raw === 'string' ? JSON.parse(raw) : raw;
@@ -484,23 +402,260 @@ function formatTime(dateStr: string | null): string {
   const now = new Date();
   const diffMs = now.getTime() - date.getTime();
   const diffMins = Math.floor(diffMs / 60000);
-
   if (diffMins < 1) return 'Vừa xong';
-  if (diffMins < 60) return `${diffMins} phút`;
-
+  if (diffMins < 60) return `${diffMins}p`;
   const diffHours = Math.floor(diffMins / 60);
-  if (diffHours < 24) return `${diffHours} giờ`;
-
+  if (diffHours < 24) {
+    const hh = date.getHours().toString().padStart(2, '0');
+    const mm = date.getMinutes().toString().padStart(2, '0');
+    return `${hh}:${mm}`;
+  }
   const diffDays = Math.floor(diffHours / 24);
   if (diffDays === 1) return 'Hôm qua';
-  if (diffDays < 7) return `${diffDays} ngày`;
-
+  if (diffDays < 7) return `${diffDays}d`;
   return date.toLocaleDateString('vi-VN');
 }
-
-function formatDateShort(dateStr: string): string {
-  // dateStr is YYYY-MM-DD from <input type="date">
-  const [year, month, day] = dateStr.split('-');
-  return `${day}/${month}/${year}`;
-}
 </script>
+
+<style scoped>
+.conv-list {
+  background: var(--smax-bg);
+  display: flex; flex-direction: column;
+  height: 100%; overflow: hidden;
+}
+
+.cl-header {
+  padding: 11px 13px;
+  border-bottom: 1px solid var(--smax-grey-200);
+  background: var(--smax-grey-50);
+}
+.cl-search {
+  width: 100%;
+  padding: 9px 11px 9px 36px;
+  border: 1.5px solid var(--smax-grey-200);
+  border-radius: 9px;
+  font-size: 13px;
+  background: var(--smax-bg) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='17' height='17' viewBox='0 0 24 24' fill='none' stroke='%235a6478' stroke-width='2'%3E%3Ccircle cx='11' cy='11' r='7'/%3E%3Cpath d='M21 21l-4.35-4.35'/%3E%3C/svg%3E") no-repeat 11px center;
+  outline: none;
+  font-family: inherit;
+}
+.cl-search:focus { border-color: var(--smax-primary); }
+
+.cl-label-bar {
+  display: flex; gap: 4px; margin-top: 7px;
+  overflow-x: auto;
+  padding-bottom: 3px;
+  align-items: center;
+}
+.cl-label-bar::-webkit-scrollbar { height: 4px; }
+.cl-label-chip {
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 3px 9px;
+  border-radius: 11px;
+  font-size: 11px; font-weight: 500;
+  border: 1px solid;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  user-select: none;
+  background: var(--smax-bg);
+}
+.cl-label-chip[data-color="red"]    { color: #c62828; border-color: #ef5350; }
+.cl-label-chip[data-color="red"].active    { background: #ef5350; color: white; }
+.cl-label-chip[data-color="purple"] { color: #6a1b9a; border-color: #ab47bc; }
+.cl-label-chip[data-color="purple"].active { background: #6a1b9a; color: white; }
+.cl-label-chip[data-color="orange"] { color: #ef6c00; border-color: #ffa726; }
+.cl-label-chip[data-color="orange"].active { background: #ff9800; color: white; }
+.cl-label-chip[data-color="yellow"] { color: #f57f17; border-color: #fbc02d; }
+.cl-label-chip[data-color="yellow"].active { background: #f9a825; color: white; }
+.cl-label-chip[data-color="green"]  { color: #2e7d32; border-color: #66bb6a; }
+.cl-label-chip[data-color="green"].active  { background: #43a047; color: white; }
+.cl-label-chip[data-color="blue"]   { color: #1565c0; border-color: #42a5f5; }
+.cl-label-chip[data-color="blue"].active   { background: #1976d2; color: white; }
+.cl-label-chip[data-color="grey"]   { color: var(--smax-grey-700); border-color: var(--smax-grey-300); }
+.cl-label-chip[data-color="grey"].active   { background: var(--smax-grey-700); color: white; }
+.clear-tags {
+  background: transparent; border: none;
+  color: var(--smax-grey-700);
+  cursor: pointer;
+  font-size: 16px; line-height: 1; padding: 0 5px;
+}
+
+.cl-tabs {
+  display: flex; gap: 3px;
+  margin-top: 7px;
+  border-bottom: 1px solid var(--smax-grey-200);
+  margin-left: -13px; margin-right: -13px;
+  padding: 0 13px;
+}
+.cl-tab {
+  background: transparent; border: none;
+  padding: 7px 11px;
+  cursor: pointer;
+  font-size: 12px; font-weight: 500;
+  color: var(--smax-grey-700);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: inherit;
+}
+.cl-tab.active {
+  color: var(--smax-primary);
+  border-bottom-color: var(--smax-primary);
+}
+.cl-tab-count {
+  background: var(--smax-grey-100);
+  color: var(--smax-grey-700);
+  padding: 1px 6px; border-radius: 9px;
+  font-size: 10px;
+}
+.cl-tab.active .cl-tab-count {
+  background: var(--smax-primary-soft);
+  color: var(--smax-primary);
+}
+
+.conv-scroll { flex: 1; overflow-y: auto; }
+.loading {
+  padding: 20px; text-align: center;
+  color: var(--smax-grey-700); font-size: 12px; font-style: italic;
+}
+
+.conv-item {
+  padding: 11px 13px;
+  display: flex; gap: 11px;
+  align-items: flex-start;
+  cursor: pointer;
+  border-bottom: 1px solid var(--smax-grey-100);
+  position: relative;
+  user-select: none;
+  /* Cố định chiều cao mỗi item — name + preview + tag row reserved */
+  min-height: 78px;
+  box-sizing: border-box;
+}
+/* Avatar dịch xuống nhẹ để canh giữa với name + preview (bỏ qua tag row) */
+.conv-item :deep(.smax-av) { margin-top: 2px; flex-shrink: 0; }
+.conv-item:hover { background: var(--smax-grey-50); }
+.conv-item.unread .ci-name { font-weight: 700; }
+/* Active: nền xanh nhạt đồng nhất + bo góc + viền xanh nhẹ */
+.conv-item.active,
+.conv-item.is-group.active {
+  background: var(--smax-primary-soft) !important;
+  border-radius: 12px;
+  margin: 2px 6px;
+  border-bottom-color: transparent !important;
+  box-shadow: inset 0 0 0 1.5px #64b5f6 !important;
+}
+.conv-item.active:hover,
+.conv-item.is-group.active:hover {
+  background: var(--smax-primary-soft) !important;
+}
+
+/* Unread count badge — pill xám mờ dưới timestamp */
+.ci-meta-right {
+  display: flex; flex-direction: column;
+  align-items: flex-end; gap: 4px;
+  flex-shrink: 0;
+}
+.ci-unread-count {
+  min-width: 20px; height: 18px;
+  padding: 0 6px;
+  background: #b8bfc9;
+  color: white;
+  font-size: 10px; font-weight: 700;
+  border-radius: 9px;
+  display: inline-flex; align-items: center; justify-content: center;
+  line-height: 1;
+}
+
+.ci-avatar {
+  width: 41px; height: 41px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #90caf9, #1976d2);
+  display: flex; align-items: center; justify-content: center;
+  color: white; font-weight: 600; font-size: 14px;
+  flex-shrink: 0; position: relative;
+}
+.ci-avatar.is-group {
+  background: linear-gradient(135deg, #ff7043, #d84315);
+}
+.platform-mark {
+  position: absolute; bottom: -2px; right: -2px;
+  width: 15px; height: 15px;
+  background: #0068ff; border-radius: 50%;
+  border: 2px solid var(--smax-bg);
+  color: white; font-size: 9px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+}
+
+.ci-body {
+  flex: 1; min-width: 0;
+  display: flex; flex-direction: column;
+  position: relative;
+}
+.ci-name-row {
+  display: flex; align-items: center;
+  height: 20px;
+  padding-right: 64px; /* chừa rộng hơn để fit "Vừa xong" (~58px), không đè lên tên */
+}
+.ci-name {
+  font-size: 14px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 4px;
+  min-width: 0; flex: 1;
+  line-height: 20px;
+}
+.ci-name > * { flex-shrink: 0; }
+.ci-name :first-child + * { /* tên thật sự — cho phép shrink */
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.group-icon { font-size: 11px; }
+/* Meta-right float ra góc phải, không nằm trong flex flow → badge không phá height */
+.ci-meta-right {
+  position: absolute; top: 0; right: 0;
+  display: flex; flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  pointer-events: none;
+}
+.ci-time {
+  font-size: 11px; color: var(--smax-grey-700);
+  line-height: 1;
+}
+.ci-preview {
+  font-size: 12px; color: var(--smax-grey-700);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  margin-top: 2px;
+  height: 16px; line-height: 16px;
+  padding-right: 30px; /* chừa chỗ cho unread badge float trên */
+}
+/* Tag row luôn reserve khoảng nhỏ — kể cả khi không có tag */
+.ci-tag-row {
+  display: flex; gap: 4px; margin-top: 3px; align-items: center;
+  flex-wrap: nowrap; overflow: hidden;
+  height: 16px;
+}
+.tag-mini {
+  display: inline-block;
+  padding: 1px 7px; border-radius: 4px;
+  font-size: 10px; font-weight: 600;
+  color: white;
+}
+.status-pill {
+  display: inline-flex; align-items: center; gap: 3px;
+  padding: 2px 7px; border-radius: 9px;
+  font-size: 10px; font-weight: 500;
+}
+.pill-success { background: rgba(0,200,83,0.12); color: #00897b; }
+.pill-warning { background: rgba(255,145,0,0.12); color: #ef6c00; }
+.pill-info    { background: rgba(33,150,243,0.12); color: #1565c0; }
+
+.sentiment {
+  position: absolute;
+  top: 11px; right: 28px;
+}
+
+.empty-state {
+  text-align: center; padding: 40px 13px;
+  color: var(--smax-grey-700); font-size: 12px;
+}
+</style>

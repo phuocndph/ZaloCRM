@@ -12,21 +12,160 @@ export interface Contact {
   fullName: string | null;
   crmName?: string | null;
   phone: string | null;
+  phone2?: string | null;
+  phone3?: string | null;
+  phonesExtra?: Array<{ phone: string; label?: string }>;
   email?: string | null;
   avatarUrl?: string | null;
   source: string | null;
+  sourceDate?: string | null;
   status: string | null;
   zaloUid?: string | null;
   nextAppointment: string | null;
   notes: string | null;
   tags: string[];
+  metadata?: Record<string, unknown>;
   assignedUserId?: string | null;
-  assignedUser?: { fullName: string } | null;
+  assignedUser?: { id?: string; fullName: string; email?: string } | null;
   createdAt?: string;
+  updatedAt?: string;
   firstContactDate?: string | null;
   leadScore: number;
   lastActivity: string | null;
   mergedInto: string | null;
+
+  // Demographic / personal
+  gender?: string | null;
+  birthYear?: number | null;
+  birthDate?: string | null;
+  occupation?: string | null;
+  incomeRange?: string | null;
+  socialFacebook?: string | null;
+  socialTiktok?: string | null;
+  preferredLang?: string | null;
+
+  // Address
+  province?: string | null;
+  district?: string | null;
+  ward?: string | null;
+  addressLine?: string | null;
+
+  // Discovery / Zalo (read-only)
+  hasZalo?: boolean | null;
+  zaloLookupAt?: string | null;
+  zaloLookupAttempts?: number;
+  importBatchId?: string | null;
+
+  // Consent
+  consentStatus?: string | null;
+  consentRevokedAt?: string | null;
+  consentSource?: string | null;
+
+  // Aggregate inbound (read-only)
+  lastInboundAt?: string | null;
+  lastInboundMessageId?: string | null;
+  lastInboundPreview?: string | null;
+  lastInboundType?: string | null;
+
+  // Aggregate outbound (read-only)
+  lastOutboundAt?: string | null;
+  lastOutboundMessageId?: string | null;
+  lastOutboundPreview?: string | null;
+  lastOutboundType?: string | null;
+  lastOutboundByUserId?: string | null;
+  lastOutboundByZaloAccountId?: string | null;
+
+  // Last interaction (read-only)
+  lastInteractionAt?: string | null;
+  lastInteractionType?: string | null;
+  lastInteractionPayload?: Record<string, unknown> | null;
+
+  // Counter cache (read-only)
+  totalInbound?: number;
+  totalOutbound?: number;
+  totalAppointments?: number;
+}
+
+export const GENDER_OPTIONS = [
+  { text: 'Nam', value: 'male' },
+  { text: 'Nữ', value: 'female' },
+  { text: 'Khác', value: 'other' },
+  { text: 'Không rõ', value: 'unknown' },
+];
+
+export const INCOME_RANGE_OPTIONS = [
+  { text: '< 20 triệu', value: 'lt_20m' },
+  { text: '20 – 50 triệu', value: '20_50m' },
+  { text: '50 – 100 triệu', value: '50_100m' },
+  { text: '> 100 triệu', value: 'gt_100m' },
+];
+
+export const CONSENT_OPTIONS = [
+  { text: 'Mặc định', value: 'implicit' },
+  { text: 'Đồng ý', value: 'granted' },
+  { text: 'Đã rút', value: 'revoked' },
+];
+
+export const CONTENT_TYPE_LABEL: Record<string, string> = {
+  image: '📷 Hình ảnh',
+  file: '📎 File',
+  sticker: '🎴 Sticker',
+  voice: '🎤 Voice',
+  video: '🎥 Video',
+  gif: '🎞️ GIF',
+  link: '🔗 Liên kết',
+  contact_card: '👤 Danh thiếp',
+  location: '📍 Vị trí',
+};
+
+/** "Hôm nay 12:49" / "Hôm qua 23:14" / "5/5/2026 14:32" */
+export function formatRecentDateTime(iso: string | null | undefined): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterday = new Date(today.getTime() - 86_400_000);
+  const dayOfMsg = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const hh = d.getHours().toString().padStart(2, '0');
+  const mm = d.getMinutes().toString().padStart(2, '0');
+  if (dayOfMsg.getTime() === today.getTime()) return `Hôm nay ${hh}:${mm}`;
+  if (dayOfMsg.getTime() === yesterday.getTime()) return `Hôm qua ${hh}:${mm}`;
+  return `${d.toLocaleDateString('vi-VN')} ${hh}:${mm}`;
+}
+
+/** Truncated preview: 60 chars max. Falls back to media-type label when content is empty. */
+export function messagePreview(
+  content: string | null | undefined,
+  contentType: string | null | undefined,
+  maxLen = 60,
+): string {
+  const trimmed = content?.trim();
+  if (trimmed) {
+    return trimmed.length > maxLen ? trimmed.slice(0, maxLen) + '…' : trimmed;
+  }
+  return CONTENT_TYPE_LABEL[contentType ?? ''] ?? (contentType ?? '');
+}
+
+export interface AccountActivityItem {
+  zaloAccountId: string;
+  zaloAccount: {
+    id: string;
+    displayName: string | null;
+    phone: string | null;
+    avatarUrl: string | null;
+  };
+  conversationId: string;
+  totalInbound: number;
+  totalOutbound: number;
+  lastInbound: { id: string; content: string | null; contentType: string; sentAt: string } | null;
+  lastOutbound: {
+    id: string;
+    content: string | null;
+    contentType: string;
+    sentAt: string;
+    repliedByUserId: string | null;
+    repliedBy: { id: string; fullName: string } | null;
+  } | null;
 }
 
 export interface DuplicateGroup {

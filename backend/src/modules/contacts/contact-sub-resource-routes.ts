@@ -29,4 +29,54 @@ export async function contactSubResourceRoutes(app: FastifyInstance): Promise<vo
       return reply.status(500).send({ error: 'Failed to fetch appointments' });
     }
   });
+
+  // ── GET /api/v1/contacts/by-zalo-uid/:uid — lookup CRM contact by Zalo UID
+  // Trả contact info + assigned user + count conversations để dùng cho user dialog
+  app.get('/api/v1/contacts/by-zalo-uid/:uid', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const user = request.user!;
+      const { uid } = request.params as { uid: string };
+
+      const contact = await prisma.contact.findFirst({
+        where: { zaloUid: uid, orgId: user.orgId, mergedInto: null },
+        include: {
+          assignedUser: { select: { id: true, fullName: true, email: true } },
+          _count: { select: { conversations: true, appointments: true } },
+        },
+      });
+
+      if (!contact) return reply.send({ contact: null });
+
+      // Last conversation for "Nhắn tin" deep-link
+      const lastConv = await prisma.conversation.findFirst({
+        where: { contactId: contact.id, orgId: user.orgId },
+        orderBy: { lastMessageAt: 'desc' },
+        select: { id: true, zaloAccountId: true },
+      });
+
+      return {
+        contact: {
+          id: contact.id,
+          fullName: contact.fullName,
+          crmName: contact.crmName,
+          phone: contact.phone,
+          email: contact.email,
+          source: contact.source,
+          status: contact.status,
+          notes: contact.notes,
+          tags: contact.tags,
+          leadScore: contact.leadScore,
+          firstContactDate: contact.firstContactDate,
+          lastActivity: contact.lastActivity,
+          assignedUser: contact.assignedUser,
+          conversationsCount: contact._count.conversations,
+          appointmentsCount: contact._count.appointments,
+          lastConversationId: lastConv?.id ?? null,
+        },
+      };
+    } catch (err) {
+      logger.error('[contacts] By zalo uid error:', err);
+      return reply.status(500).send({ error: 'Failed to fetch contact' });
+    }
+  });
 }

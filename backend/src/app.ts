@@ -25,6 +25,7 @@ import { contactRoutes } from './modules/contacts/contact-routes.js';
 import { contactSubResourceRoutes } from './modules/contacts/contact-sub-resource-routes.js';
 import { appointmentRoutes } from './modules/contacts/appointment-routes.js';
 import { startAppointmentReminder } from './modules/contacts/appointment-reminder.js';
+import { zinstantProxyRoutes } from './modules/contacts/zinstant-proxy-routes.js';
 import { dashboardRoutes } from './modules/dashboard/dashboard-routes.js';
 import { reportRoutes } from './modules/dashboard/report-routes.js';
 import { userRoutes } from './modules/auth/user-routes.js';
@@ -129,6 +130,7 @@ async function bootstrap() {
   await app.register(contactRoutes);
   await app.register(contactSubResourceRoutes);
   await app.register(appointmentRoutes);
+  await app.register(zinstantProxyRoutes);
   await app.register(dashboardRoutes);
   await app.register(reportRoutes);
   await app.register(userRoutes);

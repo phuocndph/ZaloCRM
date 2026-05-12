@@ -2,10 +2,12 @@ import { ref, computed } from 'vue';
 import { api } from '@/api/index';
 import { io, Socket } from 'socket.io-client';
 import type { Contact } from '@/composables/use-contacts';
+import { useAuthStore } from '@/stores/auth';
 
 interface ZaloAccount {
   id: string;
   displayName: string | null;
+  avatarUrl?: string | null;
 }
 
 export interface AiSentiment {
@@ -34,9 +36,12 @@ interface ConversationMessage {
 export interface ReplyMessageRef {
   msgId: string;
   cliMsgId?: string;
+  /** Nội dung tin nhắn gốc — Zalo lưu trong field 'msg'; FE map thành 'content' */
   content: string;
   msgType: string;
   uidFrom: string;
+  /** Tên người gửi gốc — Zalo lưu trong 'fromD'; FE map thành 'senderName' */
+  senderName: string;
   ts: string;
   propertyExt?: Record<string, unknown>;
   ttl?: number;
@@ -47,11 +52,30 @@ interface RawMessage extends Omit<Message, 'reactions' | 'reply'> {
   reactions?: Array<{ emoji: string; reactorId: string; count?: number; reacted?: boolean }>;
 }
 
+export interface FriendshipInfo {
+  /** friend | pending_friend | chatting_stranger | ghost | none */
+  relationshipKind: string;
+  /** none | pending_sent | pending_received | accepted | rejected | removed | blocked */
+  friendshipStatus: string;
+  becameFriendAt: string | null;
+  firstMessageAt: string | null;
+}
+
 export interface Conversation {
   id: string;
   threadType: 'user' | 'group';
   contact: Contact | null;
   zaloAccount: ZaloAccount | null;
+  /** Tên nhóm Zalo (chỉ có khi threadType=group) — backend resolve qua getGroupInfo */
+  groupName?: string | null;
+  /** Avatar nhóm Zalo URL (chỉ có khi threadType=group) */
+  groupAvatarUrl?: string | null;
+  /** Số thành viên nhóm */
+  groupMembersCount?: number | null;
+  /** External thread ID (group id từ Zalo, hoặc UID per-nick cho user thread) */
+  externalThreadId?: string | null;
+  /** Friend record per-pair (chỉ user thread) — backend join từ Friend table */
+  friendship?: FriendshipInfo | null;
   lastMessageAt: string | null;
   unreadCount: number;
   isReplied: boolean;
@@ -71,6 +95,7 @@ export interface Message {
   contentType: string;
   senderType: string;
   senderName: string | null;
+  senderUid?: string | null;
   sentAt: string;
   isDeleted: boolean;
   zaloMsgId: string | null;
@@ -82,6 +107,7 @@ export interface Message {
 }
 
 export function useChat() {
+  const authStore = useAuthStore();
   const conversations = ref<Conversation[]>([]);
   const selectedConvId = ref<string | null>(null);
   const messages = ref<Message[]>([]);
@@ -100,6 +126,17 @@ export function useChat() {
   const aiUsage = ref({ usedToday: 0, maxDaily: 500, remaining: 500, enabled: true });
   const aiConfig = ref<AiConfig>({ provider: 'anthropic', model: 'claude-sonnet-4-6', maxDaily: 500, enabled: true });
   let socket: Socket | null = null;
+  let convSyncTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Debounce server-side reconcile: chỉ fetch full list sau 3s không có tin mới
+  // → tránh lag khi nhận burst (chat group nhiều người gửi liên tiếp).
+  function scheduleConvSync() {
+    if (convSyncTimer) clearTimeout(convSyncTimer);
+    convSyncTimer = setTimeout(() => {
+      void fetchConversations();
+      convSyncTimer = null;
+    }, 3000);
+  }
 
   const selectedConv = computed(() =>
     conversations.value.find(c => c.id === selectedConvId.value) || null,
@@ -135,14 +172,37 @@ export function useChat() {
 
   function normalizeMessage(message: RawMessage): Message {
     const counts = new Map<string, number>();
+    const myEmojis = new Set<string>();
+    const myId = authStore.user?.id || '';
     for (const reaction of message.reactions || []) {
       counts.set(reaction.emoji, (counts.get(reaction.emoji) || 0) + 1);
+      if (myId && reaction.reactorId === myId) myEmojis.add(reaction.emoji);
     }
     const { reactions, quote, ...base } = message;
+
+    // Normalize quote: Zalo lưu với field 'msg' + 'fromD' thay vì 'content' + 'senderName'.
+    // Map sang ReplyMessageRef chuẩn để MessageBubble render đúng.
+    let reply: ReplyMessageRef | null = null;
+    if (quote) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const q = quote as any;
+      reply = {
+        msgId: String(q.msgId || q.msg_id || q.globalMsgId || ''),
+        cliMsgId: q.cliMsgId,
+        content: String(q.msg ?? q.content ?? ''),
+        senderName: String(q.fromD ?? q.senderName ?? q.fromName ?? ''),
+        msgType: String(q.msgType ?? ''),
+        uidFrom: String(q.uidFrom ?? q.uid_from ?? ''),
+        ts: String(q.ts ?? ''),
+        propertyExt: q.propertyExt,
+        ttl: q.ttl,
+      };
+    }
+
     return {
       ...base,
-      reply: quote ?? null,
-      reactions: Array.from(counts.entries()).map(([emoji, count]) => ({ emoji, count, reacted: false })),
+      reply,
+      reactions: Array.from(counts.entries()).map(([emoji, count]) => ({ emoji, count, reacted: myEmojis.has(emoji) })),
     };
   }
 
@@ -260,7 +320,29 @@ export function useChat() {
     } catch {
       // Ignore mark-read errors
     }
+    // Auto-sync Zalo profile (gender/birth/phone/avatar) khi contact thiếu data.
+    // Chỉ fire-and-forget; user không phải đợi.
+    void autoSyncZaloProfile(convId);
     await Promise.allSettled([generateAiSummary(), generateAiSentiment(), fetchAiUsage()]);
+  }
+
+  /** Fetch Zalo profile để fill các field còn null (gender/birthDate/phone/avatar). */
+  async function autoSyncZaloProfile(convId: string) {
+    const conv = conversations.value.find(c => c.id === convId);
+    const c = conv?.contact;
+    if (!c?.zaloUid) return;
+    // Chỉ sync khi missing 1 trong 4 field. Tránh gọi API thừa.
+    const needSync = !c.gender || !c.birthDate || !c.phone || !c.avatarUrl;
+    if (!needSync) return;
+    try {
+      const res = await api.post(`/contacts/${c.id}/sync-zalo-profile`);
+      if (res.data?.updated && res.data?.contact && conv) {
+        conv.contact = res.data.contact;
+      }
+    } catch (err) {
+      // Silent fail: KH không phải friend của nick nào, hoặc profile riêng tư
+      console.debug('[zalo-profile-sync]', (err as Error)?.message);
+    }
   }
 
   async function sendMessage(content: string, replyMessageId?: string | null) {
@@ -296,7 +378,36 @@ export function useChat() {
           messages.value.push(normalizeMessage(data.message as RawMessage));
         }
       }
-      fetchConversations();
+      // Optimistic update conversation list — tránh fetch full HTTP mỗi message
+      // (cũ: fetchConversations() per event → 143 rows re-render → lag rõ).
+      const idx = conversations.value.findIndex(c => c.id === data.conversationId);
+      if (idx !== -1) {
+        const conv = conversations.value[idx];
+        if (conv.contact) {
+          if (data.message.senderType === 'self') {
+            conv.contact.totalOutbound = (conv.contact.totalOutbound ?? 0) + 1;
+            conv.contact.lastOutboundAt = data.message.sentAt;
+          } else {
+            conv.contact.totalInbound = (conv.contact.totalInbound ?? 0) + 1;
+            conv.contact.lastInboundAt = data.message.sentAt;
+          }
+          conv.contact.lastActivity = data.message.sentAt;
+        }
+        conv.lastMessageAt = data.message.sentAt;
+        // Cập nhật messages preview để conv list hiển thị tin mới nhất ngay
+        conv.messages = [data.message, ...(conv.messages || [])].slice(0, 1);
+        if (data.message.senderType !== 'self' && conv.id !== selectedConvId.value) {
+          conv.unreadCount = (conv.unreadCount ?? 0) + 1;
+        }
+        // Move conv to top (in-place — sort theo lastMessageAt sẽ cần thêm overhead)
+        if (idx > 0) {
+          conversations.value.splice(idx, 1);
+          conversations.value.unshift(conv);
+        }
+      }
+      // Debounce sync from server: chỉ fetch sau 3s im lặng → reconcile state
+      // (tránh chạy mỗi tin → lag list khi nhận burst).
+      scheduleConvSync();
     });
 
     socket.on('chat:deleted', (data: { messageId?: string; zaloMsgId?: string }) => {
@@ -312,13 +423,28 @@ export function useChat() {
     socket.on('chat:reactions', (data: { messageId?: string; msgId?: string; zaloMsgId?: string; reactions: { userId: string; userName: string; reaction: string; action: 'add' | 'remove' }[] }) => {
       const msg = messages.value.find(m => m.id === data.messageId || m.id === data.msgId || m.zaloMsgId === data.zaloMsgId);
       if (!msg) return;
+      // Merge với reactions hiện có thay vì replace — tránh mất emoji của user khác
       const counts = new Map<string, number>();
-      for (const reaction of data.reactions) {
-        const emoji = reaction.reaction;
-        if (reaction.action === 'add') counts.set(emoji, (counts.get(emoji) || 0) + 1);
-        if (reaction.action === 'remove') counts.delete(emoji);
+      const myEmojis = new Set<string>();
+      for (const r of msg.reactions || []) {
+        counts.set(r.emoji, r.count);
+        if (r.reacted) myEmojis.add(r.emoji);
       }
-      msg.reactions = Array.from(counts.entries()).map(([emoji, count]) => ({ emoji, count, reacted: false }));
+      const myId = authStore.user?.id || '';
+      for (const r of data.reactions) {
+        const emoji = r.reaction;
+        const isMine = r.userId === myId;
+        if (r.action === 'add') {
+          counts.set(emoji, (counts.get(emoji) || 0) + 1);
+          if (isMine) myEmojis.add(emoji);
+        } else if (r.action === 'remove') {
+          const cur = (counts.get(emoji) || 0) - 1;
+          if (cur > 0) counts.set(emoji, cur);
+          else counts.delete(emoji);
+          if (isMine) myEmojis.delete(emoji);
+        }
+      }
+      msg.reactions = Array.from(counts.entries()).map(([emoji, count]) => ({ emoji, count, reacted: myEmojis.has(emoji) }));
     });
 
     socket.on('chat:pinned', () => {

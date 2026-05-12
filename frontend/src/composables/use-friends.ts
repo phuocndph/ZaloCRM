@@ -1,6 +1,47 @@
 import { ref } from 'vue';
 import { api } from '@/api/index';
 
+export interface DbFriend {
+  id: string;
+  contactId: string;
+  zaloAccountId: string;
+  zaloUidInNick: string;
+  friendshipStatus: string;
+  hasConversation: boolean;
+  relationshipKind: 'friend' | 'pending_friend' | 'chatting_stranger' | 'ghost' | 'none';
+  aliasInNick: string | null;
+  zaloLabels: Array<{ id?: string; name?: string; color?: string }>;
+  becameFriendAt: string | null;
+  removedAt: string | null;
+  firstMessageAt: string | null;
+  lastInboundAt: string | null;
+  lastOutboundAt: string | null;
+  lastInteractionAt: string | null;
+  totalInbound: number;
+  totalOutbound: number;
+  contact?: {
+    id: string;
+    fullName: string | null;
+    crmName: string | null;
+    phone: string | null;
+    email: string | null;
+    avatarUrl: string | null;
+    tags: string[];
+    leadScore: number;
+    source: string | null;
+    gender: string | null;
+    status: string | null;
+    province: string | null;
+    district: string | null;
+    birthYear: number | null;
+  };
+  zaloAccount?: {
+    id: string;
+    displayName: string | null;
+    phone: string | null;
+  };
+}
+
 export function useFriends() {
   const friends = ref<any[]>([]);
   const onlineFriends = ref<any[]>([]);
@@ -8,6 +49,12 @@ export function useFriends() {
   const recommendations = ref<any[]>([]);
   const searchResults = ref<any[]>([]);
   const loading = ref(false);
+
+  // DB-backed (CRM-side persistent friend list)
+  const friendsDb = ref<DbFriend[]>([]);
+  const friendCounts = ref<Record<string, number>>({});
+  const loadingDb = ref(false);
+  const syncing = ref(false);
 
   function base(accountId: string) {
     return `/zalo-accounts/${accountId}/friends`;
@@ -196,6 +243,50 @@ export function useFriends() {
     }
   }
 
+  const friendsDbTotal = ref(0);
+
+  // DB-backed friend list — paginated read from our Friend table
+  async function fetchFriendsDb(
+    accountId: string,
+    opts: { kind?: string; page?: number; limit?: number; search?: string } = {},
+  ) {
+    loadingDb.value = true;
+    try {
+      const res = await api.get(`${base(accountId)}-db`, {
+        params: {
+          kind: opts.kind ?? 'all',
+          page: opts.page ?? 1,
+          limit: opts.limit ?? 25,
+          search: opts.search ?? '',
+        },
+      });
+      friendsDb.value = res.data?.friends ?? [];
+      friendCounts.value = res.data?.counts ?? {};
+      friendsDbTotal.value = res.data?.total ?? 0;
+    } catch (err) {
+      console.error('fetchFriendsDb failed:', err);
+      friendsDb.value = [];
+      friendCounts.value = {};
+      friendsDbTotal.value = 0;
+    } finally {
+      loadingDb.value = false;
+    }
+  }
+
+  // Sync from Zalo → upsert our Friend table
+  async function syncFriendsDb(accountId: string) {
+    syncing.value = true;
+    try {
+      const res = await api.post(`${base(accountId)}-db/sync`);
+      return res.data;
+    } catch (err) {
+      console.error('syncFriendsDb failed:', err);
+      return null;
+    } finally {
+      syncing.value = false;
+    }
+  }
+
   return {
     friends,
     onlineFriends,
@@ -220,5 +311,13 @@ export function useFriends() {
     unblockUser,
     blockFeed,
     unblockFeed,
+    // DB-backed
+    friendsDb,
+    friendsDbTotal,
+    friendCounts,
+    loadingDb,
+    syncing,
+    fetchFriendsDb,
+    syncFriendsDb,
   };
 }

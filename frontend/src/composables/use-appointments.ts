@@ -10,13 +10,22 @@ import { api } from '@/api/index';
 export interface Appointment {
   id: string;
   contactId: string;
-  contact?: { id: string; fullName: string | null; phone: string | null };
+  contact?: { id: string; fullName: string | null; phone: string | null; avatarUrl?: string | null; zaloUid?: string | null };
   appointmentDate: string;
   appointmentTime: string;
   type: string;
   status: string;
   notes: string | null;
   createdAt: string;
+  // Phase A: phân biệt nguồn + link sang Zalo conversation
+  source: 'manual' | 'zalo';
+  externalRef: string | null;
+  zaloMessageId: string | null;
+  emoji: string | null;
+  conversationId: string | null; // resolve từ backend join với Message.conversation
+  // Audit: ai đổi status cuối + lúc nào (cron auto-flip không set)
+  statusChangedAt: string | null;
+  statusChangedBy: { id: string; fullName: string | null; email: string } | null;
 }
 
 export interface AppointmentFilters {
@@ -24,10 +33,14 @@ export interface AppointmentFilters {
   to: string;
   status: string;
   contactId: string;
+  source: 'all' | 'manual' | 'zalo'; // filter chip
 }
 
+// 5 trạng thái: 'scheduled' (chưa đến giờ) → cron auto-flip → 'overdue' khi quá hạn.
+// Sale mark thủ công sang completed/cancelled/no_show.
 export const APPOINTMENT_STATUS_OPTIONS = [
   { text: 'Đã lên lịch', value: 'scheduled' },
+  { text: 'Quá hạn', value: 'overdue' },
   { text: 'Hoàn thành', value: 'completed' },
   { text: 'Đã huỷ', value: 'cancelled' },
   { text: 'Vắng mặt', value: 'no_show' },
@@ -43,6 +56,7 @@ export const APPOINTMENT_TYPE_OPTIONS = [
 export function statusChipColor(status: string): string {
   switch (status) {
     case 'scheduled': return 'blue';
+    case 'overdue': return 'orange'; // cam để cảnh báo sale cần action
     case 'completed': return 'green';
     case 'cancelled': return 'grey';
     case 'no_show': return 'red';
@@ -68,7 +82,9 @@ export function useAppointments() {
     to: '',
     status: '',
     contactId: '',
+    source: 'all',
   });
+  const sourceCounts = ref<Record<string, number>>({});
 
   async function fetchAppointments() {
     loading.value = true;
@@ -79,10 +95,12 @@ export function useAppointments() {
           dateTo: filters.to || undefined,
           status: filters.status || undefined,
           contactId: filters.contactId || undefined,
+          source: filters.source === 'all' ? undefined : filters.source,
         },
       });
       appointments.value = res.data.appointments ?? res.data;
       total.value = res.data.total ?? appointments.value.length;
+      sourceCounts.value = res.data.counts ?? {};
     } catch (err) {
       console.error('Failed to fetch appointments:', err);
     } finally {
@@ -150,20 +168,40 @@ export function useAppointments() {
     }
   }
 
+  // Đổi status qua PATCH endpoint dedicate → backend tự set statusChangedByUserId/At
+  async function changeStatus(id: string, status: 'completed' | 'cancelled' | 'no_show' | 'scheduled' | 'overdue'): Promise<boolean> {
+    saving.value = true;
+    try {
+      const res = await api.patch(`/appointments/${id}/status`, { status });
+      const idx = appointments.value.findIndex(a => a.id === id);
+      if (idx !== -1) appointments.value[idx] = { ...appointments.value[idx], ...res.data };
+      return true;
+    } catch (err) {
+      console.error('Failed to change status:', err);
+      return false;
+    } finally {
+      saving.value = false;
+    }
+  }
+
   async function markComplete(id: string): Promise<boolean> {
-    return updateAppointment(id, { status: 'completed' } as Partial<Appointment>);
+    return changeStatus(id, 'completed');
   }
 
   async function cancelAppointment(id: string): Promise<boolean> {
-    return updateAppointment(id, { status: 'cancelled' } as Partial<Appointment>);
+    return changeStatus(id, 'cancelled');
+  }
+
+  async function markNoShow(id: string): Promise<boolean> {
+    return changeStatus(id, 'no_show');
   }
 
   return {
     appointments, todayAppointments, upcomingAppointments,
-    total, loading, saving, deleting,
+    total, sourceCounts, loading, saving, deleting,
     filters,
     fetchAppointments, fetchToday, fetchUpcoming,
     createAppointment, updateAppointment, deleteAppointment,
-    markComplete, cancelAppointment,
+    markComplete, cancelAppointment, markNoShow, changeStatus,
   };
 }

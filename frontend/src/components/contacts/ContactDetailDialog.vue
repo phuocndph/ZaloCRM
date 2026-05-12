@@ -1,101 +1,504 @@
 <template>
-  <v-dialog v-model="show" max-width="680" persistent scrollable>
+  <v-dialog v-model="show" max-width="820" persistent scrollable>
     <v-card>
       <v-card-title class="d-flex align-center">
         <span>{{ isNew ? 'Thêm khách hàng' : 'Chi tiết khách hàng' }}</span>
+        <v-chip
+          v-if="!isNew && contact?.hasZalo === true"
+          color="success"
+          size="small"
+          variant="tonal"
+          class="ml-3"
+        >
+          Có Zalo
+        </v-chip>
+        <v-chip
+          v-else-if="!isNew && contact?.hasZalo === false"
+          color="error"
+          size="small"
+          variant="tonal"
+          class="ml-3"
+        >
+          Không có Zalo
+        </v-chip>
         <v-spacer />
         <v-btn icon="mdi-close" variant="text" @click="close" />
       </v-card-title>
 
+      <v-tabs v-model="activeTab" density="compact" color="primary">
+        <v-tab value="basic">Cơ bản</v-tab>
+        <v-tab value="personal">Cá nhân</v-tab>
+        <v-tab value="address">Địa chỉ</v-tab>
+        <v-tab value="zalo">Zalo & Consent</v-tab>
+        <v-tab value="activity" :disabled="isNew">Tiếp cận</v-tab>
+      </v-tabs>
+
       <v-divider />
 
       <v-card-text>
-        <v-row dense>
-          <!-- CRM name (real name) -->
-          <v-col cols="12" sm="6">
-            <v-text-field v-model="form.crmName" label="Tên CRM (tên thật)" hint="Dùng cho automation" persistent-hint />
-          </v-col>
+        <v-tabs-window v-model="activeTab">
+          <!-- ── TAB: Cơ bản ────────────────────────────────────────── -->
+          <v-tabs-window-item value="basic">
+            <v-row dense>
+              <v-col cols="12" sm="6">
+                <v-text-field v-model="form.crmName" label="Tên CRM (tên thật)" hint="Dùng cho automation" persistent-hint />
+              </v-col>
+              <v-col cols="12" sm="6">
+                <v-text-field v-model="form.fullName" label="Tên hiển thị Zalo" :rules="[required]" />
+              </v-col>
 
-          <!-- Full name (Zalo display name) -->
-          <v-col cols="12" sm="6">
-            <v-text-field v-model="form.fullName" label="Tên hiển thị Zalo" :rules="[required]" />
-          </v-col>
+              <v-col cols="12" sm="4">
+                <v-text-field v-model="form.phone" label="SĐT chính" />
+              </v-col>
+              <v-col cols="12" sm="4">
+                <v-text-field v-model="form.phone2" label="SĐT 2" />
+              </v-col>
+              <v-col cols="12" sm="4">
+                <v-text-field v-model="form.phone3" label="SĐT 3" />
+              </v-col>
 
-          <!-- Phone -->
-          <v-col cols="12" sm="6">
-            <v-text-field v-model="form.phone" label="Số điện thoại" />
-          </v-col>
+              <v-col cols="12" sm="6">
+                <v-text-field v-model="form.email" label="Email" type="email" />
+              </v-col>
+              <v-col cols="12" sm="6">
+                <v-select
+                  v-model="form.source"
+                  :items="SOURCE_OPTIONS"
+                  item-title="text"
+                  item-value="value"
+                  label="Nguồn"
+                  clearable
+                />
+              </v-col>
 
-          <!-- Email -->
-          <v-col cols="12" sm="6">
-            <v-text-field v-model="form.email" label="Email" type="email" />
-          </v-col>
+              <v-col cols="12" sm="6">
+                <v-select
+                  v-model="form.status"
+                  :items="STATUS_OPTIONS"
+                  item-title="text"
+                  item-value="value"
+                  label="Trạng thái"
+                  clearable
+                />
+              </v-col>
+              <v-col cols="12" sm="6">
+                <v-text-field
+                  v-model="form.firstContactDate"
+                  label="Ngày tiếp nhận"
+                  type="date"
+                />
+              </v-col>
 
-          <!-- Source -->
-          <v-col cols="12" sm="6">
-            <v-select
-              v-model="form.source"
-              :items="SOURCE_OPTIONS"
-              item-title="text"
-              item-value="value"
-              label="Nguồn"
-              clearable
-            />
-          </v-col>
+              <v-col cols="12" sm="6">
+                <v-text-field
+                  v-model="form.nextAppointmentDate"
+                  label="Ngày tái khám"
+                  type="date"
+                />
+              </v-col>
 
-          <!-- Status -->
-          <v-col cols="12" sm="6">
-            <v-select
-              v-model="form.status"
-              :items="STATUS_OPTIONS"
-              item-title="text"
-              item-value="value"
-              label="Trạng thái"
-              clearable
-            />
-          </v-col>
+              <v-col cols="12">
+                <v-combobox
+                  v-model="form.tags"
+                  label="Tags CRM"
+                  hint="Tag CRM do sale gắn (tag tự động bắt đầu bằng auto:)"
+                  persistent-hint
+                  multiple
+                  chips
+                  closable-chips
+                  clearable
+                />
+              </v-col>
 
-          <!-- Next appointment date -->
-          <v-col cols="12" sm="6">
-            <v-text-field
-              v-model="form.nextAppointmentDate"
-              label="Ngày tái khám"
-              type="date"
-            />
-          </v-col>
+              <v-col cols="12">
+                <v-textarea v-model="form.notes" label="Ghi chú" rows="3" auto-grow />
+              </v-col>
+            </v-row>
+          </v-tabs-window-item>
 
-          <!-- First contact date -->
-          <v-col cols="12" sm="6">
-            <v-text-field
-              v-model="form.firstContactDate"
-              label="Ngày tiếp nhận"
-              type="date"
-            />
-          </v-col>
+          <!-- ── TAB: Cá nhân ───────────────────────────────────────── -->
+          <v-tabs-window-item value="personal">
+            <v-row dense>
+              <v-col cols="12" sm="6">
+                <v-select
+                  v-model="form.gender"
+                  :items="GENDER_OPTIONS"
+                  item-title="text"
+                  item-value="value"
+                  label="Giới tính"
+                  clearable
+                />
+              </v-col>
+              <v-col cols="12" sm="3">
+                <v-text-field
+                  v-model.number="form.birthYear"
+                  label="Năm sinh"
+                  type="number"
+                  :min="1900"
+                  :max="currentYear"
+                  hint="Nhập riêng năm nếu không có ngày đầy đủ"
+                  persistent-hint
+                />
+              </v-col>
+              <v-col cols="12" sm="3">
+                <v-text-field
+                  v-model="form.birthDate"
+                  label="Ngày sinh"
+                  type="date"
+                />
+              </v-col>
 
-          <!-- Tags -->
-          <v-col cols="12" sm="6">
-            <v-combobox
-              v-model="form.tags"
-              label="Tags"
-              multiple
-              chips
-              closable-chips
-              clearable
-              hide-details
-            />
-          </v-col>
+              <v-col cols="12" sm="6">
+                <v-text-field
+                  v-model="form.occupation"
+                  label="Nghề nghiệp"
+                />
+              </v-col>
+              <v-col cols="12" sm="6">
+                <v-select
+                  v-model="form.incomeRange"
+                  :items="INCOME_RANGE_OPTIONS"
+                  item-title="text"
+                  item-value="value"
+                  label="Mức thu nhập"
+                  clearable
+                />
+              </v-col>
 
-          <!-- Notes -->
-          <v-col cols="12">
-            <v-textarea
-              v-model="form.notes"
-              label="Ghi chú"
-              rows="3"
-              auto-grow
-            />
-          </v-col>
-        </v-row>
+              <v-col cols="12" sm="6">
+                <v-text-field
+                  v-model="form.socialFacebook"
+                  label="Facebook"
+                  prepend-inner-icon="mdi-facebook"
+                  placeholder="username hoặc URL"
+                />
+              </v-col>
+              <v-col cols="12" sm="6">
+                <v-text-field
+                  v-model="form.socialTiktok"
+                  label="TikTok"
+                  prepend-inner-icon="mdi-music-note"
+                  placeholder="@username"
+                />
+              </v-col>
+
+              <v-col cols="12" sm="6">
+                <v-select
+                  v-model="form.preferredLang"
+                  :items="LANG_OPTIONS"
+                  item-title="text"
+                  item-value="value"
+                  label="Ngôn ngữ ưu tiên"
+                />
+              </v-col>
+
+              <!-- Computed age display -->
+              <v-col cols="12" sm="6" class="d-flex align-center">
+                <v-chip
+                  v-if="computedAge !== null"
+                  color="primary"
+                  variant="tonal"
+                >
+                  <v-icon start>mdi-cake-variant</v-icon>
+                  {{ computedAge }} tuổi
+                </v-chip>
+                <span v-else class="text-grey">Chưa có ngày/năm sinh</span>
+              </v-col>
+            </v-row>
+          </v-tabs-window-item>
+
+          <!-- ── TAB: Địa chỉ ───────────────────────────────────────── -->
+          <v-tabs-window-item value="address">
+            <v-row dense>
+              <v-col cols="12" sm="4">
+                <v-text-field v-model="form.province" label="Tỉnh/Thành phố" />
+              </v-col>
+              <v-col cols="12" sm="4">
+                <v-text-field v-model="form.district" label="Quận/Huyện" />
+              </v-col>
+              <v-col cols="12" sm="4">
+                <v-text-field v-model="form.ward" label="Phường/Xã" />
+              </v-col>
+              <v-col cols="12">
+                <v-textarea
+                  v-model="form.addressLine"
+                  label="Địa chỉ chi tiết"
+                  rows="2"
+                  auto-grow
+                />
+              </v-col>
+            </v-row>
+          </v-tabs-window-item>
+
+          <!-- ── TAB: Zalo & Consent ────────────────────────────────── -->
+          <v-tabs-window-item value="zalo">
+            <v-row dense>
+              <v-col cols="12" sm="4">
+                <div class="text-caption text-grey">Zalo UID</div>
+                <div class="text-body-2 font-mono">{{ contact?.zaloUid ?? '—' }}</div>
+              </v-col>
+              <v-col cols="12" sm="4">
+                <div class="text-caption text-grey">Có Zalo?</div>
+                <div class="text-body-2">
+                  <v-chip
+                    v-if="contact?.hasZalo === true"
+                    color="success"
+                    size="x-small"
+                    variant="tonal"
+                  >Có</v-chip>
+                  <v-chip
+                    v-else-if="contact?.hasZalo === false"
+                    color="error"
+                    size="x-small"
+                    variant="tonal"
+                  >Không</v-chip>
+                  <span v-else class="text-grey">Chưa kiểm tra</span>
+                </div>
+              </v-col>
+              <v-col cols="12" sm="4">
+                <div class="text-caption text-grey">Lần kiểm tra cuối</div>
+                <div class="text-body-2">
+                  {{ contact?.zaloLookupAt ? formatDateTime(contact.zaloLookupAt) : '—' }}
+                  <span v-if="contact?.zaloLookupAttempts" class="text-grey">
+                    ({{ contact.zaloLookupAttempts }} lần)
+                  </span>
+                </div>
+              </v-col>
+
+              <v-col cols="12"><v-divider class="my-2" /></v-col>
+
+              <v-col cols="12" sm="6">
+                <v-select
+                  v-model="form.consentStatus"
+                  :items="CONSENT_OPTIONS"
+                  item-title="text"
+                  item-value="value"
+                  label="Trạng thái đồng ý"
+                  hint="Đánh dấu 'Đã rút' để các nick không gửi mời/tin tới KH này"
+                  persistent-hint
+                />
+              </v-col>
+              <v-col cols="12" sm="6">
+                <v-text-field
+                  v-model="form.consentSource"
+                  label="Nguồn đồng ý"
+                  placeholder="form_landing, opt_in_msg, manual..."
+                />
+              </v-col>
+              <v-col v-if="contact?.consentRevokedAt" cols="12">
+                <v-alert type="warning" density="compact" variant="tonal">
+                  Đã rút đồng ý lúc {{ formatDateTime(contact.consentRevokedAt) }}
+                </v-alert>
+              </v-col>
+            </v-row>
+          </v-tabs-window-item>
+
+          <!-- ── TAB: Tiếp cận (read-only) ──────────────────────────── -->
+          <v-tabs-window-item value="activity">
+            <div v-if="!contact?.id" class="text-center py-8 text-grey">
+              Lưu khách hàng trước để xem lịch sử tiếp cận
+            </div>
+            <template v-else>
+              <v-row dense>
+                <v-col cols="6" sm="3">
+                  <v-card variant="tonal" class="text-center pa-2">
+                    <div class="text-caption text-grey">KH gửi</div>
+                    <div class="text-h6">{{ contact.totalInbound ?? 0 }}</div>
+                  </v-card>
+                </v-col>
+                <v-col cols="6" sm="3">
+                  <v-card variant="tonal" color="primary" class="text-center pa-2">
+                    <div class="text-caption">Sale gửi</div>
+                    <div class="text-h6">{{ contact.totalOutbound ?? 0 }}</div>
+                  </v-card>
+                </v-col>
+                <v-col cols="6" sm="3">
+                  <v-card variant="tonal" color="orange" class="text-center pa-2">
+                    <div class="text-caption">Lịch hẹn</div>
+                    <div class="text-h6">{{ contact.totalAppointments ?? 0 }}</div>
+                  </v-card>
+                </v-col>
+                <v-col cols="6" sm="3">
+                  <v-card variant="tonal" color="success" class="text-center pa-2">
+                    <div class="text-caption">Lead score</div>
+                    <div class="text-h6">{{ contact.leadScore ?? 0 }}</div>
+                  </v-card>
+                </v-col>
+              </v-row>
+
+              <!-- Per-account activity (only nicks that have interacted) -->
+              <div class="text-subtitle-2 mt-4 mb-2 d-flex align-center">
+                Hoạt động theo từng nick Zalo
+                <v-spacer />
+                <v-btn
+                  v-if="contact?.id"
+                  size="x-small"
+                  variant="text"
+                  icon="mdi-refresh"
+                  :loading="loadingActivity"
+                  @click="contact?.id && loadAccountActivity(contact.id)"
+                />
+              </div>
+
+              <div v-if="loadingActivity" class="text-center py-4">
+                <v-progress-circular indeterminate size="24" />
+              </div>
+              <div
+                v-else-if="accountActivity.length === 0"
+                class="text-grey text-body-2 pa-3 text-center"
+              >
+                Chưa có nick nào trong hệ thống có tương tác với khách hàng này
+              </div>
+              <div v-else>
+                <v-card
+                  v-for="acct in accountActivity"
+                  :key="acct.zaloAccountId"
+                  variant="outlined"
+                  class="mb-2 pa-3"
+                >
+                  <div class="d-flex align-center mb-2">
+                    <v-avatar size="32" class="mr-2" color="grey-lighten-2">
+                      <v-img v-if="acct.zaloAccount.avatarUrl" :src="acct.zaloAccount.avatarUrl" />
+                      <v-icon v-else size="18">mdi-account</v-icon>
+                    </v-avatar>
+                    <div>
+                      <div class="text-body-2 font-weight-medium">
+                        {{ acct.zaloAccount.displayName ?? '(không tên)' }}
+                      </div>
+                      <div class="text-caption text-grey">
+                        {{ acct.zaloAccount.phone ?? '—' }}
+                      </div>
+                    </div>
+                    <v-spacer />
+                    <v-chip size="x-small" variant="tonal" class="mr-1">
+                      KH: {{ acct.totalInbound }}
+                    </v-chip>
+                    <v-chip size="x-small" variant="tonal" color="primary">
+                      Sale: {{ acct.totalOutbound }}
+                    </v-chip>
+                  </div>
+
+                  <div class="ml-1">
+                    <div class="d-flex align-start mb-1">
+                      <v-icon size="x-small" color="info" class="mr-2 mt-1">
+                        mdi-message-arrow-left
+                      </v-icon>
+                      <div class="flex-grow-1" style="min-width: 0">
+                        <template v-if="acct.lastInbound">
+                          <span class="text-caption text-grey-darken-1">
+                            {{ formatRecentDateTime(acct.lastInbound.sentAt) }}
+                          </span>
+                          <v-tooltip
+                            location="top"
+                            max-width="420"
+                            :disabled="!acct.lastInbound.content"
+                          >
+                            <template #activator="{ props: tipProps }">
+                              <span
+                                v-bind="tipProps"
+                                class="text-body-2 ml-2 d-inline-block text-truncate"
+                                style="max-width: 60%; vertical-align: middle"
+                              >
+                                {{
+                                  messagePreview(
+                                    acct.lastInbound.content,
+                                    acct.lastInbound.contentType,
+                                  )
+                                }}
+                              </span>
+                            </template>
+                            <div class="text-pre-wrap">{{ acct.lastInbound.content }}</div>
+                          </v-tooltip>
+                        </template>
+                        <span v-else class="text-grey text-body-2">Chưa có tin từ KH</span>
+                      </div>
+                    </div>
+
+                    <div class="d-flex align-start">
+                      <v-icon size="x-small" color="primary" class="mr-2 mt-1">
+                        mdi-message-arrow-right
+                      </v-icon>
+                      <div class="flex-grow-1" style="min-width: 0">
+                        <template v-if="acct.lastOutbound">
+                          <span class="text-caption text-grey-darken-1">
+                            {{ formatRecentDateTime(acct.lastOutbound.sentAt) }}
+                          </span>
+                          <v-tooltip
+                            location="top"
+                            max-width="420"
+                            :disabled="!acct.lastOutbound.content"
+                          >
+                            <template #activator="{ props: tipProps }">
+                              <span
+                                v-bind="tipProps"
+                                class="text-body-2 ml-2 d-inline-block text-truncate"
+                                style="max-width: 60%; vertical-align: middle"
+                              >
+                                {{
+                                  messagePreview(
+                                    acct.lastOutbound.content,
+                                    acct.lastOutbound.contentType,
+                                  )
+                                }}
+                              </span>
+                            </template>
+                            <div class="text-pre-wrap">{{ acct.lastOutbound.content }}</div>
+                          </v-tooltip>
+                          <span
+                            v-if="acct.lastOutbound.repliedBy"
+                            class="text-caption text-grey ml-1"
+                          >
+                            — {{ acct.lastOutbound.repliedBy.fullName }}
+                          </span>
+                        </template>
+                        <span v-else class="text-grey text-body-2">Chưa có tin từ Sale</span>
+                      </div>
+                    </div>
+                  </div>
+                </v-card>
+              </div>
+
+              <v-divider class="my-3" />
+
+              <div class="text-subtitle-2 mb-2">Lịch sử mời kết bạn</div>
+              <div v-if="loadingAttempts" class="text-center py-4">
+                <v-progress-circular indeterminate size="24" />
+              </div>
+              <div v-else-if="attempts.length === 0" class="text-grey text-body-2 pa-2">
+                Chưa có lần mời kết bạn nào
+              </div>
+              <v-table v-else density="compact">
+                <thead>
+                  <tr>
+                    <th>Nick</th>
+                    <th>State</th>
+                    <th>Queued</th>
+                    <th>Sent</th>
+                    <th>Decided</th>
+                    <th>Lỗi</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="a in attempts" :key="a.id">
+                    <td>{{ a.zaloAccount?.displayName ?? a.zaloAccountId.slice(0, 8) }}</td>
+                    <td>
+                      <v-chip :color="attemptStateColor(a.state)" size="x-small" variant="tonal">
+                        {{ a.state }}
+                      </v-chip>
+                    </td>
+                    <td>{{ a.queuedAt ? formatDateTime(a.queuedAt) : '—' }}</td>
+                    <td>{{ a.sentAt ? formatDateTime(a.sentAt) : '—' }}</td>
+                    <td>{{ a.decidedAt ? formatDateTime(a.decidedAt) : '—' }}</td>
+                    <td>
+                      <span v-if="a.errorCode" class="text-error text-caption">{{ a.errorCode }}</span>
+                      <span v-else class="text-grey">—</span>
+                    </td>
+                  </tr>
+                </tbody>
+              </v-table>
+            </template>
+          </v-tabs-window-item>
+        </v-tabs-window>
       </v-card-text>
 
       <v-divider />
@@ -120,8 +523,24 @@
 
 <script setup lang="ts">
 import { ref, watch, computed } from 'vue';
+import { api } from '@/api/index';
 import type { Contact } from '@/composables/use-contacts';
-import { SOURCE_OPTIONS, STATUS_OPTIONS, useContacts } from '@/composables/use-contacts';
+import {
+  SOURCE_OPTIONS,
+  STATUS_OPTIONS,
+  GENDER_OPTIONS,
+  INCOME_RANGE_OPTIONS,
+  CONSENT_OPTIONS,
+  useContacts,
+  formatRecentDateTime,
+  messagePreview,
+  type AccountActivityItem,
+} from '@/composables/use-contacts';
+
+const LANG_OPTIONS = [
+  { text: 'Tiếng Việt', value: 'vi' },
+  { text: 'English', value: 'en' },
+];
 
 const props = defineProps<{
   modelValue: boolean;
@@ -142,11 +561,15 @@ const show = computed({
 });
 
 const isNew = computed(() => !props.contact?.id);
+const activeTab = ref<'basic' | 'personal' | 'address' | 'zalo' | 'activity'>('basic');
+const currentYear = new Date().getFullYear();
 
 interface FormState {
   fullName: string;
   crmName: string;
   phone: string;
+  phone2: string;
+  phone3: string;
   email: string;
   source: string;
   status: string;
@@ -154,15 +577,32 @@ interface FormState {
   firstContactDate: string;
   notes: string;
   tags: string[];
+  // personal
+  gender: string;
+  birthYear: number | null;
+  birthDate: string;
+  occupation: string;
+  incomeRange: string;
+  socialFacebook: string;
+  socialTiktok: string;
+  preferredLang: string;
+  // address
+  province: string;
+  district: string;
+  ward: string;
+  addressLine: string;
+  // consent
+  consentStatus: string;
+  consentSource: string;
 }
-
-const form = ref<FormState>(emptyForm());
 
 function emptyForm(): FormState {
   return {
     fullName: '',
     crmName: '',
     phone: '',
+    phone2: '',
+    phone3: '',
     email: '',
     source: '',
     status: '',
@@ -170,7 +610,52 @@ function emptyForm(): FormState {
     firstContactDate: '',
     notes: '',
     tags: [],
+    gender: '',
+    birthYear: null,
+    birthDate: '',
+    occupation: '',
+    incomeRange: '',
+    socialFacebook: '',
+    socialTiktok: '',
+    preferredLang: 'vi',
+    province: '',
+    district: '',
+    ward: '',
+    addressLine: '',
+    consentStatus: 'implicit',
+    consentSource: '',
   };
+}
+
+const form = ref<FormState>(emptyForm());
+
+// Attempts on activity tab
+const attempts = ref<Array<{
+  id: string;
+  state: string;
+  zaloAccountId: string;
+  zaloAccount?: { id: string; displayName: string | null; phone: string | null } | null;
+  queuedAt: string;
+  sentAt: string | null;
+  decidedAt: string | null;
+  errorCode: string | null;
+}>>([]);
+const loadingAttempts = ref(false);
+
+// Per-Zalo-account message activity for this contact
+const accountActivity = ref<AccountActivityItem[]>([]);
+const loadingActivity = ref(false);
+
+async function loadAccountActivity(contactId: string) {
+  loadingActivity.value = true;
+  try {
+    const res = await api.get(`/contacts/${contactId}/account-activity`);
+    accountActivity.value = res.data?.items ?? [];
+  } catch {
+    accountActivity.value = [];
+  } finally {
+    loadingActivity.value = false;
+  }
 }
 
 watch(() => props.contact, (c) => {
@@ -179,6 +664,8 @@ watch(() => props.contact, (c) => {
       fullName: c.fullName ?? '',
       crmName: c.crmName ?? '',
       phone: c.phone ?? '',
+      phone2: c.phone2 ?? '',
+      phone3: c.phone3 ?? '',
       email: c.email ?? '',
       source: c.source ?? '',
       status: c.status ?? '',
@@ -190,21 +677,92 @@ watch(() => props.contact, (c) => {
         : '',
       notes: c.notes ?? '',
       tags: c.tags ?? [],
+      gender: c.gender ?? '',
+      birthYear: c.birthYear ?? null,
+      birthDate: c.birthDate
+        ? new Date(c.birthDate).toISOString().split('T')[0]
+        : '',
+      occupation: c.occupation ?? '',
+      incomeRange: c.incomeRange ?? '',
+      socialFacebook: c.socialFacebook ?? '',
+      socialTiktok: c.socialTiktok ?? '',
+      preferredLang: c.preferredLang ?? 'vi',
+      province: c.province ?? '',
+      district: c.district ?? '',
+      ward: c.ward ?? '',
+      addressLine: c.addressLine ?? '',
+      consentStatus: c.consentStatus ?? 'implicit',
+      consentSource: c.consentSource ?? '',
     };
+    activeTab.value = 'basic';
+    if (c.id) {
+      loadAttempts(c.id);
+      loadAccountActivity(c.id);
+    } else {
+      attempts.value = [];
+      accountActivity.value = [];
+    }
   } else {
     form.value = emptyForm();
+    activeTab.value = 'basic';
+    attempts.value = [];
+    accountActivity.value = [];
   }
 }, { immediate: true, deep: true });
+
+async function loadAttempts(contactId: string) {
+  loadingAttempts.value = true;
+  try {
+    const res = await api.get(`/campaigns/contacts/${contactId}/attempts`);
+    attempts.value = res.data?.attempts ?? [];
+  } catch {
+    attempts.value = [];
+  } finally {
+    loadingAttempts.value = false;
+  }
+}
+
+const computedAge = computed<number | null>(() => {
+  if (form.value.birthDate) {
+    const y = new Date(form.value.birthDate).getFullYear();
+    if (Number.isFinite(y)) return currentYear - y;
+  }
+  if (form.value.birthYear && Number.isFinite(form.value.birthYear)) {
+    return currentYear - form.value.birthYear;
+  }
+  return null;
+});
+
+function attemptStateColor(state: string) {
+  const map: Record<string, string> = {
+    queued: 'grey',
+    looking_up: 'blue',
+    sent: 'info',
+    accepted: 'success',
+    rejected: 'error',
+    no_zalo: 'warning',
+    cancelled: 'grey',
+    expired: 'grey',
+    error: 'error',
+  };
+  return map[state] ?? 'grey';
+}
+
+function formatDateTime(iso: string) {
+  return new Date(iso).toLocaleString('vi-VN');
+}
 
 function required(v: string) {
   return !!v || 'Bắt buộc';
 }
 
 async function onSave() {
-  const payload: Partial<Contact> = {
+  const payload: Partial<Contact> & Record<string, unknown> = {
     fullName: form.value.fullName || null,
     crmName: form.value.crmName || null,
     phone: form.value.phone || null,
+    phone2: form.value.phone2 || null,
+    phone3: form.value.phone3 || null,
     email: form.value.email || null,
     source: form.value.source || null,
     status: form.value.status || null,
@@ -216,6 +774,25 @@ async function onSave() {
       : null,
     notes: form.value.notes || null,
     tags: form.value.tags,
+
+    gender: form.value.gender || null,
+    birthYear: form.value.birthYear ?? null,
+    birthDate: form.value.birthDate
+      ? new Date(form.value.birthDate + 'T00:00:00').toISOString()
+      : null,
+    occupation: form.value.occupation || null,
+    incomeRange: form.value.incomeRange || null,
+    socialFacebook: form.value.socialFacebook || null,
+    socialTiktok: form.value.socialTiktok || null,
+    preferredLang: form.value.preferredLang || 'vi',
+
+    province: form.value.province || null,
+    district: form.value.district || null,
+    ward: form.value.ward || null,
+    addressLine: form.value.addressLine || null,
+
+    consentStatus: form.value.consentStatus || 'implicit',
+    consentSource: form.value.consentSource || null,
   };
 
   let result: Contact | null;
@@ -243,3 +820,9 @@ function close() {
   emit('update:modelValue', false);
 }
 </script>
+
+<style scoped>
+.font-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+</style>

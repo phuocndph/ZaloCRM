@@ -5,3 +5,13 @@ dist/
 backups/
 .DS_Store
 .gstack/
+
+# Local dev artifacts — không commit
+.backfill*.sql
+.diag.sql
+/frontend/public/chat-smax-*.html
+/frontend/public/chat-perpair-context.html
+/frontend/public/contacts-approach-*.html
+/frontend/public/contacts-layout-mockups.html
+/frontend/public/friends-v2.html
+/frontend/public/Giao Diện Tính Năng*.xlsx

@@ -56,4 +56,28 @@ export function startAppointmentReminder(io: Server): void {
   });
 
   logger.info('[reminder] Appointment reminder cron started (daily 01:00 UTC)');
+
+  // Auto-flip scheduled → overdue mỗi 5 phút khi appointmentDate < now.
+  // (Trước: 30 min — quá lag. Frontend giờ tính effectiveStatus client-side nhưng
+  // cron vẫn cần để DB đồng bộ cho query filter / report.)
+  async function flipOverdue() {
+    try {
+      const now = new Date();
+      const result = await prisma.appointment.updateMany({
+        where: { status: 'scheduled', appointmentDate: { lt: now } },
+        data: { status: 'overdue' },
+      });
+      if (result.count > 0) {
+        logger.info(`[appointment] Auto-flipped ${result.count} scheduled → overdue`);
+      }
+    } catch (err) {
+      logger.error('[appointment] Overdue auto-flip error:', err);
+    }
+  }
+
+  cron.schedule('*/5 * * * *', flipOverdue);
+  // Catch-up ngay khi container start — fix rows quá hạn lúc server xuống
+  void flipOverdue();
+
+  logger.info('[appointment] Overdue auto-flip cron started (every 5 min + on-boot)');
 }
