@@ -34,6 +34,12 @@ export interface Contact {
   displayLeadScore?: number;
   displayHasZalo?: boolean | null;
   childrenCount?: number;
+  // Aggregate Zalo identity keys (computed từ Friend rows):
+  //   null khi không có data hoặc Friend bất đồng (distinctXxxCount > 1)
+  aggregateZaloGlobalId?: string | null;
+  aggregateZaloUsername?: string | null;
+  distinctGlobalIdCount?: number;
+  distinctUsernameCount?: number;
   nextAppointment: string | null;
   notes: string | null;
   tags: string[];

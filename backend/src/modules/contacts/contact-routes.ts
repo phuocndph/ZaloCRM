@@ -672,11 +672,15 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
               hasConversation: true,
               zaloDisplayName: body.zaloName || null,
               zaloAvatarUrl: body.zaloAvatarUrl || null,
+              zaloGlobalId: body.zaloGlobalId || null,
+              zaloUsername: body.zaloUsername || null,
             },
             update: {
               hasConversation: true,
               ...(body.zaloName ? { zaloDisplayName: body.zaloName } : {}),
               ...(body.zaloAvatarUrl ? { zaloAvatarUrl: body.zaloAvatarUrl } : {}),
+              ...(body.zaloGlobalId ? { zaloGlobalId: body.zaloGlobalId } : {}),
+              ...(body.zaloUsername ? { zaloUsername: body.zaloUsername } : {}),
             },
           }).catch((err: unknown) => {
             logger.warn('[ensure-by-uid] Friend upsert failed:', err);

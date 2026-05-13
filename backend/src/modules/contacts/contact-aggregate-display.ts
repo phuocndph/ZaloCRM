@@ -19,12 +19,16 @@ interface FriendLite {
   id: string;
   leadScore: number;
   statusRef?: StatusLite | null;
+  zaloGlobalId?: string | null;
+  zaloUsername?: string | null;
 }
 
 interface ContactWithFriends {
   statusRef?: StatusLite | null;
   leadScore: number;
   hasZalo: boolean | null;
+  zaloGlobalId?: string | null;
+  zaloUsername?: string | null;
   friends?: FriendLite[];
 }
 
@@ -33,6 +37,14 @@ export interface AggregateDisplay {
   displayLeadScore: number;
   displayHasZalo: boolean | null;
   childrenCount: number; // = friends.length (per-pair = "con")
+  // Globally-unique identifiers — aggregate từ Friend rows:
+  //  null khi không có data hoặc khác nhau giữa Friend (đa Zalo identity);
+  //  string khi tất cả Friend agree (single common identity).
+  // distinctGlobalIdCount > 1 → KH Cha gom nhiều Zalo identity → hiển thị "đa".
+  aggregateZaloGlobalId: string | null;
+  aggregateZaloUsername: string | null;
+  distinctGlobalIdCount: number;
+  distinctUsernameCount: number;
 }
 
 export function computeAggregateDisplay<T extends ContactWithFriends>(contact: T): AggregateDisplay {
@@ -53,11 +65,30 @@ export function computeAggregateDisplay<T extends ContactWithFriends>(contact: T
   // hasZalo: any friend tồn tại → KH có Zalo. Else giữ Contact.hasZalo.
   const displayHasZalo = friends.length > 0 ? true : contact.hasZalo;
 
+  // Aggregate globalId/username: distinct giá trị từ Friend.
+  // Fallback Contact field khi 0 friend (legacy data).
+  const globalIds = new Set<string>();
+  const usernames = new Set<string>();
+  for (const f of friends) {
+    if (f.zaloGlobalId) globalIds.add(f.zaloGlobalId);
+    if (f.zaloUsername) usernames.add(f.zaloUsername);
+  }
+  let aggregateZaloGlobalId: string | null = null;
+  let aggregateZaloUsername: string | null = null;
+  if (globalIds.size === 1) aggregateZaloGlobalId = [...globalIds][0];
+  else if (globalIds.size === 0 && contact.zaloGlobalId) aggregateZaloGlobalId = contact.zaloGlobalId;
+  if (usernames.size === 1) aggregateZaloUsername = [...usernames][0];
+  else if (usernames.size === 0 && contact.zaloUsername) aggregateZaloUsername = contact.zaloUsername;
+
   return {
     displayStatus,
     displayLeadScore,
     displayHasZalo,
     childrenCount: friends.length,
+    aggregateZaloGlobalId,
+    aggregateZaloUsername,
+    distinctGlobalIdCount: globalIds.size,
+    distinctUsernameCount: usernames.size,
   };
 }
 
@@ -77,6 +108,8 @@ export const AGGREGATE_INCLUDE = {
       zaloLabels: true,
       zaloDisplayName: true,
       zaloAvatarUrl: true,
+      zaloGlobalId: true,
+      zaloUsername: true,
       becameFriendAt: true,
       lastInboundAt: true,
       lastOutboundAt: true,

@@ -696,6 +696,12 @@ model Friend {
   // FE hiển thị Friend row + promote-to-parent (new Contact name).
   zaloDisplayName    String?   @map("zalo_display_name")
   zaloAvatarUrl      String?   @map("zalo_avatar_url")
+  // Globally-unique identifiers — về mặt bản chất thuộc Zalo identity per-Friend,
+  // không thuộc Contact (KH Cha). Cùng Zalo identity nhìn từ nhiều nick có cùng
+  // globalId/username (per-viewer chỉ khác zaloUidInNick). KH Cha aggregate qua
+  // computeAggregateDisplay: trùng tất cả Friend → cha hiện chung; khác → "đa".
+  zaloGlobalId       String?   @map("zalo_global_id")
+  zaloUsername       String?   @map("zalo_username")
   zaloLabels         Json      @default("[]") @map("zalo_labels")          // [{id,name,color}]
   zaloLabelsSyncedAt DateTime? @map("zalo_labels_synced_at")
 

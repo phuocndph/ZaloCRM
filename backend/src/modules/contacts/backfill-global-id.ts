@@ -95,6 +95,16 @@ export async function backfillGlobalId(batchSize: number = 50): Promise<Backfill
             zaloUsername: profile.username || null,
           },
         });
+        // Đồng bộ xuống Friend rows của Contact này — globalId/username là
+        // property của Zalo identity, các Friend của cùng Contact (cùng identity)
+        // có chung. Cross-account UID khác nhau, nhưng globalId GIỐNG.
+        await prisma.friend.updateMany({
+          where: { contactId: c.id },
+          data: {
+            zaloGlobalId: profile.globalId,
+            zaloUsername: profile.username || null,
+          },
+        }).catch(() => {});
         resolved++;
       } catch (err) {
         if ((err as { code?: string }).code === 'P2002') {

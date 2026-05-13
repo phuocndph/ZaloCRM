@@ -53,12 +53,23 @@
         <template #activator="{ props: act }">
           <button v-bind="act" class="btn" title="Bật/tắt cột tuỳ chọn">⚙ Cột</button>
         </template>
-        <v-list density="compact" min-width="240">
-          <v-list-subheader>Cột Zalo identity</v-list-subheader>
+        <v-list density="compact" min-width="320">
+          <v-list-subheader>Cột KH Cha — aggregate</v-list-subheader>
           <v-list-item v-for="c in OPTIONAL_COLUMNS" :key="c.key" @click="toggleColumn(c.key)">
             <template #prepend>
               <v-icon size="18" :color="visibleCols[c.key] ? 'primary' : ''">
                 {{ visibleCols[c.key] ? 'mdi-checkbox-marked' : 'mdi-checkbox-blank-outline' }}
+              </v-icon>
+            </template>
+            <v-list-item-title>{{ c.label }}</v-list-item-title>
+            <v-list-item-subtitle v-if="c.hint" class="text-caption">{{ c.hint }}</v-list-item-subtitle>
+          </v-list-item>
+          <v-divider class="my-1" />
+          <v-list-subheader>Cột KH Con — per-Friend (mở ▸ để xem)</v-list-subheader>
+          <v-list-item v-for="c in CHILD_OPTIONAL_COLUMNS" :key="c.key" @click="toggleChildColumn(c.key)">
+            <template #prepend>
+              <v-icon size="18" :color="visibleChildCols[c.key] ? 'primary' : ''">
+                {{ visibleChildCols[c.key] ? 'mdi-checkbox-marked' : 'mdi-checkbox-blank-outline' }}
               </v-icon>
             </template>
             <v-list-item-title>{{ c.label }}</v-list-item-title>
@@ -217,16 +228,19 @@
                 <span v-else-if="contact.hasZalo === false" class="chip chip-grey">Không</span>
                 <span v-else class="empty">?</span>
               </td>
-              <td v-if="visibleCols.zaloUid">
-                <code v-if="contact.zaloUid" class="uid-cell" :title="contact.zaloUid">{{ contact.zaloUid }}</code>
+              <td v-if="visibleCols.zaloUid" :title="'Per-account UID khác nhau theo nick. Mở ▸ xem chi tiết per row con.'">
+                <span v-if="(contact.childrenCount ?? 0) > 1" class="chip chip-multi" title="Đa Zalo identity — mỗi nick có UID riêng">đa {{ contact.childrenCount }} con</span>
+                <code v-else-if="contact.zaloUid" class="uid-cell">{{ contact.zaloUid }}</code>
                 <span v-else class="empty">—</span>
               </td>
               <td v-if="visibleCols.zaloGlobalId">
-                <code v-if="contact.zaloGlobalId" class="uid-cell" :title="contact.zaloGlobalId">{{ contact.zaloGlobalId.slice(0, 12) }}…</code>
+                <span v-if="(contact.distinctGlobalIdCount ?? 0) > 1" class="chip chip-multi" title="Đa Zalo identity (globalId khác nhau giữa các nick)">đa {{ contact.distinctGlobalIdCount }} identity</span>
+                <code v-else-if="contact.aggregateZaloGlobalId" class="uid-cell" :title="contact.aggregateZaloGlobalId">{{ contact.aggregateZaloGlobalId.slice(0, 12) }}…</code>
                 <span v-else class="empty">—</span>
               </td>
               <td v-if="visibleCols.zaloUsername">
-                <span v-if="contact.zaloUsername" class="uid-cell">@{{ contact.zaloUsername }}</span>
+                <span v-if="(contact.distinctUsernameCount ?? 0) > 1" class="chip chip-multi">đa {{ contact.distinctUsernameCount }} username</span>
+                <span v-else-if="contact.aggregateZaloUsername" class="uid-cell">@{{ contact.aggregateZaloUsername }}</span>
                 <span v-else class="empty">—</span>
               </td>
               <td v-if="visibleCols.lookupState">
@@ -257,6 +271,8 @@
                         <th>Tên CRM/Nick KH</th>
                         <th>Ảnh KH</th>
                         <th>Tên Zalo + UID</th>
+                        <th v-if="visibleChildCols.zaloGlobalId" title="Zalo globalId per identity (toàn cục)">Global ID</th>
+                        <th v-if="visibleChildCols.zaloUsername" title="Zalo username (handle)">Username</th>
                         <th>Trạng thái KB</th>
                         <th>Trạng thái KH</th>
                         <th>Score</th>
@@ -296,6 +312,14 @@
                             <span class="line1">{{ row.zaloName || '—' }}</span>
                             <span class="uid">{{ row.zaloUid || 'chưa lấy' }}</span>
                           </div>
+                        </td>
+                        <td v-if="visibleChildCols.zaloGlobalId">
+                          <code v-if="row.zaloGlobalId" class="uid-cell" :title="row.zaloGlobalId">{{ row.zaloGlobalId.slice(0, 10) }}…</code>
+                          <span v-else class="empty">—</span>
+                        </td>
+                        <td v-if="visibleChildCols.zaloUsername">
+                          <span v-if="row.zaloUsername" class="uid-cell">@{{ row.zaloUsername }}</span>
+                          <span v-else class="empty">—</span>
                         </td>
                         <td>
                           <div class="kb-cell">
@@ -442,17 +466,20 @@ const { contacts, total, loading, filters, pagination, fetchContacts } = useCont
 const { duplicateTotal, fetchDuplicateGroups } = useContactIntelligence();
 const toast = useToast();
 
-// ── Column toggle (optional Zalo identity columns) ─────────────────────────
-// Default ẨN — bật khi sale cần debug per-account UID hoặc xem global identifiers.
-// Persist sang localStorage để load lại nhớ pref.
+// ── Column toggle ───────────────────────────────────────────────────────────
+// 2 LEVEL:
+//  - Master (KH Cha): cột aggregate — chỉ có nghĩa khi tất cả Friend đồng nhất.
+//    Show "đa N identity" khi distinctGlobalIdCount > 1.
+//  - Child (KH Con / Friend row): cột per-identity — mỗi row 1 giá trị riêng.
+// Persist localStorage. Default ẨN.
 const OPTIONAL_COLUMNS = [
-  { key: 'zaloUid',      label: 'Zalo UID',  hint: 'Per-account UID chính (cũ nhất)' },
-  { key: 'zaloGlobalId', label: 'Global ID', hint: 'Toàn cục — dedup cross-account' },
-  { key: 'zaloUsername', label: 'Username',  hint: 'Handle t_xxx (toàn cục)' },
-  { key: 'lookupState',  label: 'Lookup',    hint: 'Trạng thái tra Zalo qua SĐT' },
+  { key: 'zaloUid',      label: 'Zalo UID (Cha)',  hint: 'KH Cha: per-account UID chính. Đa nick → mở ▸ xem row con.' },
+  { key: 'zaloGlobalId', label: 'Global ID (Cha)', hint: 'KH Cha: globalId chung khi tất cả con trùng, hoặc "đa N".' },
+  { key: 'zaloUsername', label: 'Username (Cha)',  hint: 'KH Cha: username chung khi trùng tất cả con.' },
+  { key: 'lookupState',  label: 'Lookup',          hint: 'Trạng thái tra Zalo qua SĐT cho KH này.' },
 ] as const;
 type OptColKey = (typeof OPTIONAL_COLUMNS)[number]['key'];
-const LS_KEY_COLS = 'contactsview.visibleCols.v1';
+const LS_KEY_COLS = 'contactsview.visibleCols.v2';
 function loadVisibleCols(): Record<OptColKey, boolean> {
   const def = { zaloUid: false, zaloGlobalId: false, zaloUsername: false, lookupState: false };
   try {
@@ -466,10 +493,30 @@ function toggleColumn(key: OptColKey) {
   visibleCols.value[key] = !visibleCols.value[key];
   try { localStorage.setItem(LS_KEY_COLS, JSON.stringify(visibleCols.value)); } catch { /* ignore */ }
 }
-// Tổng cột để colspan empty-state đúng (17 cố định + count cột optional bật)
 const totalColumnsCount = computed(() =>
   17 + Object.values(visibleCols.value).filter(Boolean).length,
 );
+
+// Child (KH Con) optional cols — riêng vì bản chất per-Friend chứ không aggregate.
+const CHILD_OPTIONAL_COLUMNS = [
+  { key: 'zaloGlobalId', label: 'Global ID (Con)', hint: 'Per-identity — toàn cục, cùng giữa các nick nhìn cùng identity' },
+  { key: 'zaloUsername', label: 'Username (Con)',  hint: 'Per-identity username handle' },
+] as const;
+type ChildColKey = (typeof CHILD_OPTIONAL_COLUMNS)[number]['key'];
+const LS_KEY_CHILD_COLS = 'contactsview.visibleChildCols.v1';
+function loadVisibleChildCols(): Record<ChildColKey, boolean> {
+  const def = { zaloGlobalId: false, zaloUsername: false };
+  try {
+    const raw = localStorage.getItem(LS_KEY_CHILD_COLS);
+    if (raw) return { ...def, ...JSON.parse(raw) };
+  } catch { /* ignore */ }
+  return def;
+}
+const visibleChildCols = ref<Record<ChildColKey, boolean>>(loadVisibleChildCols());
+function toggleChildColumn(key: ChildColKey) {
+  visibleChildCols.value[key] = !visibleChildCols.value[key];
+  try { localStorage.setItem(LS_KEY_CHILD_COLS, JSON.stringify(visibleChildCols.value)); } catch { /* ignore */ }
+}
 
 const showDialog = ref(false);
 const showDuplicateDialog = ref(false);
@@ -537,6 +584,8 @@ interface ApiFriendship {
   zaloLabels: unknown;
   zaloDisplayName: string | null;
   zaloAvatarUrl: string | null;
+  zaloGlobalId: string | null;
+  zaloUsername: string | null;
   becameFriendAt: string | null;
   lastInboundAt: string | null;
   lastOutboundAt: string | null;
@@ -586,6 +635,8 @@ function mapFriendshipToChildRow(f: ApiFriendship, contact: Contact): ChildRow {
     // Tên Zalo per-identity (snapshot tại Friend), fallback Contact.fullName chỉ khi NULL
     zaloName: f.zaloDisplayName || contact.fullName,
     zaloUid: f.zaloUidInNick,
+    zaloGlobalId: f.zaloGlobalId,
+    zaloUsername: f.zaloUsername,
     relationshipKind: kind,
     hasConversation: f.hasConversation,
     careStatus: (contact.status as CareStatusValue) || 'interested',
@@ -744,6 +795,8 @@ interface ChildRow {
   aliasInNick: string | null;
   zaloName: string | null;
   zaloUid: string | null;
+  zaloGlobalId: string | null;
+  zaloUsername: string | null;
   relationshipKind: 'friend' | 'pending_friend' | 'chatting_stranger' | 'ghost';
   hasConversation: boolean;
   careStatus: CareStatusValue;
@@ -1168,6 +1221,15 @@ onMounted(() => {
   border-radius: 4px;
   color: var(--smax-grey-700);
   word-break: break-all;
+}
+.chip-multi {
+  background: rgba(13, 71, 161, 0.10);
+  color: #0d47a1;
+  font-size: 10.5px;
+  padding: 1px 7px;
+  border-radius: 9px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .empty-state {
