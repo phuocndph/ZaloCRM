@@ -39,13 +39,35 @@ export async function friendRoutes(app: FastifyInstance) {
       if (kind && kind !== 'all') where.relationshipKind = kind;
       if (search.trim()) {
         const q = search.trim();
+        // Phone variants: VN 0xxx ↔ 84xxx — DB phổ biến lưu 84xxx, user gõ 0xxx.
+        const digits = q.replace(/[^\d]/g, '');
+        const phoneVariants: string[] = [];
+        if (digits.length >= 9) {
+          phoneVariants.push(digits);
+          if (digits.startsWith('0')) phoneVariants.push('84' + digits.slice(1));
+          else if (digits.startsWith('84')) phoneVariants.push('0' + digits.slice(2));
+          else phoneVariants.push('0' + digits, '84' + digits);
+        }
+        const phoneClauses = phoneVariants.map(p => ({ phone: { contains: p } }));
         where.contact = {
           OR: [
             { fullName: { contains: q, mode: 'insensitive' } },
             { crmName:  { contains: q, mode: 'insensitive' } },
-            { phone:    { contains: q } },
+            ...phoneClauses,
           ],
         };
+        // Cũng search Friend per-identity (zaloUidInNick, zaloGlobalId, zaloUsername) ở wrapper OR
+        where.AND = [
+          { OR: [
+            { contact: where.contact },
+            { zaloUidInNick:   { equals: q } },
+            { zaloGlobalId:    { equals: q } },
+            { zaloUsername:    { equals: q } },
+            { zaloDisplayName: { contains: q, mode: 'insensitive' } },
+            { aliasInNick:     { contains: q, mode: 'insensitive' } },
+          ] },
+        ];
+        delete where.contact;
       }
 
       const [friends, total, countsRaw] = await Promise.all([

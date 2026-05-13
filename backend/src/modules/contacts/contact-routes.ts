@@ -40,19 +40,29 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
       if (status) where.status = status;
       if (assignedUserId) where.assignedUserId = assignedUserId;
       if (search) {
+        // Phone variants: VN có thể nhập 0xxx, 84xxx, +84xxx — DB phổ biến lưu 84xxx.
+        // Match cả 2 chiều: nếu user gõ 0xxx → cũng tìm 84xxx (drop 0, add 84) và ngược lại.
         const digits = search.replace(/[^\d]/g, '');
+        const phoneVariants: string[] = [];
+        if (digits.length >= 9) {
+          phoneVariants.push(digits);
+          if (digits.startsWith('0')) phoneVariants.push('84' + digits.slice(1));
+          else if (digits.startsWith('84')) phoneVariants.push('0' + digits.slice(2));
+          else phoneVariants.push('0' + digits, '84' + digits);
+        }
+        const phoneClauses = phoneVariants.flatMap(p => [
+          { phone:  { contains: p } },
+          { phone2: { contains: p } },
+          { phone3: { contains: p } },
+        ]);
         where.OR = [
           { fullName: { contains: search, mode: 'insensitive' } },
           { crmName: { contains: search, mode: 'insensitive' } },
-          { phone: { contains: search } },
+          ...phoneClauses,
           { email: { contains: search, mode: 'insensitive' } },
           { zaloUid: { equals: search } },
           { zaloGlobalId: { equals: search } },
           { zaloUsername: { equals: search } },
-          ...(digits.length >= 9 ? [
-            { phone2: { contains: digits } },
-            { phone3: { contains: digits } },
-          ] : []),
         ];
       }
 

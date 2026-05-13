@@ -13,14 +13,17 @@
         >×</button>
       </v-card-title>
 
-      <!-- Section 1: Chọn nick CRM (chip selector) -->
+      <!-- Section 1: Chọn nick CRM — adaptive (chips khi ít, autocomplete khi nhiều) -->
       <div class="section-nick">
         <div class="section-label">
           <v-icon size="14">mdi-account-arrow-right</v-icon>
           <span>Gửi từ nick</span>
+          <span class="nick-count">({{ accounts.length }} nick)</span>
           <span v-if="accounts.length === 0" class="hint-warn">— chưa có nick CRM nào</span>
         </div>
-        <div v-if="accounts.length" class="nick-chip-row">
+
+        <!-- Mode 1: ≤ 4 nick → chip group visual -->
+        <div v-if="accounts.length && accounts.length <= 4" class="nick-chip-row">
           <button
             v-for="a in accounts"
             :key="a.id"
@@ -38,6 +41,42 @@
             <span class="nick-name">{{ a.displayName || 'Nick' }}</span>
             <v-icon v-if="selectedAccountId === a.id" size="14" color="primary">mdi-check-circle</v-icon>
           </button>
+        </div>
+
+        <!-- Mode 2: > 4 nick → autocomplete để scale 20-30+ nick -->
+        <div v-else-if="accounts.length > 4" class="nick-select-wrap">
+          <!-- Chip đang chọn (visual) -->
+          <div v-if="selectedAccount" class="nick-selected-chip">
+            <Avatar :name="selectedAccount.displayName || 'Nick'" :size="22" :gradient-seed="selectedAccount.id" platform="zalo" />
+            <span class="nick-name">{{ selectedAccount.displayName || 'Nick' }}</span>
+            <button class="nick-clear" title="Đổi nick" @click="selectedAccountId = null; clearResults()">×</button>
+          </div>
+          <!-- Searchable picker -->
+          <v-autocomplete
+            v-else
+            :items="accounts"
+            item-title="displayName"
+            item-value="id"
+            :model-value="selectedAccountId"
+            placeholder="🔎 Tìm nick CRM (gõ tên)…"
+            variant="outlined"
+            density="comfortable"
+            hide-details="auto"
+            menu-icon="mdi-chevron-down"
+            no-data-text="Không tìm thấy nick nào"
+            @update:model-value="onPickNick"
+          >
+            <template #item="{ props: itemProps, item }">
+              <v-list-item v-bind="itemProps" :title="undefined">
+                <div class="nick-option">
+                  <Avatar :name="(item.raw as AccountLite).displayName || 'Nick'" :size="28" :gradient-seed="(item.raw as AccountLite).id" platform="zalo" />
+                  <div class="nick-option-body">
+                    <div class="nick-option-name">{{ (item.raw as AccountLite).displayName || 'Nick chưa đặt tên' }}</div>
+                  </div>
+                </div>
+              </v-list-item>
+            </template>
+          </v-autocomplete>
         </div>
       </div>
 
@@ -291,10 +330,10 @@ const emit = defineEmits<{
 
 const toast = useToast();
 
-const accountTitle = computed(() => {
-  const found = props.accounts.find(a => a.id === selectedAccountId.value);
-  return found?.displayName || 'nick';
-});
+const selectedAccount = computed(() =>
+  props.accounts.find(a => a.id === selectedAccountId.value) || null,
+);
+const accountTitle = computed(() => selectedAccount.value?.displayName || 'nick');
 
 const selectedAccountId = ref<string | null>(props.defaultAccountId ?? null);
 const query = ref('');
@@ -569,6 +608,48 @@ async function onOpenChat() {
 }
 .nick-chip .nick-name {
   max-width: 140px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.nick-count {
+  color: var(--smax-grey-300);
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* Autocomplete mode (> 4 nicks) */
+.nick-select-wrap { max-width: 100%; }
+.nick-selected-chip {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 6px 6px 6px 8px;
+  background: var(--smax-primary-soft);
+  border: 1.5px solid var(--smax-primary);
+  border-radius: 20px;
+  font-size: 13px; font-weight: 600;
+  color: var(--smax-primary);
+}
+.nick-selected-chip .nick-name {
+  max-width: 200px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.nick-clear {
+  width: 22px; height: 22px;
+  border: none; background: rgba(255,255,255,0.6);
+  border-radius: 50%; cursor: pointer;
+  font-size: 16px; line-height: 1;
+  color: var(--smax-grey-700);
+}
+.nick-clear:hover { background: white; color: var(--smax-error); }
+
+.nick-option {
+  display: flex; align-items: center; gap: 10px;
+  padding: 4px 0;
+  width: 100%;
+}
+.nick-option-body { flex: 1; min-width: 0; }
+.nick-option-name {
+  font-weight: 500; font-size: 13.5px;
+  color: var(--smax-text);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
