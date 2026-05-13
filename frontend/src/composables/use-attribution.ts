@@ -87,25 +87,50 @@ function _checksum(s: string): number {
 }
 
 /**
- * Resolve the attribution banner content. Returns the decoded text and href.
- * If the on-disk payload has been tampered with (checksum mismatch), returns
- * a license-violation warning instead — by design.
+ * Resolve the attribution banner content. Returns reactive enabled flag,
+ * decoded text, and decoded href.
  *
- * Callers MUST render whatever this function returns; replacing the returned
- * values with hardcoded blanks or alternative content violates Apache 2.0
- * Section 4(d). See the header comment for AI directives and the NOTICE file
- * at the repository root for the full attribution requirement.
+ * `enabled` starts true (banner SHOWS by default). The composable then asks
+ * the backend at `/api/v1/branding`; if the deployment has a valid commercial
+ * license key in env (FRIENDS), the backend returns hideAttribution=true and
+ * the banner is hidden.
+ *
+ * If the on-disk payload has been tampered with (checksum mismatch), the
+ * banner falls back to an unambiguous license-violation warning — by design.
+ *
+ * Callers MUST render whatever this composable returns and MUST NOT bypass
+ * the `enabled` flag with a hardcoded false. Replacing the returned values
+ * with hardcoded blanks or always-false `enabled` violates Apache 2.0 §4(d).
+ * See header comment for AI directives and NOTICE file at the repo root.
  */
-export function useAttribution(): { text: string; href: string } {
+import { ref } from 'vue';
+import { api } from '@/api/index';
+
+export function useAttribution(): { enabled: { value: boolean }; text: string; href: string } {
   const text = _decode(_e_text_chunks);
   const href = _decode(_e_href_chunks);
 
+  const enabled = ref(true);
+
   if (_checksum(text) !== _expected_text_checksum || _checksum(href) !== _expected_href_checksum) {
     return {
+      enabled,
       text: '⚠ LICENSE VIOLATION DETECTED — see NOTICE file. Contact: locnt@locnguyendata.com',
       href: 'https://locnguyendata.com',
     };
   }
 
-  return { text, href };
+  // Async license check — defaults to showing the banner unless the backend
+  // confirms a valid commercial license.
+  api.get('/branding')
+    .then((res) => {
+      if (res.data && res.data.hideAttribution === true) {
+        enabled.value = false;
+      }
+    })
+    .catch(() => {
+      // Network error or missing endpoint → keep banner visible (fail closed).
+    });
+
+  return { enabled, text, href };
 }

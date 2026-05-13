@@ -73,6 +73,7 @@
         license from the maintainer (locnt@locnguyendata.com).
       -->
       <a
+        v-if="attribution.enabled.value"
         class="contact-marquee"
         :href="attribution.href"
         target="_blank"
