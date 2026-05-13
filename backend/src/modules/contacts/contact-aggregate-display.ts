@@ -75,6 +75,8 @@ export const AGGREGATE_INCLUDE = {
       hasConversation: true,
       aliasInNick: true,
       zaloLabels: true,
+      zaloDisplayName: true,
+      zaloAvatarUrl: true,
       becameFriendAt: true,
       lastInboundAt: true,
       lastOutboundAt: true,

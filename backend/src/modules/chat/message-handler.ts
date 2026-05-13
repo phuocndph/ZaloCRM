@@ -26,6 +26,9 @@ export interface IncomingMessage {
   // Cho non-self: thuộc SENDER. Cho self: thuộc RECIPIENT (thread peer).
   contactGlobalId?: string;
   contactUsername?: string;
+  // Per-identity (per-account) display name + avatar — lưu vào Friend.zaloDisplayName/AvatarUrl
+  contactZaloDisplayName?: string;
+  contactZaloAvatarUrl?: string;
   groupName?: string;       // group name if group message
   groupAvatarUrl?: string;  // group avatar URL from Zalo (via getGroupInfo.avt)
   groupMembersCount?: number; // total members in group
@@ -161,6 +164,8 @@ export async function handleIncomingMessage(
         sentAt: message.sentAt,
         senderType: (msg.isSelf ? 'self' : 'contact') as 'self' | 'contact',
       },
+      contactZaloDisplayName: msg.contactZaloDisplayName ?? null,
+      contactZaloAvatarUrl: msg.contactZaloAvatarUrl ?? null,
     };
     void applyContactAggregateFromMessage(aggregateInput);
     void applyFriendAggregate(aggregateInput);

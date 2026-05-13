@@ -206,12 +206,17 @@ export function attachZaloListener(ctx: ListenerContext): void {
       let recipientName: string = '';
       let contactGlobalId: string = '';
       let contactUsername: string = '';
+      // Snapshot tên + avatar Zalo của KH nhìn từ nick này (lưu vào Friend.zaloDisplayName/AvatarUrl)
+      let contactZaloDisplayName: string = '';
+      let contactZaloAvatarUrl: string = '';
       if (senderUid && api.getUserInfo) {
         const resolveUid = message.isSelf ? (message.threadId || '') : senderUid;
         if (resolveUid) {
           const userInfo = await resolveZaloName(api, resolveUid, userInfoCache);
           contactGlobalId = userInfo.globalId;
           contactUsername = userInfo.username;
+          contactZaloDisplayName = userInfo.zaloName;
+          contactZaloAvatarUrl = userInfo.avatar;
           if (message.isSelf) {
             if (userInfo.zaloName) recipientName = userInfo.zaloName;
             if (userInfo.avatar && message.threadId) updateContactAvatar(message.threadId, userInfo.avatar);
@@ -253,6 +258,8 @@ export function attachZaloListener(ctx: ListenerContext): void {
         recipientName: recipientName || undefined,
         contactGlobalId: contactGlobalId || undefined,
         contactUsername: contactUsername || undefined,
+        contactZaloDisplayName: contactZaloDisplayName || undefined,
+        contactZaloAvatarUrl: contactZaloAvatarUrl || undefined,
         groupName,
         groupAvatarUrl,
         groupMembersCount,

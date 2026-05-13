@@ -206,9 +206,18 @@
                   {{ friendKindLabel(f.relationshipKind) }}
                 </span>
               </div>
-              <div class="friend-card-row">
-                <span class="lbl">UID khách:</span>
-                <code class="uid">{{ f.zaloUidInNick }}</code>
+              <!-- KH theo nick này: avatar + tên Zalo riêng cho identity này (KHÔNG dùng tên KH Cha) -->
+              <div class="friend-customer-row">
+                <Avatar
+                  :src="f.zaloAvatarUrl"
+                  :name="f.zaloDisplayName || `KH-${f.zaloUidInNick.slice(-4)}`"
+                  :size="28"
+                  :gradient-seed="f.zaloUidInNick"
+                />
+                <div class="friend-customer-info">
+                  <div class="friend-customer-name">{{ f.zaloDisplayName || `KH-${f.zaloUidInNick.slice(-4)}` }}</div>
+                  <code class="uid">UID: {{ f.zaloUidInNick }}</code>
+                </div>
               </div>
               <div class="friend-card-row">
                 <span class="lbl">Trạng thái KH:</span>
@@ -393,6 +402,8 @@ interface FriendItem {
   becameFriendAt: string | null;
   lastInboundAt: string | null;
   leadScore: number;
+  zaloDisplayName: string | null;
+  zaloAvatarUrl: string | null;
   statusRef: { id: string; name: string; order: number; color: string | null } | null;
   zaloAccount: { id: string; displayName: string | null; owner: { id: string; fullName: string } | null };
 }
@@ -733,6 +744,23 @@ function relativeTime(dateStr: string) {
 .friend-card-row .ml-auto { margin-left: auto; }
 .friend-card-row.meta-line { padding-top: 6px; border-top: 1px dashed var(--smax-grey-200); margin-top: 4px; color: var(--smax-grey-700); }
 .friend-card-row.meta-line strong { color: var(--smax-text); }
+.friend-customer-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; margin: 4px 0 6px;
+  background: var(--smax-grey-50);
+  border-radius: 6px;
+  border-left: 3px solid var(--smax-primary);
+}
+.friend-customer-info { flex: 1; min-width: 0; }
+.friend-customer-name {
+  font-size: 12.5px; font-weight: 600;
+  color: var(--smax-text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.friend-customer-row .uid {
+  display: inline-block;
+  margin-top: 2px;
+}
 .friend-card-actions { display: flex; justify-content: flex-end; gap: 6px; padding-top: 8px; border-top: 1px dashed var(--smax-grey-200); margin-top: 6px; }
 .btn-sm-danger { padding: 4px 10px; font-size: 11px; border: 1px solid #ffcdd2; color: #c62828; border-radius: 4px; background: rgba(255,82,82,0.05); cursor: pointer; }
 .btn-sm-danger:hover { background: rgba(255,82,82,0.15); }

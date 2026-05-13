@@ -47,6 +47,10 @@ export interface AggregateMessageInput {
   };
   /** For self/outbound: the CRM user who triggered the send (if known). */
   outboundUserId?: string | null;
+  /** Snapshot tên Zalo của KH nhìn từ nick này (lưu vào Friend.zaloDisplayName). */
+  contactZaloDisplayName?: string | null;
+  /** Snapshot avatar Zalo của KH nhìn từ nick này (Friend.zaloAvatarUrl). */
+  contactZaloAvatarUrl?: string | null;
 }
 
 /**
@@ -212,6 +216,10 @@ export async function applyFriendAggregate(args: AggregateMessageInput): Promise
             contactId: conv.contactId!,
             zaloAccountId: conv.zaloAccountId,
             zaloUidInNick: conv.externalThreadId!,
+            // Snapshot per-identity tên + avatar Zalo của KH (chỉ set khi inbound,
+            // vì self message senderName là của chính sale chứ không phải KH).
+            zaloDisplayName: isInbound ? (args.contactZaloDisplayName || null) : null,
+            zaloAvatarUrl: isInbound ? (args.contactZaloAvatarUrl || null) : null,
             friendshipStatus: 'none',
             hasConversation: true,
             relationshipKind: 'chatting_stranger',
@@ -236,6 +244,13 @@ export async function applyFriendAggregate(args: AggregateMessageInput): Promise
           updates.lastInboundAt = sentAt;
         }
         updates.totalInbound = { increment: 1 };
+        // Refresh per-identity Zalo display name + avatar (KH có thể đổi tên).
+        if (args.contactZaloDisplayName && args.contactZaloDisplayName !== existing.zaloDisplayName) {
+          updates.zaloDisplayName = args.contactZaloDisplayName;
+        }
+        if (args.contactZaloAvatarUrl && args.contactZaloAvatarUrl !== existing.zaloAvatarUrl) {
+          updates.zaloAvatarUrl = args.contactZaloAvatarUrl;
+        }
       } else {
         if (!existing.lastOutboundAt || existing.lastOutboundAt < sentAt) {
           updates.lastOutboundAt = sentAt;

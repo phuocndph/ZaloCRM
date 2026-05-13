@@ -11,6 +11,7 @@ import { mergeContacts } from './merge-service.js';
 import { runContactIntelligence } from './contact-intelligence.js';
 import { backfillGlobalId, backfillOrphanFriends } from './backfill-global-id.js';
 import { backfillMissingFriends } from './backfill-missing-friends.js';
+import { backfillFriendDisplayName } from './backfill-friend-display-name.js';
 import { migrateStatusTable } from './status-migration.js';
 import { computeAggregateDisplay, AGGREGATE_INCLUDE } from './contact-aggregate-display.js';
 import { runAutomationRules } from '../automation/automation-service.js';
@@ -498,6 +499,7 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
         select: {
           id: true, contactId: true, zaloAccountId: true, zaloUidInNick: true,
           statusId: true, leadScore: true, aliasInNick: true,
+          zaloDisplayName: true, zaloAvatarUrl: true,
         },
       });
       if (!friend) return reply.status(404).send({ error: 'Friend not found' });
@@ -508,19 +510,22 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
         select: { id: true },
       });
 
-      // Build display name: body override > aliasInNick > "KH-{last4 UID}"
+      // Build display name: body override > zaloDisplayName (per-identity snapshot)
+      // > aliasInNick > "KH-{last4 UID}". KHÔNG dùng parent name vì sẽ leak tên Cha.
       const last4 = friend.zaloUidInNick.slice(-4);
       const fullName = body.fullName?.trim()
+        || friend.zaloDisplayName
         || friend.aliasInNick
         || `KH-${last4}`;
 
       const result = await prisma.$transaction(async (tx) => {
-        // 1. Create new Contact with friend's per-pair status/score
+        // 1. Create new Contact with friend's per-pair status/score/avatar
         const newContact = await tx.contact.create({
           data: {
             orgId: user.orgId,
             zaloUid: friend.zaloUidInNick,
             fullName,
+            avatarUrl: friend.zaloAvatarUrl,
             statusId: friend.statusId ?? defaultStatus?.id ?? null,
             leadScore: friend.leadScore,
             hasZalo: true,
@@ -793,6 +798,17 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
       return reply.send(result);
     } catch (err) {
       logger.error('[contacts] Backfill orphan friends error:', err);
+      return reply.status(500).send({ error: 'Backfill failed', detail: String(err) });
+    }
+  });
+
+  // ── POST /api/v1/contacts/backfill-friend-display-name — resolve per-identity Zalo name+avatar ─
+  app.post('/api/v1/contacts/backfill-friend-display-name', async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const result = await backfillFriendDisplayName();
+      return reply.send(result);
+    } catch (err) {
+      logger.error('[contacts] Backfill friend display name error:', err);
       return reply.status(500).send({ error: 'Backfill failed', detail: String(err) });
     }
   });

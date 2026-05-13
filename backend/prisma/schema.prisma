@@ -691,6 +691,11 @@ model Friend {
 
   // ── Zalo-side metadata ──────────────────────────────────────────────────
   aliasInNick        String?   @map("alias_in_nick")
+  // Tên + avatar Zalo của KH NHÌN TỪ NICK NÀY (per-identity).
+  // Set khi message-handler dispatch tin → applyFriendAggregate. Dùng cho
+  // FE hiển thị Friend row + promote-to-parent (new Contact name).
+  zaloDisplayName    String?   @map("zalo_display_name")
+  zaloAvatarUrl      String?   @map("zalo_avatar_url")
   zaloLabels         Json      @default("[]") @map("zalo_labels")          // [{id,name,color}]
   zaloLabelsSyncedAt DateTime? @map("zalo_labels_synced_at")
 

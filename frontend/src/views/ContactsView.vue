@@ -249,7 +249,7 @@
                           </span>
                         </td>
                         <td>
-                          <Avatar :src="contact.avatarUrl" :name="contact.fullName || '?'" :size="32" :gradient-seed="contact.id" />
+                          <Avatar :src="row.zaloAvatarUrl || contact.avatarUrl" :name="row.zaloName || contact.fullName || '?'" :size="32" :gradient-seed="row.id" />
                         </td>
                         <td>
                           <div class="two-line">
@@ -454,6 +454,8 @@ interface ApiFriendship {
   hasConversation: boolean;
   aliasInNick: string | null;
   zaloLabels: unknown;
+  zaloDisplayName: string | null;
+  zaloAvatarUrl: string | null;
   becameFriendAt: string | null;
   lastInboundAt: string | null;
   lastOutboundAt: string | null;
@@ -500,12 +502,14 @@ function mapFriendshipToChildRow(f: ApiFriendship, contact: Contact): ChildRow {
     salePhone: f.zaloAccount.phone || '',
     saleName: f.zaloAccount.owner?.fullName || '—',
     aliasInNick: f.aliasInNick,
-    zaloName: contact.fullName,
+    // Tên Zalo per-identity (snapshot tại Friend), fallback Contact.fullName chỉ khi NULL
+    zaloName: f.zaloDisplayName || contact.fullName,
     zaloUid: f.zaloUidInNick,
     relationshipKind: kind,
     careStatus: (contact.status as CareStatusValue) || 'interested',
     statusRef: f.statusRef,
     leadScore: f.leadScore ?? 0,
+    zaloAvatarUrl: f.zaloAvatarUrl,
     crmTagsPerNick: contact.tags?.slice(0, 3) || [],
     zaloLabels: labels,
     lastInboundAt: f.lastInboundAt,
@@ -652,6 +656,7 @@ interface ChildRow {
   nickName: string;
   statusRef: StatusLite | null;
   leadScore: number;
+  zaloAvatarUrl: string | null;
   salePhone: string;
   saleName: string;
   aliasInNick: string | null;
