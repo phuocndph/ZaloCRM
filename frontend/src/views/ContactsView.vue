@@ -159,25 +159,25 @@
           <tr>
             <th class="w-32"></th>
             <th class="w-40"></th>
-            <th class="w-260">Tên CRM / Zalo (KH)</th>
-            <th class="w-120">SĐT</th>
-            <th class="w-90">Giới tính</th>
-            <th class="w-120">Tỉnh/Quận</th>
-            <th class="w-100">Nguồn</th>
-            <th class="w-120">Trạng thái KH</th>
-            <th class="w-80">Score</th>
-            <th class="w-220">Nick chăm</th>
-            <th class="w-150">Sale chính</th>
-            <th class="w-200">KH nhắn cuối</th>
-            <th class="w-200">Sale nhắn cuối</th>
-            <th class="w-100">Tin (in/out)</th>
-            <th class="w-140">Tags CRM</th>
-            <th class="w-90">Có Zalo?</th>
-            <th v-if="visibleCols.zaloUid" class="w-140" title="Zalo UID per-account chính (cũ nhất)">Zalo UID</th>
-            <th v-if="visibleCols.zaloGlobalId" class="w-140" title="Zalo globalId toàn cục (dedup cross-account)">Global ID</th>
-            <th v-if="visibleCols.zaloUsername" class="w-140" title="Zalo username (handle t_xxx)">Username</th>
-            <th v-if="visibleCols.lookupState" class="w-110" title="Trạng thái tra Zalo qua SĐT">Lookup</th>
-            <th class="w-180">Action</th>
+            <th class="w-200">Tên CRM / Zalo (KH)</th>
+            <th class="w-110">SĐT</th>
+            <th class="w-70">Giới tính</th>
+            <th class="w-100">Tỉnh/Quận</th>
+            <th class="w-80">Nguồn</th>
+            <th class="w-100">Trạng thái KH</th>
+            <th class="w-60">Score</th>
+            <th class="w-180">Nick chăm</th>
+            <th class="w-130">Sale chính</th>
+            <th class="w-170">KH nhắn cuối</th>
+            <th class="w-170">Sale nhắn cuối</th>
+            <th class="w-80">Tin in/out</th>
+            <th class="w-110">Tags CRM</th>
+            <th class="w-70">Có Zalo?</th>
+            <th v-if="visibleCols.zaloUid" class="w-120" title="Zalo UID per-account chính (cũ nhất)">Zalo UID</th>
+            <th v-if="visibleCols.zaloGlobalId" class="w-130" title="Zalo globalId toàn cục (dedup cross-account)">Global ID</th>
+            <th v-if="visibleCols.zaloUsername" class="w-130" title="Zalo username (handle t_xxx)">Username</th>
+            <th v-if="visibleCols.lookupState" class="w-100" title="Trạng thái tra Zalo qua SĐT">Lookup</th>
+            <th class="w-130">Action</th>
           </tr>
         </thead>
         <tbody>
@@ -1031,9 +1031,23 @@ onMounted(() => {
 
 <style scoped>
 .smax-contacts-page {
-  padding: 13px 18px 26px;
+  padding: 13px 18px 13px;
   background: var(--smax-grey-100);
-  min-height: 100%;
+  /* Flex column: page-header + toolbar + stats + scroll-wrap (flex: 1).
+     Height fixed = viewport - topnav → scroll-wrap takes remaining vertical
+     space + own scroll (V + H) → toolbar/stats stay above khi scroll bảng. */
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - var(--smax-topnav-h, 52px));
+  overflow: hidden;
+}
+.smax-contacts-page > .page-header,
+.smax-contacts-page > .toolbar,
+.smax-contacts-page > .toolbar-secondary,
+.smax-contacts-page > .advanced-panel,
+.smax-contacts-page > .stats-row,
+.smax-contacts-page > .pagination {
+  flex-shrink: 0;
 }
 
 /* ════════ Page header ════════ */
@@ -1220,38 +1234,40 @@ onMounted(() => {
   margin-left: 3px;
 }
 
-/* ════════ Table ════════ */
-/* overflow: visible — KHÔNG tạo scroll container. Lý do: sticky thead bound to
-   nearest scroll ancestor. overflow-x: auto auto-promote overflow-y → scroll
-   container; sticky pin vào TOP CỦA scroll-wrap (không phải viewport). Khi page
-   scroll, cả wrap di chuyển → thead theo. Để sticky pin viewport, wrap phải
-   overflow: visible. Trade-off: nếu viewport hẹp hơn min-width table (1500px),
-   page-level H scroll thay vì internal H scroll. Acceptable cho desktop CRM. */
+/* ════════ Table — responsive contained scroll ════════
+   PATTERN: scroll-wrap takes remaining viewport height + own scroll both axes.
+   Sticky thead binds to scroll-wrap, pins at top (top: 0). Page tự nó KHÔNG
+   scroll — toolbar/stats stay above scroll-wrap, table cuộn trong wrap.
+
+   Lợi ích responsive:
+   - HD 1366: table > viewport → H scroll trong wrap (toolbar/stats không bị scroll)
+   - FHD 1920+: table fit, không H scroll. Sticky thead pin top wrap.
+   - 2K 2560+: table fit thừa space.
+   Sticky vertical bind nên work ổn ở mọi viewport. */
 .scroll-wrap {
   background: var(--smax-bg);
   border-radius: 7px;
-  overflow: visible;
+  overflow: auto; /* both axes scroll inside wrap */
+  flex: 1; min-height: 0; /* fill remaining vertical space của page flex column */
   box-shadow: 0 1px 3px rgba(0,0,0,0.05);
 }
 .smax-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 12.5px;
-  min-width: 2240px;
-  /* table-layout: fixed → column width tính từ <th> + width class, KHÔNG recalc
-     theo content tbody. Tránh nhảy layout khi expand row con (child-table có content
-     rộng/hẹp khác). Width đủ rộng cho content phổ biến (không wrap). */
+  /* min-width: 1500 cho HD 1366 — < viewport hẹp 1500 sẽ H scroll trong wrap.
+     Cột explicit width đủ cho content phổ biến nhưng không quá rộng. */
+  min-width: 1500px;
+  /* table-layout: fixed → cột không recalc khi expand row con (no layout shift) */
   table-layout: fixed;
 }
 .smax-table > thead > tr > th {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* Child table inside expanded row dùng layout auto riêng — table-layout: fixed
-   của bảng cha KHÔNG kế thừa vào table con (table-layout là property độc lập per-table). */
 .child-table { table-layout: auto; }
-/* Sticky header: pin thead Cha khi scroll. CHỈ direct descendant > > > —
-   tránh leak sticky xuống .child-table thead (nested inside expanded row → đè lên nhau). */
+/* Sticky thead Cha pin trong scroll-wrap (top: 0 vì wrap có own scroll, không
+   phải page scroll). CHỈ direct descendant > > > tránh leak xuống child-table. */
 .smax-table > thead > tr > th {
   background: var(--smax-grey-50);
   border-bottom: 1px solid var(--smax-grey-200);
@@ -1264,7 +1280,7 @@ onMounted(() => {
   text-transform: uppercase;
   letter-spacing: 0.3px;
   position: sticky;
-  top: var(--smax-topnav-h, 52px);
+  top: 0;
   z-index: 5;
 }
 /* Child table thead = static (chỉ scroll cùng row, không pin) */
