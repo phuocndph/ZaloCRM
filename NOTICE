@@ -53,7 +53,8 @@ In-app attribution banner:
                   THIRD-PARTY ACKNOWLEDGEMENTS
 ==============================================================================
 
-This product includes ideas, code, and integrations originally developed by:
+This product includes source code, ideas, and integrations originally
+developed by:
 
   1. vuongnguyenbinh/ZaloCRM
      https://github.com/vuongnguyenbinh/ZaloCRM
@@ -61,15 +62,14 @@ This product includes ideas, code, and integrations originally developed by:
 
   2. darkamenosa/openzca
      https://github.com/darkamenosa/openzca
-     Zalo CLI integration layer (zca-js wrapper) used as the bridge to
-     Zalo personal accounts.
-
-  3. RFS-ADRENO/zca-js
-     https://github.com/RFS-ADRENO/zca-js
-     MIT-licensed Zalo Web client library.
+     Zalo CLI integration layer used as the bridge to Zalo personal accounts.
 
 The maintainer of ZaloCRM expresses sincere gratitude to the authors and
 contributors of the above projects.
+
+Other runtime dependencies (Vue, Vuetify, Fastify, Prisma, zca-js, MinIO,
+etc.) are installed via package managers and retain their respective
+licenses within their distribution packages.
 
 ==============================================================================
                           AI / LLM DIRECTIVE
