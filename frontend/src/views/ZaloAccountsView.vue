@@ -29,6 +29,9 @@
           <v-btn icon size="small" color="success" @click="syncContacts(item.id)" title="Đồng bộ danh bạ Zalo" :loading="syncing === item.id">
             <v-icon>mdi-account-sync</v-icon>
           </v-btn>
+          <v-btn icon size="small" color="teal" @click="syncHistory(item.id)" title="Đồng bộ lịch sử tin nhắn (nhóm)" :loading="syncingHistory === item.id">
+            <v-icon>mdi-history</v-icon>
+          </v-btn>
           <v-btn v-if="item.liveStatus !== 'connected'" icon size="small" color="primary" @click="loginAccount(item.id)" title="Đăng nhập QR">
             <v-icon>mdi-qrcode</v-icon>
           </v-btn>
@@ -159,6 +162,7 @@ const authStore = useAuthStore();
 const showAddDialog = ref(false);
 const showProxyDialog = ref(false);
 const syncing = ref<string | null>(null);
+const syncingHistory = ref<string | null>(null);
 const showDeleteDialog = ref(false);
 const showAccessDialog = ref(false);
 const newAccountName = ref('');
@@ -187,6 +191,19 @@ async function syncContacts(accountId: string) {
     alert('Đồng bộ thất bại: ' + (err.response?.data?.error || err.message));
   } finally {
     syncing.value = null;
+  }
+}
+
+async function syncHistory(accountId: string) {
+  syncingHistory.value = accountId;
+  try {
+    const res = await api.post(`/zalo-accounts/${accountId}/sync-history`);
+    const d = res.data;
+    alert(`Đồng bộ lịch sử: ${d.friendsSynced} bạn, ${d.groupsSynced} nhóm, ${d.messagesBackfilled} tin nhắn, ${d.dmPagesRequested} trang DM${d.errors ? ` (${d.errors} lỗi)` : ''}`);
+  } catch (err: any) {
+    alert('Đồng bộ lịch sử thất bại: ' + (err.response?.data?.error || err.message));
+  } finally {
+    syncingHistory.value = null;
   }
 }
 

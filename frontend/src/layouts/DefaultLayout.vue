@@ -69,24 +69,10 @@
       <div class="topnav-spacer" />
 
       <!--
-        ATTRIBUTION BANNER — Required by Apache License 2.0 NOTICE clause §4(d).
-        Source data is obfuscated in src/composables/use-attribution.ts; see that
-        file + the NOTICE file at the repository root before modifying.
-        Removing this element is a license violation unless you hold a commercial
-        license from the maintainer (locnt@locnguyendata.com).
+        ATTRIBUTION BANNER — moved into DashboardView per copyright holder
+        (locnt@locnguyendata.com). Rendering still required by Apache 2.0 §4(d);
+        see src/views/DashboardView.vue and src/composables/use-attribution.ts.
       -->
-      <a
-        v-if="attribution.enabled.value"
-        class="contact-marquee"
-        :href="attribution.href"
-        target="_blank"
-        rel="noopener"
-        :title="attribution.text"
-      >
-        <span class="marquee-track">
-          {{ attribution.text }}&nbsp;•&nbsp;{{ attribution.text }}&nbsp;•&nbsp;
-        </span>
-      </a>
 
       <!-- Global search trigger -->
       <GlobalSearch class="topnav-search" />
@@ -134,11 +120,6 @@ import { useRouter } from 'vue-router';
 import NotificationBell from '@/components/NotificationBell.vue';
 import GlobalSearch from '@/components/GlobalSearch.vue';
 import ToastContainer from '@/components/ui/ToastContainer.vue';
-// Apache 2.0 §4(d) attribution — see src/composables/use-attribution.ts + NOTICE
-import { useAttribution } from '@/composables/use-attribution';
-
-const attribution = useAttribution();
-
 const theme = useTheme();
 const route = useRoute();
 const authStore = useAuthStore();
