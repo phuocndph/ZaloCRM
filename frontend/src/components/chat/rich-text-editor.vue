@@ -70,10 +70,11 @@ import Underline from '@tiptap/extension-underline';
 const props = withDefaults(defineProps<{
   modelValue: string;
   placeholder?: string;
-  showToolbar?: boolean;
+  showToolbar?: boolean;       // Hiển thị format toolbar (B I U S list code) — mặc định FALSE.
+                               //  Parent toggle qua T icon button khi cần.
 }>(), {
   placeholder: 'Nhập tin nhắn...',
-  showToolbar: true,
+  showToolbar: false,
 });
 
 const emit = defineEmits<{
@@ -178,33 +179,30 @@ onBeforeUnmount(() => { editor.value?.destroy(); });
   box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.10);
 }
 
-/* ── Toolbar collapsible — ẩn default, slide in khi focus hoặc đang gõ ── */
+/* ── Format toolbar: hidden by default, parent toggle qua prop showToolbar=true.
+ * Khi prop true → render `v-if="showToolbar"` ở template → element không tồn tại
+ * khi false → 0 height, không reserve space. ── */
 .editor-toolbar {
-  max-height: 0;
+  height: 30px;
+  padding: 3px 4px;
+  border-bottom: 1px solid var(--smax-grey-100, #f5f6fa);
   overflow: hidden;
-  opacity: 0;
-  padding: 0 4px;
-  border-bottom: 1px solid transparent;
-  transition: max-height 0.18s ease, opacity 0.15s, padding 0.15s, border-color 0.15s;
-}
-.rich-text-editor:focus-within .editor-toolbar,
-.rich-text-editor.focused .editor-toolbar,
-.rich-text-editor.has-content .editor-toolbar {
-  max-height: 40px;
-  opacity: 1;
-  padding: 4px;
-  border-bottom-color: var(--smax-grey-100, #f5f6fa);
+  background: var(--smax-grey-50, #fafbfc);
 }
 
+/* Editor content: auto-grow theo nội dung (min 60px ~ 2 dòng Zalo Web).
+ * Max-height kế thừa từ parent .input-area (CSS variable --editor-max-h),
+ * scroll bên trong nếu vượt. Mặc định 320px cho an toàn. */
 .editor-content :deep(.tiptap-input) {
-  padding: 9px 13px;
-  min-height: 42px;
-  max-height: 140px;
+  padding: 8px 13px;
+  min-height: 60px;
+  max-height: var(--editor-max-h, 320px);
   overflow-y: auto;
   outline: none;
   font-size: 14px;
   line-height: 1.5;
   color: var(--smax-text, #212121);
+  box-sizing: border-box;
 }
 .editor-content :deep(.tiptap-input p) {
   margin: 0;

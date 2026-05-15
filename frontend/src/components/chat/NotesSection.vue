@@ -481,9 +481,12 @@ async function confirmCreate() {
   if (!d.date || !d.noteId || !props.contactId) return;
   creatingApt.value.add(d.noteId);
   try {
-    const time = d.time || '09:00';
+    // Time optional: nếu user clear → dùng 09:00 default; nếu set thì giữ
+    const time = d.time && /^\d{2}:\d{2}$/.test(d.time) ? d.time : '09:00';
     const isoDate = new Date(`${d.date}T${time}:00`).toISOString();
-    const summary = d.location ? `${d.summary} (📍 ${d.location})` : d.summary;
+    // Location optional: chỉ inject vào summary nếu có nội dung trim non-empty
+    const loc = (d.location || '').trim();
+    const summary = loc ? `${d.summary} (📍 ${loc})` : d.summary;
     const { data } = await api.post('/appointments', {
       contactId: props.contactId,
       appointmentDate: isoDate,
@@ -494,15 +497,21 @@ async function confirmCreate() {
     const aptId = data.id || data.appointment?.id;
     if (aptId) {
       await linkAppointment(d.noteId, aptId);
-      // Trigger fly-to-tab animation từ vị trí note → activity tab badge
       triggerFlyAnimation(d.noteId);
       toast.success('📅 Đã tạo lịch hẹn');
       aiResult.value.delete(d.noteId);
       closeEditDialog();
     }
-  } catch (err) {
+  } catch (err: any) {
     console.error(err);
-    toast.error('Không tạo được lịch hẹn');
+    // Hiển thị message thực từ backend (vd 409 dedup conflict)
+    const status = err?.response?.status;
+    const msg = err?.response?.data?.error;
+    if (status === 409) {
+      toast.error(msg || 'Đã có lịch hẹn trùng giờ với KH này — đổi giờ hoặc xem trong Hoạt động');
+    } else {
+      toast.error(msg || `Không tạo được lịch hẹn (${status || 'unknown'})`);
+    }
   } finally {
     creatingApt.value.delete(d.noteId);
   }

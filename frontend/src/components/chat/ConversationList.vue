@@ -92,14 +92,40 @@
 
           <div class="ci-preview">{{ lastMessagePreview(conv) }}</div>
 
-          <!-- Tag row luôn render (kể cả rỗng) để giữ layout cố định -->
+          <!-- Tag row luôn render (kể cả rỗng) để giữ layout cố định.
+               Show 3 tag đầu + "+N" chip click xem rest qua v-menu. -->
           <div class="ci-tag-row">
             <span
-              v-for="tag in (conv.contact?.tags || []).slice(0, 2)"
+              v-for="tag in (conv.contact?.tags || []).slice(0, 3)"
               :key="tag"
               class="tag-mini"
               :style="`background:${tagBgColor(tag)}`"
             >{{ tag }}</span>
+
+            <v-menu
+              v-if="(conv.contact?.tags || []).length > 3"
+              :close-on-content-click="false"
+              location="top start"
+              open-on-hover
+            >
+              <template #activator="{ props: actProps }">
+                <span
+                  v-bind="actProps"
+                  class="tag-overflow"
+                  :title="`Còn ${(conv.contact?.tags || []).length - 3} tag khác`"
+                  @click.stop
+                >+{{ (conv.contact?.tags || []).length - 3 }}</span>
+              </template>
+              <div class="tag-overflow-popup">
+                <span
+                  v-for="tag in (conv.contact?.tags || []).slice(3)"
+                  :key="tag"
+                  class="tag-popup-pill"
+                  :style="`background:${tagBgColor(tag)}`"
+                >{{ tag }}</span>
+              </div>
+            </v-menu>
+
             <span v-if="friendshipStatus(conv)" :class="['status-pill', friendshipPillClass(conv)]">
               {{ friendshipStatus(conv) }}
             </span>
@@ -690,6 +716,49 @@ function formatTime(dateStr: string | null): string {
   padding: 1px 7px; border-radius: 4px;
   font-size: 10px; font-weight: 600;
   color: white;
+  flex-shrink: 0;
+  max-width: 80px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* Overflow "+N" chip — hover/click hiện popup các tag còn lại */
+.tag-overflow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 16px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--smax-grey-200, #ebedf0);
+  color: var(--smax-grey-700, #4a5468);
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.12s;
+}
+.tag-overflow:hover {
+  background: var(--smax-primary, #2962ff);
+  color: #fff;
+}
+.tag-overflow-popup {
+  background: #fff;
+  padding: 8px 10px;
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  max-width: 280px;
+}
+.tag-popup-pill {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  color: white;
+  white-space: nowrap;
 }
 .status-pill {
   display: inline-flex; align-items: center; gap: 3px;

@@ -280,8 +280,9 @@
           @cancel="onCancelReplyEdit"
         />
 
-        <!-- Compact toolbar (Zalo-style): chỉ 6 nút chức năng cốt lõi -->
+        <!-- Compact toolbar (Zalo-style) — group dividers cho visual rhythm -->
         <div class="input-toolbar-top">
+          <!-- Group 1: Media -->
           <StickerPicker @select="onSendSticker" />
           <button class="icon-tool" title="Gửi ảnh" @click="onPickImage">
             <v-icon size="18">mdi-image-outline</v-icon>
@@ -289,13 +290,30 @@
           <button class="icon-tool" title="Gửi file" @click="onPickFile">
             <v-icon size="18">mdi-paperclip</v-icon>
           </button>
+          <span class="toolbar-divider"></span>
+
+          <!-- Group 2: Contact / format -->
           <button class="icon-tool" title="Gửi danh thiếp" @click="todoToast('Danh thiếp')">
             <v-icon size="18">mdi-account-box-outline</v-icon>
           </button>
-          <button class="icon-tool" title="Định dạng văn bản" @click="toggleFormat">
+          <button
+            class="icon-tool"
+            :class="{ active: formatBarVisible }"
+            :title="formatBarVisible ? 'Ẩn định dạng văn bản' : 'Hiện định dạng văn bản (B I U S ...)'"
+            @click="toggleFormat"
+          >
             <v-icon size="18">mdi-format-text</v-icon>
           </button>
-          <button class="icon-tool" title="Tạo nhắc hẹn" @click="todoToast('Nhắc hẹn')">
+          <span class="toolbar-divider"></span>
+
+          <!-- Group 3: Productivity -->
+          <button
+            class="icon-tool"
+            :class="{ active: showAppointmentDialog }"
+            title="Tạo nhắc hẹn cho KH này"
+            :disabled="!conversation.contact"
+            @click="showAppointmentDialog = true"
+          >
             <v-icon size="18">mdi-calendar-clock</v-icon>
           </button>
           <button class="icon-tool" title="Template tin nhắn (gõ /)" @click="openTemplatePopup">
@@ -307,17 +325,21 @@
         </div>
 
         <div class="input-row">
-          <!-- Avatar nick đang gửi (thụt vào để input thẳng hàng) -->
-          <Avatar
+          <!-- Avatar nick đang gửi — OUTSIDE editor (góc trái), halo gradient cam-đỏ-vàng -->
+          <div
             v-if="conversation.zaloAccount"
-            :src="conversation.zaloAccount.avatarUrl"
-            :name="conversation.zaloAccount.displayName || 'Nick'"
-            :size="34"
-            :gradient-seed="conversation.zaloAccount.id"
-            platform="zalo"
-            :title="`Đang gửi từ nick: ${conversation.zaloAccount.displayName || ''}`"
-            class="sender-nick-avatar"
-          />
+            class="nick-avatar-halo"
+            :title="`Tin nhắn này được gửi đi từ ${conversation.zaloAccount.displayName || 'nick Zalo'}`"
+          >
+            <Avatar
+              :src="conversation.zaloAccount.avatarUrl"
+              :name="conversation.zaloAccount.displayName || 'Nick'"
+              :size="36"
+              :gradient-seed="conversation.zaloAccount.id"
+              platform="zalo"
+              class="sender-nick-avatar"
+            />
+          </div>
 
           <div class="editor-wrap">
             <QuickTemplatePopup
@@ -332,6 +354,7 @@
               ref="editorRef"
               v-model="inputText"
               :placeholder="inputPlaceholder"
+              :show-toolbar="formatBarVisible"
               class="input-editor"
               @submit="handleSend"
               @typing="onTypingEvent"
@@ -347,6 +370,15 @@
             <v-icon v-else size="20">mdi-send</v-icon>
           </button>
         </div>
+
+        <!-- Appointment quick-create dialog (dùng chung với NotesSection cột 4) -->
+        <AppointmentQuickDialog
+          v-model="showAppointmentDialog"
+          :contact-id="conversation.contact?.id ?? null"
+          :contact-name="conversation.contact?.fullName ?? null"
+          header="📅 Tạo nhắc hẹn"
+          @created="onAppointmentCreated"
+        />
 
         <!-- Hidden file inputs cho upload ảnh / file -->
         <input
@@ -434,6 +466,7 @@ import ReplyPreviewBar from '@/components/chat/reply-preview-bar.vue';
 import ForwardDialog from '@/components/chat/forward-dialog.vue';
 import RichTextEditor from '@/components/chat/rich-text-editor.vue';
 import TagCrmBar from '@/components/chat/TagCrmBar.vue';
+import AppointmentQuickDialog from '@/components/chat/AppointmentQuickDialog.vue';
 import { useToast } from '@/composables/use-toast';
 import { groupAvatarStore } from '@/composables/use-group-avatar-cache';
 
@@ -839,9 +872,31 @@ const inputPlaceholder = computed(() => {
   return 'Gõ tin nhắn… ("/" template, "@" mention, "#" tag)';
 });
 
-function onCareStatusChange(value: string) {
-  emit('care-status-changed', value);
-  toast.success(`Đã đổi care status → ${value}`);
+/* Care status change: persist qua API + update local conversation.contact.status NGAY.
+ * Trước đây chỉ emit lên ChatView (parent KHÔNG handle) → status không bao giờ lưu. */
+async function onCareStatusChange(value: string) {
+  const contactId = props.conversation?.contact?.id;
+  if (!contactId) return;
+  // Optimistic update
+  const prev = props.conversation?.contact?.status;
+  if (props.conversation?.contact) {
+    (props.conversation.contact as { status?: string | null }).status = value;
+  }
+  try {
+    const { api: apiClient } = await import('@/api/index');
+    // Backend dùng PUT /contacts/:id (full update), KHÔNG có PATCH.
+    await apiClient.put(`/contacts/${contactId}`, { status: value });
+    toast.success(`Đã đổi trạng thái → ${value}`);
+    emit('care-status-changed', value);
+  } catch (err: any) {
+    // Rollback
+    if (props.conversation?.contact) {
+      (props.conversation.contact as { status?: string | null }).status = prev as string | null;
+    }
+    const msg = err?.response?.data?.error || `Lưu trạng thái thất bại (${err?.response?.status || 'network'})`;
+    toast.error(msg);
+    console.error(err);
+  }
 }
 
 async function fireWebhook() {
@@ -945,15 +1000,19 @@ async function handleFiles(files: File[]) {
   }
 }
 
-// ── Format toggle (HTML formatting toolbar of RichTextEditor) ────────────────
+// ── Format toggle: T icon bật/tắt format toolbar (B I U S list code) trong editor.
+//   Mặc định ẨN — chỉ user nào cần định dạng mới bật. Tiết kiệm 30px chiều cao.
 const formatBarVisible = ref(false);
 function toggleFormat() {
   formatBarVisible.value = !formatBarVisible.value;
-  // RichTextEditor toolbar tự show khi focus; click button này để focus + toggle CSS class
-  if (formatBarVisible.value) {
-    editorRef.value?.focus();
-    toast.push('Bôi đen text rồi dùng Ctrl+B / Ctrl+I / Ctrl+U');
-  }
+  if (formatBarVisible.value) editorRef.value?.focus();
+}
+
+// ── Appointment quick-create từ icon 📅 trong toolbar — đồng bộ flow với cột 4.
+const showAppointmentDialog = ref(false);
+function onAppointmentCreated() {
+  // Notify parent reload conversation count + có thể mở Activity tab
+  emit('refresh-thread');
 }
 
 // ── Display item types (album grouping + date dividers) ─────────────────────
@@ -1470,19 +1529,44 @@ watch(() => props.editingMessage?.id, async (id) => {
   text-align: right;
 }
 
-/* ════════ Input area ════════ */
+/* ════════ Input area ════════
+ * Auto-grow theo content: editor expand khi user nhập nhiều dòng.
+ * BỊ CHẶN ở 45% chiều cao của .message-thread (column 3) → message list luôn
+ * còn tối thiểu 55%. Editor max-height computed: container 45% - chrome (~110px)
+ * cho tag bar + outer toolbar + send row + padding. Đảm bảo không che message list. */
 .input-area {
   background: var(--smax-bg);
   border-top: 1px solid var(--smax-grey-200);
   padding: 7px 13px 9px;
   flex-shrink: 0;
+  flex-grow: 0;
+  max-height: 45%;          /* Cap 45% chiều cao của .message-thread */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  /* Truyền max-height cho editor: 45% .message-thread - 110px chrome = available */
+  --editor-max-h: calc(45dvh - 130px);
+}
+/* Editor content area chiếm phần còn lại trong .input-area */
+.input-area .input-row {
+  flex: 1 1 auto;
+  min-height: 0;
 }
 .input-toolbar-top {
-  display: flex; align-items: center; gap: 1px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
   margin-bottom: 6px;
-  padding-bottom: 6px;
+  padding: 2px 0 6px;
   border-bottom: 1px solid var(--smax-grey-100);
   flex-wrap: wrap;
+}
+.toolbar-divider {
+  width: 1px;
+  height: 18px;
+  background: var(--smax-grey-200, #ebedf0);
+  margin: 0 4px;
+  flex-shrink: 0;
 }
 .icon-tool {
   width: 32px; height: 32px;
@@ -1493,8 +1577,20 @@ watch(() => props.editingMessage?.id, async (id) => {
   color: var(--smax-grey-700);
   background: transparent; border: none;
   font-family: inherit;
+  outline: none;
+  /* Reset focus visual để sticker không bị "lệch" outline */
+  -webkit-tap-highlight-color: transparent;
 }
 .icon-tool:hover { background: var(--smax-grey-100); color: var(--smax-primary); }
+.icon-tool:focus { outline: none; }
+.icon-tool:focus-visible {
+  outline: 2px solid var(--smax-primary-soft, #bbdefb);
+  outline-offset: -1px;
+}
+.icon-tool.active {
+  background: var(--smax-primary-soft, #e3f2fd);
+  color: var(--smax-primary, #2962ff);
+}
 .icon-tool.spacer-after {
   border-right: 1px solid var(--smax-grey-200);
   margin-right: 4px; padding-right: 4px;
@@ -1505,15 +1601,61 @@ watch(() => props.editingMessage?.id, async (id) => {
   display: flex; align-items: flex-end; gap: 8px;
   position: relative;
 }
-.sender-nick-avatar {
-  margin-bottom: 4px; /* căn đáy với textarea */
-  flex-shrink: 0;
-}
 .editor-wrap {
   flex: 1; min-width: 0;
   position: relative;
 }
 .input-editor { width: 100%; }
+
+/* ── Avatar nick halo: gradient cam-đỏ-vàng đậm xoay quanh avatar ───────
+ * Inspired Instagram Stories halo. Conic-gradient rotate 3s linear infinite.
+ * Avatar bên trong 36px, halo ring 42px (padding 3px tạo viền).
+ * Hover: tăng speed + brightness để feedback. */
+.nick-avatar-halo {
+  flex-shrink: 0;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  padding: 3px;
+  background: conic-gradient(
+    from var(--halo-angle, 0deg),
+    #ef6c00 0%,        /* cam đậm */
+    #c62828 25%,       /* đỏ đậm */
+    #f9a825 50%,       /* vàng đậm */
+    #ef6c00 75%,
+    #c62828 100%
+  );
+  animation: haloSpin 3s linear infinite;
+  margin-bottom: 4px;  /* căn đáy với editor (60px → 42px lệch 18px / 2 ≈ 4px) */
+  cursor: help;
+  transition: filter 0.18s;
+}
+.nick-avatar-halo:hover {
+  filter: brightness(1.12) saturate(1.2);
+  animation-duration: 1.8s;
+}
+.nick-avatar-halo .sender-nick-avatar {
+  display: block;
+  border: 2px solid var(--smax-bg, #fff);
+  border-radius: 50%;
+}
+@property --halo-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+@keyframes haloSpin {
+  to { --halo-angle: 360deg; }
+}
+/* Fallback nếu trình duyệt không hỗ trợ @property — dùng rotate transform */
+@supports not (background: conic-gradient(from 0deg, red, blue)) {
+  .nick-avatar-halo {
+    animation: haloRotate 3s linear infinite;
+  }
+  @keyframes haloRotate {
+    to { transform: rotate(360deg); }
+  }
+}
 
 .send-btn {
   background: var(--smax-primary);
