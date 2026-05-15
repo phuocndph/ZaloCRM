@@ -280,8 +280,9 @@
           @cancel="onCancelReplyEdit"
         />
 
-        <!-- Compact toolbar (Zalo-style): chỉ 6 nút chức năng cốt lõi -->
+        <!-- Compact toolbar (Zalo-style) — group dividers cho visual rhythm -->
         <div class="input-toolbar-top">
+          <!-- Group 1: Media -->
           <StickerPicker @select="onSendSticker" />
           <button class="icon-tool" title="Gửi ảnh" @click="onPickImage">
             <v-icon size="18">mdi-image-outline</v-icon>
@@ -289,12 +290,18 @@
           <button class="icon-tool" title="Gửi file" @click="onPickFile">
             <v-icon size="18">mdi-paperclip</v-icon>
           </button>
+          <span class="toolbar-divider"></span>
+
+          <!-- Group 2: Contact / format -->
           <button class="icon-tool" title="Gửi danh thiếp" @click="todoToast('Danh thiếp')">
             <v-icon size="18">mdi-account-box-outline</v-icon>
           </button>
           <button class="icon-tool" title="Định dạng văn bản" @click="toggleFormat">
             <v-icon size="18">mdi-format-text</v-icon>
           </button>
+          <span class="toolbar-divider"></span>
+
+          <!-- Group 3: Productivity -->
           <button class="icon-tool" title="Tạo nhắc hẹn" @click="todoToast('Nhắc hẹn')">
             <v-icon size="18">mdi-calendar-clock</v-icon>
           </button>
@@ -1502,11 +1509,20 @@ watch(() => props.editingMessage?.id, async (id) => {
   /* Reserved space: toolbar 32 + editor 84 + outer toolbar 38 + reply bar (when present) ~30 + padding */
 }
 .input-toolbar-top {
-  display: flex; align-items: center; gap: 1px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
   margin-bottom: 6px;
-  padding-bottom: 6px;
+  padding: 2px 0 6px;
   border-bottom: 1px solid var(--smax-grey-100);
   flex-wrap: wrap;
+}
+.toolbar-divider {
+  width: 1px;
+  height: 18px;
+  background: var(--smax-grey-200, #ebedf0);
+  margin: 0 4px;
+  flex-shrink: 0;
 }
 .icon-tool {
   width: 32px; height: 32px;
@@ -1517,8 +1533,16 @@ watch(() => props.editingMessage?.id, async (id) => {
   color: var(--smax-grey-700);
   background: transparent; border: none;
   font-family: inherit;
+  outline: none;
+  /* Reset focus visual để sticker không bị "lệch" outline */
+  -webkit-tap-highlight-color: transparent;
 }
 .icon-tool:hover { background: var(--smax-grey-100); color: var(--smax-primary); }
+.icon-tool:focus { outline: none; }
+.icon-tool:focus-visible {
+  outline: 2px solid var(--smax-primary-soft, #bbdefb);
+  outline-offset: -1px;
+}
 .icon-tool.spacer-after {
   border-right: 1px solid var(--smax-grey-200);
   margin-right: 4px; padding-right: 4px;

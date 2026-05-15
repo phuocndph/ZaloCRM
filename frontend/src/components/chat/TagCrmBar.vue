@@ -1,57 +1,87 @@
 <template>
   <div class="tag-crm-bar" v-if="contactId">
-    <div class="tag-pills">
-      <!-- Assigned pills (lấy style từ CrmTag master list nếu match) -->
-      <span
-        v-for="(tag, idx) in tags"
-        :key="tag"
-        class="tag-pill"
-        :style="tagStyle(tag) || `border-color: ${fallbackHue(idx)}; color: ${fallbackHue(idx)}`"
-        :title="findDef(tag)?.description || 'Click × để xoá'"
-      >
-        <span v-if="findDef(tag)?.emoji">{{ findDef(tag)?.emoji }} </span>{{ tag }}
-        <button class="tag-x" title="Xoá tag" @click="removeTag(tag)">×</button>
-      </span>
+    <!-- Label prefix -->
+    <span class="bar-label">🏷</span>
 
-      <!-- Quick-add picker từ CrmTag master (autocomplete + search) -->
-      <span v-if="adding" class="tag-pill adding">
-        <input
-          ref="addInput"
-          v-model="newTag"
-          class="tag-input-inline"
-          placeholder="Gõ tên / chọn từ danh sách…"
-          list="crm-tag-options"
-          @keydown.enter.prevent="confirmAdd"
-          @keydown.escape.prevent="cancelAdd"
-          @blur="confirmAdd"
-        />
-        <datalist id="crm-tag-options">
-          <option v-for="def in availableDefs" :key="def.id" :value="def.name">
-            {{ def.category ? `[${def.category}]` : '' }} {{ def.description || '' }}
-          </option>
-        </datalist>
-      </span>
-      <button v-else class="tag-add-btn" @click="startAdd">
-        + Thêm thẻ
-      </button>
-    </div>
+    <!-- Assigned pills (sort theo priority order từ CrmTag.order) -->
+    <span
+      v-for="tag in sortedTags"
+      :key="tag"
+      class="tag-pill"
+      :style="tagStyle(tag) || `border-color: ${defaultHue}; color: ${defaultHue}`"
+      :title="findDef(tag)?.description || 'Click × để xoá'"
+    >
+      <span v-if="findDef(tag)?.emoji">{{ findDef(tag)?.emoji }} </span>{{ tag }}
+      <button class="tag-x" title="Xoá tag" @click="removeTag(tag)">×</button>
+    </span>
 
-    <!-- Quick-add buttons từ CrmTag master (chỉ hiện khi chưa có tag nào) -->
-    <div v-if="!tags.length && !adding && tagDefs.length" class="tag-suggestions">
-      <span class="sug-label">Gắn nhanh:</span>
-      <button
-        v-for="def in tagDefs.slice(0, 8)"
-        :key="def.id"
-        class="tag-sug"
-        :style="`color: ${def.color}; border-color: ${def.color}`"
-        @click="quickAdd(def.name)"
-      >+ <span v-if="def.emoji">{{ def.emoji }} </span>{{ def.name }}</button>
-    </div>
+    <!-- "+ Thêm tag" dropdown — xổ lên (location top) chứa list system tags + settings link -->
+    <v-menu v-model="dropdownOpen" :close-on-content-click="false" location="top start" offset="6">
+      <template #activator="{ props: actProps }">
+        <button v-bind="actProps" class="tag-add-btn">
+          + Thêm tag
+        </button>
+      </template>
+
+      <div class="tag-dropdown">
+        <!-- Search input -->
+        <div class="dd-search">
+          <input
+            ref="searchInput"
+            v-model="search"
+            placeholder="Tìm tag…"
+            @keydown.enter.prevent="onEnterSearch"
+            @keydown.escape="dropdownOpen = false"
+          />
+        </div>
+
+        <!-- Tag list -->
+        <div v-if="loading && !tagDefs.length" class="dd-state">Đang tải…</div>
+        <div v-else-if="!filteredDefs.length && !search" class="dd-state">
+          <p>Chưa có tag CRM nào trong hệ thống.</p>
+          <button class="dd-create-inline" @click="goToSettings">+ Tạo tag mới</button>
+        </div>
+        <div v-else class="dd-list">
+          <button
+            v-for="def in filteredDefs"
+            :key="def.id"
+            class="dd-option"
+            :class="{ active: tags.includes(def.name) }"
+            @click="onPickTag(def)"
+          >
+            <span class="dd-color-dot" :style="`background: ${def.color}`"></span>
+            <span class="dd-tag-name">
+              <span v-if="def.emoji">{{ def.emoji }} </span>{{ def.name }}
+              <span v-if="def.category" class="dd-category">· {{ def.category }}</span>
+            </span>
+            <span v-if="tags.includes(def.name)" class="dd-check">✓</span>
+          </button>
+
+          <!-- Free-text option khi search không match exact -->
+          <button
+            v-if="search.trim() && !filteredDefs.some(d => d.name.toLowerCase() === search.trim().toLowerCase())"
+            class="dd-option dd-option-create"
+            @click="onCreateNewTag"
+          >
+            <span class="dd-color-dot" style="background: #90A4AE; border: 1px dashed #90A4AE;"></span>
+            <span class="dd-tag-name">Tạo tag mới: <strong>{{ search.trim() }}</strong></span>
+          </button>
+        </div>
+
+        <!-- Footer settings link -->
+        <div class="dd-footer">
+          <button class="dd-settings-link" @click="goToSettings">
+            <span class="settings-icon">⚙</span>
+            Cài đặt tag CRM
+          </button>
+        </div>
+      </div>
+    </v-menu>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, nextTick, onMounted } from 'vue';
+import { ref, computed, onMounted, nextTick, watch } from 'vue';
 import { api } from '@/api/index';
 import { useToast } from '@/composables/use-toast';
 
@@ -77,43 +107,39 @@ const emit = defineEmits<{
 
 const toast = useToast();
 
-// CrmTag master list — fetch 1 lần, cache module-level dùng chung mọi instance
+// CrmTag master list — fetch khi cần
 const tagDefs = ref<CrmTagDef[]>([]);
+const loading = ref(false);
 let fetchedOnce = false;
 
 async function loadTagDefs() {
   if (fetchedOnce) return;
+  loading.value = true;
   try {
     const { data } = await api.get('/crm-tags');
     tagDefs.value = (data.tags || []).filter((t: CrmTagDef) => t.isActive);
     fetchedOnce = true;
   } catch (err) {
     console.warn('[crm-tags] Cannot load master list', err);
+  } finally {
+    loading.value = false;
   }
 }
 
-/* Sort tags theo priority order trong CrmTag.order (định nghĩa ở settings).
- * Tag không match → đẩy xuống cuối theo alphabetical. */
-const tags = computed(() => {
-  const list = props.modelValue || [];
+const tags = computed(() => props.modelValue || []);
+
+// Sort theo priority CrmTag.order
+const sortedTags = computed(() => {
+  const list = tags.value;
   return [...list].sort((a, b) => {
     const da = findDef(a);
     const db = findDef(b);
-    if (da && db) return da.order - db.order;          // cả 2 có def → sort theo order
-    if (da) return -1;                                  // a có def, b không → a trước
-    if (db) return 1;                                   // b có def, a không → b trước
-    return a.localeCompare(b);                          // cả 2 không def → alphabet
+    if (da && db) return da.order - db.order;
+    if (da) return -1;
+    if (db) return 1;
+    return a.localeCompare(b);
   });
 });
-
-const adding = ref(false);
-const newTag = ref('');
-const addInput = ref<HTMLInputElement | null>(null);
-
-// Tag chưa gán → hiện trong autocomplete
-const availableDefs = computed(() =>
-  tagDefs.value.filter(d => !tags.value.includes(d.name)),
-);
 
 function findDef(name: string): CrmTagDef | null {
   return tagDefs.value.find(d => d.name === name) || null;
@@ -125,47 +151,73 @@ function tagStyle(name: string): string | null {
   return `background: ${def.color}15; color: ${def.color}; border-color: ${def.color}`;
 }
 
-const FALLBACK_HUES = ['#c62828', '#1565c0', '#d84315', '#f9a825', '#ef6c00', '#2e7d32', '#00838f', '#6a1b9a'];
-function fallbackHue(idx: number): string {
-  return FALLBACK_HUES[idx % FALLBACK_HUES.length];
+const defaultHue = '#546E7A';
+
+// Dropdown state
+const dropdownOpen = ref(false);
+const search = ref('');
+const searchInput = ref<HTMLInputElement | null>(null);
+
+watch(dropdownOpen, (v) => {
+  if (v) {
+    search.value = '';
+    nextTick(() => searchInput.value?.focus());
+  }
+});
+
+const filteredDefs = computed(() => {
+  if (!search.value.trim()) return tagDefs.value;
+  const q = search.value.toLowerCase().trim();
+  return tagDefs.value.filter(d =>
+    d.name.toLowerCase().includes(q) ||
+    (d.description || '').toLowerCase().includes(q) ||
+    (d.category || '').toLowerCase().includes(q),
+  );
+});
+
+function onEnterSearch() {
+  // Enter trên search: nếu match 1 def → assign; nếu không → create new
+  const exact = tagDefs.value.find(d => d.name.toLowerCase() === search.value.trim().toLowerCase());
+  if (exact) {
+    onPickTag(exact);
+  } else if (search.value.trim()) {
+    onCreateNewTag();
+  }
 }
 
-function startAdd() {
-  adding.value = true;
-  newTag.value = '';
-  nextTick(() => addInput.value?.focus());
+async function onPickTag(def: CrmTagDef) {
+  // Toggle: nếu đã gắn → bỏ; chưa gắn → thêm
+  if (tags.value.includes(def.name)) {
+    await persist(tags.value.filter(t => t !== def.name));
+  } else {
+    await persist([...tags.value, def.name]);
+  }
+  search.value = '';
+  // Giữ dropdown mở để chọn nhiều tag liên tiếp
 }
 
-function cancelAdd() {
-  adding.value = false;
-  newTag.value = '';
-}
-
-async function confirmAdd() {
-  const t = newTag.value.trim();
-  if (!t) { cancelAdd(); return; }
-  if (tags.value.includes(t)) {
-    toast.warning('Tag đã tồn tại');
-    cancelAdd();
+async function onCreateNewTag() {
+  const name = search.value.trim();
+  if (!name) return;
+  if (tags.value.includes(name)) {
+    toast.warning('Tag đã tồn tại trên KH này');
     return;
   }
-  await persist([...tags.value, t]);
-
-  // Auto-create CrmTag definition nếu chưa có (free-text mới)
-  if (!findDef(t)) {
-    try {
-      const { data } = await api.post('/crm-tags', { name: t, category: 'Khác' });
-      tagDefs.value.push(data.tag);
-    } catch {
-      // Silent — Contact.tags vẫn lưu được
+  try {
+    const { data } = await api.post('/crm-tags', { name, category: 'Khác' });
+    tagDefs.value.push(data.tag);
+    await persist([...tags.value, name]);
+    search.value = '';
+    toast.success(`✓ Đã tạo tag "${name}" + gắn cho KH`);
+  } catch (err: any) {
+    // Tag có thể đã tồn tại trong DB (legacy) — vẫn assign vào Contact.tags
+    if (err?.response?.status === 409) {
+      await persist([...tags.value, name]);
+      search.value = '';
+    } else {
+      toast.error('Không tạo được tag');
     }
   }
-  cancelAdd();
-}
-
-async function quickAdd(value: string) {
-  if (tags.value.includes(value)) return;
-  await persist([...tags.value, value]);
 }
 
 async function removeTag(tag: string) {
@@ -182,57 +234,57 @@ async function persist(next: string[]) {
   }
 }
 
+function goToSettings() {
+  dropdownOpen.value = false;
+  window.location.assign('/settings?tab=crm-tags');
+}
+
 onMounted(() => { void loadTagDefs(); });
 </script>
 
 <style scoped>
 .tag-crm-bar {
-  /* Extend full-width của input-area (input-area có padding 7px 13px) */
-  margin: -7px -13px 7px;
-  padding: 7px 13px 6px;
-  background: var(--smax-bg);
-  border-bottom: 1px solid var(--smax-grey-100);
-}
-
-.tag-pills {
   display: flex;
-  flex-wrap: nowrap;             /* 1 dòng — không wrap */
+  flex-wrap: nowrap;
   align-items: center;
   gap: 6px;
-  overflow-x: auto;              /* scroll ngang nếu nhiều tag */
+  margin: -7px -13px 7px;        /* extend full-width của .input-area */
+  padding: 6px 13px;
+  background: var(--smax-grey-50, #fafbfc);
+  border-bottom: 1px solid var(--smax-grey-100);
+  overflow-x: auto;
   overflow-y: hidden;
-  padding-bottom: 2px;           /* chừa chỗ scrollbar */
   scrollbar-width: thin;
 }
-.tag-pills::-webkit-scrollbar { height: 4px; }
-.tag-pills::-webkit-scrollbar-thumb {
+.tag-crm-bar::-webkit-scrollbar { height: 4px; }
+.tag-crm-bar::-webkit-scrollbar-thumb {
   background: var(--smax-grey-200);
   border-radius: 2px;
 }
-.tag-pills::-webkit-scrollbar-thumb:hover { background: var(--smax-grey-300); }
-.tag-pills::-webkit-scrollbar-track { background: transparent; }
-.tag-pill { flex-shrink: 0; }   /* giữ kích thước, không co lại khi overflow */
-.tag-add-btn { flex-shrink: 0; }
+.tag-crm-bar::-webkit-scrollbar-track { background: transparent; }
+
+.bar-label {
+  font-size: 13px;
+  color: var(--smax-grey-500);
+  margin-right: 2px;
+  flex-shrink: 0;
+}
 
 .tag-pill {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 3px 5px 3px 9px;
+  gap: 3px;
+  padding: 3px 5px 3px 10px;
   border-radius: 12px;
   font-size: 12px;
   font-weight: 500;
   border: 1.4px solid;
   background: transparent;
   white-space: nowrap;
+  flex-shrink: 0;
   transition: filter 0.12s;
 }
-.tag-pill.adding {
-  padding: 0 6px;
-  color: var(--smax-primary, #2962ff);
-  border-color: var(--smax-primary);
-}
-
+.tag-pill:hover { filter: brightness(0.96); }
 .tag-x {
   background: none;
   border: none;
@@ -246,53 +298,149 @@ onMounted(() => { void loadTagDefs(); });
 }
 .tag-x:hover { opacity: 1; }
 
-.tag-input-inline {
-  border: none;
-  outline: none;
-  background: transparent;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--smax-primary);
-  padding: 2px 0;
-  min-width: 70px;
-  font-family: inherit;
-}
-
 .tag-add-btn {
-  background: var(--smax-grey-100);
+  background: #fff;
   border: 1.4px dashed var(--smax-grey-300);
   color: var(--smax-grey-600);
   border-radius: 12px;
-  font-size: 11.5px;
+  font-size: 12px;
   font-weight: 500;
-  padding: 3px 10px;
+  padding: 3px 11px;
   cursor: pointer;
-  transition: background 0.12s, color 0.12s;
+  flex-shrink: 0;
+  transition: all 0.12s;
 }
 .tag-add-btn:hover {
   background: var(--smax-primary-soft, #e3f2fd);
   color: var(--smax-primary);
   border-color: var(--smax-primary);
+  border-style: solid;
 }
 
-.tag-suggestions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px;
-  margin-top: 5px;
-  font-size: 11px;
-}
-.sug-label { color: var(--smax-grey-500); font-size: 10.5px; }
-.tag-sug {
-  background: transparent;
-  border: 1px dashed currentColor;
+/* ── Dropdown popup (Zalo-native style, opens upward) ────────────────── */
+.tag-dropdown {
+  width: 280px;
+  max-height: 380px;
+  background: #fff;
   border-radius: 10px;
-  font-size: 10.5px;
-  font-weight: 500;
-  padding: 2px 7px;
-  cursor: pointer;
-  opacity: 0.7;
+  box-shadow: 0 6px 24px rgba(0,0,0,0.15);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
-.tag-sug:hover { opacity: 1; }
+
+.dd-search {
+  padding: 8px 10px 6px;
+  border-bottom: 1px solid var(--smax-grey-100);
+}
+.dd-search input {
+  width: 100%;
+  border: 1px solid var(--smax-grey-200);
+  border-radius: 7px;
+  padding: 6px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  background: var(--smax-grey-50);
+}
+.dd-search input:focus { border-color: var(--smax-primary); background: #fff; }
+
+.dd-state {
+  padding: 16px;
+  text-align: center;
+  color: var(--smax-grey-500);
+  font-size: 12.5px;
+}
+.dd-create-inline {
+  background: var(--smax-primary-soft);
+  color: var(--smax-primary);
+  border: none;
+  margin-top: 6px;
+  font-weight: 600;
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.dd-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 4px 0;
+  min-height: 0;
+}
+
+.dd-option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: transparent;
+  border: none;
+  padding: 7px 12px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  width: 100%;
+  text-align: left;
+  transition: background 0.1s;
+}
+.dd-option:hover { background: var(--smax-grey-50, #f5f6fa); }
+.dd-option.active { background: rgba(33, 150, 243, 0.06); }
+.dd-option.active .dd-tag-name { font-weight: 600; }
+.dd-option-create {
+  border-top: 1px dashed var(--smax-grey-200);
+  font-style: italic;
+  color: var(--smax-primary);
+}
+.dd-option-create:hover { background: var(--smax-primary-soft); }
+
+.dd-color-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.dd-tag-name {
+  flex: 1;
+  color: var(--smax-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dd-category {
+  font-size: 11px;
+  color: var(--smax-grey-500);
+  font-weight: 400;
+  margin-left: 2px;
+}
+.dd-check {
+  color: var(--smax-primary);
+  font-size: 14px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.dd-footer {
+  border-top: 1px solid var(--smax-grey-100);
+}
+.dd-settings-link {
+  width: 100%;
+  background: transparent;
+  border: none;
+  padding: 9px 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--smax-grey-700);
+  font-family: inherit;
+  font-weight: 500;
+  transition: background 0.1s, color 0.1s;
+}
+.dd-settings-link:hover {
+  background: var(--smax-grey-50);
+  color: var(--smax-primary);
+}
+.settings-icon { font-size: 14px; }
 </style>
