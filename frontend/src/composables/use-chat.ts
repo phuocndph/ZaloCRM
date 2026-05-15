@@ -3,6 +3,7 @@ import { api } from '@/api/index';
 import { io, Socket } from 'socket.io-client';
 import type { Contact } from '@/composables/use-contacts';
 import { useAuthStore } from '@/stores/auth';
+import { applyPendingTags } from '@/composables/use-pending-mutations';
 
 interface ZaloAccount {
   id: string;
@@ -178,7 +179,9 @@ export function useChat() {
           ...extraFilters.value,
         },
       });
-      conversations.value = res.data.conversations;
+      // Apply pending optimistic mutations (tag assigns chưa được BE confirm) trước khi
+      // replace state — tránh fetchConversations chạy giữa lúc BE đang sync wipe UI optimistic.
+      conversations.value = applyPendingTags(res.data.conversations);
     } catch (err) {
       console.error('Failed to fetch conversations:', err);
     } finally {

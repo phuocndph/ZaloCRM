@@ -469,6 +469,7 @@ import TagCrmBar from '@/components/chat/TagCrmBar.vue';
 import AppointmentQuickDialog from '@/components/chat/AppointmentQuickDialog.vue';
 import { useToast } from '@/composables/use-toast';
 import { groupAvatarStore } from '@/composables/use-group-avatar-cache';
+import { registerPendingTags, clearPendingTags } from '@/composables/use-pending-mutations';
 
 interface TemplateItem { id: string; name: string; content: string; category: string | null; isPersonal: boolean; }
 
@@ -674,11 +675,16 @@ async function onPickLabel(label: AccountLabelView) {
   // ── Optimistic 2: friendship.crmTagsPerNick — strip ALL "🔵 X" cũ +
   // add "🔵 newLabel" nếu assign. Đây là field tag bar cột 3 + cột 2 read.
   // Vue reactive mutation: friendship là proxy của conversation prop. ──
+  const stripped = oldCrmTags.filter(t => !t.startsWith('🔵 '));
+  const newTags = labelId !== null ? [...stripped, `🔵 ${label.text}`] : stripped;
   if (friendship) {
-    const stripped = oldCrmTags.filter(t => !t.startsWith('🔵 '));
-    const newTags = labelId !== null ? [...stripped, `🔵 ${label.text}`] : stripped;
     friendship.crmTagsPerNick = newTags;
   }
+
+  // Đăng ký pending mutation — fetchConversations giữa lúc BE đang sync sẽ apply lại
+  // newTags lên response thay vì để response (chưa có tag) ghi đè optimistic state.
+  const convId = props.conversation?.id;
+  if (convId) registerPendingTags(convId, newTags);
 
   toast.success(labelId ? `✓ Đã gắn "${label.text}"` : `✓ Đã bỏ tag`);
 
@@ -686,13 +692,16 @@ async function onPickLabel(label: AccountLabelView) {
   try {
     const { api: apiClient } = await import('@/api/index');
     await apiClient.post(`/zalo-accounts/${accId}/labels/assign-thread`, { threadId, labelId });
+    // BE đã confirm — clear pending để các fetch sau dùng BE-authoritative value
+    if (convId) clearPendingTags(convId);
     // Reconcile với BE — fetch fresh + dispatch event để các surface khác re-fetch
     void fetchAllLabels(accId, threadId);
     window.dispatchEvent(new CustomEvent('zalo-labels-synced', { detail: { accountId: accId } }));
   } catch (err: any) {
-    // Rollback BOTH optimistic mutations
+    // Rollback BOTH optimistic mutations + clear pending
     allLabels.value = snapshotAllLabels;
     if (friendship) friendship.crmTagsPerNick = oldCrmTags;
+    if (convId) clearPendingTags(convId);
     toast.error(err.response?.data?.error || 'Không gán được tag — đã hoàn tác');
   }
 }
