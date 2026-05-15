@@ -23,10 +23,10 @@
           v-for="tag in availableTags"
           :key="tag"
           class="cl-label-chip"
-          :class="{ active: filters.tags.includes(tag) }"
-          :data-color="colorOfTag(tag)"
+          :class="{ active: filters.tags.includes(tag), 'is-zalo': isZaloManaged(tag) }"
+          :style="{ '--tag-color': tagColor(tag) }"
           @click="toggleTag(tag)"
-        >{{ tag }}</span>
+        >{{ cleanTagName(tag) }}</span>
 
         <button
           v-if="filters.tags.length"
@@ -254,32 +254,8 @@ function buildFilterParams(): Record<string, string> {
   return params;
 }
 
-// CRM label color map (từ mockup chat-smax-v3)
-const TAG_COLOR_MAP: Record<string, string> = {
-  'TTAVIO': 'red',
-  'EGD': 'purple',
-  'EBV': 'blue',
-  'phiền': 'orange',
-  'ấm': 'yellow',
-  'nóng': 'red',
-  'có tương tác': 'green',
-  'lạnh': 'blue',
-  'đàm phán': 'green',
-  'vip': 'orange',
-};
-function colorOfTag(tag: string): string {
-  return TAG_COLOR_MAP[tag] || TAG_COLOR_MAP[tag.toLowerCase()] || 'grey';
-}
-function tagBgColor(tag: string): string {
-  // Zalo-mirrored tags ("🔵 X") luôn dùng xanh dương nhất quán
-  if (tag.startsWith('🔵 ')) return '#1976d2';
-  const color = colorOfTag(tag);
-  const map: Record<string, string> = {
-    red: '#ef5350', purple: '#6f48d9', orange: '#ff9800',
-    yellow: '#f9a825', green: '#43a047', blue: '#1976d2', grey: '#9e9e9e',
-  };
-  return map[color] || '#9e9e9e';
-}
+// Tag color logic giờ qua composable use-crm-tag-defs (tagColor lookup từ CrmTag.color).
+// Legacy TAG_COLOR_MAP + colorOfTag + tagBgColor đã removed sau refactor TagIcon monochromatic.
 
 /* Merge Contact.tags + Friend.crmTagsPerNick (Zalo-mirrored "🔵 X").
  * Dedup, Zalo tags hiển thị đầu (priority cho per-pair context). */

@@ -98,7 +98,7 @@ import { ref, computed, onMounted, nextTick, watch } from 'vue';
 import { api } from '@/api/index';
 import { useToast } from '@/composables/use-toast';
 import TagIcon from '@/components/icons/TagIcon.vue';
-import { tagColor as lookupTagColor, cleanTagName, refreshTagDefs } from '@/composables/use-crm-tag-defs';
+import { tagColor as lookupTagColor, cleanTagName } from '@/composables/use-crm-tag-defs';
 
 interface CrmTagDef {
   id: string;
