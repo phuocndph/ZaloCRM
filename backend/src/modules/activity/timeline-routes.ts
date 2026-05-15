@@ -54,6 +54,16 @@ export async function timelineRoutes(app: FastifyInstance): Promise<void> {
       const activityCategoriesFilter = categoriesArr
         ? categoriesArr.filter(c => c !== 'note')
         : null;
+      // Tab matrix (categoriesArr → behavior):
+      //   null (no param)            → notes + all activities (default xem mọi thứ)
+      //   ['note']                   → notes ONLY (tab "Ghi chú")
+      //   ['customer_info', ...]     → activities ONLY (tab "Hoạt động", filter category)
+      //   ['note', 'customer_info']  → notes + filtered activities (tab "Tất cả")
+      //
+      // Activity query SKIP nếu user chỉ muốn 'note' (categoriesArr === ['note']):
+      //   fetchActivities = không có filter (null) HOẶC có activity category nào đó.
+      const fetchActivities =
+        !categoriesArr || (activityCategoriesFilter !== null && activityCategoriesFilter.length > 0);
 
       // Over-fetch để handle merge interleaving (lưu ý: edge case mất pagination
       // nếu 1 table có quá nhiều rows trước cursor → next cursor có thể skip)
@@ -85,22 +95,24 @@ export async function timelineRoutes(app: FastifyInstance): Promise<void> {
               take: overfetch,
             })
           : Promise.resolve([]),
-        prisma.activityLog.findMany({
-          where: {
-            orgId: user.orgId,
-            entityType: 'contact',
-            entityId: contactId,
-            ...(activityCategoriesFilter && activityCategoriesFilter.length
-              ? { category: { in: activityCategoriesFilter } }
-              : {}),
-            ...cursorWhere,
-          },
-          include: {
-            user: { select: { id: true, fullName: true, email: true } },
-          },
-          orderBy: { createdAt: 'desc' },
-          take: overfetch,
-        }),
+        fetchActivities
+          ? prisma.activityLog.findMany({
+              where: {
+                orgId: user.orgId,
+                entityType: 'contact',
+                entityId: contactId,
+                ...(activityCategoriesFilter && activityCategoriesFilter.length
+                  ? { category: { in: activityCategoriesFilter } }
+                  : {}),
+                ...cursorWhere,
+              },
+              include: {
+                user: { select: { id: true, fullName: true, email: true } },
+              },
+              orderBy: { createdAt: 'desc' },
+              take: overfetch,
+            })
+          : Promise.resolve([]),
       ]);
 
       // Merge sort DESC by createdAt
