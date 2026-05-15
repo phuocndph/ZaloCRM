@@ -83,14 +83,28 @@ export function useChatContactPanel(
     }
   }
 
-  // Watch chỉ theo contact.id để KHÔNG refire khi conv.contact bị overwrite bởi
-  // mark-read / live updates (gây mất nội dung user đang edit trong form).
+  // Watch theo contact.id để repopulate form khi đổi sang KH khác.
+  // KHÔNG re-populate khi cùng contact (giữ field user đang edit).
   watch(() => getContact()?.id, () => {
     const c = getContact();
     if (!c) return;
     populateForm(c);
     fetchContactExtras(c.id);
   }, { immediate: true });
+
+  // Sync narrow fields từ ngoài vào (cột 3 đổi status / tags → cột 4 update theo).
+  // Chỉ sync status + tags vì đây là những field được mutate từ component khác.
+  // Các field text (name, phone, ...) user edit trực tiếp ở cột 4 nên KHÔNG sync ngược.
+  watch(() => getContact()?.status, (s) => {
+    if (s !== undefined && s !== form.status) form.status = s;
+  });
+  watch(() => getContact()?.tags, (t) => {
+    const arr = Array.isArray(t) ? [...t] : [];
+    // Compare shallow — chỉ update nếu khác (tránh override khi user vừa edit)
+    if (arr.length !== form.tags.length || arr.some((v, i) => v !== form.tags[i])) {
+      form.tags = arr;
+    }
+  }, { deep: true });
 
   async function saveContact() {
     const contactId = getContactId();
