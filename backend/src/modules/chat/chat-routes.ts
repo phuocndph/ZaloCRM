@@ -200,7 +200,43 @@ export async function chatRoutes(app: FastifyInstance) {
     }
     if (tags) {
       const tagList = tags.split(',').map((t) => t.trim()).filter(Boolean);
-      if (tagList.length > 0) contactWhere.tags = { array_contains: tagList };
+      if (tagList.length > 0) {
+        // Tag filter check CẢ 3 nguồn (theo mergedTags FE):
+        //   1. Contact.tags (org-level CRM tags)
+        //   2. Friend.crmTagsPerNick (per-pair CRM tags, kèm 🔵 Zalo-mirrored)
+        //   3. Friend.zaloLabels (Zalo Real native labels, sync 2-way)
+        // Trước đây chỉ check Contact.tags → user thấy tag "MKT HS" ở chip bar
+        // (qua mergedTags) nhưng filter không match KH có tag chỉ ở Friend level.
+        //
+        // Strip "🔵 " prefix khi compare zaloLabels.name vì FE render với prefix
+        // nhưng backend zaloLabels lưu name gốc.
+        const cleanTagList = tagList.map((t) => t.replace(/^🔵\s+/, ''));
+        const tagSourceOR: Array<Record<string, unknown>> = [
+          { tags: { array_contains: tagList } },
+          {
+            friends: {
+              some: {
+                OR: [
+                  { crmTagsPerNick: { array_contains: tagList } },
+                  ...cleanTagList.map((name) => ({
+                    zaloLabels: { path: ['$[*].name'], array_contains: [name] },
+                  })),
+                ],
+              },
+            },
+          },
+        ];
+        // Combine với search OR (nếu có) qua AND wrapper — tránh overwrite.
+        if (contactWhere.OR) {
+          contactWhere.AND = [
+            { OR: contactWhere.OR as Record<string, unknown>[] },
+            { OR: tagSourceOR },
+          ];
+          delete contactWhere.OR;
+        } else {
+          contactWhere.OR = tagSourceOR;
+        }
+      }
     }
     // KH có ít nhất 1 Friend với kind trong list (Friend level filter)
     if (relationshipKindAny) {
