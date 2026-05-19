@@ -34,7 +34,15 @@
         @click="$emit('select', acc.id)"
       >
         <div class="av" :class="[saleClass(acc.id), { offline: !isOnline(acc) }]">
-          {{ initials(acc.displayName) }}
+          <img
+            v-if="acc.avatarUrl"
+            :src="acc.avatarUrl"
+            :alt="acc.displayName || 'Nick'"
+            loading="lazy"
+            referrerpolicy="no-referrer"
+            @error="onNickAvatarError($event)"
+          />
+          <span v-else>{{ initials(acc.displayName) }}</span>
         </div>
         <div class="info">
           <div class="name">{{ acc.displayName || 'Nick chưa đặt tên' }}</div>
@@ -99,6 +107,20 @@ function saleClass(id: string): string {
   let h = 0;
   for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
   return PALETTE[h % PALETTE.length];
+}
+
+// Khi avatar URL fail load (Zalo CDN expire hoặc hotlink block) → ẩn img,
+// fallback sang initials span (đã có sẵn trong DOM nhờ v-else nếu URL null,
+// nhưng khi URL có-rồi-fail, span chưa render → tự inject).
+function onNickAvatarError(e: Event): void {
+  const img = e.target as HTMLImageElement;
+  img.style.display = 'none';
+  const parent = img.parentElement;
+  if (parent && !parent.querySelector('span')) {
+    const span = document.createElement('span');
+    span.textContent = '?';
+    parent.appendChild(span);
+  }
 }
 </script>
 
@@ -191,11 +213,17 @@ function saleClass(id: string): string {
   font-weight: 700; font-size: 11px;
   position: relative;
   flex-shrink: 0;
+  overflow: hidden;
+}
+.nick-pill .av img {
+  width: 100%; height: 100%; object-fit: cover;
+  display: block;
 }
 .nick-pill .av::after {
   content: ""; position: absolute; bottom: -1px; right: -1px;
   width: 10px; height: 10px; border-radius: 50%;
   background: #16a34a; border: 2px solid #fff;
+  z-index: 1;
 }
 .nick-pill .av.offline::after { background: #9ca3af; }
 .nick-pill .info { min-width: 0; }

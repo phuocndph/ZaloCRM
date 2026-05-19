@@ -12,6 +12,7 @@
             />
           </th>
           <th>Khách hàng</th>
+          <th class="nick-care-col" title="Nick CRM đang chăm cặp này">Nick chăm</th>
           <th class="nick-log-col" title="Số nick Zalo đã có log nhật ký với KH này">Nick log</th>
           <th>Tên CRM / Nick</th>
           <th>Trạng thái KB</th>
@@ -39,7 +40,7 @@
           </td>
           <td>
             <div class="cell-customer">
-              <!-- Avatar: ưu tiên zaloAvatarUrl, fallback contact.avatarUrl, cuối cùng initials text -->
+              <!-- Avatar KH: ưu tiên zaloAvatarUrl, fallback contact.avatarUrl, cuối cùng initials text -->
               <div class="av" :class="avatarBgClass(f)">
                 <img
                   v-if="f.zaloAvatarUrl || f.contact?.avatarUrl"
@@ -56,18 +57,38 @@
                   {{ displayName(f) }}
                   <span v-if="f.aliasInNick" class="alias">· {{ f.aliasInNick }}</span>
                 </div>
+                <!-- Sub row: UID KH per-nick · SĐT · Giới tính · Tuổi (info dày, dòng dưới tên) -->
                 <div class="sub">
-                  <!-- Nick chăm (zaloAccount.displayName) — quan trọng nhất khi "Tất cả nick" mode -->
-                  <span v-if="f.zaloAccount?.displayName" class="nick-chip" :title="'Nick chăm: ' + f.zaloAccount.displayName">
-                    👤 {{ f.zaloAccount.displayName }}
+                  <span v-if="f.zaloUidInNick" class="sub-uid" :title="'UID Zalo của KH (nhìn từ nick ' + (f.zaloAccount?.displayName || '?') + ')'">
+                    🆔 {{ f.zaloUidInNick }}
                   </span>
                   <template v-if="f.contact?.phone">· 📱 {{ f.contact.phone }}</template>
-                  <template v-else-if="f.zaloAccount?.phone">· 📱 {{ f.zaloAccount.phone }}</template>
-                  <template v-if="f.contact?.birthYear">· {{ age(f.contact.birthYear) }}t</template>
                   <template v-if="f.contact?.gender">· {{ genderShort(f.contact.gender) }}</template>
+                  <template v-if="f.contact?.birthYear">· {{ age(f.contact.birthYear) }}t</template>
                 </div>
               </div>
             </div>
+          </td>
+          <!-- Cột "Nick chăm" — quan trọng cho "Tất cả nick" mode để sale phân biệt nick nào đang chăm KH này -->
+          <td class="nick-care-col">
+            <div v-if="f.zaloAccount" class="cell-nick">
+              <div class="nick-av" :class="[saleBgClass(f.zaloAccount.id || ''), { offline: false }]">
+                <img
+                  v-if="f.zaloAccount.avatarUrl"
+                  :src="f.zaloAccount.avatarUrl"
+                  :alt="f.zaloAccount.displayName || 'Nick'"
+                  loading="lazy"
+                  referrerpolicy="no-referrer"
+                  @error="onAvatarError($event)"
+                />
+                <span v-else>{{ nickInitials(f.zaloAccount.displayName) }}</span>
+              </div>
+              <div class="nick-info">
+                <div class="nick-name">{{ f.zaloAccount.displayName || 'Nick chưa đặt tên' }}</div>
+                <div class="nick-sub">{{ f.zaloAccount.phone || '—' }}</div>
+              </div>
+            </div>
+            <span v-else class="dim-cell">—</span>
           </td>
           <td>
             <div class="nick-log" :class="nickLogLevel(f)">
@@ -196,6 +217,22 @@ function avatarBgClass(f: DbFriend): string {
   let h = 0;
   for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
   return CUSTOMER_PALETTE[h % CUSTOMER_PALETTE.length];
+}
+
+// Sale color palette — đồng nhất với NickSidebar (cùng hash account.id → cùng màu).
+const SALE_PALETTE = ['av-s1', 'av-s2', 'av-s3', 'av-s4', 'av-s5', 'av-s6', 'av-s7'];
+function saleBgClass(accountId: string): string {
+  if (!accountId) return SALE_PALETTE[0];
+  let h = 0;
+  for (let i = 0; i < accountId.length; i++) h = (h * 31 + accountId.charCodeAt(i)) >>> 0;
+  return SALE_PALETTE[h % SALE_PALETTE.length];
+}
+
+function nickInitials(name?: string | null): string {
+  if (!name) return '?';
+  const parts = name.trim().split(/\s+/);
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[parts.length - 2][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
 /** Tên hiển thị — ưu tiên CRM tự đặt > zaloDisplayName per-pair > Contact.fullName > placeholder. */
@@ -360,6 +397,7 @@ function relativeDate(iso: string): string {
 }
 .ftable thead th.cb-col { width: 32px; padding-right: 4px; }
 .ftable thead th.nick-log-col { width: 60px; }
+.ftable thead th.nick-care-col { width: 180px; }
 .ftable thead th.action-col { width: 120px; }
 
 .ftable tbody td {
@@ -398,15 +436,54 @@ function relativeDate(iso: string): string {
 .cell-customer .info .name { font-weight: 600; }
 .cell-customer .info .name .alias { color: #8d96a4; font-weight: 400; font-size: 11px; }
 .cell-customer .info .sub { font-size: 11px; color: #8d96a4; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
-.cell-customer .info .sub .nick-chip {
-  background: #eef2ff; color: #4f46e5;
-  padding: 1px 6px; border-radius: 10px;
-  font-size: 10px; font-weight: 500;
+.cell-customer .info .sub .sub-uid {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  color: #6b7280;
+  background: #f3f4f6;
+  padding: 0 5px;
+  border-radius: 3px;
   white-space: nowrap;
 }
 .zalo-label {
   border: 1px solid; font-size: 10px;
 }
+
+/* ── Cột "Nick chăm" ───────────────────────────────────────────────────── */
+.cell-nick {
+  display: flex; align-items: center; gap: 8px;
+  min-width: 0;
+}
+.cell-nick .nick-av {
+  width: 28px; height: 28px; border-radius: 50%;
+  color: #fff; display: grid; place-items: center;
+  font-weight: 700; font-size: 11px; flex-shrink: 0;
+  position: relative; overflow: hidden;
+}
+.cell-nick .nick-av img {
+  width: 100%; height: 100%; object-fit: cover;
+  display: block;
+}
+.cell-nick .nick-av.offline { opacity: 0.5; }
+.cell-nick .nick-info { min-width: 0; }
+.cell-nick .nick-name {
+  font-weight: 500; font-size: 12px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  max-width: 130px;
+}
+.cell-nick .nick-sub {
+  font-size: 10.5px; color: #8d96a4;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* Sale color palette — đồng nhất với NickSidebar */
+.av-s1 { background: #4f46e5; }
+.av-s2 { background: #0891b2; }
+.av-s3 { background: #059669; }
+.av-s4 { background: #d97706; }
+.av-s5 { background: #db2777; }
+.av-s6 { background: #7c3aed; }
+.av-s7 { background: #dc2626; }
 
 .alias-cell { font-size: 12px; color: #1a2433; }
 .alias-empty { font-size: 12px; color: #8d96a4; font-style: italic; }
