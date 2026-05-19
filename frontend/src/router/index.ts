@@ -80,6 +80,18 @@ const routes = [
     meta: { requiresAuth: true },
   },
   {
+    path: '/leads/stuck',
+    name: 'StuckLeads',
+    component: () => import('@/views/StuckLeadsView.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/settings/scoring',
+    name: 'ScoringSettings',
+    component: () => import('@/views/ScoringSettingsView.vue'),
+    meta: { requiresAuth: true },
+  },
+  {
     path: '/api-settings',
     name: 'ApiSettings',
     component: () => import('@/views/ApiSettingsView.vue'),

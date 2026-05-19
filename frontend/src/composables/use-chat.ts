@@ -130,6 +130,10 @@ export function useChat() {
   const conversations = ref<Conversation[]>([]);
   const selectedConvId = ref<string | null>(null);
   const messages = ref<Message[]>([]);
+  // Track conv mà messages.value đang chứa — để fetchMessages biết switch conv thì
+  // wholesale replace (không merge tin từ conv khác), refresh cùng conv thì merge
+  // (giữ tin socket đến trong lúc HTTP fly).
+  const messagesConvId = ref<string | null>(null);
   const loadingConvs = ref(false);
   const loadingMsgs = ref(false);
   const sendingMsg = ref(false);
@@ -247,6 +251,12 @@ export function useChat() {
   }
 
   async function fetchMessages(convId: string) {
+    // Switch conv → wholesale reset messages.value để không mix tin từ conv cũ.
+    // Nếu cùng conv (refresh) → giữ messages hiện tại cho merge logic phía dưới.
+    if (messagesConvId.value !== convId) {
+      messages.value = [];
+      messagesConvId.value = convId;
+    }
     // Cache-then-refresh: nếu đã từng load conv này, set list ngay từ cache để
     // user thấy giao diện tin nhắn lập tức; rồi fetch fresh in background.
     const cached = messagesCache.get(convId);
@@ -261,9 +271,22 @@ export function useChat() {
         params: { limit: 100 },
       });
       const list = (res.data.messages as RawMessage[]).map(normalizeMessage);
-      messagesCache.set(convId, list);
-      // Tránh ghi đè khi user đã đổi sang conv khác trong lúc đợi response
-      if (selectedConvId.value === convId) messages.value = list;
+      // Merge thay vì wholesale replace: giữ msgs đã insert qua socket trong lúc HTTP
+      // bay (BE replication lag có thể chưa thấy msg socket vừa nhận). CHỈ merge khi
+      // messagesConvId.value === convId — đảm bảo socket items thuộc conv hiện tại,
+      // không phải tin từ conv khác bị tích luỹ.
+      if (selectedConvId.value === convId && messagesConvId.value === convId) {
+        const beIds = new Set(list.map(m => m.id));
+        const socketOnly = messages.value.filter(m => !beIds.has(m.id));
+        if (socketOnly.length === 0) {
+          messages.value = list;
+        } else {
+          const merged = [...list, ...socketOnly];
+          merged.sort((a, b) => new Date(a.sentAt).getTime() - new Date(b.sentAt).getTime());
+          messages.value = merged;
+        }
+      }
+      messagesCache.set(convId, messages.value);
     } catch (err) {
       console.error('Failed to fetch messages:', err);
     } finally {

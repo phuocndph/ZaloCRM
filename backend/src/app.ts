@@ -18,6 +18,7 @@ import { config } from './config/index.js';
 import { prisma } from './shared/database/prisma-client.js';
 import { logger } from './shared/utils/logger.js';
 import { authRoutes } from './modules/auth/auth-routes.js';
+import { brandingRoutes } from './modules/branding/branding-routes.js';
 import { zaloRoutes } from './modules/zalo/zalo-routes.js';
 import { chatRoutes } from './modules/chat/chat-routes.js';
 import { chatAttachmentRoutes } from './modules/chat/chat-attachment-routes.js';
@@ -31,6 +32,7 @@ import { crmTagRoutes } from './modules/contacts/crm-tag-routes.js';
 import { crmTagGroupRoutes } from './modules/contacts/crm-tag-group-routes.js';
 import { userPreferenceRoutes } from './modules/auth/user-preference-routes.js';
 import { timelineRoutes } from './modules/activity/timeline-routes.js';
+import { scoringRoutes } from './modules/scoring/scoring-routes.js';
 import { zaloLabelsRoutes, startLabelsBackgroundSync } from './modules/zalo/zalo-labels-routes.js';
 import { startAppointmentReminder } from './modules/contacts/appointment-reminder.js';
 import { zinstantProxyRoutes } from './modules/contacts/zinstant-proxy-routes.js';
@@ -132,6 +134,7 @@ async function bootstrap() {
   // ── Routes ────────────────────────────────────────────────────────────────
 
   await app.register(authRoutes);
+  await app.register(brandingRoutes);
   await app.register(zaloRoutes);
   await app.register(chatRoutes);
   await app.register(chatAttachmentRoutes);
@@ -144,6 +147,7 @@ async function bootstrap() {
   await app.register(crmTagGroupRoutes);
   await app.register(userPreferenceRoutes);
   await app.register(timelineRoutes);
+  await app.register(scoringRoutes);
   await app.register(zaloLabelsRoutes);
   await app.register(zinstantProxyRoutes);
   await app.register(dashboardRoutes);
@@ -215,6 +219,9 @@ async function bootstrap() {
     startContactIntelligence();
     startLabelsBackgroundSync(60_000); // realtime-ish 2-way pull every 60s
     startInteractionCron(); // daily silent_30d detection (02:00 VN)
+    // Phase 6 — Lead Scoring background jobs (decay hourly + stuck detection 6am daily)
+    const { startScoringScheduler } = await import('./modules/scoring/scoring-scheduler.js');
+    startScoringScheduler({ enabled: config.nodeEnv !== 'test' });
     await eventBuffer.start(io);
   } catch (err) {
     logger.error('Failed to start server:', err);

@@ -4,9 +4,7 @@
     <header class="ip-header">
       <button class="ip-close" title="Đóng" @click="$emit('close')">×</button>
       <div class="ip-avatar-wrap">
-        <!-- KHÔNG truyền :gender — gender badge ♂/♀ sẽ đè lên lead-score-badge.
-             Gender info đã hiển thị ở chat header (chip "Nam"/"Nữ" row 1)
-             + ô select Gender trong tab Hồ sơ. Không cần lặp lại ở avatar cột 4. -->
+        <!-- KHÔNG truyền :gender — gender badge ♂/♀ sẽ đè lên lead-score-badge. -->
         <Avatar
           :src="props.contact?.avatarUrl"
           :name="headerFullName"
@@ -14,7 +12,6 @@
           :gradient-seed="props.contact?.id || headerFullName"
           class="ip-avatar-big"
         />
-        <!-- Lead score badge overlay (Smax-style điểm KH) -->
         <span
           v-if="props.contact"
           class="lead-score-badge"
@@ -59,6 +56,18 @@
       >
         <span class="ic">📅</span> Lịch hẹn
         <span v-if="activityBadgeCount || pendingAptBump" class="tab-badge">{{ (activityBadgeCount ?? 0) + pendingAptBump }}</span>
+      </button>
+      <button
+        v-if="props.friendId"
+        class="ip-tab"
+        :class="{ active: activeTab === 'score' }"
+        :title="`Điểm KH: ${props.contact?.leadScore ?? 0}`"
+        @click="activeTab = 'score'"
+      >
+        <span class="ic">⭐</span> Điểm
+        <span v-if="(props.contact?.leadScore ?? 0) > 0" class="tab-badge tab-badge-score">
+          {{ props.contact?.leadScore }}
+        </span>
       </button>
     </nav>
 
@@ -328,8 +337,27 @@
           <p>Chưa có hoạt động — sau khi có conv tin nhắn, AI sẽ tự tóm tắt + phân tích cảm xúc.</p>
         </div>
       </div>
+
+      <!-- ══════ TAB 4: ĐIỂM (Lead Scoring) ══════ -->
+      <div v-show="activeTab === 'score'" class="tab-pane tab-pane-score">
+        <ScoreInlinePanel
+          v-if="props.friendId"
+          :friend-id="props.friendId"
+          :stage-label="scoreStageLabel"
+          @view-history="openScoreHistory"
+        />
+        <div v-else class="tab-empty">
+          <p>Tab Điểm chỉ áp dụng cho hội thoại 1-1 (có Friend).</p>
+        </div>
+      </div>
     </div>
 
+    <!-- Score history modal (overlay full screen, Teleport to body) -->
+    <ScoreHistoryModal
+      v-model="scoreHistoryOpen"
+      :friend-id="props.friendId ?? null"
+      :contact-name="headerFullName"
+    />
   </aside>
 </template>
 
@@ -349,12 +377,16 @@ import type { CareStatusValue } from '@/constants/care-status';
 import { useToast } from '@/composables/use-toast';
 import { api } from '@/api';
 import CustomerTimelineSection from './CustomerTimelineSection.vue';
+import ScoreInlinePanel from '@/components/scoring/ScoreInlinePanel.vue';
+import ScoreHistoryModal from '@/components/scoring/ScoreHistoryModal.vue';
 
 const props = defineProps<{
   contactId: string | null;
   contact: Contact | null;
   // Nick CRM đang xem KH này — dùng để xác định Friend row "active" cho per-pair tag.
   activeZaloAccountId?: string | null;
+  // Friend.id của cặp (contact × activeZaloAccount). Cần để fetch score breakdown per-pair.
+  friendId?: string | null;
   // Friendship per-pair (nick × KH) — chứa aliasInNick để sync 2-way với Zalo Real.
   friendship?: { id?: string; aliasInNick?: string | null } | null;
   aiSummary: string;
@@ -406,7 +438,7 @@ async function saveAlias() {
 }
 
 // ════════ Tab state (persist sang tab khác KH khác) ════════
-const activeTab = ref<'profile' | 'relations' | 'activity'>('profile');
+const activeTab = ref<'profile' | 'relations' | 'activity' | 'score'>('profile');
 
 // Info section auto-collapse: mặc định compact (chỉ Tên + SĐT). Click tab Hồ Sơ
 // hoặc bấm "Xem đầy đủ" → expand, đếm 5s rồi tự thu gọn lại.
@@ -464,6 +496,18 @@ onMounted(() => window.addEventListener('appointment-created', onGlobalAppointme
 onBeforeUnmount(() => {
   clearCollapseTimer();
   window.removeEventListener('appointment-created', onGlobalAppointmentCreated);
+});
+
+// ════════ Score history modal (mở từ tab Điểm "Xem toàn bộ →") ════════
+const scoreHistoryOpen = ref(false);
+function openScoreHistory() {
+  scoreHistoryOpen.value = true;
+}
+
+// Stage label hiển thị cạnh điểm tổng (vd "warm-lead" lấy từ friendship.statusRef.name)
+const scoreStageLabel = computed<string | null>(() => {
+  const c = props.contact as Contact & { friendship?: { statusRef?: { name?: string } | null } } | null;
+  return c?.friendship?.statusRef?.name || null;
 });
 
 // ════════ Relations data (friends per nick = KH Con) — fetch khi đổi contact ═══
@@ -629,9 +673,13 @@ const hasAnyActivity = computed(() =>
 const toast = useToast();
 
 // Khi đổi sang contact mới, reset về tab Hồ sơ + refetch relations
-// (NotesSection tự fetch khi prop contactId đổi)
+// (NotesSection tự fetch khi prop contactId đổi).
+// Cũng force reset infoExpanded + start countdown — nếu activeTab đã = 'profile',
+// watch(activeTab) sẽ KHÔNG fire khi cùng giá trị → form section stuck ở state cũ.
 watch(() => props.contactId, (id) => {
   activeTab.value = 'profile';
+  infoExpanded.value = true;
+  startCollapseCountdown();
   if (id) void fetchRelations(id);
   else relations.value = { friends: [] };
 }, { immediate: true });
@@ -662,6 +710,18 @@ function relativeTime(dateStr: string) {
   position: relative;
   flex-shrink: 0;
 }
+/* Tab 4 "Điểm" — score panel content full-width 280px, vertical stack */
+.tab-pane-score {
+  padding: 12px 14px 18px;
+}
+/* Tab badge cho score (khác badge số tin chưa đọc) */
+.tab-badge-score {
+  background: #fef3c7 !important;
+  color: #b45309 !important;
+  font-weight: 700 !important;
+  min-width: 24px;
+}
+
 .ip-close {
   position: absolute; top: 7px; right: 9px;
   width: 26px; height: 26px;
@@ -669,8 +729,10 @@ function relativeTime(dateStr: string) {
   font-size: 20px; cursor: pointer;
   color: var(--smax-grey-700);
   border-radius: 50%;
+  z-index: 5;
 }
 .ip-close:hover { background: var(--smax-grey-100); }
+
 
 .ip-avatar-wrap {
   position: relative;

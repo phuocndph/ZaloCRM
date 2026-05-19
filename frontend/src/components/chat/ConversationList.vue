@@ -53,8 +53,9 @@
 
     <!-- ════════ Conv items ════════ -->
     <div ref="scrollContainer" class="conv-scroll">
-      <div v-if="loading" class="loading">Đang tải…</div>
+      <div v-if="loading && conversations.length === 0" class="loading">Đang tải…</div>
 
+      <TransitionGroup name="conv-list" tag="div" class="conv-list-inner">
       <div
         v-for="conv in conversations"
         :key="conv.id"
@@ -144,6 +145,7 @@
 
         <AiSentimentBadge v-if="parseSentiment(conv)" :sentiment="parseSentiment(conv)" class="sentiment" />
       </div>
+      </TransitionGroup>
 
       <div v-if="!loading && conversations.length === 0" class="empty-state">
         Chưa có hội thoại nào
@@ -392,30 +394,15 @@ function scrollSelectedIntoView() {
   if (!row || !container) return;
   const rowRect = row.getBoundingClientRect();
   const ctnRect = container.getBoundingClientRect();
-  // Chỉ scroll nếu row nằm ngoài viewport (tránh giật khi đã visible)
   if (rowRect.top < ctnRect.top || rowRect.bottom > ctnRect.bottom) {
-    row.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    row.scrollIntoView({ behavior: 'auto', block: 'nearest' });
   }
 }
 
-// Watch selectedId — scroll khi thay đổi (nav từ extern hoặc click trong list)
 watch(() => props.selectedId, async () => {
-  await nextTick();           // đợi row render xong (đặc biệt khi conv mới append)
-  scrollSelectedIntoView();
-}, { immediate: true });
-
-// Watch vị trí của selected conv trong list — nếu BE refresh + reorder (do user
-// vừa send message → conv đó lên top), index sẽ đổi từ N→0 → scroll lại lên top.
-// Watch derived index thay vì watch full array để hiệu suất tốt + chỉ fire khi
-// thật sự cần. Cũng cover case list mới fetch (length đổi).
-const selectedIndex = computed(() => {
-  if (!props.selectedId) return -1;
-  return props.conversations.findIndex(c => c.id === props.selectedId);
-});
-watch(selectedIndex, async () => {
   await nextTick();
   scrollSelectedIntoView();
-});
+}, { immediate: true });
 
 // ── Utility functions ───────────────────────────────────────────────────────
 function lastMessagePreview(conv: Conversation): string {
@@ -646,6 +633,10 @@ function formatTime(dateStr: string | null): string {
 }
 
 .conv-scroll { flex: 1; overflow-y: auto; }
+.conv-list-inner { display: flex; flex-direction: column; }
+.conv-list-move { transition: transform 0.25s ease; }
+.conv-list-leave-active { transition: none; }
+.conv-list-enter-active { transition: none; }
 .loading {
   padding: 20px; text-align: center;
   color: var(--smax-grey-700); font-size: 12px; font-style: italic;

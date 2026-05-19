@@ -321,6 +321,13 @@ export function attachZaloListener(ctx: ListenerContext): void {
     for (const message of messages) {
       try {
         const senderUid = String(message.data?.uidFrom || '');
+        // For DM messages from requestOldMessages, the peer UID (thread id)
+        // may not appear on the top-level `threadId` field. Derive it from
+        // payload: for self → data.idTo (peer); for incoming → uidFrom (peer).
+        const peerFallback = message.isSelf
+          ? String(message.data?.idTo || '')
+          : senderUid;
+        const resolvedThreadId = String(message.threadId || peerFallback || '');
         let senderName = message.data?.dName || '';
         let recipientName = '';
         let contactGlobalId = '';
@@ -334,10 +341,10 @@ export function attachZaloListener(ctx: ListenerContext): void {
             if (userInfo.zaloName) senderName = userInfo.zaloName;
             contactGlobalId = userInfo.globalId;
             contactUsername = userInfo.username;
-          } else if (message.isSelf && threadType === 'user' && message.threadId) {
-            const userInfo = await resolveZaloName(api, message.threadId, userInfoCache);
+          } else if (message.isSelf && threadType === 'user' && resolvedThreadId) {
+            const userInfo = await resolveZaloName(api, resolvedThreadId, userInfoCache);
             if (userInfo.zaloName) recipientName = userInfo.zaloName;
-            if (userInfo.avatar) updateContactAvatar(message.threadId, userInfo.avatar);
+            if (userInfo.avatar) updateContactAvatar(resolvedThreadId, userInfo.avatar);
             contactGlobalId = userInfo.globalId;
             contactUsername = userInfo.username;
           }
@@ -346,8 +353,8 @@ export function attachZaloListener(ctx: ListenerContext): void {
         let groupName: string | undefined;
         let groupAvatarUrl: string | undefined;
         let groupMembersCount: number | undefined;
-        if (threadType === 'group' && message.threadId) {
-          const groupInfo = await resolveGroupInfo(api, message.threadId);
+        if (threadType === 'group' && resolvedThreadId) {
+          const groupInfo = await resolveGroupInfo(api, resolvedThreadId);
           groupName = groupInfo.name || undefined;
           groupAvatarUrl = groupInfo.avatar || undefined;
           groupMembersCount = groupInfo.membersCount ?? undefined;
@@ -368,7 +375,7 @@ export function attachZaloListener(ctx: ListenerContext): void {
           msgId: String(message.data?.msgId || ''),
           timestamp: parseInt(message.data?.ts || String(Date.now())),
           isSelf: message.isSelf || false,
-          threadId: message.threadId || '',
+          threadId: resolvedThreadId,
           threadType,
           recipientName: recipientName || undefined,
           contactGlobalId: contactGlobalId || undefined,

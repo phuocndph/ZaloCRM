@@ -9,6 +9,7 @@ import { requireRole } from '../auth/role-middleware.js';
 import { zaloPool } from './zalo-pool.js';
 import { logger } from '../../shared/utils/logger.js';
 import { randomUUID } from 'node:crypto';
+import { backfillAccountHistory } from './zalo-history-backfill.js';
 
 export async function zaloSyncRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authMiddleware);
@@ -73,6 +74,23 @@ export async function zaloSyncRoutes(app: FastifyInstance) {
       } catch (err) {
         logger.error('[sync] Zalo contacts error:', err);
         return reply.status(500).send({ error: 'Sync failed: ' + String(err) });
+      }
+    }
+  );
+
+  // Sync group history from Zalo (manual trigger for fresh accounts / re-sync)
+  app.post('/api/v1/zalo-accounts/:id/sync-history', { preHandler: requireRole('owner', 'admin') },
+    async (request, reply) => {
+      const { id } = request.params as { id: string };
+      const instance = zaloPool.getInstance(id);
+      if (!instance?.api) return reply.status(400).send({ error: 'Zalo account not connected' });
+
+      try {
+        const result = await backfillAccountHistory(instance.api, id);
+        return { success: true, ...result };
+      } catch (err) {
+        logger.error('[sync] Zalo history sync error:', err);
+        return reply.status(500).send({ error: 'Sync history failed: ' + String(err) });
       }
     }
   );

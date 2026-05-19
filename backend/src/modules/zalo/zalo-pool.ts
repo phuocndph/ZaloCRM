@@ -13,6 +13,7 @@ import { logger } from '../../shared/utils/logger.js';
 import { attachZaloListener, type UserInfoCacheEntry } from './zalo-listener-factory.js';
 import { emitWebhook } from '../api/webhook-service.js';
 import { startMessageSync, stopMessageSync } from './zalo-message-sync.js';
+import { backfillIfEmpty } from './zalo-history-backfill.js';
 import { readFile } from 'fs/promises';
 import { imageSize } from 'image-size';
 import { withProxy } from './proxy-util.js';
@@ -122,9 +123,13 @@ class ZaloAccountPool {
         logger.warn(`[zalo:${accountId}] Backfill orphaned conversations failed:`, err);
       });
 
+      // Fire-and-forget: initial history backfill on first login (empty DB)
+      backfillIfEmpty(api, accountId).catch((err) => {
+        logger.warn(`[zalo:${accountId}] Initial history backfill failed:`, err);
+      });
+
       // Fire-and-forget: pull Zalo labels lần đầu để Friend.zaloLabels + crmTagsPerNick
       // có data ngay sau khi connect — tránh phải bấm "Đồng bộ ngay" thủ công.
-      // Dynamic import để tránh circular: zalo-labels-routes → zalo-pool → ...
       this.autoSyncLabelsOnConnect(accountId);
     } catch (err) {
       const instance = this.instances.get(accountId);

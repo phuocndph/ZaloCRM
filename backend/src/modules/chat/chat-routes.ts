@@ -243,6 +243,7 @@ export async function chatRoutes(app: FastifyInstance) {
       .filter(c => c.threadType === 'user' && c.contactId)
       .map(c => ({ zaloAccountId: c.zaloAccountId, contactId: c.contactId! }));
     let friendMap = new Map<string, {
+      id: string;
       relationshipKind: string; friendshipStatus: string;
       becameFriendAt: Date | null; firstMessageAt: Date | null;
       crmTagsPerNick: unknown;
@@ -252,6 +253,7 @@ export async function chatRoutes(app: FastifyInstance) {
       const friends = await prisma.friend.findMany({
         where: { OR: userPairs.map(p => ({ AND: [{ zaloAccountId: p.zaloAccountId }, { contactId: p.contactId }] })) },
         select: {
+          id: true,                            // Friend.id để FE fetch /scoring/:friendId/breakdown
           zaloAccountId: true, contactId: true,
           relationshipKind: true, friendshipStatus: true,
           becameFriendAt: true, firstMessageAt: true,
@@ -260,6 +262,7 @@ export async function chatRoutes(app: FastifyInstance) {
         },
       });
       friendMap = new Map(friends.map(f => [`${f.zaloAccountId}:${f.contactId}`, {
+        id: f.id,
         relationshipKind: f.relationshipKind,
         friendshipStatus: f.friendshipStatus,
         becameFriendAt: f.becameFriendAt,

@@ -12,6 +12,7 @@ backups/
 TODO.local.md
 .zalo-icon-preview.html
 .zalo-phase6-preview.html
+.zalo-filter-mockup.html
 /frontend/public/chat-smax-*.html
 /frontend/public/chat-perpair-context.html
 /frontend/public/contacts-approach-*.html

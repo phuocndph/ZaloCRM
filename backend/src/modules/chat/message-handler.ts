@@ -8,6 +8,7 @@ import { randomUUID } from 'node:crypto';
 import { emitWebhook } from '../api/webhook-service.js';
 import { runAutomationRules } from '../automation/automation-service.js';
 import { applyContactAggregateFromMessage, applyContactInteraction, applyFriendAggregate } from '../contacts/contact-aggregate.js';
+import { onInboundMessage as onInboundScoring, onOutboundMessage as onOutboundScoring } from '../scoring/scoring-hooks.js';
 import { syncReminderFromMessage } from '../contacts/reminder-sync.js';
 
 export interface IncomingMessage {
@@ -169,6 +170,53 @@ export async function handleIncomingMessage(
     };
     void applyContactAggregateFromMessage(aggregateInput);
     void applyFriendAggregate(aggregateInput);
+
+    // Phase 6 — Lead scoring hook (fire-and-forget).
+    // Resolve friendId by (zaloAccountId, externalThreadId) sau aggregate đã chạy.
+    // Nếu Friend chưa exist (lần đầu chat), aggregate sẽ tạo row → hook sẽ chạy ở message kế.
+    if (msg.threadType !== 'group' && msg.threadId) {
+      void (async () => {
+        try {
+          const friend = await prisma.friend.findUnique({
+            where: {
+              zaloAccountId_zaloUidInNick: {
+                zaloAccountId: msg.accountId,
+                zaloUidInNick: msg.threadId,
+              },
+            },
+            select: { id: true, lastInboundAt: true, lastOutboundAt: true },
+          });
+          if (!friend) return;
+
+          const content = String(message.content || '');
+          const sentAtMs = message.sentAt.getTime();
+
+          if (msg.isSelf) {
+            // Outbound — chỉ check slow_response_self
+            if (friend.lastInboundAt) {
+              const secs = Math.max(0, (sentAtMs - friend.lastInboundAt.getTime()) / 1000);
+              onOutboundScoring(account.orgId, friend.id, { responseSecondsFromLastInbound: secs });
+            }
+          } else {
+            // Inbound — full keyword + engagement scoring
+            const responseSecs = friend.lastOutboundAt
+              ? Math.max(0, (sentAtMs - friend.lastOutboundAt.getTime()) / 1000)
+              : null;
+            const isVoiceOrCall =
+              message.contentType === 'voice' ||
+              message.contentType === 'audio' ||
+              message.contentType === 'call';
+            onInboundScoring(account.orgId, friend.id, content, {
+              contentLength: content.length,
+              isVoiceOrCall,
+              responseSecondsFromLastOutbound: responseSecs,
+            });
+          }
+        } catch {
+          // silent — scoring is best-effort
+        }
+      })();
+    }
 
     // Auto-sync Zalo reminder → Appointment (fire-and-forget, dedup theo externalRef)
     void syncReminderFromMessage({
