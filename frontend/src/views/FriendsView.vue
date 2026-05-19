@@ -1,891 +1,557 @@
 <template>
-  <div class="smax-friends-page">
-    <!-- ════════ Page header ════════ -->
-    <header class="page-header">
-      <h1>Bạn bè</h1>
-      <div class="subtitle">
-        Mỗi row = 1 cặp <strong>(nick × KH)</strong> đã sinh UID. Quản lý
-        <strong>Đã KB</strong>, <strong>Đã gửi mời</strong>, <strong>Đang nhắn (lạ)</strong> per-nick.
-      </div>
-    </header>
+  <div class="friends-page">
+    <!-- 2-col layout: sidebar (nicks) + main -->
+    <div class="page-grid">
+      <NickSidebar
+        :accounts="accounts"
+        :selected-nick-id="effectiveNickId"
+        :count-by-nick="countByNick"
+        :total-friends-all="totalAcrossAllNicks"
+        @select="onSelectNick"
+      />
 
-    <!-- ════════ Filter bar ════════ -->
-    <div class="filter-bar">
-      <!-- Row 1: search + nick + care + date + actions -->
-      <div class="filter-row-1">
-        <input
-          v-model="search"
-          class="search-input"
-          placeholder="Tìm tên KH / SĐT / tên nick…"
-          @input="debouncedFetch"
+      <main class="main">
+        <header class="page-head">
+          <h1>👥 Bạn bè</h1>
+
+          <span v-if="activeAccount" class="active-nick">
+            <span class="av" :class="nickAvatarClass(activeAccount.id)">{{ nickInitials(activeAccount.displayName) }}</span>
+            <span class="nick-name">{{ activeAccount.displayName || 'Nick' }}</span>
+            <span class="dot-sep">·</span>
+            <span>{{ friendsDbTotal }} bạn</span>
+          </span>
+          <span v-else-if="effectiveNickId === 'all'" class="active-nick all">
+            <span class="av">∑</span>
+            <span class="nick-name">Tất cả nick</span>
+            <span class="dot-sep">·</span>
+            <span>{{ totalAcrossAllNicks }} bạn</span>
+          </span>
+
+          <div class="spacer" />
+          <input
+            v-model="searchInput"
+            class="head-search"
+            placeholder="🔍 Tìm KH theo tên / SĐT / nick Zalo..."
+            @input="debouncedFetch"
+          />
+          <button class="btn" title="Tùy chỉnh cột">⚙ Cột</button>
+          <button class="btn" title="Xuất CSV">⬇ Xuất CSV</button>
+          <button
+            v-if="activeAccount"
+            class="btn primary"
+            :disabled="syncing"
+            @click="onSync"
+          >{{ syncing ? '↻ Đang đồng bộ…' : '↻ Đồng bộ Zalo' }}</button>
+        </header>
+
+        <FriendsSmartHints :friends="friendsDb" @apply="onApplyHint" />
+
+        <FriendsFilterBar
+          :kind-filter="state.kindFilter.value"
+          :count-by-kind="countByKind"
+          :care-status="state.careStatus.value"
+          @update:kind-filter="onKindChange"
+          @update:care-status="onCareChange"
         />
 
-        <button class="nick-single" @click="cycleNick" :disabled="!accounts.length" title="Click để đổi nick">
-          <span class="ns-label">NICK</span>
-          <Avatar
-            :src="activeAccount?.avatarUrl"
-            :name="activeAccount?.displayName || 'Nick'"
-            :size="24"
-            :gradient-seed="activeAccount?.id"
-            platform="zalo"
-          />
-          <span class="ns-name">{{ activeAccount?.displayName || 'Chọn nick' }}</span>
-          <span v-if="friendsDbTotal" class="ns-count">{{ friendsDbTotal }} bạn</span>
-          <span class="ns-arrow">▾</span>
-        </button>
+        <div class="stats">
+          <div class="stat good">🟢 Đã KB: <strong>{{ friendCounts.friend ?? 0 }}</strong></div>
+          <div class="stat warn">🟡 Đang chờ: <strong>{{ friendCounts.pending_friend ?? 0 }}</strong></div>
+          <div class="stat">🔵 Đang nhắn lạ: <strong>{{ friendCounts.chatting_stranger ?? 0 }}</strong></div>
+          <div class="stat">⚪ Đã ngắt: <strong>{{ friendCounts.ghost ?? 0 }}</strong></div>
+          <div v-if="silentCount > 0" class="stat bad">⚠ Im lặng &gt; 7d: <strong>{{ silentCount }}</strong></div>
+          <div class="spacer-flex" />
+          <span class="density-label">Hiển thị:</span>
+          <div class="density-toggle">
+            <button
+              v-for="d in DENSITY_OPTIONS"
+              :key="d.value"
+              :class="{ active: state.density.value === d.value }"
+              @click="state.density.value = d.value"
+            >{{ d.label }}</button>
+          </div>
+        </div>
 
-        <select v-model="careStatus" @change="fetch">
-          <option value="">Tất cả trạng thái KH</option>
-          <option value="interested">💬 Quan tâm</option>
-          <option value="caring">🤝 Chăm sóc</option>
-          <option value="negotiating">⚡ Đàm phán</option>
-          <option value="hot">🔥 Nóng</option>
-          <option value="cold">❄ Lạnh</option>
-          <option value="won">✅ Đã chốt</option>
-        </select>
+        <FriendsBulkBar
+          :count="selected.size"
+          @clear="selected = new Set()"
+          @msg-batch="onBulkMessage"
+          @tag="onBulkTag"
+          @change-status="onBulkChangeStatus"
+          @export="onBulkExport"
+        />
 
-        <input type="date" v-model="dateFrom" class="date-input" />
-        <span class="date-separator">→</span>
-        <input type="date" v-model="dateTo" class="date-input" />
+        <FriendsTable
+          :friends="friendsDb"
+          :loading="loadingDb"
+          :density="state.density.value"
+          :selected="selected"
+          @update:selected="selected = $event"
+          @open-detail="onOpenDetail"
+          @open-chat="onOpenChat"
+          @open-contact="onOpenContact"
+        />
 
-        <span class="spacer"></span>
-        <button class="btn">⚙ Cột</button>
-        <button class="btn">⬇ Xuất CSV</button>
-        <button
-          v-if="activeAccount"
-          class="btn btn-primary"
-          :disabled="syncing"
-          @click="onSync"
-        >
-          {{ syncing ? '↻ Đang đồng bộ…' : '↻ Đồng bộ Zalo' }}
-        </button>
-      </div>
-
-      <!-- Row 2: kind tabs -->
-      <div class="kind-tabs">
-        <button
-          v-for="t in KIND_TABS"
-          :key="t.value"
-          class="kind-tab"
-          :class="{ active: kindTab === t.value }"
-          @click="kindTab = t.value; fetch()"
-        >
-          <span v-if="t.dotColor" class="badge-dot" :style="`background:${t.dotColor}`"></span>
-          {{ t.label }}
-          <span class="count">{{ kindCount(t.value) }}</span>
-        </button>
-      </div>
-
-      <!-- Row 3: label chip filter -->
-      <div class="label-chip-row">
-        <span class="label-text">Tag CRM:</span>
-        <span
-          v-for="lbl in CRM_LABEL_CHIPS"
-          :key="lbl.text"
-          class="smax-label-chip"
-          :class="{ active: activeChips.includes(lbl.text) }"
-          :data-color="lbl.color"
-          @click="toggleChip(lbl.text)"
-        >{{ lbl.text }}</span>
-      </div>
+        <div class="pag">
+          <span>{{ pagFrom }}–{{ pagTo }} / {{ friendsDbTotal }}</span>
+          <div class="spacer-flex" />
+          <span>Trang:</span>
+          <button :disabled="pagination.page === 1" @click="goPage(pagination.page - 1)">« Trước</button>
+          <button
+            v-for="p in visiblePages"
+            :key="p"
+            :class="{ primary: p === pagination.page }"
+            @click="goPage(p)"
+          >{{ p }}</button>
+          <button :disabled="pagination.page >= totalPages" @click="goPage(pagination.page + 1)">Sau »</button>
+        </div>
+      </main>
     </div>
 
-    <!-- ════════ Stats row ════════ -->
-    <div class="stats-row">
-      <div class="stat-box">📋 Tổng pair: <span class="stat-num">{{ friendsDbTotal }}</span></div>
-      <div class="stat-box">🟢 Đã KB: <span class="stat-num">{{ kindCount('friend') }}</span></div>
-      <div class="stat-box">🟡 Đang chờ: <span class="stat-num">{{ kindCount('pending_friend') }}</span></div>
-      <div class="stat-box">🔵 Đang nhắn lạ: <span class="stat-num">{{ kindCount('chatting_stranger') }}</span></div>
-      <div class="stat-box">⚪ Đã ngắt: <span class="stat-num">{{ kindCount('ghost') }}</span></div>
-    </div>
+    <FriendDetailPanel
+      :friend="detailFriend"
+      :active-nick-name="activeAccount?.displayName || 'Nick'"
+      @close="detailFriend = null"
+      @open-chat="onOpenChat"
+      @call="onCall"
+      @open-contact="onOpenContact"
+    />
 
-    <!-- ════════ Empty state ════════ -->
-    <div v-if="!activeAccount" class="empty-page">
-      Chọn 1 nick Zalo phía trên để xem danh sách bạn bè per-pair.
-    </div>
-
-    <!-- ════════ Table ════════ -->
-    <div v-else class="scroll-wrap">
-      <table class="smax-table">
-        <thead>
-          <tr>
-            <th>Khách hàng</th>
-            <th class="w-110" title="Số nick zalo có log nhật ký nhắn tin với KH này">Nick có log</th>
-            <th>Nick Zalo (Sale)</th>
-            <th>Tên CRM / Nick (KH)</th>
-            <th>Tên Zalo + UID</th>
-            <th>Trạng thái KB</th>
-            <th>Trạng thái KH</th>
-            <th>Nhãn CRM</th>
-            <th>Label Zalo</th>
-            <th>KH nhắn cuối</th>
-            <th>Sale nhắn cuối</th>
-            <th>Tin (in/out)</th>
-            <th>Là bạn từ</th>
-            <th class="w-90">Auto</th>
-            <th class="w-180">Action</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="f in friendsDb" :key="f.id">
-            <!-- KH cell -->
-            <td>
-              <div class="kh-cell">
-                <Avatar
-                  :src="f.contact?.avatarUrl"
-                  :name="f.contact?.crmName || f.contact?.fullName || '?'"
-                  :size="32"
-                  :gender="f.contact?.gender"
-                  :gradient-seed="f.contact?.id"
-                />
-                <div class="three-line">
-                  <span class="line1">{{ f.contact?.crmName || f.contact?.fullName || '—' }}</span>
-                  <span class="line2">
-                    {{ f.contact?.phone || '—' }}
-                    <template v-if="f.contact?.gender">· {{ genderLabel(f.contact.gender) }}</template>
-                    <template v-if="ageOf(f.contact)">· {{ ageOf(f.contact) }}t</template>
-                  </span>
-                  <span v-if="f.contact?.fullName" class="line3">{{ f.contact.fullName }}</span>
-                </div>
-              </div>
-            </td>
-
-            <!-- Nick có log (số nick zalo đã từng log với KH này) -->
-            <td>
-              <div class="nick-count-cell">
-                <span
-                  :class="['nick-count-badge', `lvl-${nickLogLevel(f)}`]"
-                  :title="`${nickLogCount(f)} nick đã log nhật ký với KH này`"
-                  @click="onShowNickLog(f)"
-                >{{ nickLogCount(f) }}</span>
-                <span class="nick-count-label">nick chăm</span>
-              </div>
-            </td>
-
-            <!-- Nick cell -->
-            <td>
-              <div class="nick-cell">
-                <Avatar
-                  :src="f.zaloAccount?.avatarUrl"
-                  :name="f.zaloAccount?.displayName || 'Nick'"
-                  :size="28"
-                  :gradient-seed="f.zaloAccount?.id"
-                  platform="zalo"
-                />
-                <div class="two-line">
-                  <span class="line1">{{ f.zaloAccount?.displayName || '—' }}</span>
-                  <span class="line2">{{ f.zaloAccount?.phone || '—' }}</span>
-                </div>
-              </div>
-            </td>
-
-            <!-- Tên CRM / Nick KH -->
-            <td>
-              <div class="two-line">
-                <span class="line1" :class="{ empty: !f.aliasInNick }">
-                  {{ f.aliasInNick || '— chưa đặt alias —' }}
-                </span>
-                <span class="line2">{{ f.aliasInNick ? 'alias do nick đặt' : 'dùng tên Zalo' }}</span>
-              </div>
-            </td>
-
-            <!-- Tên Zalo thật + UID -->
-            <td>
-              <div class="two-line">
-                <span class="line1">{{ f.contact?.fullName || '—' }}</span>
-                <span class="uid">{{ f.zaloUidInNick }}</span>
-              </div>
-            </td>
-
-            <!-- Trạng thái KB -->
-            <td>
-              <span class="badge-dot" :style="`background:${kindDotColor(f.relationshipKind)}`"></span>
-              <span :class="['chip', kindChipClass(f.relationshipKind)]">
-                {{ kindLabel(f.relationshipKind) }}
-              </span>
-            </td>
-
-            <!-- Trạng thái KH per-pair (dynamic từ Status table, đồng nhất với ContactsView) -->
-            <td>
-              <v-menu :close-on-content-click="true">
-                <template #activator="{ props: act }">
-                  <span
-                    v-if="f.statusRef"
-                    v-bind="act"
-                    class="chip status-edit-chip"
-                    :style="{ background: chipBg(f.statusRef.color), color: chipFg(f.statusRef.color) }"
-                    :title="`Status per-pair (Cha = MAX order các con). Click đổi.`"
-                  >{{ f.statusRef.name }}</span>
-                  <span v-else v-bind="act" class="empty status-edit-chip" style="cursor:pointer">— đặt —</span>
-                </template>
-                <v-list density="compact" min-width="220" max-height="320">
-                  <v-list-item
-                    v-for="s in allStatuses"
-                    :key="s.id"
-                    :title="s.name"
-                    @click="applyFriendStatus(f, s.id)"
-                  >
-                    <template #prepend>
-                      <span class="status-dot" :style="{ background: s.color || '#9e9e9e' }"></span>
-                    </template>
-                  </v-list-item>
-                  <v-divider />
-                  <v-list-item title="— Bỏ status —" @click="applyFriendStatus(f, null)" />
-                </v-list>
-              </v-menu>
-            </td>
-
-            <!-- Nhãn CRM -->
-            <td>
-              <div class="tag-cell">
-                <span v-for="tag in (f.contact?.tags || []).slice(0, 2)" :key="tag" class="chip chip-info">{{ tag }}</span>
-                <span v-if="(f.contact?.tags || []).length > 2" class="chip chip-grey">
-                  +{{ f.contact!.tags.length - 2 }}
-                </span>
-                <span v-if="!f.contact?.tags?.length" class="empty">—</span>
-              </div>
-            </td>
-
-            <!-- Label Zalo -->
-            <td>
-              <div class="tag-cell">
-                <span v-for="lbl in (f.zaloLabels || []).slice(0, 2)" :key="lbl.id || lbl.name" class="chip chip-orange-soft">
-                  {{ lbl.name }}
-                </span>
-                <span v-if="!f.zaloLabels?.length" class="empty">—</span>
-              </div>
-            </td>
-
-            <!-- KH nhắn cuối -->
-            <td>
-              <template v-if="f.lastInboundAt">
-                <div class="cell-strong">{{ formatRecentDateTime(f.lastInboundAt) }}</div>
-              </template>
-              <span v-else class="empty">—</span>
-            </td>
-
-            <!-- Sale nhắn cuối -->
-            <td>
-              <template v-if="f.lastOutboundAt">
-                <div class="cell-strong">{{ formatRecentDateTime(f.lastOutboundAt) }}</div>
-              </template>
-              <span v-else class="empty">—</span>
-            </td>
-
-            <!-- Tin in/out -->
-            <td><strong>{{ f.totalInbound }}</strong> / {{ f.totalOutbound }}</td>
-
-            <!-- Là bạn từ -->
-            <td>
-              <span v-if="f.becameFriendAt" class="text-grey">{{ relativeDate(f.becameFriendAt) }}</span>
-              <span v-else class="empty">—</span>
-            </td>
-
-            <!-- Auto (automation đang chạy) -->
-            <td>
-              <span v-if="autoLabelOf(f)" class="chip chip-info">{{ autoLabelOf(f) }}</span>
-              <span v-else class="empty">—</span>
-            </td>
-
-            <!-- Action -->
-            <td>
-              <div class="action-cell">
-                <button class="row-action-btn" @click="goChat(f)" title="Mở chat">💬</button>
-                <button
-                  v-if="f.relationshipKind === 'pending_friend'"
-                  class="row-action-btn"
-                  @click="onCancelInvite(f)"
-                  title="Hủy mời"
-                >↻ Hủy</button>
-                <button
-                  v-else-if="f.relationshipKind === 'chatting_stranger'"
-                  class="row-action-btn"
-                  @click="onSendInvite(f)"
-                  title="Gửi mời KB"
-                >+ KB</button>
-                <button class="row-action-btn" @click="onAutomation(f)" title="Automation">⚡</button>
-              </div>
-            </td>
-          </tr>
-
-          <tr v-if="!loadingDb && !friendsDb.length">
-            <td colspan="15" class="empty-state">
-              {{ activeAccount ? 'Chưa có pair nào.' : 'Chọn 1 nick Zalo để xem.' }}
-            </td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-
-    <!-- Pagination -->
-    <div v-if="activeAccount" class="pagination">
-      <button class="btn" :disabled="pagination.page <= 1" @click="changePage(pagination.page - 1)">← Trước</button>
-      <span class="page-info">Trang {{ pagination.page }} / {{ totalPages }}</span>
-      <button class="btn" :disabled="pagination.page >= totalPages" @click="changePage(pagination.page + 1)">Sau →</button>
+    <!-- Persistent restore toast -->
+    <div v-if="state.restoredFromStorage.value" class="toast" @click.self="state.dismissRestoreToast()">
+      ✓ Đã khôi phục nick
+      <b>{{ restoredNickLabel }}</b>
+      + filter từ phiên trước.
+      <a href="#" @click.prevent="onResetAll">Đặt lại</a>
+      <button class="toast-close" @click="state.dismissRestoreToast()">✕</button>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, reactive } from 'vue';
+import { ref, computed, watch, onMounted, reactive } from 'vue';
 import { useRouter } from 'vue-router';
 import { useFriends, type DbFriend } from '@/composables/use-friends';
 import { useZaloAccounts } from '@/composables/use-zalo-accounts';
-import {
-  GENDER_OPTIONS,
-  formatRecentDateTime,
-} from '@/composables/use-contacts';
-import Avatar from '@/components/ui/Avatar.vue';
-import { useToast } from '@/composables/use-toast';
-import { api } from '@/api';
+import { useFriendsState, type DensityMode, type FriendKindFilter } from '@/composables/use-friends-state';
+import NickSidebar from '@/components/friends/NickSidebar.vue';
+import FriendsFilterBar from '@/components/friends/FriendsFilterBar.vue';
+import FriendsSmartHints from '@/components/friends/FriendsSmartHints.vue';
+import FriendsTable from '@/components/friends/FriendsTable.vue';
+import FriendsBulkBar from '@/components/friends/FriendsBulkBar.vue';
+import FriendDetailPanel from '@/components/friends/FriendDetailPanel.vue';
+import type { SmartHint } from '@/components/friends/FriendsSmartHints.vue';
 
 const router = useRouter();
 const { accounts, fetchAccounts } = useZaloAccounts();
 const {
-  friendsDb, friendsDbTotal, friendCounts, loadingDb, syncing,
-  fetchFriendsDb, syncFriendsDb,
+  friendsDb,
+  friendsDbTotal,
+  friendCounts,
+  loadingDb,
+  syncing,
+  fetchFriendsDb,
+  syncFriendsDb,
 } = useFriends();
 
-const search = ref('');
-const careStatus = ref('');
-const dateFrom = ref('');
-const dateTo = ref('');
-const kindTab = ref<'all' | 'friend' | 'pending_friend' | 'chatting_stranger' | 'ghost'>('all');
-const activeChips = ref<string[]>([]);
-const selectedAccountId = ref<string | null>(null);
-const pagination = reactive({ page: 1, limit: 25 });
+const stateRaw = useFriendsState();
+// Expose .value refs together to template via shorthand
+const state = {
+  kindFilter: stateRaw.kindFilter,
+  careStatus: stateRaw.careStatus,
+  density: stateRaw.density,
+  restoredFromStorage: stateRaw.restoredFromStorage,
+  dismissRestoreToast: stateRaw.dismissRestoreToast,
+};
 
-const KIND_TABS = [
-  { value: 'all',                label: 'Tất cả',        dotColor: '' },
-  { value: 'friend',             label: 'Đã kết bạn',     dotColor: 'var(--smax-success)' },
-  { value: 'pending_friend',     label: 'Đã gửi mời',     dotColor: 'var(--smax-warning)' },
-  { value: 'chatting_stranger',  label: 'Đang nhắn (lạ)', dotColor: 'var(--smax-info)' },
-  { value: 'ghost',              label: 'Đã ngắt',        dotColor: '#9e9e9e' },
-] as const;
-
-const CRM_LABEL_CHIPS = [
-  { text: 'TTAVIO',        color: 'red' },
-  { text: 'EGD',           color: 'purple' },
-  { text: 'Phiền',         color: 'orange' },
-  { text: 'Ấm',            color: 'yellow' },
-  { text: 'Nóng',          color: 'red' },
-  { text: 'Có tương tác',  color: 'green' },
-  { text: 'Lạnh',          color: 'blue' },
-  { text: 'Đàm phán',      color: 'green' },
+const DENSITY_OPTIONS: { value: DensityMode; label: string }[] = [
+  { value: 'compact',  label: 'Gọn' },
+  { value: 'normal',   label: 'Vừa' },
+  { value: 'detailed', label: 'Rộng' },
 ];
 
+const searchInput = ref('');
+const pagination = reactive({ page: 1, limit: 25 });
+const selected = ref<Set<string>>(new Set());
+const detailFriend = ref<DbFriend | null>(null);
+
+// ─── Active nick resolution ───
+// effectiveNickId: 'all' | account.id | null (loading)
+const effectiveNickId = computed<string | null>(() => stateRaw.selectedNickId.value);
 const activeAccount = computed(() =>
-  accounts.value.find(a => a.id === selectedAccountId.value) || null,
+  accounts.value.find(a => a.id === effectiveNickId.value) || null,
 );
+
+// Counts (TODO khi backend cho aggregate). Tạm derive từ list hiện tại.
+const countByNick = ref<Record<string, number>>({});
+const totalAcrossAllNicks = computed(() => {
+  return Object.values(countByNick.value).reduce((s, v) => s + v, 0);
+});
+const countByKind = computed<Record<string, number>>(() => {
+  return {
+    all: friendsDbTotal.value,
+    friend: friendCounts.value.friend ?? 0,
+    pending_friend: friendCounts.value.pending_friend ?? 0,
+    chatting_stranger: friendCounts.value.chatting_stranger ?? 0,
+    ghost: friendCounts.value.ghost ?? 0,
+  };
+});
+
+const silentCount = computed(() => {
+  const SEVEN = 7 * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  return friendsDb.value.filter(f => f.lastInteractionAt && now - new Date(f.lastInteractionAt).getTime() >= SEVEN).length;
+});
+
+const restoredNickLabel = computed(() => {
+  if (stateRaw.restoredNickId.value === 'all') return 'Tất cả nick';
+  const a = accounts.value.find(x => x.id === stateRaw.restoredNickId.value);
+  return a?.displayName || 'Nick';
+});
+
+// ─── Pagination derived ───
 const totalPages = computed(() => Math.max(1, Math.ceil(friendsDbTotal.value / pagination.limit)));
+const pagFrom = computed(() => {
+  if (friendsDbTotal.value === 0) return 0;
+  return (pagination.page - 1) * pagination.limit + 1;
+});
+const pagTo = computed(() => Math.min(pagination.page * pagination.limit, friendsDbTotal.value));
+const visiblePages = computed<number[]>(() => {
+  const total = totalPages.value;
+  const cur = pagination.page;
+  const out = new Set<number>([1, total, cur - 1, cur, cur + 1]);
+  return [...out].filter(p => p >= 1 && p <= total).sort((a, b) => a - b);
+});
 
-function kindCount(kind: string): number {
-  if (kind === 'all') return friendsDbTotal.value;
-  return friendCounts.value[kind] || 0;
-}
-
+// ─── Fetch wiring ───
 let searchTimeout: ReturnType<typeof setTimeout>;
 function debouncedFetch() {
   clearTimeout(searchTimeout);
-  searchTimeout = setTimeout(() => { pagination.page = 1; fetch(); }, 300);
+  searchTimeout = setTimeout(() => {
+    pagination.page = 1;
+    fetch();
+  }, 300);
 }
 
 async function fetch() {
-  if (!selectedAccountId.value) return;
-  await fetchFriendsDb(selectedAccountId.value, {
-    kind: kindTab.value === 'all' ? undefined : kindTab.value,
+  const id = effectiveNickId.value;
+  if (!id || id === 'all') {
+    // 'all' mode — backend chưa hỗ trợ aggregate cross-nick; tạm để trống danh sách
+    // và hiện hint message (TODO: implement /friends-all endpoint backend-side).
+    friendsDb.value = [];
+    friendsDbTotal.value = 0;
+    return;
+  }
+  await fetchFriendsDb(id, {
+    kind: state.kindFilter.value === 'all' ? undefined : state.kindFilter.value,
     page: pagination.page,
     limit: pagination.limit,
-    search: search.value || undefined,
+    search: searchInput.value || undefined,
   });
 }
-function changePage(p: number) {
+
+function goPage(p: number) {
   pagination.page = p;
   fetch();
 }
 
-function cycleNick() {
-  if (!accounts.value.length) return;
-  const idx = accounts.value.findIndex(a => a.id === selectedAccountId.value);
-  const next = accounts.value[(idx + 1) % accounts.value.length];
-  selectedAccountId.value = next.id;
+function onSelectNick(nickId: string) {
+  stateRaw.selectedNickId.value = nickId;
+  pagination.page = 1;
+  selected.value = new Set();
+  fetch();
+}
+
+function onKindChange(v: FriendKindFilter) {
+  state.kindFilter.value = v;
   pagination.page = 1;
   fetch();
 }
-function toggleChip(name: string) {
-  activeChips.value = activeChips.value.includes(name)
-    ? activeChips.value.filter(x => x !== name)
-    : [...activeChips.value, name];
-  // TODO: filter friendsDb client-side or send to API when supported
+
+function onCareChange(v: string) {
+  state.careStatus.value = v;
+  pagination.page = 1;
+  // TODO: pass careStatus to fetchFriendsDb khi backend hỗ trợ filter theo statusRef
+  fetch();
 }
 
 async function onSync() {
-  if (!selectedAccountId.value) return;
-  await syncFriendsDb(selectedAccountId.value);
+  if (!effectiveNickId.value || effectiveNickId.value === 'all') return;
+  await syncFriendsDb(effectiveNickId.value);
   await fetch();
 }
 
-// Per-row actions — đảm bảo conv tồn tại trước khi push vào Chat (Friend có thể
-// chưa có hội thoại nếu sale chưa từng nhắn). ensure-conversation idempotent.
-async function goChat(f: DbFriend) {
+// ─── Detail panel + actions ───
+function onOpenDetail(f: DbFriend) {
+  detailFriend.value = f;
+}
+
+async function onOpenChat(f: DbFriend) {
+  // Best-effort: ensure conversation tồn tại trước, rồi điều hướng tới Chat.
+  // Reuse logic của FriendsView cũ — backend đảm bảo idempotent.
   try {
-    const res = await api.post<{ conversationId: string }>(
-      `/friends/${f.id}/ensure-conversation`, {},
-    );
+    const { api } = await import('@/api/index');
+    const res = await api.post<{ conversationId: string }>(`/friends/${f.id}/ensure-conversation`, {});
     if (res.data?.conversationId) {
       router.push({ name: 'Chat', params: { convId: res.data.conversationId } });
+      return;
     }
   } catch (err) {
     console.error('[FriendsView] ensure-conversation failed:', err);
-    if (f.contact?.id) router.push({ path: '/chat', query: { contactId: f.contact.id } });
   }
-}
-const toast = useToast();
-const DEFAULT_INVITE_MSG = 'Xin chào, tôi muốn kết bạn với bạn.';
-async function onSendInvite(f: DbFriend) {
-  if (!f.zaloAccountId || !f.zaloUidInNick) return;
-  if (!confirm(`Gửi mời KB tới ${f.contact?.fullName || 'KH'} qua nick ${f.zaloAccount?.displayName}?`)) return;
-  try {
-    await api.post(`/zalo-accounts/${f.zaloAccountId}/friends/requests`, {
-      userId: f.zaloUidInNick,
-      message: DEFAULT_INVITE_MSG,
-    });
-    toast.success(`Đã gửi mời KB ${f.contact?.fullName || ''}`);
-    await fetch();
-  } catch (err) {
-    const msg = (err as { response?: { data?: { error?: string } } }).response?.data?.error || 'Gửi mời KB thất bại';
-    toast.error(msg);
-  }
-}
-async function onCancelInvite(f: DbFriend) {
-  if (!f.zaloAccountId || !f.zaloUidInNick) return;
-  if (!confirm(`Hủy mời KB ${f.contact?.fullName || 'KH'}?`)) return;
-  try {
-    await api.delete(`/zalo-accounts/${f.zaloAccountId}/friends/requests/${f.zaloUidInNick}`);
-    toast.success('Đã hủy mời KB');
-    await fetch();
-  } catch (err) {
-    const msg = (err as { response?: { data?: { error?: string } } }).response?.data?.error || 'Hủy mời KB thất bại';
-    toast.error(msg);
-  }
-}
-function onAutomation(_f: DbFriend) {
-  toast.warning('Automation per-pair: chưa implement');
+  if (f.contact?.id) router.push({ path: '/chat', query: { contactId: f.contact.id } });
 }
 
-// ════════ Per-pair status (dynamic từ Status table) ════════
-interface StatusLite { id: string; name: string; order: number; color: string | null }
-const allStatuses = ref<StatusLite[]>([]);
-async function loadStatuses() {
-  if (allStatuses.value.length > 0) return;
-  try {
-    const res = await api.get<{ statuses: StatusLite[] }>('/settings/statuses');
-    allStatuses.value = res.data.statuses || [];
-  } catch { /* non-critical */ }
+function onOpenContact(f: DbFriend) {
+  if (f.contact?.id) router.push(`/contacts/${f.contact.id}`);
 }
-onMounted(() => { void loadStatuses(); });
 
-async function applyFriendStatus(f: DbFriend, statusId: string | null) {
-  try {
-    await api.patch(`/friends/${f.id}`, { statusId });
-    const next = statusId ? allStatuses.value.find(s => s.id === statusId) || null : null;
-    f.statusRef = next;
-    f.statusId = statusId;
-  } catch (err) {
-    toast.error('Cập nhật status thất bại');
+function onCall(f: DbFriend) {
+  if (f.contact?.phone) {
+    window.location.href = `tel:${f.contact.phone}`;
   }
 }
 
-function chipBg(hex: string | null | undefined): string {
-  if (!hex) return 'rgba(90,100,120,0.10)';
-  const m = hex.match(/^#([0-9a-f]{6})$/i);
-  if (!m) return 'rgba(90,100,120,0.10)';
-  const n = parseInt(m[1], 16);
-  return `rgba(${(n>>16)&255},${(n>>8)&255},${n&255},0.15)`;
+// ─── Bulk actions (stubs — backend wiring lần kế) ───
+function onBulkMessage() {
+  console.log('[bulk] message to', [...selected.value]);
 }
-function chipFg(hex: string | null | undefined): string { return hex || 'var(--smax-grey-700)'; }
-
-// ════════ Nick có log (số nick đã log với KH này) ════════
-// MOCK: hiện friendsDb là per-pair, mỗi row 1 cặp. Số nick log với contactId
-// cần aggregate. Tạm trả 1 — chờ backend bổ sung field hoặc query separate.
-function nickLogCount(_f: DbFriend): number { return 1; }
-function nickLogLevel(f: DbFriend): number {
-  const n = nickLogCount(f);
-  if (n >= 4) return 4;
-  if (n >= 3) return 3;
-  if (n >= 2) return 2;
-  return 1;
+function onBulkTag() {
+  console.log('[bulk] tag', [...selected.value]);
 }
-function onShowNickLog(f: DbFriend) {
-  toast.push(`Detail ${nickLogCount(f)} nick log với ${f.contact?.crmName || 'KH'}: chưa implement`);
+function onBulkChangeStatus() {
+  console.log('[bulk] change status', [...selected.value]);
+}
+function onBulkExport() {
+  console.log('[bulk] export', [...selected.value]);
 }
 
-// ════════ Auto (automation đang chạy per-pair) ════════
-// MOCK: chờ Friend.automations relation
-function autoLabelOf(_f: DbFriend): string | null { return null; }
+// ─── Smart hints ───
+function onApplyHint(h: SmartHint) {
+  if (h.key === 'silent7d') {
+    // Filter client-side cho session này — backend cần thêm param sau
+    console.log('[hint] silent7d — TODO wire backend filter');
+  } else if (h.key === 'newThisWeek') {
+    console.log('[hint] newThisWeek');
+  } else if (h.key === 'hotPending') {
+    state.careStatus.value = 'hot';
+    fetch();
+  } else if (h.key === 'aliasDup') {
+    console.log('[hint] aliasDup — show merge dialog');
+  }
+}
 
-// Formatters
-function genderLabel(value: string) {
-  return GENDER_OPTIONS.find(o => o.value === value)?.text ?? value;
+// ─── Avatar helpers cho header ───
+const NICK_PALETTE = ['av-c1', 'av-c2', 'av-c3', 'av-c4', 'av-c5', 'av-c6', 'av-c7'];
+function nickAvatarClass(id: string): string {
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+  return NICK_PALETTE[h % NICK_PALETTE.length];
 }
-function kindLabel(kind: DbFriend['relationshipKind']): string {
-  const map: Record<DbFriend['relationshipKind'], string> = {
-    friend: 'Đã KB',
-    pending_friend: 'Đã gửi mời',
-    chatting_stranger: 'Đang nhắn (lạ)',
-    ghost: 'Đã ngắt',
-    none: '—',
-  };
-  return map[kind];
+function nickInitials(name?: string | null): string {
+  if (!name) return '?';
+  const parts = name.trim().split(/\s+/);
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[parts.length - 2][0] + parts[parts.length - 1][0]).toUpperCase();
 }
-function kindDotColor(kind: DbFriend['relationshipKind']): string {
-  const map: Record<DbFriend['relationshipKind'], string> = {
-    friend: 'var(--smax-success)',
-    pending_friend: 'var(--smax-warning)',
-    chatting_stranger: 'var(--smax-info)',
-    ghost: '#9e9e9e',
-    none: 'var(--smax-grey-300)',
-  };
-  return map[kind];
+
+function onResetAll() {
+  stateRaw.reset();
+  searchInput.value = '';
+  selected.value = new Set();
+  pagination.page = 1;
+  if (accounts.value.length) {
+    stateRaw.selectedNickId.value = accounts.value[0].id;
+    fetch();
+  }
 }
-function kindChipClass(kind: DbFriend['relationshipKind']): string {
-  const map: Record<DbFriend['relationshipKind'], string> = {
-    friend: 'chip-success',
-    pending_friend: 'chip-warning',
-    chatting_stranger: 'chip-info',
-    ghost: 'chip-grey',
-    none: 'chip-grey',
-  };
-  return map[kind];
-}
-function ageOf(c?: { birthYear: number | null } | null): number | null {
-  if (!c?.birthYear) return null;
-  return new Date().getFullYear() - c.birthYear;
-}
-function relativeDate(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-  if (days === 0) return 'hôm nay';
-  if (days === 1) return 'hôm qua';
-  if (days < 30) return `${days}d trước`;
-  return `${Math.floor(days / 30)}m trước`;
-}
+
+// ─── Watchers ───
+watch(() => stateRaw.density.value, () => {
+  // density chỉ là UI, không cần refetch
+});
+
+// Khi accounts đã load, nếu state đang null thì pick first.
+watch(accounts, (list) => {
+  if (!stateRaw.selectedNickId.value && list.length) {
+    stateRaw.selectedNickId.value = list[0].id;
+    fetch();
+  }
+}, { immediate: false });
 
 onMounted(async () => {
   await fetchAccounts();
-  if (accounts.value.length) {
-    selectedAccountId.value = accounts.value[0].id;
-    fetch();
+
+  // Validate restored nick — nếu nick id từ storage không còn tồn tại → fallback
+  const persisted = stateRaw.selectedNickId.value;
+  if (persisted && persisted !== 'all') {
+    const exists = accounts.value.some(a => a.id === persisted);
+    if (!exists && accounts.value.length) {
+      stateRaw.selectedNickId.value = accounts.value[0].id;
+    }
+  } else if (!persisted && accounts.value.length) {
+    stateRaw.selectedNickId.value = accounts.value[0].id;
+  }
+  fetch();
+
+  // Auto-dismiss restore toast sau 5s
+  if (stateRaw.restoredFromStorage.value) {
+    setTimeout(() => stateRaw.dismissRestoreToast(), 5000);
   }
 });
 </script>
 
 <style scoped>
-.smax-friends-page {
-  padding: 13px 18px 26px;
-  background: var(--smax-grey-100);
-  min-height: 100%;
+.friends-page {
+  height: calc(100vh - var(--smax-topnav-h, 52px));
+  background: #f5f7fb;
+  display: flex; flex-direction: column;
+  overflow: hidden;
 }
 
-.page-header h1 {
-  margin: 0 0 5px;
-  font-size: 20px; font-weight: 600;
-}
-.subtitle {
-  color: var(--smax-grey-700);
-  margin-bottom: 11px;
-  font-size: 13px;
+.page-grid {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  flex: 1;
+  min-height: 0;
 }
 
-/* ════════ Filter bar ════════ */
-.filter-bar {
-  background: var(--smax-bg);
-  border-radius: 7px;
-  padding: 11px 13px;
-  margin-bottom: 9px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+@media (max-width: 1100px) {
+  .page-grid { grid-template-columns: 220px 1fr; }
 }
-.filter-row-1 {
-  display: flex; align-items: center; gap: 7px;
-  flex-wrap: wrap;
-  margin-bottom: 9px;
-}
-.filter-row-1 > * { font-family: inherit; font-size: 13px; }
-.search-input {
-  flex: 1; min-width: 220px;
-  padding: 7px 11px;
-  border: 1px solid var(--smax-grey-300);
-  border-radius: 6px;
-  background: var(--smax-bg);
-}
-.search-input:focus { outline: none; border-color: var(--smax-primary); }
-.filter-row-1 select,
-.date-input {
-  padding: 7px 11px;
-  border: 1px solid var(--smax-grey-300);
-  border-radius: 6px;
-  background: var(--smax-bg);
-}
-.date-input { max-width: 140px; }
-.date-separator { color: var(--smax-grey-700); font-size: 12px; }
-
-.nick-single {
-  background: var(--smax-bg);
-  border: 1.5px solid var(--smax-primary);
-  border-radius: 6px;
-  padding: 5px 11px 5px 9px;
-  display: flex; align-items: center; gap: 7px;
-  min-width: 240px;
-  cursor: pointer;
-  color: var(--smax-primary);
-}
-.nick-single:hover { background: var(--smax-primary-soft); }
-.nick-single:disabled { opacity: 0.5; cursor: not-allowed; }
-.ns-label {
-  font-size: 10px;
-  color: var(--smax-grey-700);
-  text-transform: uppercase; letter-spacing: 0.4px;
-  font-weight: 600;
-}
-.ns-avatar {
-  width: 22px; height: 22px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, #ffb74d, #f57c00);
-  color: white; font-size: 10px; font-weight: 600;
-  display: inline-flex; align-items: center; justify-content: center;
-}
-.ns-name { flex: 1; font-weight: 600; color: var(--smax-text); }
-.ns-count {
-  background: var(--smax-primary-soft);
-  color: var(--smax-primary);
-  padding: 1px 7px; border-radius: 9px;
-  font-size: 11px;
-}
-.ns-arrow { font-size: 11px; color: var(--smax-grey-700); }
-
-.spacer { flex: 1; }
-.btn {
-  padding: 7px 13px;
-  border: 1px solid var(--smax-primary);
-  background: var(--smax-bg);
-  color: var(--smax-primary);
-  border-radius: 6px;
-  cursor: pointer;
-  display: inline-flex; align-items: center; gap: 5px;
-  font-size: 13px;
-}
-.btn:hover { background: var(--smax-primary-soft); }
-.btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn-primary { background: var(--smax-primary); color: white; }
-.btn-primary:hover:not(:disabled) { background: var(--smax-primary-hover); }
-
-/* Kind tabs */
-.kind-tabs {
-  display: flex; gap: 3px;
-  border-bottom: 1px solid var(--smax-grey-200);
-}
-.kind-tab {
-  background: transparent; border: none;
-  padding: 8px 13px;
-  cursor: pointer;
-  font-size: 13px; font-weight: 500;
-  color: var(--smax-grey-700);
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
-  display: inline-flex; align-items: center; gap: 5px;
-  font-family: inherit;
-}
-.kind-tab:hover { color: var(--smax-primary); }
-.kind-tab.active {
-  color: var(--smax-primary);
-  border-bottom-color: var(--smax-primary);
-}
-.kind-tab .count {
-  background: var(--smax-grey-100);
-  color: var(--smax-grey-700);
-  padding: 1px 7px; border-radius: 9px;
-  font-size: 11px;
-}
-.kind-tab.active .count {
-  background: var(--smax-primary-soft);
-  color: var(--smax-primary);
-}
-.badge-dot {
-  display: inline-block;
-  width: 8px; height: 8px;
-  border-radius: 50%;
+@media (max-width: 800px) {
+  .page-grid { grid-template-columns: 1fr; }
+  .page-grid > :first-child { display: none; }
 }
 
-/* Label chips */
-.label-chip-row {
-  display: flex; gap: 5px; flex-wrap: wrap;
-  margin-top: 9px;
-  align-items: center;
-}
-.label-text {
-  font-size: 11px; color: var(--smax-grey-700);
-  text-transform: uppercase; letter-spacing: 0.4px;
-  font-weight: 600;
-}
-
-/* ════════ Stats ════════ */
-.stats-row {
-  display: flex; gap: 11px; flex-wrap: wrap;
-  background: var(--smax-bg);
-  padding: 9px 13px;
-  border-radius: 7px;
-  margin-bottom: 9px;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-}
-.stat-box { display: flex; align-items: center; gap: 5px; font-size: 13px; }
-.stat-num { font-weight: 600; color: var(--smax-primary); margin-left: 3px; }
-
-.empty-page {
-  background: var(--smax-bg);
-  border-radius: 7px;
-  padding: 60px 20px;
-  text-align: center;
-  color: var(--smax-grey-700);
-  font-style: italic;
-}
-
-/* ════════ Table ════════ */
-.scroll-wrap {
-  background: var(--smax-bg);
-  border-radius: 7px;
-  overflow-x: auto;
-  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
-}
-.smax-table {
-  width: 100%; border-collapse: collapse;
-  font-size: 12.5px;
-  min-width: 1500px;
-}
-.smax-table thead th {
-  background: var(--smax-grey-50);
-  border-bottom: 1px solid var(--smax-grey-200);
-  padding: 9px 11px;
-  text-align: left;
-  font-weight: 600;
-  color: var(--smax-grey-700);
-  white-space: nowrap;
-  font-size: 11.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-}
-.smax-table tbody tr { border-bottom: 1px solid var(--smax-grey-100); }
-.smax-table tbody tr:hover { background: var(--smax-grey-50); }
-.smax-table td { padding: 9px 11px; vertical-align: top; }
-.w-180 { width: 180px; }
-
-.kh-cell, .nick-cell {
-  display: flex; align-items: center; gap: 7px;
-}
-.three-line, .two-line {
-  display: flex; flex-direction: column; gap: 2px;
+.main {
+  display: flex; flex-direction: column;
+  overflow: hidden;
   min-width: 0;
 }
-.line1 { font-weight: 500; color: var(--smax-text); font-size: 12.5px; }
-.line2 { font-size: 11px; color: var(--smax-grey-700); }
-.line3 { font-size: 10.5px; color: var(--smax-grey-300); font-style: italic; }
-.line1.empty { color: var(--smax-grey-300); font-style: italic; font-weight: 400; }
-.uid {
-  font-family: ui-monospace, "Cascadia Code", Menlo, monospace;
-  font-size: 10px; color: var(--smax-grey-700);
-  word-break: break-all;
+
+.page-head {
+  padding: 12px 20px 8px;
+  background: #fff;
+  border-bottom: 1px solid #e4e8ef;
+  display: flex; align-items: center; gap: 12px;
+  flex-wrap: wrap;
+}
+.page-head h1 { margin: 0; font-size: 18px; font-weight: 700; color: #1a2433; }
+
+.active-nick {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: #e8f0fe; color: #2f6ee5;
+  padding: 3px 10px; border-radius: 14px;
+  font-weight: 600; font-size: 12px;
+}
+.active-nick .av {
+  width: 18px; height: 18px; border-radius: 50%;
+  color: #fff; display: grid; place-items: center;
+  font-size: 9px; font-weight: 700;
+}
+.active-nick.all .av {
+  background: linear-gradient(135deg, #94a3b8, #64748b);
+}
+.active-nick .dot-sep { opacity: .6; }
+
+.spacer { flex: 1; }
+
+.head-search {
+  padding: 7px 12px;
+  border: 1px solid #cdd4df; border-radius: 8px;
+  width: 280px; font-size: 13px;
+  font-family: inherit;
+}
+.head-search:focus { outline: none; border-color: #2f6ee5; box-shadow: 0 0 0 3px #e8f0fe; }
+
+.btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 12px; border-radius: 7px; border: 1px solid #cdd4df;
+  background: #fff; color: #1a2433;
+  font-weight: 600; font-size: 12px;
+  cursor: pointer; font-family: inherit;
+}
+.btn:hover { background: #f9fafc; }
+.btn.primary { background: #2f6ee5; color: #fff; border-color: #2f6ee5; }
+.btn.primary:hover:not(:disabled) { background: #2356b8; }
+.btn:disabled { opacity: .6; cursor: not-allowed; }
+
+.stats {
+  padding: 8px 20px;
+  background: #f9fafc;
+  border-bottom: 1px solid #e4e8ef;
+  display: flex; gap: 16px; align-items: center;
+  font-size: 12px; color: #5b6573;
+}
+.stats .stat strong { color: #1a2433; }
+.stats .stat.good strong { color: #16a34a; }
+.stats .stat.warn strong { color: #d97706; }
+.stats .stat.bad strong { color: #dc2626; }
+.spacer-flex { flex: 1; }
+
+.density-label { font-size: 11px; }
+.density-toggle {
+  display: inline-flex;
+  background: #fff; border: 1px solid #e4e8ef;
+  border-radius: 6px; padding: 1px;
+}
+.density-toggle button {
+  padding: 3px 8px;
+  background: transparent; border: none;
+  border-radius: 4px;
+  font-size: 11px; color: #5b6573;
+  cursor: pointer; font-family: inherit;
+}
+.density-toggle button.active {
+  background: #2f6ee5; color: #fff; font-weight: 600;
 }
 
-.avatar.avatar-customer {
-  width: 32px; height: 32px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, #90caf9, #1976d2);
-  display: flex; align-items: center; justify-content: center;
-  color: white; font-weight: 600; font-size: 13px;
-  flex-shrink: 0;
+.pag {
+  padding: 8px 20px;
+  background: #fff;
+  border-top: 1px solid #e4e8ef;
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; color: #5b6573;
 }
-.avatar.avatar-customer.is-female {
-  background: linear-gradient(135deg, #f48fb1, #c2185b);
+.pag button {
+  padding: 4px 10px;
+  border: 1px solid #e4e8ef; background: #fff;
+  border-radius: 5px; cursor: pointer; font-size: 12px;
+  font-family: inherit;
 }
-.avatar.avatar-nick {
-  width: 26px; height: 26px;
-  border-radius: 50%;
-  background: linear-gradient(135deg, #ffb74d, #f57c00);
-  display: flex; align-items: center; justify-content: center;
-  color: white; font-weight: 600; font-size: 10px;
-  flex-shrink: 0;
+.pag button:hover:not(:disabled) { background: #f9fafc; }
+.pag button.primary { background: #2f6ee5; color: #fff; border-color: #2f6ee5; }
+.pag button:disabled { opacity: .4; cursor: not-allowed; }
+
+.toast {
+  position: fixed; bottom: 20px; right: 20px;
+  background: #1a2433; color: #fff;
+  padding: 10px 16px; border-radius: 8px;
+  font-size: 12px; max-width: 360px;
+  box-shadow: 0 4px 20px rgba(0,0,0,.25);
+  z-index: 60;
+  display: flex; align-items: center; gap: 8px;
+  animation: slideUp .25s;
+}
+.toast a { color: #93c5fd; text-decoration: none; margin-left: 4px; }
+.toast a:hover { text-decoration: underline; }
+.toast-close {
+  background: transparent; border: none;
+  color: #fff; opacity: .6; cursor: pointer;
+  margin-left: 4px; font-family: inherit; font-size: 12px;
+}
+.toast-close:hover { opacity: 1; }
+@keyframes slideUp {
+  from { transform: translateY(20px); opacity: 0; }
+  to   { transform: translateY(0); opacity: 1; }
 }
 
-.cell-strong { font-weight: 500; font-size: 12px; }
-.empty { color: var(--smax-grey-300); }
-.text-grey { color: var(--smax-grey-700); }
-
-.tag-cell { display: flex; flex-wrap: wrap; gap: 4px; }
-.chip {
-  display: inline-flex; align-items: center;
-  padding: 1px 7px; border-radius: 9px;
-  font-size: 10.5px; font-weight: 500;
-  white-space: nowrap;
-}
-.chip-success     { background: rgba(0,200,83,0.12); color: #00897b; }
-.chip-warning     { background: rgba(255,145,0,0.15); color: #ef6c00; }
-.chip-info        { background: rgba(33,150,243,0.12); color: #1565c0; }
-.chip-grey        { background: rgba(90,100,120,0.10); color: var(--smax-grey-700); }
-.chip-error       { background: rgba(255,82,82,0.12); color: #c62828; }
-.chip-orange-soft { background: rgba(255,167,38,0.18); color: #ef6c00; }
-
-.action-cell { display: flex; gap: 4px; }
-.row-action-btn {
-  background: var(--smax-bg);
-  border: 1px solid var(--smax-grey-300);
-  border-radius: 5px;
-  padding: 3px 7px;
-  cursor: pointer;
-  font-size: 12px;
-}
-.row-action-btn:hover {
-  background: var(--smax-primary-soft);
-  border-color: var(--smax-primary);
-  color: var(--smax-primary);
-}
-
-.empty-state {
-  text-align: center;
-  padding: 38px;
-  color: var(--smax-grey-700);
-  font-style: italic;
-}
-
-/* Nick có log badge */
-.nick-count-cell {
-  display: flex; align-items: center; gap: 5px;
-}
-.nick-count-badge {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 26px; height: 26px;
-  border-radius: 50%;
-  font-weight: 700; font-size: 12px;
-  color: white;
-  cursor: pointer;
-  user-select: none;
-  flex-shrink: 0;
-  background: var(--smax-grey-300);
-}
-.nick-count-badge.lvl-1 { background: var(--smax-grey-300); color: var(--smax-grey-700); }
-.nick-count-badge.lvl-2 { background: linear-gradient(135deg, #66bb6a, #2e7d32); }
-.nick-count-badge.lvl-3 { background: linear-gradient(135deg, #ffa726, #ef6c00); }
-.nick-count-badge.lvl-4 { background: linear-gradient(135deg, #ef5350, #c62828); }
-.nick-count-badge:hover { transform: scale(1.08); transition: transform 0.15s; }
-.nick-count-label {
-  font-size: 10.5px; color: var(--smax-grey-700);
-  white-space: nowrap;
-}
-
-.w-90 { width: 90px; }
-.w-110 { width: 110px; }
-
-.pagination {
-  display: flex; align-items: center; justify-content: center; gap: 11px;
-  margin-top: 13px;
-  font-size: 13px; color: var(--smax-grey-700);
-}
+.av-c1 { background: linear-gradient(135deg, #2f6ee5, #1d4ed8); }
+.av-c2 { background: linear-gradient(135deg, #16a34a, #15803d); }
+.av-c3 { background: linear-gradient(135deg, #d97706, #b45309); }
+.av-c4 { background: linear-gradient(135deg, #7c3aed, #6d28d9); }
+.av-c5 { background: linear-gradient(135deg, #db2777, #be185d); }
+.av-c6 { background: linear-gradient(135deg, #0891b2, #0e7490); }
+.av-c7 { background: linear-gradient(135deg, #ea580c, #c2410c); }
 </style>
