@@ -41,14 +41,14 @@ async function handleZaloReaction(accountId: string, io: Server | null, reaction
     // Tìm conversation theo externalThreadId + accountId
     const conversation = await prisma.conversation.findFirst({
       where: { zaloAccountId: accountId, externalThreadId: threadId },
-      select: { id: true },
+      select: { id: true, contactId: true, orgId: true },
     });
     if (!conversation) return;
 
     // Tìm Message theo zaloMsgId
     const message = await prisma.message.findFirst({
       where: { conversationId: conversation.id, zaloMsgId: targetZaloMsgId },
-      select: { id: true },
+      select: { id: true, senderType: true },
     });
     if (!message) return;
 
@@ -94,6 +94,24 @@ async function handleZaloReaction(accountId: string, io: Server | null, reaction
         source: 'zalo',
       }],
     });
+
+    // Phase 8 — Engagement aggregate: count only KH-on-Sale reactions
+    // (KH thả ❤️ vào tin sale gửi). Skip nếu sale thả vào tin KH (không phải signal).
+    const isAddAction = !!rawIcon && rType >= 0;
+    if (isAddAction && conversation.contactId && message.senderType === 'self') {
+      void (async () => {
+        try {
+          const { incrementDailyAggregate } = await import('../engagement/engagement-service.js');
+          await incrementDailyAggregate({
+            contactId: conversation.contactId!,
+            orgId: conversation.orgId,
+            reaction: 1,
+          });
+        } catch {
+          // silent — engagement best-effort
+        }
+      })();
+    }
   } catch (err) {
     logger.warn(`[zalo:${accountId}] reaction handler error:`, err);
   }

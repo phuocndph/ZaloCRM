@@ -171,6 +171,47 @@ export async function handleIncomingMessage(
     void applyContactAggregateFromMessage(aggregateInput);
     void applyFriendAggregate(aggregateInput);
 
+    // Phase 8 — Engagement daily aggregate hook (fire-and-forget).
+    // Skip for group threads (only meaningful for 1-1 contact engagement).
+    if (msg.threadType !== 'group' && contactId) {
+      void (async () => {
+        try {
+          const { incrementDailyAggregate, messageEngagementInputs } =
+            await import('../engagement/engagement-service.js');
+          const signals = messageEngagementInputs(message.contentType, msg.isSelf);
+
+          // customerInitiated: KH nhắn trước trong ngày (chỉ khi inbound + chưa có activity nào hôm nay)
+          let customerInitiated = false;
+          if (!msg.isSelf) {
+            const today = new Date(sentAt);
+            const startOfDay = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()));
+            const priorToday = await prisma.message.findFirst({
+              where: {
+                conversationId: conversation.id,
+                sentAt: { gte: startOfDay, lt: sentAt },
+                id: { not: message.id },
+              },
+              select: { id: true },
+            });
+            customerInitiated = !priorToday;
+          }
+
+          await incrementDailyAggregate({
+            contactId,
+            orgId: account.orgId,
+            at: sentAt,
+            inboundMsg: signals.inbound,
+            outboundMsg: signals.outbound,
+            mediaShare: signals.mediaShare,
+            voiceMsg: signals.voiceMsg,
+            customerInitiated,
+          });
+        } catch (err) {
+          // silent — engagement is best-effort
+        }
+      })();
+    }
+
     // Phase 6 — Lead scoring hook (fire-and-forget).
     // Resolve friendId by (zaloAccountId, externalThreadId) sau aggregate đã chạy.
     // Nếu Friend chưa exist (lần đầu chat), aggregate sẽ tạo row → hook sẽ chạy ở message kế.

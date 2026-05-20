@@ -29,6 +29,7 @@ import {
   checkRuleEnabled,
 } from './gate-evaluator.js';
 import { dispatchAction } from './action-dispatcher.js';
+import { pickNickForTask } from './nick-selector.js';
 import type { SequenceStep } from '../sequences/types.js';
 import type { BlockActionType } from '../blocks/types.js';
 
@@ -171,13 +172,30 @@ async function processTask(taskId: string): Promise<void> {
     }
   }
 
-  // 6. Nick assignment — TODO Phase E2: pick from pool per actionType caps.
-  //    For now, use task.assignedNickId if pre-set (manual_run can pre-set),
-  //    or skip with reason "no_nick_assigned".
+  // 6. Nick assignment — pick from pool if task didn't pre-set one.
+  //    pickNickForTask handles per-actionType selection:
+  //      - send_message: must find existing Friend (accepted/pending)
+  //      - request_friend: round-robin across connected nicks, dedup attempts, cap-aware
   let assignedNickId = task.assignedNickId;
   if (!assignedNickId && (actionType === 'request_friend' || actionType === 'send_message')) {
-    await markSkipped(taskId, 'rule_disabled', 'No nick assigned (Phase E2 pool selector pending)');
-    return;
+    const pick = await pickNickForTask({
+      orgId: task.orgId,
+      contactId: task.contact.id,
+      actionType,
+    });
+    if (!pick) {
+      const reason = actionType === 'send_message'
+        ? 'no_friend_nick'
+        : 'all_nicks_capped_or_attempted';
+      await markSkipped(taskId, reason, 'pickNickForTask returned null');
+      return;
+    }
+    assignedNickId = pick.nickId;
+    // Persist the selection so retries reuse the same nick
+    await prisma.automationTask.update({
+      where: { id: taskId },
+      data: { assignedNickId },
+    });
   }
 
   // 7. Per-nick throttle + daily cap (Zalo-bound actions only)

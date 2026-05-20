@@ -336,6 +336,27 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
         },
       });
 
+      // Phase 7 — emit AutomationEvent for engine triggers bound to contact_created
+      void (async () => {
+        try {
+          const { automationEventBus } = await import('../automation/engine/event-bus.js');
+          automationEventBus.emit({
+            type: 'contact_created',
+            orgId: user.orgId,
+            occurredAt: new Date(),
+            contactId: contact.id,
+            payload: {
+              source: contact.source,
+              status: contact.status,
+              hasPhone: Boolean(contact.phone),
+              hasZalo: Boolean(contact.zaloUid || contact.zaloGlobalId),
+            },
+          });
+        } catch {
+          // engine not loaded — silent
+        }
+      })();
+
       return reply.status(201).send(contact);
     } catch (err) {
       logger.error('[contacts] Create error:', err);
