@@ -19,7 +19,7 @@
 <template>
   <Teleport to="body">
     <div v-if="modelValue" class="editor-backdrop" @click.self="close">
-      <div class="editor airtable-scope" @keydown.escape="close" @keydown.ctrl.enter="submit" tabindex="-1" ref="editorRef">
+      <div class="editor airtable-scope" @keydown.escape="close" @keydown.ctrl.enter="submit" tabindex="-1">
         <!-- ─── Header ─── -->
         <div class="editor-head">
           <h2>📌 {{ isEdit ? 'Sửa nhắc hẹn' : 'Tạo nhắc hẹn' }}</h2>
@@ -28,16 +28,18 @@
 
         <!-- ─── Body ─── -->
         <div class="editor-body">
-          <!-- 1. Tiêu đề -->
+          <!-- 1. Tiêu đề — icon prefix + placeholder bold trong box (bỏ label trên) -->
           <div class="field">
-            <span class="field-label">Tiêu đề</span>
-            <input
-              ref="titleInputRef"
-              v-model="form.title"
-              class="title-input"
-              type="text"
-              :placeholder="titlePlaceholder"
-            />
+            <div class="title-input-wrap">
+              <span class="ic">📌</span>
+              <input
+                ref="titleInputRef"
+                v-model="form.title"
+                class="title-input"
+                type="text"
+                :placeholder="titlePlaceholder"
+              />
+            </div>
           </div>
 
           <!-- 1.5. Liên kết KH + Sale phụ trách (2 cols) -->
@@ -58,9 +60,10 @@
                 </div>
                 <button type="button" class="remove" @click="clearContact" title="Bỏ link KH">✕</button>
               </div>
-              <!-- KH autocomplete dropdown -->
+              <!-- KH autocomplete dropdown — autofocus search ngay khi mở -->
               <div v-else-if="custSuggestOpen" class="cust-suggest">
                 <input
+                  ref="custSearchInputRef"
                   v-model="custQuery"
                   class="cust-suggest-search"
                   type="text"
@@ -87,7 +90,7 @@
                   Không tìm thấy KH "{{ custQuery }}"
                 </div>
                 <div class="cust-item skip" @mousedown.prevent="dismissCustSuggest">
-                  → Bỏ qua, tạo nhắc hẹn không link KH
+                  → Không gắn khách
                 </div>
               </div>
               <button v-else type="button" class="link-kh-btn" @click="openCustSuggest">
@@ -163,30 +166,33 @@
             </div>
           </div>
 
-          <!-- 5. Địa điểm -->
+          <!-- 5. Địa điểm — icon prefix + 6 chips 1 dòng (5 preset + smart auto) -->
           <div class="field">
-            <span class="field-label">Địa điểm</span>
-            <input
-              v-model="form.location"
-              class="location-input"
-              type="text"
-              placeholder="Nhập địa điểm hoặc chọn nhanh bên dưới..."
-            />
-            <div class="tip-row">
+            <div class="location-input-wrap">
+              <span class="ic">📍</span>
+              <input
+                v-model="form.location"
+                class="location-input"
+                type="text"
+                placeholder="Nhập địa điểm..."
+              />
+            </div>
+            <div class="location-tip-row">
               <button
                 v-for="p in LOCATION_PRESETS"
                 :key="p.value"
                 type="button"
-                class="tip-chip"
+                class="loc-chip"
                 @click="form.location = p.value"
               >{{ p.icon }} {{ p.value }}</button>
               <button
-                v-if="smartLocation"
                 type="button"
-                class="tip-chip smart"
-                @click="form.location = smartLocation"
-                :title="'Gợi ý từ tiêu đề'"
-              >🤖 {{ smartLocation }}</button>
+                class="loc-chip smart"
+                :class="{ disabled: !smartLocation }"
+                :disabled="!smartLocation"
+                @click="smartLocation && (form.location = smartLocation)"
+                :title="smartLocation ? `Gợi ý: ${smartLocation}` : 'Tự nhận diện từ tiêu đề (chưa có)'"
+              >🤖 {{ smartLocation ? smartLocation : 'Auto' }}</button>
             </div>
           </div>
 
@@ -355,10 +361,10 @@ const emit = defineEmits<{
   (e: 'updated', a: Appointment): void;
 }>();
 
-const editorRef = ref<HTMLDivElement | null>(null);
 const titleInputRef = ref<HTMLInputElement | null>(null);
 const dateBtnRef = ref<HTMLButtonElement | null>(null);
 const timeBtnRef = ref<HTMLButtonElement | null>(null);
+const custSearchInputRef = ref<HTMLInputElement | null>(null);
 
 // Computed popup position từ button bounding rect (vì popup TELEPORT ngoài modal,
 // không thể dùng absolute relative đến field nữa — modal sẽ KHÔNG bị popup
@@ -390,9 +396,9 @@ const custSearching = ref(false);
 
 function openCustSuggest() {
   custSuggestOpen.value = true;
+  // Auto-focus search input ngay khi mở (1-click flow, không cần click thêm)
   nextTick(() => {
-    const el = editorRef.value?.querySelector<HTMLInputElement>('.cust-suggest-search');
-    el?.focus();
+    custSearchInputRef.value?.focus();
   });
 }
 
@@ -456,8 +462,8 @@ const error = ref('');
 
 const titlePlaceholder = computed(() =>
   selectedContact.value?.fullName
-    ? `Gọi nhắc KH ${selectedContact.value.fullName}`
-    : 'Gọi nhắc khách hàng...',
+    ? `Tiêu đề nhắc hẹn — vd Gọi nhắc ${selectedContact.value.fullName}`
+    : 'Tiêu đề nhắc hẹn — vd Gọi nhắc khách hàng',
 );
 
 const canSubmit = computed(() =>
@@ -733,18 +739,22 @@ const DURATIONS = [
 ];
 
 /**
- * Compute end label support multi-day. Trong ngày → "HH:mm". Qua ngày → "HH:mm DD/MM".
+ * Compute end label support multi-day.
+ *   Trong ngày      → "HH:mm"
+ *   Qua ngày khác   → "HH:mm DD/MM"
+ *
+ * Parse form.date (ISO "YYYY-MM-DD") theo LOCAL timezone (split + new Date(y, m-1, d))
+ * thay vì new Date("YYYY-MM-DD") (UTC midnight → off by tz hours khi compute).
  */
 const computedEndLabel = computed(() => {
   if (!form.time || !form.durationMin || !form.date) return '--:--';
+  const [y, mo, d] = form.date.split('-').map((s) => parseInt(s, 10));
   const [h, m] = form.time.split(':').map((s) => parseInt(s, 10));
-  const startDate = new Date(form.date);
-  startDate.setHours(h, m, 0, 0);
+  const startDate = new Date(y, mo - 1, d, h, m, 0, 0);
   const endDate = new Date(startDate.getTime() + form.durationMin * 60 * 1000);
   const endH = String(endDate.getHours()).padStart(2, '0');
   const endM = String(endDate.getMinutes()).padStart(2, '0');
   const timeOnly = `${endH}:${endM}`;
-  // Same day → chỉ giờ. Khác ngày → kèm DD/MM
   if (
     endDate.getFullYear() === startDate.getFullYear() &&
     endDate.getMonth() === startDate.getMonth() &&
@@ -925,15 +935,22 @@ if (typeof window !== 'undefined') {
 }
 .row-2 { display: grid; grid-template-columns: 1fr 1fr; gap: var(--at-s-sm); }
 
-/* Title input (font-weight 500 size 16 — đậm hơn body) */
-.title-input {
+/* Title input wrap — icon prefix + placeholder bold inline */
+.title-input-wrap {
+  display: flex; align-items: center;
   width: 100%; height: 48px; padding: 0 var(--at-s-md);
   border: 1px solid var(--at-hairline); border-radius: var(--at-r-sm);
-  font-family: inherit; font-size: 16px; font-weight: 500;
-  color: var(--at-ink); background: var(--at-canvas); outline: none;
+  background: var(--at-canvas); gap: 10px;
 }
-.title-input:focus { border-color: var(--at-ink); }
-.title-input::placeholder { font-weight: 400; color: var(--at-muted); }
+.title-input-wrap:focus-within { border-color: var(--at-ink); }
+.title-input-wrap .ic { font-size: 18px; flex-shrink: 0; }
+.title-input {
+  flex: 1; min-width: 0;
+  border: none; outline: none; background: transparent;
+  font-family: inherit; font-size: 16px; font-weight: 500;
+  color: var(--at-ink);
+}
+.title-input::placeholder { font-weight: 500; color: var(--at-muted); }
 
 /* Linked KH row — 1 dòng: avatar + tên - sdt - (gợi nhớ) + remove */
 .linked-kh-row {
@@ -1230,40 +1247,78 @@ if (typeof window !== 'undefined') {
   font-variant-numeric: tabular-nums;
 }
 
-/* Type chips */
-.type-row { display: flex; gap: 6px; flex-wrap: wrap; }
+/* Type chips — 4 chips 1 dòng grid 4-col, narrower 10% */
+.type-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 5px;
+}
 .type-chip {
-  flex: 1; min-width: 120px;
-  padding: 10px 12px; border-radius: var(--at-r-md);
+  min-width: 0;
+  padding: 8px 8px; border-radius: var(--at-r-md);
   border: 1px solid var(--at-hairline);
-  display: flex; align-items: center; gap: 10px;
+  display: flex; align-items: center; gap: 6px;
   background: var(--at-canvas); cursor: pointer;
-  font-size: 13px; font-weight: 500; color: var(--at-body);
+  font-size: 12.5px; font-weight: 500; color: var(--at-body);
   font-family: inherit;
+  white-space: nowrap; overflow: hidden;
 }
 .type-chip:active { background: var(--at-surface-soft); }
 .type-chip.active {
   border-color: var(--at-ink); background: var(--at-ink); color: var(--at-on-primary);
 }
 .type-chip .type-ico {
-  width: 28px; height: 28px; border-radius: var(--at-r-sm);
+  width: 24px; height: 24px; border-radius: var(--at-r-sm);
   display: inline-flex; align-items: center; justify-content: center;
-  font-size: 14px; flex-shrink: 0;
+  font-size: 13px; flex-shrink: 0;
 }
 .type-chip[data-t="call"]      .type-ico { background: #fdf0e3; color: #7a4115; }
 .type-chip[data-t="message"]   .type-ico { background: #e8f4ee; color: #1f4d39; }
 .type-chip[data-t="meeting"]   .type-ico { background: #fbe6dc; color: #7a2000; }
 .type-chip[data-t="follow_up"] .type-ico { background: #fdf3df; color: #7a5818; }
 
-/* Location input */
-.location-input {
+/* Location input wrap — icon prefix giống title */
+.location-input-wrap {
+  display: flex; align-items: center;
   width: 100%; height: 44px; padding: 0 var(--at-s-md);
   border: 1px solid var(--at-hairline); border-radius: var(--at-r-sm);
-  font-family: inherit; font-size: 14px; color: var(--at-ink);
-  background: var(--at-canvas); outline: none;
+  background: var(--at-canvas); gap: 8px;
 }
-.location-input:focus { border-color: var(--at-ink); }
-.location-input::placeholder { color: var(--at-muted); }
+.location-input-wrap:focus-within { border-color: var(--at-ink); }
+.location-input-wrap .ic { font-size: 16px; flex-shrink: 0; }
+.location-input {
+  flex: 1; min-width: 0;
+  border: none; outline: none; background: transparent;
+  font-family: inherit; font-size: 14px; color: var(--at-ink);
+}
+.location-input::placeholder { color: var(--at-muted); font-weight: 500; }
+
+/* Location chips 6 cols 1 dòng — border-radius nhỏ 10px (md) */
+.location-tip-row {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 4px;
+  margin-top: 4px;
+}
+.loc-chip {
+  display: inline-flex; align-items: center; justify-content: center; gap: 3px;
+  padding: 5px 6px;
+  height: 28px;
+  background: var(--at-canvas);
+  border: 1px solid var(--at-hairline);
+  border-radius: var(--at-r-md);
+  font-size: 11px; font-weight: 500; color: var(--at-body);
+  cursor: pointer; font-family: inherit;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  min-width: 0;
+}
+.loc-chip:active:not(:disabled) { background: var(--at-surface-soft); }
+.loc-chip.smart {
+  background: var(--at-cream); border-color: var(--at-mustard); color: var(--at-ink);
+}
+.loc-chip.disabled {
+  opacity: 0.5; cursor: not-allowed; background: var(--at-surface-soft);
+}
 
 /* Notes textarea */
 .notes-area {
