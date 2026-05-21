@@ -68,8 +68,8 @@
       </span>
     </div>
 
-    <!-- Body: sidebar + content -->
-    <div class="apt-body">
+    <!-- Body: sidebar + content + detail panel (3-col squeeze layout) -->
+    <div class="apt-body" :class="{ 'with-panel': !!selectedAppointment }">
       <div v-if="sidebarOpen && isNarrow" class="sidebar-backdrop" @click="sidebarOpen = false" />
       <div class="sidebar-wrap" :class="{ open: sidebarOpen }">
       <AppointmentsSidebar
@@ -111,19 +111,19 @@
           @open-chat="onOpenChat"
         />
       </main>
-    </div>
 
-    <!-- Detail panel -->
-    <AppointmentDetailPanel
-      :appointment="selectedAppointment"
-      @close="selectedAppointment = null"
-      @complete="onMarkComplete"
-      @cancel="onCancel"
-      @no-show="onNoShow"
-      @reschedule="onReschedule"
-      @open-chat="onOpenChat"
-      @open-contact="onOpenContact"
-    />
+      <!-- Detail panel — 3rd grid column trên desktop, overlay trên mobile (<900px) -->
+      <AppointmentDetailPanel
+        :appointment="selectedAppointment"
+        @close="selectedAppointment = null"
+        @complete="onMarkComplete"
+        @cancel="onCancel"
+        @no-show="onNoShow"
+        @reschedule="onReschedule"
+        @open-chat="onOpenChat"
+        @open-contact="onOpenContact"
+      />
+    </div>
 
     <!-- Quick create modal -->
     <AppointmentQuickCreate
@@ -585,7 +585,7 @@ onBeforeUnmount(() => {
 .at-chip .chip-info { opacity: 0.8; font-weight: 400; }
 .at-chip .x { margin-left: 2px; opacity: 0.6; font-size: 11px; }
 
-/* ── Body grid ──────────────────────────────────────────────────────── */
+/* ── Body grid (3-col squeeze layout) ────────────────────────────────── */
 .apt-body {
   display: grid;
   grid-template-columns: 280px 1fr;
@@ -594,6 +594,10 @@ onBeforeUnmount(() => {
   overflow: hidden;
   position: relative;
   background: var(--at-canvas);
+  transition: grid-template-columns 0.18s ease;
+}
+.apt-body.with-panel {
+  grid-template-columns: 280px 1fr 380px;
 }
 .sidebar-wrap { overflow: hidden; background: var(--at-surface-soft); border-right: 1px solid var(--at-hairline); }
 .sidebar-backdrop { display: none; }
@@ -605,15 +609,19 @@ onBeforeUnmount(() => {
 }
 
 /* Tablet */
+@media (max-width: 1280px) {
+  .apt-body.with-panel { grid-template-columns: 280px 1fr 340px; }
+}
 @media (max-width: 1100px) {
   .apt-body { grid-template-columns: 240px 1fr; }
+  .apt-body.with-panel { grid-template-columns: 240px 1fr 320px; }
   .apt-hero { padding: var(--at-s-md) var(--at-s-lg); }
   .apt-hero-title { font-size: 24px; }
 }
 
-/* Narrow tablet & mobile: sidebar = drawer */
+/* Narrow tablet & mobile: sidebar = drawer, panel = overlay */
 @media (max-width: 900px) {
-  .apt-body { grid-template-columns: 1fr; }
+  .apt-body, .apt-body.with-panel { grid-template-columns: 1fr; }
   .drawer-toggle { display: inline-flex; }
   .sidebar-wrap {
     position: absolute;

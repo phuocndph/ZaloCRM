@@ -1,7 +1,10 @@
 <template>
-  <Teleport to="body">
-    <div v-if="appointment" class="panel-overlay" @click="$emit('close')" />
-    <aside class="apt-panel" :class="{ open: !!appointment }">
+  <!-- 2026-05-21: switched from fixed overlay (Teleport to body) to inline panel
+       as 3rd grid column in AppointmentsView. Was causing z-index conflicts +
+       content bleed-through. Mobile fallback remains overlay via CSS media query. -->
+  <aside v-if="appointment" class="apt-panel" :class="{ open: !!appointment }">
+    <div class="panel-overlay panel-overlay--mobile-only" @click="$emit('close')" />
+    <div class="apt-panel-inner">
       <template v-if="appointment">
         <div class="panel-head">
           <div class="ev-color" :style="{ background: saleColor(ownerId(appointment)).bg }" />
@@ -111,8 +114,8 @@
           >✓ Hoàn thành</button>
         </div>
       </template>
-    </aside>
-  </Teleport>
+    </div>
+  </aside>
 </template>
 
 <script setup lang="ts">
@@ -174,33 +177,47 @@ function formatRelative(iso: string): string {
 <style scoped>
 @import '@/components/automation/phase7/airtable.css';
 
-.panel-overlay {
-  position: fixed; inset: 0;
-  background: rgba(24,29,38,0.22);
-  z-index: 49;
-}
+/* Desktop: inline panel = 3rd grid column trong apt-body. Không fixed/overlay. */
 .apt-panel {
-  position: fixed;
-  top: var(--smax-topnav-h, 52px);
-  right: 0;
-  bottom: 0;
-  width: 420px;
-  max-width: 100vw;
+  position: relative;
+  width: 100%;
+  height: 100%;
   background: var(--at-canvas);
   border-left: 1px solid var(--at-hairline);
-  box-shadow: -16px 0 40px rgba(24,29,38,0.12);
-  transform: translateX(100%);
-  transition: transform .22s ease;
   display: flex;
   flex-direction: column;
-  z-index: 50;
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
   color: var(--at-body);
+  overflow: hidden;
 }
-.apt-panel.open { transform: translateX(0); }
+.apt-panel-inner {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+.panel-overlay--mobile-only { display: none; }
 
-@media (max-width: 768px) {
-  .apt-panel { width: 100vw; top: 0; }
+/* Mobile / narrow: fixed overlay với backdrop */
+@media (max-width: 900px) {
+  .apt-panel {
+    position: fixed;
+    top: var(--smax-topnav-h, 52px);
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: 100vw;
+    z-index: 1200;
+    border-left: none;
+    box-shadow: 0 -8px 32px rgba(24,29,38,0.16);
+  }
+  .panel-overlay--mobile-only {
+    display: block;
+    position: fixed;
+    inset: var(--smax-topnav-h, 52px) 0 0 0;
+    background: rgba(24,29,38,0.22);
+    z-index: -1;
+  }
 }
 
 /* Head: signature ribbon (4px) on top via .ev-color, then content */
