@@ -523,9 +523,13 @@ function onAppointmentCreated() {
   pendingAptBump.value++;
   badgeBump.value = true;
   setTimeout(() => { badgeBump.value = false; }, 600);
-  // Refresh real data từ backend rồi reset bump (tránh double count)
+  // Reset bump NGAY trong .then() (không setTimeout 300ms) để Vue batch cùng frame
+  //   activityBadgeCount: 0 → 1  (do reload)
+  //   pendingAptBump:     1 → 0  (do reset)
+  // Cả 2 update cùng microtask → 1 re-render duy nhất, badge từ 1 (bump) → 1 (real),
+  // không flash số 2. Bug cũ: setTimeout 300ms giữ bump=1 sau khi data đã = 1 → badge = 2.
   reloadAppointments().then(() => {
-    setTimeout(() => { pendingAptBump.value = 0; }, 300);
+    pendingAptBump.value = 0;
   });
 }
 
