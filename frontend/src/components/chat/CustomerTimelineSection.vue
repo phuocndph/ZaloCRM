@@ -171,13 +171,17 @@
       <div v-else-if="items.length > 0" class="end-marker">─ Hết ─</div>
     </div>
 
-    <!-- Appointment dialog (shared) -->
-    <AppointmentQuickDialog
+    <!-- Modal "Nhắc hẹn" — dùng AppointmentEditor unified (chốt 2026-05-21) -->
+    <AppointmentEditor
       v-model="showAptDialog"
-      :contact-id="props.contactId"
-      :contact-name="props.contactName"
-      :prefill="aptPrefill"
-      header="🤖 Xác nhận tạo lịch hẹn"
+      :prefill-contact="props.contactId ? {
+        id: props.contactId,
+        fullName: props.contactName || null,
+        phone: null,
+        zaloUid: null,
+        zaloUsername: null,
+      } : null"
+      :current-user-id="auth.user?.id ?? null"
       @created="onAppointmentCreated"
     />
   </section>
@@ -192,7 +196,7 @@ import { useAuthStore } from '@/stores/auth';
 import { useToast } from '@/composables/use-toast';
 import NoteRow from './NoteRow.vue';
 import ActivityItem from './ActivityItem.vue';
-import AppointmentQuickDialog from './AppointmentQuickDialog.vue';
+import AppointmentEditor from '@/components/appointments/AppointmentEditor.vue';
 import {
   CATEGORY_META,
   ALL_CATEGORIES,
@@ -474,9 +478,9 @@ function openAptDialog(note: Note) {
   showAptDialog.value = true;
 }
 
-async function onAppointmentCreated(aptId: string) {
+async function onAppointmentCreated(apt: { id: string }) {
   if (aptPrefillNoteId.value) {
-    await linkAppointment(aptPrefillNoteId.value, aptId);
+    await linkAppointment(aptPrefillNoteId.value, apt.id);
     aiResult.value.delete(aptPrefillNoteId.value);
   }
   aptPrefillNoteId.value = null;

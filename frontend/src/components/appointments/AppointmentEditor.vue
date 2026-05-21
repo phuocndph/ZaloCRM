@@ -38,71 +38,89 @@
               type="text"
               :placeholder="titlePlaceholder"
             />
-            <!-- Linked KH chip nếu đã có -->
-            <div v-if="selectedContact" class="linked-kh-chip">
-              <span class="av" :style="{ background: contactColor(selectedContact.id) }">
-                {{ initials(selectedContact.fullName) }}
-              </span>
-              {{ selectedContact.fullName || 'Khách hàng' }}
-              <span v-if="selectedContact.phone">· {{ selectedContact.phone }}</span>
-              <button class="remove" @click="clearContact" title="Bỏ link KH">✕</button>
-            </div>
-            <!-- KH autocomplete dropdown (chỉ hiện khi chưa có KH + đang focus) -->
-            <div v-else-if="custSuggestOpen" class="cust-suggest">
-              <div class="cust-suggest-head">
-                🔍 Liên kết khách hàng <span class="opt">(tuỳ chọn)</span>
+          </div>
+
+          <!-- 1.5. Liên kết KH + Sale phụ trách (2 cols) -->
+          <div class="row-2">
+            <!-- KH -->
+            <div class="field">
+              <span class="field-label">Liên kết khách hàng</span>
+              <!-- Linked KH chip nếu đã có — 1 dòng: avatar + tên - sdt - (gợi nhớ) -->
+              <div v-if="selectedContact" class="linked-kh-row">
+                <span class="av" :style="{ background: contactColor(selectedContact.id) }">
+                  {{ initials(selectedContact.fullName) }}
+                </span>
+                <div class="linked-info">
+                  <span class="name">{{ selectedContact.fullName || 'Khách hàng' }}</span>
+                  <span v-if="selectedContact.phone" class="sep">·</span>
+                  <span v-if="selectedContact.phone" class="phone">{{ selectedContact.phone }}</span>
+                  <span v-if="selectedContact.zaloUsername" class="nick">({{ selectedContact.zaloUsername }})</span>
+                </div>
+                <button type="button" class="remove" @click="clearContact" title="Bỏ link KH">✕</button>
               </div>
-              <input
-                v-model="custQuery"
-                class="cust-suggest-search"
-                type="text"
-                placeholder="Tìm tên / SĐT / Zalo UID..."
-                autocomplete="off"
-                @input="onCustSearch"
-              />
-              <div v-if="custSearching" class="cust-loading">Đang tìm...</div>
-              <div
-                v-for="c in custSuggestions"
-                :key="c.id"
-                class="cust-item"
-                @mousedown.prevent="pickContact(c)"
-              >
-                <span class="av" :style="{ background: contactColor(c.id) }">{{ initials(c.fullName) }}</span>
-                <div>
-                  <div class="name">{{ c.fullName || 'Khách hàng' }}</div>
-                  <div class="meta">
-                    <span v-if="c.phone">{{ c.phone }}</span>
-                    <span v-if="c.zaloUid"> · {{ c.zaloUid }}</span>
+              <!-- KH autocomplete dropdown -->
+              <div v-else-if="custSuggestOpen" class="cust-suggest">
+                <input
+                  v-model="custQuery"
+                  class="cust-suggest-search"
+                  type="text"
+                  placeholder="Tìm tên / SĐT / tên gợi nhớ..."
+                  autocomplete="off"
+                  @input="onCustSearch"
+                />
+                <div v-if="custSearching" class="cust-loading">Đang tìm...</div>
+                <div
+                  v-for="c in custSuggestions"
+                  :key="c.id"
+                  class="cust-item"
+                  @mousedown.prevent="pickContact(c)"
+                >
+                  <span class="av" :style="{ background: contactColor(c.id) }">{{ initials(c.fullName) }}</span>
+                  <div class="cust-info-1line">
+                    <span class="name">{{ c.fullName || 'Khách hàng' }}</span>
+                    <span v-if="c.phone" class="sep">·</span>
+                    <span v-if="c.phone" class="phone">{{ c.phone }}</span>
+                    <span v-if="c.zaloUsername" class="nick">({{ c.zaloUsername }})</span>
                   </div>
                 </div>
+                <div v-if="!custSearching && custQuery && custSuggestions.length === 0" class="cust-empty">
+                  Không tìm thấy KH "{{ custQuery }}"
+                </div>
+                <div class="cust-item skip" @mousedown.prevent="dismissCustSuggest">
+                  → Bỏ qua, tạo nhắc hẹn không link KH
+                </div>
               </div>
-              <div v-if="!custSearching && custQuery && custSuggestions.length === 0" class="cust-empty">
-                Không tìm thấy KH "{{ custQuery }}"
-              </div>
-              <div class="cust-item skip" @mousedown.prevent="dismissCustSuggest">
-                → Bỏ qua, tạo nhắc hẹn không link KH
-              </div>
+              <button v-else type="button" class="link-kh-btn" @click="openCustSuggest">
+                + Liên kết khách hàng
+              </button>
             </div>
-            <button v-else type="button" class="link-kh-btn" @click="openCustSuggest">
-              + Liên kết khách hàng
-            </button>
+            <!-- Sale phụ trách -->
+            <div class="field">
+              <span class="field-label">Sale phụ trách</span>
+              <select v-model="form.assignedUserId" class="sale-select">
+                <option :value="null">— Chưa gán —</option>
+                <option v-for="u in users" :key="u.id" :value="u.id">
+                  {{ u.fullName || u.email }}{{ u.id === currentUserId ? ' (tôi)' : '' }}
+                </option>
+              </select>
+            </div>
           </div>
 
           <!-- 2. Ngày + Giờ (2 cols) -->
           <div class="row-2">
             <div class="field">
               <span class="field-label">Ngày</span>
-              <button class="picker-display" @click="openDatePicker = !openDatePicker">
+              <button class="picker-display" :class="{ open: openDatePicker }" @click="toggleDatePicker">
                 <span class="ic">📅</span>
                 <span class="val">{{ dateLabel }}</span>
                 <span class="caret">{{ openDatePicker ? '▴' : '▾' }}</span>
               </button>
-              <!-- Date picker dropdown -->
-              <div v-if="openDatePicker" class="picker-popup date-popup">
+              <!-- Date picker popup -->
+              <div v-if="openDatePicker" class="picker-popup date-popup" v-click-outside="closeDatePicker">
                 <div class="dp-head">
-                  <button @click="shiftCalMonth(-1)">‹</button>
+                  <button type="button" @click="shiftCalMonth(-1)">‹</button>
                   <span class="month">Tháng {{ calMonth.getMonth() + 1 }}, {{ calMonth.getFullYear() }}</span>
-                  <button @click="shiftCalMonth(1)">›</button>
+                  <button type="button" @click="shiftCalMonth(1)">›</button>
                 </div>
                 <div class="dp-grid">
                   <div v-for="w in ['CN','T2','T3','T4','T5','T6','T7']" :key="w" class="dp-wd">{{ w }}</div>
@@ -121,20 +139,24 @@
                     :key="t.label"
                     type="button"
                     class="tip-chip"
+                    :class="{ active: isDateTipActive(t.offset) }"
                     @click="pickDateOffset(t.offset)"
                   >{{ t.label }}</button>
+                </div>
+                <div class="popup-foot">
+                  <button type="button" class="at-btn at-btn--primary popup-confirm" @click="closeDatePicker">✓ Xác nhận</button>
                 </div>
               </div>
             </div>
             <div class="field">
               <span class="field-label">Giờ bắt đầu</span>
-              <button class="picker-display" @click="openTimePicker = !openTimePicker">
+              <button class="picker-display" :class="{ open: openTimePicker }" @click="toggleTimePicker">
                 <span class="ic">🕐</span>
                 <span class="val">{{ form.time || '--:--' }}</span>
                 <span class="caret">{{ openTimePicker ? '▴' : '▾' }}</span>
               </button>
               <!-- Time picker dropdown (iOS wheel style) -->
-              <div v-if="openTimePicker" class="picker-popup time-popup">
+              <div v-if="openTimePicker" class="picker-popup time-popup" v-click-outside="closeTimePicker">
                 <div class="tp-wheels">
                   <div class="tp-fade tp-fade--top"></div>
                   <div class="tp-fade tp-fade--bot"></div>
@@ -164,33 +186,36 @@
                     </div>
                   </div>
                 </div>
-                <div class="tp-quick">
+                <!-- 4 quick chips: 2x2 grid -->
+                <div class="tp-quick-grid">
                   <button type="button" class="tip-chip" @click="randomTime('morning')">☀️ Sáng</button>
                   <button type="button" class="tip-chip" @click="randomTime('noon')">🌤 Trưa</button>
                   <button type="button" class="tip-chip" @click="randomTime('afternoon')">⛅ Chiều</button>
                   <button type="button" class="tip-chip" @click="randomTime('evening')">🌙 Tối</button>
                 </div>
-                <div class="tp-helper">Bấm lại 1 chip để random giờ khác trong khung</div>
+                <div class="tp-helper">Bấm lại 1 khung để random giờ khác</div>
+                <div class="popup-foot">
+                  <button type="button" class="at-btn at-btn--primary popup-confirm" @click="closeTimePicker">✓ Xác nhận</button>
+                </div>
               </div>
             </div>
           </div>
 
-          <!-- 3. Duration -->
+          <!-- 3. Duration — small tag chips, 1 row scroll-x nếu cần -->
           <div class="field">
-            <span class="field-label">Dự kiến dành thời gian</span>
-            <div class="duration-grid">
+            <div class="duration-header">
+              <span class="field-label">Dự kiến dành thời gian</span>
+              <span class="duration-end">🏁 Dự kiến kết thúc: <b>{{ computedEndLabel }}</b> <em>(Tự tính toán)</em></span>
+            </div>
+            <div class="duration-row">
               <button
                 v-for="d in DURATIONS"
                 :key="d.value"
                 type="button"
-                class="tip-chip"
+                class="tag-chip"
                 :class="{ active: form.durationMin === d.value }"
                 @click="form.durationMin = d.value"
               >{{ d.label }}</button>
-            </div>
-            <div class="compute-end">
-              <span class="ic">🏁</span>
-              <span>Cuộc hẹn kết thúc lúc <b>{{ computedEndLabel }}</b> (tự tính)</span>
             </div>
           </div>
 
@@ -290,7 +315,15 @@ interface ContactLite {
   fullName: string | null;
   phone: string | null;
   zaloUid?: string | null;
+  /** Tên gợi nhớ (Contact.zaloUsername hoặc displayName từ Friend). Search được. */
+  zaloUsername?: string | null;
   avatarUrl?: string | null;
+}
+
+interface UserLite {
+  id: string;
+  fullName: string | null;
+  email: string;
 }
 
 const props = defineProps<{
@@ -301,6 +334,10 @@ const props = defineProps<{
   defaultDate?: Date | null;
   /** Prefill contact (vd mở từ contact page) */
   prefillContact?: ContactLite | null;
+  /** Danh sách user trong org cho dropdown Sale */
+  users?: UserLite[];
+  /** ID của user đang đăng nhập — default Sale phụ trách */
+  currentUserId?: string | null;
 }>();
 
 const emit = defineEmits<{
@@ -377,7 +414,12 @@ const form = reactive({
   type: 'call',
   location: '',
   notes: '',
+  assignedUserId: null as string | null,
 });
+
+// Computed users list (props hoặc empty) + currentUserId
+const users = computed<UserLite[]>(() => props.users ?? []);
+const currentUserId = computed<string | null>(() => props.currentUserId ?? null);
 
 const saving = ref(false);
 const error = ref('');
@@ -412,11 +454,13 @@ watch(() => props.modelValue, (open) => {
     form.type = a.type || 'call';
     form.location = (a as any).location || '';
     form.notes = a.notes || '';
+    form.assignedUserId = (a as any).assignedUserId ?? (a as any).assignedTo?.id ?? null;
     selectedContact.value = a.contact ? {
       id: a.contact.id,
       fullName: a.contact.fullName,
       phone: a.contact.phone,
       zaloUid: a.contact.zaloUid ?? null,
+      zaloUsername: (a.contact as any).zaloUsername ?? null,
     } : null;
     calMonth.value = a.appointmentDate ? new Date(a.appointmentDate) : new Date();
   } else {
@@ -428,6 +472,7 @@ watch(() => props.modelValue, (open) => {
     form.type = 'call';
     form.location = '';
     form.notes = '';
+    form.assignedUserId = currentUserId.value; // default sale = người tạo
     selectedContact.value = props.prefillContact ?? null;
     if (props.prefillContact?.fullName) {
       form.title = `Gọi nhắc KH ${props.prefillContact.fullName}`;
@@ -507,7 +552,8 @@ const calCells = computed<CalCell[]>(() => {
 
 function pickDate(d: Date) {
   form.date = isoDate(d);
-  openDatePicker.value = false;
+  calMonth.value = new Date(d); // sync month nếu user click ngày tháng khác
+  // KHÔNG auto close — user phải bấm "Xác nhận" hoặc click outside
 }
 
 function pickDateOffset(offsetDays: number) {
@@ -515,9 +561,57 @@ function pickDateOffset(offsetDays: number) {
   d.setHours(0, 0, 0, 0);
   d.setDate(d.getDate() + offsetDays);
   form.date = isoDate(d);
-  calMonth.value = new Date(d);
-  openDatePicker.value = false;
+  calMonth.value = new Date(d); // jump calendar tới tháng đúng
+  // KHÔNG auto close
 }
+
+/** Active state cho tip chip: chip "Hôm nay" sáng nếu form.date === today, v.v. */
+function isDateTipActive(offsetDays: number): boolean {
+  if (!form.date) return false;
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() + offsetDays);
+  return isoDate(d) === form.date;
+}
+
+// Mutually exclusive popups + click-outside helpers
+function toggleDatePicker() {
+  if (openDatePicker.value) {
+    openDatePicker.value = false;
+  } else {
+    openDatePicker.value = true;
+    openTimePicker.value = false; // đóng time popup nếu đang mở
+  }
+}
+function closeDatePicker() { openDatePicker.value = false; }
+function toggleTimePicker() {
+  if (openTimePicker.value) {
+    openTimePicker.value = false;
+  } else {
+    openTimePicker.value = true;
+    openDatePicker.value = false; // đóng date popup nếu đang mở
+  }
+}
+function closeTimePicker() { openTimePicker.value = false; }
+
+// v-click-outside directive — đóng popup khi click ngoài.
+// Skip trigger (button mở chính popup đó) để tránh toggle-then-close cùng frame.
+const vClickOutside = {
+  beforeMount(el: HTMLElement, binding: { value: () => void }) {
+    const handler = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (el.contains(target)) return;
+      // Skip nếu click vào picker-display button (đã handle bằng toggle)
+      if (target.closest('.picker-display')) return;
+      binding.value();
+    };
+    (el as any).__clickOutsideHandler = handler;
+    setTimeout(() => document.addEventListener('click', handler), 0);
+  },
+  unmounted(el: HTMLElement) {
+    document.removeEventListener('click', (el as any).__clickOutsideHandler);
+  },
+};
 
 const dateTips = [
   { label: 'Hôm nay',    offset: 0 },
@@ -535,7 +629,7 @@ const dateTips = [
 const openTimePicker = ref(false);
 const HOURS = Array.from({ length: 18 }, (_, i) => i + 6); // 6..23
 const MINUTES = [0, 10, 15, 30, 45, 50];
-const WHEEL_ITEM_H = 40;
+const WHEEL_ITEM_H = 32; // match CSS .tp-wheel-item height (160px wheels = 5 items visible)
 
 const hourValue = computed<number>(() => {
   if (!form.time) return 9;
@@ -546,7 +640,7 @@ const minuteValue = computed<number>(() => {
   return parseInt(form.time.split(':')[1], 10);
 });
 
-// Wheel translation: center selected → translateY = (idx * H) - (centerOffset)
+// Wheel translation: center selected at row index 2 (5 visible rows, center = row idx 2)
 const hourWheelOffset = computed(() => {
   const idx = HOURS.indexOf(hourValue.value);
   return idx >= 0 ? idx * WHEEL_ITEM_H - 2 * WHEEL_ITEM_H : 0;
@@ -676,6 +770,7 @@ async function submit() {
     const payload = {
       title: form.title.trim(),
       contactId: selectedContact.value?.id ?? null,
+      assignedUserId: form.assignedUserId,
       appointmentDate: form.date,
       appointmentTime: form.time,
       durationMin: form.durationMin,
@@ -785,27 +880,46 @@ function close() {
 .title-input:focus { border-color: var(--at-ink); }
 .title-input::placeholder { font-weight: 400; color: var(--at-muted); }
 
-/* Linked KH chip dưới title */
-.linked-kh-chip {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 4px 4px 4px 10px;
-  background: var(--at-coral-tint); color: var(--at-coral-text);
-  border-radius: var(--at-r-pill);
-  font-size: 12px; font-weight: 500;
-  align-self: flex-start;
+/* Linked KH row — 1 dòng: avatar + tên - sdt - (gợi nhớ) + remove */
+.linked-kh-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px;
+  background: var(--at-coral-tint);
+  border-radius: var(--at-r-sm);
+  min-height: 40px;
 }
-.linked-kh-chip .av {
-  width: 22px; height: 22px; border-radius: 50%;
+.linked-kh-row .av {
+  width: 28px; height: 28px; border-radius: 50%;
   color: #fff;
   display: inline-flex; align-items: center; justify-content: center;
-  font-size: 10px; font-weight: 500;
+  font-size: 11px; font-weight: 500; flex-shrink: 0;
 }
-.linked-kh-chip .remove {
+.linked-kh-row .linked-info {
+  display: flex; align-items: center; gap: 4px; flex: 1; min-width: 0;
+  font-size: 13px; color: var(--at-coral-text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.linked-kh-row .name { font-weight: 500; }
+.linked-kh-row .sep { opacity: 0.5; }
+.linked-kh-row .phone { color: var(--at-ink); font-variant-numeric: tabular-nums; }
+.linked-kh-row .nick { color: var(--at-muted); font-style: italic; font-size: 12px; }
+.linked-kh-row .remove {
   width: 22px; height: 22px; border-radius: 50%;
   background: rgba(0, 0, 0, 0.08); border: none; cursor: pointer;
-  font-size: 11px; color: inherit;
+  font-size: 11px; color: inherit; flex-shrink: 0;
   display: inline-flex; align-items: center; justify-content: center;
 }
+
+/* Sale dropdown */
+.sale-select {
+  width: 100%; height: 40px; padding: 0 var(--at-s-md);
+  border: 1px solid var(--at-hairline); border-radius: var(--at-r-sm);
+  font-family: inherit; font-size: 13.5px; color: var(--at-ink);
+  background: var(--at-canvas); outline: none;
+  cursor: pointer;
+}
+.sale-select:focus { border-color: var(--at-ink); }
+
 .link-kh-btn {
   align-self: flex-start;
   font-size: 12px; color: var(--at-link); cursor: pointer;
@@ -851,6 +965,15 @@ function close() {
 }
 .cust-item .name { font-weight: 500; color: var(--at-ink); }
 .cust-item .meta { font-size: 11.5px; color: var(--at-muted); }
+.cust-info-1line {
+  display: flex; align-items: center; gap: 4px; flex: 1; min-width: 0;
+  font-size: 13px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.cust-info-1line .name { font-weight: 500; color: var(--at-ink); }
+.cust-info-1line .sep { color: var(--at-muted); }
+.cust-info-1line .phone { color: var(--at-body); font-variant-numeric: tabular-nums; }
+.cust-info-1line .nick { color: var(--at-muted); font-style: italic; font-size: 12px; }
 .cust-item.skip {
   margin-top: 4px; padding-top: 8px;
   border-top: 1px solid var(--at-hairline);
@@ -871,17 +994,27 @@ function close() {
 .picker-display .val { font-weight: 500; flex: 1; text-align: left; }
 .picker-display .caret { color: var(--at-muted); font-size: 10px; }
 
-/* Picker popups */
+/* Picker popups — căn lọt trong ô field (max-width = field width).
+   Time picker hẹp hơn date picker (chỉ chứa 2 wheels 80px + chips). */
 .picker-popup {
   position: absolute; top: calc(100% + 4px); left: 0;
   z-index: 10;
   background: var(--at-canvas);
   border: 1px solid var(--at-hairline); border-radius: var(--at-r-lg);
   box-shadow: 0 18px 40px rgba(0, 0, 0, 0.18);
-  padding: var(--at-s-md);
-  width: 320px;
+  padding: var(--at-s-sm);
 }
-.date-popup, .time-popup { width: 320px; }
+.date-popup {
+  /* Date cần đủ rộng cho 7-col grid + tip chips */
+  width: 320px;
+  /* Nếu modal hẹp, fit theo field width */
+  max-width: calc(100vw - 48px);
+}
+.time-popup {
+  /* Time picker fit trong field width (~250px) */
+  width: 100%;
+  min-width: 240px;
+}
 
 /* Date picker grid */
 .dp-head {
@@ -920,10 +1053,10 @@ function close() {
 .dp-tips { display: flex; flex-wrap: wrap; gap: 5px; }
 .dp-tips .tip-chip { font-size: 11.5px; padding: 5px 9px; }
 
-/* Time picker wheels */
+/* Time picker wheels — compact để fit trong field 240-260px */
 .tp-wheels {
-  display: flex; align-items: center; justify-content: center; gap: var(--at-s-md);
-  height: 200px; position: relative;
+  display: flex; align-items: center; justify-content: center; gap: var(--at-s-sm);
+  height: 160px; position: relative;
   background: var(--at-surface-soft);
   border-radius: var(--at-r-md);
   overflow: hidden;
@@ -933,13 +1066,13 @@ function close() {
   height: 1px; background: var(--at-border-strong);
   pointer-events: none; z-index: 2;
 }
-.tp-wheels::before { top: 80px; }
-.tp-wheels::after { top: 120px; }
+.tp-wheels::before { top: 64px; }
+.tp-wheels::after { top: 96px; }
 .tp-fade { position: absolute; left: 0; right: 0; pointer-events: none; z-index: 3; }
-.tp-fade--top { top: 0; height: 80px; background: linear-gradient(to bottom, var(--at-surface-soft) 0%, rgba(248, 250, 252, 0) 100%); }
-.tp-fade--bot { bottom: 0; height: 80px; background: linear-gradient(to top, var(--at-surface-soft) 0%, rgba(248, 250, 252, 0) 100%); }
+.tp-fade--top { top: 0; height: 64px; background: linear-gradient(to bottom, var(--at-surface-soft) 0%, rgba(248, 250, 252, 0) 100%); }
+.tp-fade--bot { bottom: 0; height: 64px; background: linear-gradient(to top, var(--at-surface-soft) 0%, rgba(248, 250, 252, 0) 100%); }
 .tp-wheel {
-  width: 80px; height: 200px; overflow: hidden;
+  width: 60px; height: 160px; overflow: hidden;
   display: flex; flex-direction: column;
   position: relative; z-index: 1;
 }
@@ -948,22 +1081,38 @@ function close() {
   transition: transform 0.25s ease;
 }
 .tp-wheel-item {
-  height: 40px; display: flex; align-items: center; justify-content: center;
-  font-size: 20px; font-weight: 400; color: var(--at-muted);
+  height: 32px; display: flex; align-items: center; justify-content: center;
+  font-size: 16px; font-weight: 400; color: var(--at-muted);
   font-variant-numeric: tabular-nums;
   width: 100%; cursor: pointer;
   flex-shrink: 0;
 }
 .tp-wheel-item.selected {
-  color: var(--at-ink); font-weight: 500; font-size: 24px;
+  color: var(--at-ink); font-weight: 500; font-size: 20px;
 }
-.tp-separator { font-size: 24px; font-weight: 500; color: var(--at-ink); z-index: 4; }
-.tp-quick { margin-top: var(--at-s-md); display: flex; gap: 6px; }
-.tp-quick .tip-chip { flex: 1; justify-content: center; }
+.tp-separator { font-size: 20px; font-weight: 500; color: var(--at-ink); z-index: 4; }
+/* 4 chips 2x2 grid */
+.tp-quick-grid {
+  margin-top: var(--at-s-md);
+  display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px;
+}
+.tp-quick-grid .tip-chip { justify-content: center; }
 .tp-helper {
   margin-top: 8px; text-align: center;
   font-size: 11px; color: var(--at-muted);
 }
+
+/* Popup footer (Xác nhận button) */
+.popup-foot {
+  display: flex; justify-content: flex-end;
+  margin-top: var(--at-s-sm);
+  padding-top: var(--at-s-sm);
+  border-top: 1px solid var(--at-hairline);
+}
+.popup-confirm { padding: 6px 14px; font-size: 12.5px; }
+
+/* picker-display active state khi popup open */
+.picker-display.open { border-color: var(--at-ink); }
 
 /* Chips */
 .tip-row { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -982,20 +1131,42 @@ function close() {
   background: var(--at-cream); border-color: var(--at-mustard); color: var(--at-ink);
 }
 
-/* Duration grid */
-.duration-grid {
-  display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px;
+/* Duration — small tag chips trên 1 dòng (scroll-x nếu overflow) */
+.duration-header {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--at-s-xs);
+  margin-bottom: 4px;
+  flex-wrap: wrap;
 }
-.duration-grid .tip-chip { justify-content: center; padding: 7px 8px; font-size: 12.5px; }
+.duration-end {
+  font-size: 11.5px; color: var(--at-muted);
+}
+.duration-end b { color: var(--at-ink); font-weight: 500; }
+.duration-end em { color: var(--at-muted); font-style: italic; font-size: 11px; }
+.duration-row {
+  display: flex; gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  padding-bottom: 2px; /* room cho scrollbar */
+}
+.duration-row::-webkit-scrollbar { height: 4px; }
+.duration-row::-webkit-scrollbar-thumb { background: var(--at-hairline); border-radius: 2px; }
 
-.compute-end {
-  margin-top: 6px; padding: 8px 12px;
-  background: var(--at-cream); border-radius: var(--at-r-sm);
-  font-size: 12.5px; color: var(--at-ink);
-  display: flex; align-items: center; gap: 6px;
+.tag-chip {
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 3px 9px;
+  background: var(--at-canvas);
+  border: 1px solid var(--at-hairline);
+  border-radius: var(--at-r-pill);
+  font-size: 11.5px; font-weight: 500; color: var(--at-body);
+  cursor: pointer; font-family: inherit;
+  white-space: nowrap; flex-shrink: 0;
+  height: 26px;
 }
-.compute-end b { font-weight: 500; }
-.compute-end .ic { font-size: 14px; }
+.tag-chip:active { background: var(--at-surface-soft); }
+.tag-chip.active {
+  background: var(--at-ink); color: var(--at-on-primary); border-color: var(--at-ink);
+}
 
 /* Type chips */
 .type-row { display: flex; gap: 6px; flex-wrap: wrap; }

@@ -180,6 +180,8 @@
       :appointment="editAppointment"
       :default-date="quickCreateDate"
       :prefill-contact="quickCreatePrefillContact"
+      :users="users"
+      :current-user-id="currentUserId"
       @created="onAppointmentCreated"
       @updated="onAppointmentUpdated"
     />

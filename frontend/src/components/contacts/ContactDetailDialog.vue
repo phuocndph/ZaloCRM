@@ -678,13 +678,17 @@
       </v-card-actions>
     </v-card>
 
-    <!-- Quick appointment modal — trigger từ action strip header -->
-    <AppointmentQuickDialog
+    <!-- Modal "Nhắc hẹn" — unified Editor (chốt 2026-05-21) -->
+    <AppointmentEditor
       v-if="contact?.id"
       v-model="showQuickAppointment"
-      :contact-id="contact.id"
-      :contact-name="contact.fullName || contact.crmName || ''"
-      header="📅 Tạo nhắc hẹn"
+      :prefill-contact="{
+        id: contact.id,
+        fullName: contact.fullName || contact.crmName || null,
+        phone: contact.phone || null,
+        zaloUid: contact.zaloUid ?? null,
+        zaloUsername: contact.zaloUsername ?? null,
+      }"
     />
   </v-dialog>
 </template>
@@ -696,7 +700,7 @@ import { api } from '@/api/index';
 import { useToast } from '@/composables/use-toast';
 import type { Contact } from '@/composables/use-contacts';
 import { formatInOrgTz } from '@/composables/use-org-timezone';
-import AppointmentQuickDialog from '@/components/chat/AppointmentQuickDialog.vue';
+import AppointmentEditor from '@/components/appointments/AppointmentEditor.vue';
 import {
   SOURCE_OPTIONS,
   STATUS_OPTIONS,

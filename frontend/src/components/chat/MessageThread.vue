@@ -412,12 +412,17 @@
           </button>
         </div>
 
-        <!-- Appointment quick-create dialog (dùng chung với NotesSection cột 4) -->
-        <AppointmentQuickDialog
+        <!-- Modal "Nhắc hẹn" — unified UI giống trang /appointments -->
+        <AppointmentEditor
           v-model="showAppointmentDialog"
-          :contact-id="conversation.contact?.id ?? null"
-          :contact-name="headerName"
-          header="📅 Tạo nhắc hẹn"
+          :prefill-contact="conversation.contact ? {
+            id: conversation.contact.id,
+            fullName: conversation.contact.fullName,
+            phone: conversation.contact.phone,
+            zaloUid: conversation.contact.zaloUid ?? null,
+            zaloUsername: (conversation.contact as any).zaloUsername ?? null,
+          } : null"
+          :current-user-id="currentUserId"
           @created="onAppointmentCreated"
         />
 
@@ -456,8 +461,12 @@
       @pin="onPin"
     />
 
-    <!-- Forward dialog -->
+    <!-- Forward dialog — v-if gate (Phase A perf 2026-05-21): chỉ mount khi user
+         bấm forward. Trước fix: dialog mount sẵn → `allConversations` prop từ
+         ChatView trigger reactive update mỗi lần tab switch (100 conv objects).
+         Sau fix: prop chỉ đọc 1 lần khi dialog mở. -->
     <ForwardDialog
+      v-if="showForwardDialog"
       v-model="showForwardDialog"
       :conversations="allConversations ?? []"
       @forward="onForward"
@@ -516,7 +525,11 @@ import ReplyPreviewBar from '@/components/chat/reply-preview-bar.vue';
 import ForwardDialog from '@/components/chat/forward-dialog.vue';
 import RichTextEditor from '@/components/chat/rich-text-editor.vue';
 import TagCrmBar from '@/components/chat/TagCrmBar.vue';
-import AppointmentQuickDialog from '@/components/chat/AppointmentQuickDialog.vue';
+import AppointmentEditor from '@/components/appointments/AppointmentEditor.vue';
+import { useAuthStore } from '@/stores/auth';
+
+const _authStore = useAuthStore();
+const currentUserId = computed<string | null>(() => _authStore.user?.id ?? null);
 import FriendInviteDialog from '@/components/chat/FriendInviteDialog.vue';
 import { useToast } from '@/composables/use-toast';
 import { useZaloPresence } from '@/composables/use-zalo-presence';

@@ -17,14 +17,18 @@
       </v-btn>
     </div>
 
-    <!-- Modal "Tạo nhắc hẹn" — dùng AppointmentQuickDialog để UX nhất quán với
-         popup từ tab Ghi chú / từ AI-parse note. KHÔNG inline form ở đây nữa
-         để tránh duplicate UI logic. -->
-    <AppointmentQuickDialog
+    <!-- Modal "Nhắc hẹn" — dùng AppointmentEditor unified với trang /appointments
+         (chốt 2026-05-21). Đồng bộ form tạo nhắc hẹn trong chat + page chính. -->
+    <AppointmentEditor
       v-model="showQuickDialog"
-      :contact-id="contactId"
-      :contact-name="contactName"
-      header="📅 Tạo nhắc hẹn"
+      :prefill-contact="contactId ? {
+        id: contactId,
+        fullName: contactName || null,
+        phone: null,
+        zaloUid: null,
+        zaloUsername: null,
+      } : null"
+      :current-user-id="currentUserId"
       @created="onCreated"
     />
 
@@ -166,7 +170,10 @@
 <script setup lang="ts">
 import { ref, reactive, computed } from 'vue';
 import { api } from '@/api/index';
-import AppointmentQuickDialog from './AppointmentQuickDialog.vue';
+import AppointmentEditor from '@/components/appointments/AppointmentEditor.vue';
+import { useAuthStore } from '@/stores/auth';
+const _authStoreChatApt = useAuthStore();
+const currentUserId = computed<string | null>(() => _authStoreChatApt.user?.id ?? null);
 import { getOrgParts, weekdayInOrgTz, formatInOrgTz, startOfOrgDay } from '@/composables/use-org-timezone';
 
 export interface Appointment {
