@@ -15,6 +15,8 @@ const BLUR_TOKEN = '▒'.repeat(8);
 export interface PrivacyContext {
   /** Current user (viewer) — null = anonymous (shouldn't happen post-auth) */
   viewerUserId: string | null;
+  /** Org của viewer — REQUIRED cho cross-tenant safety (codex review P2 #5) */
+  orgId: string | null;
   /** True nếu viewer đã unlock PIN trong session hiện tại */
   privacyUnlocked: boolean;
 }
@@ -34,25 +36,45 @@ export function canSeeConversationContent(
 }
 
 /**
- * Redact 1 message (chat content + attachments) nếu thuộc main-nick conv không owned.
+ * Redact 1 message — CODEX REVIEW P1 FIX: allowlist response, không spread.
+ * Mọi field content-bearing đều replace bằng blur. Field metadata giữ.
+ *
+ * Allowlist field giữ (an toàn metadata):
+ *   id, conversationId, senderType, sentAt, isDeleted, deletedAt, zaloMsgId, zaloMsgIdNum
+ * Field BLUR:
+ *   content, originalContent, contentType, attachments, quote, senderUid, senderName
  */
-export function redactMessage<T extends {
-  content?: string | null;
-  attachments?: any;
-  quote?: any;
-}>(
-  msg: T,
+export function redactMessage(
+  msg: any,
   conv: { zaloAccount: { privacyMode: string; ownerUserId: string } },
   ctx: PrivacyContext,
-): T & { redacted?: boolean } {
+): any {
   if (canSeeConversationContent(conv, ctx)) return msg;
+  // Allowlist: chỉ giữ field metadata an toàn
   return {
-    ...msg,
+    id: msg.id,
+    conversationId: msg.conversationId,
+    senderType: msg.senderType,
+    sentAt: msg.sentAt,
+    isDeleted: msg.isDeleted ?? false,
+    deletedAt: msg.deletedAt ?? null,
+    zaloMsgId: msg.zaloMsgId ?? null,
+    zaloMsgIdNum: msg.zaloMsgIdNum?.toString?.() ?? null,
+    editedAt: msg.editedAt ?? null,
+    reactions: msg.reactions ?? [], // count metadata only
+    albumKey: msg.albumKey ?? null,
+    albumIndex: msg.albumIndex ?? null,
+    albumTotal: msg.albumTotal ?? null,
+    // BLUR all content-bearing fields
     content: BLUR_TOKEN,
+    originalContent: msg.originalContent ? BLUR_TOKEN : null,
+    contentType: 'text', // hide actual contentType (image/file leaks signal)
     attachments: [],
     quote: null,
+    senderUid: null,
+    senderName: null,
     redacted: true,
-  } as any;
+  };
 }
 
 /**
@@ -77,59 +99,66 @@ export function redactConversationRow<T extends {
 /**
  * Decide: viewer có quyền xem PII của 1 Contact không?
  *
- * Anh chốt Q4: contact PII blur NẾU có ít nhất 1 friend row thuộc main-nick
- * mà viewer không own (và viewer chưa unlock).
- *
- * Logic: query friends của contact, check existence của main-nick row không-own.
- * Performance: 1 EXISTS query per contact. Có thể cache nếu hot.
+ * Q4 (anh chốt): contact PII blur NẾU có ít nhất 1 friend row thuộc main-nick non-owned.
+ * CODEX REVIEW P2 #5: REQUIRE orgId trong context để tenant-safe.
  */
 export async function shouldRedactContactPii(
   contactId: string,
   ctx: PrivacyContext,
 ): Promise<boolean> {
-  // Nếu unlocked, vẫn có thể không own → cần check riêng
+  if (!ctx.orgId) {
+    // Defensive: no org context = unsafe, default redact
+    return true;
+  }
   const offending = await prisma.friend.findFirst({
     where: {
+      orgId: ctx.orgId,
       contactId,
       zaloAccount: {
+        orgId: ctx.orgId,
         privacyMode: 'main',
         ownerUserId: ctx.viewerUserId ? { not: ctx.viewerUserId } : undefined,
       },
     },
     select: { id: true },
   });
-  if (!offending) return false; // không có main-nick non-owned → safe
-  // Có main-nick non-owned. Viewer có thể là owner nick khác (cũng main) → vẫn có nick non-owned của viewer
-  // → redact (paranoid theo Q4).
-  // Nếu viewer đang unlock + OWN ít nhất 1 main-nick contact này tương tác → vẫn redact những phần
-  // thuộc main-nick non-owned. Đơn giản hoá: cứ blur khi có bất kỳ main-nick non-owned, kể cả unlocked.
-  // Reason: ngay cả khi unlock, viewer vẫn không phải owner của main-nick "kia" → không nên xem.
-  return true;
+  return !!offending;
 }
 
 /**
- * Redact Contact object — strip PII, giữ ID + score aggregate.
+ * Redact Contact object — CODEX REVIEW P1 #2 FIX: allowlist pattern.
+ * Chỉ trả ID + score/metadata aggregate. Mọi PII strip.
+ *
+ * Allowlist giữ: id, orgId, displayStatus, displayLeadScore, displayHasZalo,
+ *   priorityScore, engagementScore, engagementPattern, conversationCount,
+ *   createdAt, updatedAt, redacted flag.
+ * Strip: fullName, crmName, phone(*), email, address, social, demographic, notes,
+ *   zalo* (uid, globalId, username), avatar, assigned user info, tags content.
  */
-export function redactContact<T extends {
-  fullName?: string | null;
-  zaloUid?: string | null;
-  avatarUrl?: string | null;
-  phone?: string | null;
-  email?: string | null;
-  notes?: string | null;
-}>(
-  contact: T,
-): T & { redacted: true } {
+export function redactContact(contact: any): any {
   return {
-    ...contact,
+    id: contact.id,
+    orgId: contact.orgId,
+    // Aggregate display values (computed) — metadata, không lộ raw
+    displayStatus: contact.displayStatus,
+    displayLeadScore: contact.displayLeadScore,
+    displayHasZalo: contact.displayHasZalo,
+    // Score system (Phase 8) — metadata
+    leadScore: contact.leadScore,
+    engagementScore: contact.engagementScore,
+    engagementPattern: contact.engagementPattern,
+    engagementTrend: contact.engagementTrend,
+    priorityScore: contact.priorityScore,
+    // Count aggregates
+    _count: contact._count ?? null,
+    // Timestamps
+    createdAt: contact.createdAt,
+    updatedAt: contact.updatedAt,
+    lastActivity: contact.lastActivity,
+    // BLUR placeholder cho UI
     fullName: BLUR_TOKEN,
-    zaloUid: null,
-    avatarUrl: null,
-    phone: null,
-    email: null,
-    notes: null,
     redacted: true,
-  } as any;
+  };
 }
 
 /**
@@ -159,17 +188,20 @@ export function redactFriend<T extends {
  */
 export async function buildPrivacyContext(request: any): Promise<PrivacyContext> {
   const user = request.user;
-  if (!user) return { viewerUserId: null, privacyUnlocked: false };
+  if (!user) return { viewerUserId: null, orgId: null, privacyUnlocked: false };
+  const viewerUserId = user.userId ?? user.id;
+  const orgId = user.orgId ?? null;
 
   const cookies = parseCookies(request.headers.cookie);
   const token = cookies.priv_session;
-  if (!token) return { viewerUserId: user.userId ?? user.id, privacyUnlocked: false };
+  if (!token) return { viewerUserId, orgId, privacyUnlocked: false };
 
   const { resolveSession } = await import('./pin-service.js');
   const session = await resolveSession(token);
   return {
-    viewerUserId: user.userId ?? user.id,
-    privacyUnlocked: !!session && session.userId === (user.userId ?? user.id),
+    viewerUserId,
+    orgId,
+    privacyUnlocked: !!session && session.userId === viewerUserId,
   };
 }
 

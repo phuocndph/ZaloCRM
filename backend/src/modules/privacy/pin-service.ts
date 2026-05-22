@@ -102,14 +102,23 @@ export async function unlock(input: {
 
   const valid = await bcrypt.compare(input.pin, user.privacyPinHash);
   if (!valid) {
-    const failed = user.privacyFailedCount + 1;
+    // CODEX REVIEW P1 #3 FIX: atomic increment race-safe.
+    // 2 parallel wrong-PIN request không thể ghi đè cùng count snapshot cũ.
+    const updated = await prisma.user.update({
+      where: { id: input.userId },
+      data: { privacyFailedCount: { increment: 1 } },
+      select: { privacyFailedCount: true },
+    });
+    const failed = updated.privacyFailedCount;
     let lockedUntil: Date | null = null;
     if (failed >= 10) lockedUntil = new Date(Date.now() + PIN_FAIL_LOCKOUT_10);
     else if (failed >= 5) lockedUntil = new Date(Date.now() + PIN_FAIL_LOCKOUT_5);
-    await prisma.user.update({
-      where: { id: input.userId },
-      data: { privacyFailedCount: failed, privacyLockedUntil: lockedUntil },
-    });
+    if (lockedUntil) {
+      await prisma.user.update({
+        where: { id: input.userId },
+        data: { privacyLockedUntil: lockedUntil },
+      });
+    }
     throw new Error(
       failed >= 10
         ? 'PIN sai 10 lần — khoá 1h. Liên hệ admin nếu cần reset.'
@@ -174,36 +183,39 @@ export async function resolveSession(sessionToken: string): Promise<{
   if (!sessionToken) return null;
   const now = new Date();
 
-  const session = await prisma.userPrivacySession.findUnique({
-    where: { sessionToken },
+  // CODEX REVIEW P2 #4 FIX: atomic conditional read — re-verify active status
+  // ngay tại thời điểm decide. Tránh race với /lock hoặc revokeAll giữa read và return.
+  const session = await prisma.userPrivacySession.findFirst({
+    where: {
+      sessionToken,
+      revokedAt: null,
+      expiresAt: { gt: now },
+    },
     select: {
       userId: true,
       expiresAt: true,
       lastActivityAt: true,
-      revokedAt: true,
     },
   });
   if (!session) return null;
-  if (session.revokedAt && session.revokedAt <= now) return null;
-  if (session.expiresAt <= now) return null;
 
   // Idle timeout check
   const idleMs = now.getTime() - session.lastActivityAt.getTime();
   if (idleMs > IDLE_TIMEOUT_MS) {
-    // Auto-revoke stale session
-    await prisma.userPrivacySession.update({
-      where: { sessionToken },
+    // Auto-revoke stale session — conditional update để không đè revoke khác
+    await prisma.userPrivacySession.updateMany({
+      where: { sessionToken, revokedAt: null },
       data: { revokedAt: now },
     }).catch(() => {});
     return null;
   }
 
-  // Throttled last_activity update (60s)
+  // Throttled last_activity update (60s) — conditional để tránh resurrect session đã revoke
   const lastUpdate = lastActivityCache.get(sessionToken) ?? 0;
   if (now.getTime() - lastUpdate > ACTIVITY_UPDATE_THROTTLE_MS) {
     lastActivityCache.set(sessionToken, now.getTime());
-    void prisma.userPrivacySession.update({
-      where: { sessionToken },
+    void prisma.userPrivacySession.updateMany({
+      where: { sessionToken, revokedAt: null, expiresAt: { gt: now } },
       data: { lastActivityAt: now },
     }).catch(() => {});
   }
