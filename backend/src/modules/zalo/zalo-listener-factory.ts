@@ -232,6 +232,20 @@ export function attachZaloListener(ctx: ListenerContext): void {
     logger.info(`[zalo:${accountId}] Listener connected`);
   });
 
+  // DEBUG 2026-05-22: catch-all log để verify ListenerEvents nào fire trong thực tế.
+  // Wrap listener.emit để intercept TẤT CẢ event names. Bỏ sau khi xác minh xong.
+  const _origEmit = (listener as any).emit?.bind(listener);
+  if (_origEmit) {
+    (listener as any).emit = function (eventName: string, ...args: any[]) {
+      if (eventName !== 'message' && eventName !== 'old_messages' && eventName !== 'connected') {
+        try {
+          logger.info(`[zalo:${accountId}] 🎯 SDK emit '${eventName}' — args[0]=`, JSON.stringify(args[0])?.slice(0, 300));
+        } catch { /* ignore log error */ }
+      }
+      return _origEmit(eventName, ...args);
+    };
+  }
+
   // ─── WAVE 1+2 (2026-05-21) — typing / seen / delivered / disconnected ───────
   // Trước đây SDK fire 4 events này mà code không subscribe → bỏ phí payload.
   // Mục đích: bubble status icon (sent/delivered/seen) + typing dots realtime.
@@ -240,7 +254,11 @@ export function attachZaloListener(ctx: ListenerContext): void {
   // không có event mới. SDK fire mỗi ~2s khi KH còn gõ.
   listener.on('typing', (typing: any) => {
     try {
-      // Chỉ cần forward {threadId, isPC, ts} — FE map sang conversationId qua threadId
+      // DEBUG 2026-05-22: log raw payload để verify SDK fire event đúng shape.
+      // Anh đã test 2026-05-22 không thấy typing dots — cần xác minh event arrival.
+      logger.info(`[zalo:${accountId}] 🔵 TYPING event:`, JSON.stringify({
+        threadId: typing?.threadId, type: typing?.type, data: typing?.data, isSelf: typing?.isSelf,
+      }));
       io?.emit('zalo:typing', {
         accountId,
         threadId: typing?.threadId || '',
@@ -257,6 +275,10 @@ export function attachZaloListener(ctx: ListenerContext): void {
   // KH đọc tới msg N → tất cả msg ≤ N của ta đều được đánh dấu seen (Zalo behavior).
   listener.on('seen_messages', async (messages: any[]) => {
     try {
+      // DEBUG 2026-05-22: log raw payload
+      logger.info(`[zalo:${accountId}] 🟢 SEEN_MESSAGES event:`, JSON.stringify(
+        (messages || []).slice(0, 3).map(m => ({ threadId: m?.threadId, type: m?.type, data: m?.data })),
+      ));
       const seenIds: string[] = [];
       for (const m of messages || []) {
         const msgId = String(m?.data?.msgId || '');
@@ -299,6 +321,10 @@ export function attachZaloListener(ctx: ListenerContext): void {
   // KH device nhận packet (chưa đọc). Set delivered_at nếu chưa seen.
   listener.on('delivered_messages', async (messages: any[]) => {
     try {
+      // DEBUG 2026-05-22: log raw payload
+      logger.info(`[zalo:${accountId}] 🟡 DELIVERED_MESSAGES event:`, JSON.stringify(
+        (messages || []).slice(0, 3).map(m => ({ threadId: m?.threadId, type: m?.type, data: m?.data })),
+      ));
       const deliveredIds: string[] = [];
       for (const m of messages || []) {
         const msgId = String(m?.data?.msgId || '');
