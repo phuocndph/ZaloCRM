@@ -211,6 +211,8 @@ export async function sendMessageHandler(ctx: ActionContext): Promise<ActionResu
         content: persistContent,
         contentType: persistContentType,
         sentAt: new Date(),
+        // Phase metrics 2026-05-22: bot gửi
+        sentVia: 'automation',
       },
       select: { id: true, content: true, contentType: true, sentAt: true },
     });

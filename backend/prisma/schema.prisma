@@ -64,6 +64,8 @@ model Organization {
   permissionGroups     PermissionGroup[]
   // Phase ZaloAccounts redesign 2026-05-22 — status log uptime
   zaloAccountStatusLog ZaloAccountStatusLog[]
+  // Phase metrics layer 2026-05-22 — phone search log
+  phoneSearchEvents    PhoneSearchEvent[]
 
   @@map("organizations")
 }
@@ -127,6 +129,8 @@ model User {
   createdSequences          AutomationSequence[]   @relation("SequenceCreatedBy")
   createdTriggers           AutomationTrigger[]    @relation("TriggerCreatedBy")
   createdBroadcasts         AutomationBroadcast[]  @relation("BroadcastCreatedBy")
+  // Phase metrics layer 2026-05-22 — phone search by user
+  phoneSearchEvents         PhoneSearchEvent[]
 
   @@map("users")
 }
@@ -177,6 +181,8 @@ model ZaloAccount {
   // Phase ZaloAccounts redesign 2026-05-22: status log để tính uptime thật.
   // Xem design doc: ~/.gstack/projects/zalocrm/EVO-THANH-private-hs-design-20260522-184345.md
   statusLogs       ZaloAccountStatusLog[]
+  // Phase metrics layer 2026-05-22 — phone search log per nick
+  phoneSearchEvents PhoneSearchEvent[]
 
   @@map("zalo_accounts")
 }
@@ -507,6 +513,11 @@ model Message {
   deliveredAt     DateTime? @map("delivered_at")
   seenAt          DateTime? @map("seen_at")
   repliedByUserId String?   @map("replied_by_user_id")
+  // Phase metrics layer 2026-05-22: phân biệt nguồn gửi cho automation rate-limit + dashboard.
+  // 'user' = sale gửi qua CRM UI HOẶC sync về từ Zalo native (default — backward compat)
+  // 'automation' = bot/sequence/broadcast/NBA suggest gửi qua engine
+  // 'system' = CRM internal (reminder card, system notice — chưa dùng, reserved)
+  sentVia         String    @default("user") @map("sent_via")
   createdAt       DateTime  @default(now()) @map("created_at")
 
   conversation Conversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
@@ -517,7 +528,34 @@ model Message {
   @@index([conversationId, albumKey])
   // Composite index cho sort theo Zalo Snowflake — primary order khi list messages.
   @@index([conversationId, zaloMsgIdNum(sort: Desc)])
+  // Phase metrics 2026-05-22: aggregate query per nick per day per category
+  @@index([conversationId, sentAt, senderType, sentVia])
   @@map("messages")
+}
+
+// Phase metrics layer 2026-05-22 — Phone search event log.
+// Mỗi lần POST /zalo-accounts/:id/find-user log 1 row. Phone hash SHA-256 cho privacy.
+// Dùng cho dashboard "Phone search today: total/found/notfound" + Automation rate-limit.
+model PhoneSearchEvent {
+  id         String   @id @default(uuid())
+  orgId      String   @map("org_id")
+  accountId  String   @map("account_id")   // nick nào search
+  userId     String?  @map("user_id")      // user trigger (null nếu automation)
+  phoneHash  String   @map("phone_hash")   // SHA-256 SĐT — privacy + dedup
+  // 'found_zalo' | 'no_zalo' | 'rate_limited' | 'error'
+  result     String
+  foundUid   String?  @map("found_uid")    // null khi result != 'found_zalo'
+  errorCode  String?  @map("error_code")
+  occurredAt DateTime @default(now()) @map("occurred_at")
+
+  org     Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  account ZaloAccount  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  user    User?        @relation(fields: [userId], references: [id])
+
+  @@index([accountId, occurredAt])
+  @@index([orgId, occurredAt])
+  @@index([phoneHash])
+  @@map("phone_search_events")
 }
 
 // Appointment scheduled for a contact

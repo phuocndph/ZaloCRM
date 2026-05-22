@@ -61,6 +61,8 @@ export async function sendTemplateAction(input: {
       content,
       contentType: 'text',
       sentAt: new Date(),
+      // Phase metrics 2026-05-22: bot gửi
+      sentVia: 'automation',
     },
   });
 

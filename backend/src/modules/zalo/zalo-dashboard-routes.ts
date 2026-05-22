@@ -19,6 +19,7 @@ import { logger } from '../../shared/utils/logger.js';
 import { getZaloScope, canManageAccount } from './zalo-scope.js';
 import { uptimeWindowBatch } from './status-log-service.js';
 import { revokeAllSessions } from '../privacy/pin-service.js';
+import { getNickDayMetricsBatch, type NickDayMetrics } from './nick-metrics-service.js';
 
 const DAILY_QUOTA = 500; // per-nick soft cap shown in UI (msg today X / 500)
 
@@ -63,34 +64,23 @@ export async function zaloDashboardRoutes(app: FastifyInstance): Promise<void> {
     });
     const accountIds = accounts.map((a) => a.id);
 
-    // Today aggregate (msgToday only — không dùng cho active/idle nữa)
-    const todayStats = await prisma.dailyMessageStat.aggregate({
-      where: { orgId: user.orgId, statDate: today, zaloAccountId: { in: accountIds } },
-      _sum: { messagesSent: true, messagesReceived: true },
-    });
+    // Phase metrics layer 2026-05-22: dùng nick-metrics-service thay vì DailyMessageStat
+    // (bảng cũ KHÔNG có writer code → dead). Today metrics + uptime cùng batch query.
+    const [metricsToday, metricsYesterday, uptimeMap] = await Promise.all([
+      getNickDayMetricsBatch(accountIds, today),
+      getNickDayMetricsBatch(accountIds, new Date(today.getTime() - 86400_000)),
+      uptimeWindowBatch(accountIds, 7),
+    ]);
 
-    // Anh chốt 2026-05-22 Phase 3: ACTIVE = connected + activity 24h (KHÔNG còn 7 ngày).
-    // Activity 24h dựa trên DailyMessageStat (hôm nay + hôm qua có gửi/nhận).
-    // Uptime team từ ZaloAccountStatusLog (connection time thật) thay vì proxy.
-    const yesterday = new Date(today);
-    yesterday.setUTCDate(yesterday.getUTCDate() - 1);
-    const last24hRows = await prisma.dailyMessageStat.groupBy({
-      by: ['zaloAccountId'],
-      where: {
-        orgId: user.orgId,
-        zaloAccountId: { in: accountIds },
-        statDate: { gte: yesterday, lte: today },
-      },
-      _sum: { messagesSent: true, messagesReceived: true },
-    });
+    // Active = connected + có activity 24h (today + yesterday có msg sent/received).
     const activeRecent = new Set<string>();
-    for (const r of last24hRows) {
-      const total = (r._sum.messagesSent ?? 0) + (r._sum.messagesReceived ?? 0);
-      if (total > 0) activeRecent.add(r.zaloAccountId);
+    for (const id of accountIds) {
+      const t = metricsToday.get(id);
+      const y = metricsYesterday.get(id);
+      const total24h = (t?.msgSentTotal ?? 0) + (t?.msgReceivedTotal ?? 0)
+        + (y?.msgSentTotal ?? 0) + (y?.msgReceivedTotal ?? 0);
+      if (total24h > 0) activeRecent.add(id);
     }
-
-    // Uptime 7d batch — N+1-safe.
-    const uptimeMap = await uptimeWindowBatch(accountIds, 7);
 
     let totalNick = accounts.length;
     let active = 0;
@@ -113,7 +103,19 @@ export async function zaloDashboardRoutes(app: FastifyInstance): Promise<void> {
       }
     }
 
-    const msgToday = (todayStats._sum.messagesSent ?? 0) + (todayStats._sum.messagesReceived ?? 0);
+    // msgToday = SUM toàn org cho today (gồm cả sent + received)
+    let msgToday = 0;
+    let msgSentByBot = 0;
+    let phoneSearchTotal = 0;
+    let friendReqSent = 0;
+    for (const id of accountIds) {
+      const m = metricsToday.get(id);
+      if (!m) continue;
+      msgToday += m.msgSentTotal + m.msgReceivedTotal;
+      msgSentByBot += m.msgSentByBot;
+      phoneSearchTotal += m.phoneSearchTotal;
+      friendReqSent += m.friendReqSent;
+    }
     const quota = totalNick * DAILY_QUOTA;
     const uptimeTeam = totalNick > 0 ? uptimeSum / totalNick : 0;
 
@@ -123,6 +125,9 @@ export async function zaloDashboardRoutes(app: FastifyInstance): Promise<void> {
       idle,
       error,
       msgToday,
+      msgSentByBot,
+      phoneSearchTotal,
+      friendReqSent,
       quota,
       uptimeTeam: Number(uptimeTeam.toFixed(1)),
       needReloginIds,
@@ -184,37 +189,31 @@ export async function zaloDashboardRoutes(app: FastifyInstance): Promise<void> {
     const ids = accounts.map((a) => a.id);
     if (ids.length === 0) return [];
 
-    // msg today per account
-    const todayPerAcct = await prisma.dailyMessageStat.groupBy({
-      by: ['zaloAccountId'],
-      where: { orgId: user.orgId, statDate: today, zaloAccountId: { in: ids } },
-      _sum: { messagesSent: true, messagesReceived: true },
-    });
-    const todayMap = new Map(
-      todayPerAcct.map((r) => [
-        r.zaloAccountId,
-        (r._sum.messagesSent ?? 0) + (r._sum.messagesReceived ?? 0),
-      ]),
-    );
+    // Phase metrics layer 2026-05-22: msgToday + uptime7d cùng batch query.
+    // KHÔNG dùng DailyMessageStat nữa (dead writer). lastActivity derive từ Message table.
+    const [metricsToday, uptimeMap, lastMsgRows] = await Promise.all([
+      getNickDayMetricsBatch(ids, today),
+      uptimeWindowBatch(ids, 7),
+      // Last message sentAt per account (proxy lastActivity)
+      prisma.$queryRaw<Array<{ account_id: string; last_at: Date }>>`
+        SELECT c.zalo_account_id as account_id, MAX(m.sent_at) as last_at
+        FROM messages m
+        INNER JOIN conversations c ON c.id = m.conversation_id
+        WHERE c.zalo_account_id = ANY(${ids}::text[])
+        GROUP BY c.zalo_account_id
+      `,
+    ]);
 
-    // Phase 3 2026-05-22: uptime7d từ status log (connection time thật), KHÔNG còn proxy.
-    const uptimeMap = await uptimeWindowBatch(ids, 7);
-
-    // Last activity per account (most recent statDate with activity) — vẫn dùng cho UI display
-    const lastActivityRows = await prisma.dailyMessageStat.groupBy({
-      by: ['zaloAccountId'],
-      where: { orgId: user.orgId, zaloAccountId: { in: ids } },
-      _max: { statDate: true },
-    });
-    const lastActivityMap = new Map(
-      lastActivityRows.map((r) => [r.zaloAccountId, r._max.statDate]),
+    const lastActivityMap = new Map<string, Date>(
+      lastMsgRows.map((r) => [r.account_id, r.last_at]),
     );
 
     return accounts.map((a) => {
       const live = zaloPool.getStatus(a.id) ?? a.status;
       const u = uptimeMap.get(a.id);
       const uptime7d = u?.uptimePct ?? 0;
-      const msgToday = todayMap.get(a.id) ?? 0;
+      const todayMetrics: NickDayMetrics | undefined = metricsToday.get(a.id);
+      const msgToday = (todayMetrics?.msgSentTotal ?? 0) + (todayMetrics?.msgReceivedTotal ?? 0);
       const lastActivity = lastActivityMap.get(a.id) ?? a.lastConnectedAt;
       // Owner's department — FE dùng cho cột Department + filter chip Phòng ban.
       const ownerDept = a.owner?.departmentMember?.department ?? null;
@@ -251,6 +250,20 @@ export async function zaloDashboardRoutes(app: FastifyInstance): Promise<void> {
         quota: DAILY_QUOTA,
         uptime7d,
         lastActivityAt: lastActivity,
+        // Phase metrics layer 2026-05-22: breakdown chi tiết per nick today.
+        // FE dashboard + automation gate đều consume field này.
+        metricsToday: todayMetrics ? {
+          msgReceivedFromFriends: todayMetrics.msgReceivedFromFriends,
+          msgReceivedFromStrangers: todayMetrics.msgReceivedFromStrangers,
+          msgSentByUser: todayMetrics.msgSentByUser,
+          msgSentByBot: todayMetrics.msgSentByBot,
+          friendReqSent: todayMetrics.friendReqSent,
+          friendReqAccepted: todayMetrics.friendReqAccepted,
+          friendReqRejected: todayMetrics.friendReqRejected,
+          phoneSearchTotal: todayMetrics.phoneSearchTotal,
+          phoneSearchFoundZalo: todayMetrics.phoneSearchFoundZalo,
+          phoneSearchNoZalo: todayMetrics.phoneSearchNoZalo,
+        } : null,
         // E3: health alert badge when uptime under 80% in the 7-day window
         healthAlert: uptime7d < 80,
       };
