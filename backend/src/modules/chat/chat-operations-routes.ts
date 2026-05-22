@@ -115,6 +115,22 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
 
     try {
       const threadType = conv.threadType === 'group' ? 1 : 0;
+      const displayEmoji = reactionDisplay(reaction);
+
+      // FIX 2026-05-22 (regress bug "thả 1 tim hiện 2"): mark cache TRƯỚC khi
+      // call SDK.addReaction. Nếu mark SAU await, echo từ Zalo có thể arrive
+      // qua socket TRƯỚC khi cache được set → consumeIfExpected miss →
+      // listener tạo DB row 'zalo' DUPLICATE row 'crm' đã upsert phía dưới →
+      // FE count = 2.
+      // Lookup ownNick UID → key (zaloMsgId, emoji, ownUid) → cache 5s.
+      const ownNick = await prisma.zaloAccount.findUnique({
+        where: { id: conv.zaloAccountId },
+        select: { zaloUid: true },
+      });
+      if (ownNick?.zaloUid) {
+        markReactionEchoExpected(refs.zaloMsgId, displayEmoji, ownNick.zaloUid);
+      }
+
       // zca-js addReaction signature: (icon, dest) where dest = {data: {msgId, cliMsgId}, threadId, type}
       const result = await zaloOps.addReaction(
         conv.zaloAccountId,
@@ -126,21 +142,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
         },
       );
       // Phase A reaction fix (2026-05-21): bỏ eventBuffer.recordReaction để tránh
-      // double-emit. Trước fix: POST → recordReaction queue redis/batch → flush emit
-      // 'chat:reactions' lần 1; SAU ĐÓ POST → io.emit('chat:reactions') trực tiếp lần 2.
-      // FE socket handler increment count lần 1 (=1), lần 2 (=2) → anh thả 1 tim hiện 2.
-      // Giữ duy nhất direct emit phía dưới (latency thấp hơn, không qua queue).
-      const displayEmoji = reactionDisplay(reaction);
-      // Phase A v3 (2026-05-21): mark expected SDK echo để handleZaloReaction skip
-      // chỉ self-echo từ CRM, KHÔNG skip genuine reaction từ Zalo App của anh.
-      // Lookup ownNick UID → key (zaloMsgId, emoji, ownUid) → cache 5s.
-      const ownNick = await prisma.zaloAccount.findUnique({
-        where: { id: conv.zaloAccountId },
-        select: { zaloUid: true },
-      });
-      if (ownNick?.zaloUid) {
-        markReactionEchoExpected(refs.zaloMsgId, displayEmoji, ownNick.zaloUid);
-      }
+      // double-emit. Giữ duy nhất direct emit phía dưới.
       // Multi-emoji: upsert keyed theo (messageId, reactorId, emoji) — cùng user có thể có nhiều emoji
       await prisma.messageReaction.upsert({
         where: {

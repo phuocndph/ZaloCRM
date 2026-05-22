@@ -917,26 +917,35 @@ function openFile(href: string) {
   right: -28px;
 }
 
-/* Phase A UI fix v2 (2026-05-21) — reaction display overlap bubble.
+/* Phase A UI fix v3 (2026-05-22) — reaction display overlap bubble compact.
+   Anh chốt: 3 icon đầu tiên + +N overflow, không bị khuất ra ngoài bubble.
    - Position: absolute, bottom-LEFT (anh chốt: icon đầu lề trái, grow ra phải).
    - 50% trong / 50% ngoài bubble (overlap mép dưới).
-   - Nền trắng + viền + shadow + size +10% (24px).
-   - flex-nowrap → multi-reaction xếp NGANG, không stack dọc. */
+   - Nền trắng + viền + shadow nhẹ + COMPACT size cho fit nhiều chip vào bubble nhỏ.
+   - flex-nowrap → multi-reaction xếp NGANG, không stack dọc.
+   - max-width 90% để KHÔNG vượt qua bubble bên phải (clip bởi overflow-x:hidden parent). */
 .bubble-wrapper > .bubble-reaction-overlap {
   position: absolute;
-  bottom: -12px;
+  bottom: -10px;
   left: 8px;
   margin: 0;
   z-index: 2;
+  max-width: calc(100% - 12px);
 }
 .bubble-wrapper :deep(.bubble-reaction-overlap .v-chip) {
   background: #ffffff !important;
   border: 1px solid var(--smax-grey-300, #d4d8e0) !important;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
-  height: 24px !important;
-  font-size: 13px !important;
-  padding: 0 9px !important;
-  border-radius: 12px !important;
+  height: 20px !important;
+  font-size: 11px !important;
+  font-weight: 500 !important;
+  padding: 0 6px !important;
+  min-width: 0 !important;
+  border-radius: 10px !important;
+}
+.bubble-wrapper :deep(.bubble-reaction-overlap .v-chip__content) {
+  padding: 0 !important;
+  gap: 2px;
 }
 .bubble-wrapper :deep(.bubble-reaction-overlap .v-chip:hover) {
   background: var(--smax-grey-50, #fafbfc) !important;
