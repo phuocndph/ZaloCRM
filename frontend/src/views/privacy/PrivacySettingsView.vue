@@ -198,7 +198,6 @@ import { ref, computed, onMounted, reactive } from 'vue';
 import { RouterLink } from 'vue-router';
 import { api } from '@/api/index';
 import { usePrivacyStore } from '@/stores/privacy';
-import { useAuthStore } from '@/stores/auth';
 import PrivacyUnlockModal from '@/components/privacy/PrivacyUnlockModal.vue';
 import NickPrivacyPanel from '@/components/privacy/NickPrivacyPanel.vue';
 
@@ -214,7 +213,6 @@ interface NickRow {
 }
 
 const store = usePrivacyStore();
-const authStore = useAuthStore();
 const nicks = ref<NickRow[]>([]);
 const loading = ref(false);
 const showUnlockModal = ref(false);
@@ -234,18 +232,19 @@ onMounted(async () => {
 async function loadNicks() {
   loading.value = true;
   try {
-    const { data } = await api.get('/zalo-accounts');
-    const all: any[] = Array.isArray(data) ? data : data.accounts ?? [];
-    const myId = authStore.user?.id;
+    // Anh chốt 2026-05-22: Privacy chỉ thấy nick mình là owner (chính chủ).
+    // Endpoint /privacy/my-nicks đã filter sẵn theo ownerUserId = currentUser.
+    const { data } = await api.get('/privacy/my-nicks');
+    const all: any[] = data.nicks ?? [];
     nicks.value = all.map((a: any) => ({
       id: a.id,
       displayName: a.displayName,
       avatarUrl: a.avatarUrl,
       phone: a.phone,
       zaloUid: a.zaloUid,
-      status: a.liveStatus || a.status,
+      status: a.status,
       privacyMode: (a.privacyMode ?? 'sub') as 'main' | 'sub',
-      isOwner: !!myId && (a.owner?.id === myId || a.ownerUserId === myId),
+      isOwner: true, // all returned nicks are owned by current user by definition
     }));
   } catch (e) {
     console.warn('Load nicks failed', e);

@@ -9,8 +9,9 @@
           <th>Nick Zalo</th>
           <th>Trạng thái</th>
           <th>Sale phụ trách</th>
+          <th>Đội ngũ chia sẻ</th>
           <th>Msg today</th>
-          <th>Uptime 7d</th>
+          <th>Hoạt động 7d</th>
           <th>Hoạt động cuối</th>
           <th class="th-actions">Action</th>
         </tr>
@@ -59,19 +60,37 @@
             </span>
           </td>
           <td>
-            <div v-if="acct.crew.length" class="sales-stack">
+            <!-- Sale phụ trách (chính chủ — ownerUserId) -->
+            <div v-if="acct.owner" class="owner-cell">
+              <span class="avatar-mini owner-avatar" :style="{ background: avatarColor(acct.owner.fullName || acct.owner.email, 0) }">
+                {{ shortName(acct.owner.fullName || acct.owner.email) }}
+              </span>
+              <div class="owner-info">
+                <div class="owner-name">{{ acct.owner.fullName || acct.owner.email }}</div>
+                <div class="owner-tag">
+                  <span class="badge-owner">Chính chủ</span>
+                  <span v-if="acct.isOwnedByMe" class="badge-self">Bạn</span>
+                </div>
+              </div>
+            </div>
+            <span v-else class="muted-italic">Chưa có owner</span>
+          </td>
+          <td>
+            <!-- Đội ngũ chia sẻ (crew không gồm owner) -->
+            <div v-if="crewWithoutOwner(acct).length" class="sales-stack">
               <span
-                v-for="(c, i) in acct.crew.slice(0, 3)"
+                v-for="(c, i) in crewWithoutOwner(acct).slice(0, 3)"
                 :key="c.accessId"
                 class="avatar-mini"
-                :style="{ background: avatarColor((c.user.fullName || c.user.email), i), zIndex: 3 - i }"
-                :title="`${c.user.fullName || c.user.email} · ${c.role}`"
+                :style="{ background: avatarColor((c.user.fullName || c.user.email), i + 1), zIndex: 3 - i }"
+                :title="`${c.user.fullName || c.user.email} · Quyền: ${permLabel(c.permission)}`"
               >
                 {{ shortName(c.user.fullName || c.user.email) }}
+                <span class="perm-dot" :class="`perm-${c.permission}`" :title="permLabel(c.permission)"></span>
               </span>
-              <span v-if="acct.crew.length > 3" class="more">+{{ acct.crew.length - 3 }}</span>
+              <span v-if="crewWithoutOwner(acct).length > 3" class="more">+{{ crewWithoutOwner(acct).length - 3 }}</span>
             </div>
-            <span v-else class="muted-italic">Chưa gán</span>
+            <span v-else class="muted-italic">—</span>
           </td>
           <td>
             <div class="progress" :class="progressClass(acct.msgToday, acct.quota)">
@@ -80,7 +99,8 @@
             </div>
           </td>
           <td>
-            <span class="uptime" :class="uptimeColor(acct.uptime7d)">
+            <!-- "Hoạt động 7d" = % ngày có message trong 7 ngày qua (không phải uptime kết nối) -->
+            <span class="uptime" :class="uptimeColor(acct.uptime7d)" :title="`${acct.uptime7d}% (số ngày có message trong 7 ngày)`">
               {{ acct.uptime7d }}%
               <UptimeSparkline
                 v-if="uptimeCache[acct.id]"
@@ -91,15 +111,24 @@
           </td>
           <td>{{ relativeTime(acct.lastActivityAt) }}</td>
           <td class="td-actions" @click.stop>
-            <button class="icon-btn" :title="acct.liveStatus === 'connected' ? 'Sync' : 'Re-login'" @click="onActionClick(acct, 'reconnect')">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>
-            </button>
-            <button class="icon-btn" title="Sync danh bạ" @click="onActionClick(acct, 'sync')">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
-            </button>
-            <button class="icon-btn" title="Mở chi tiết" @click="$emit('open-detail', acct.id)">
-              <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
-            </button>
+            <!-- Actions gate theo canManage (owner-of-nick hoặc org admin) — anh chốt 2026-05-22 -->
+            <template v-if="acct.canManage">
+              <button class="icon-btn" :title="acct.liveStatus === 'connected' ? 'Sync' : 'Re-login'" @click="onActionClick(acct, 'reconnect')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-3-6.7"/><path d="M21 3v6h-6"/></svg>
+              </button>
+              <button class="icon-btn" title="Sync danh bạ" @click="onActionClick(acct, 'sync')">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
+              </button>
+              <button class="icon-btn" title="Mở chi tiết" @click="$emit('open-detail', acct.id)">
+                <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+              </button>
+            </template>
+            <template v-else>
+              <button class="icon-btn" title="Xem chi tiết (chỉ đọc — không phải chính chủ)" @click="$emit('open-detail', acct.id)">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
+              <span class="readonly-badge" title="Bạn không phải chính chủ nick này — chỉ xem được">🔒</span>
+            </template>
           </td>
         </tr>
         <tr v-if="!accounts.length">
@@ -164,6 +193,18 @@ function statusClass(live: string): string {
   if (live === 'connected') return 'ok';
   if (live === 'connecting' || live === 'qr_pending') return 'warn';
   return 'err';
+}
+
+function crewWithoutOwner(a: EnrichedAccount) {
+  if (!a.ownerUserId) return a.crew;
+  return a.crew.filter((c) => c.user.id !== a.ownerUserId);
+}
+
+function permLabel(perm: string): string {
+  if (perm === 'admin') return 'Quản trị';
+  if (perm === 'chat') return 'Chat (đọc + gửi)';
+  if (perm === 'read') return 'Chỉ đọc';
+  return perm;
 }
 
 function progressPct(n: number, total: number): number {
@@ -426,6 +467,66 @@ tbody tr.alert:hover { background: #FFF5F5 }
 }
 .icon-btn:hover { background: #F3F4F6; color: #111827 }
 .icon-btn svg { width: 14px; height: 14px }
+
+/* Owner cell (chính chủ) */
+.owner-cell { display: flex; align-items: center; gap: 8px; }
+.owner-avatar { margin-left: 0 !important; flex-shrink: 0; }
+.owner-info { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.owner-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: #111827;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 140px;
+}
+.owner-tag { display: flex; gap: 4px; align-items: center; }
+.badge-owner {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 9999px;
+  background: #FDF3DF;
+  color: #7A5818;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.badge-self {
+  font-size: 9px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 9999px;
+  background: #181D26;
+  color: white;
+}
+
+/* Permission dot on crew avatar */
+.avatar-mini { position: relative; }
+.perm-dot {
+  position: absolute;
+  bottom: -2px;
+  right: -2px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1.5px solid white;
+}
+.perm-admin { background: #aa2d00; }
+.perm-chat { background: #1b61c9; }
+.perm-read { background: #9CA3AF; }
+
+/* Readonly badge khi không có canManage */
+.readonly-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  font-size: 13px;
+  color: #9CA3AF;
+  margin-left: 2px;
+}
 
 .empty-row { padding: 32px 16px }
 .empty-msg {

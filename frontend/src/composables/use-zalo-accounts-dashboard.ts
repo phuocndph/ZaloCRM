@@ -27,6 +27,11 @@ export interface EnrichedAccount {
   lastConnectedAt: string | null;
   createdAt: string;
   owner: { id: string; fullName: string | null; email: string } | null;
+  ownerUserId: string | null;
+  /** True nếu user hiện tại có quyền edit/delete nick (owner-of-nick HOẶC org admin) */
+  canManage: boolean;
+  /** True nếu user hiện tại là owner của nick (chính chủ) */
+  isOwnedByMe: boolean;
   crew: CrewMember[];
   crewCount: number;
   msgToday: number;

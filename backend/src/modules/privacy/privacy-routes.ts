@@ -106,6 +106,33 @@ export async function registerPrivacyRoutes(app: FastifyInstance): Promise<void>
     return reply.send(status);
   });
 
+  // GET /privacy/my-nicks — trả CHỈ nicks user là chính chủ (owner) trong org.
+  // Anh chốt 2026-05-22: Privacy page chỉ thấy nick mình owner — không bao gồm
+  // granted access cross-sale (vì privacy phải chính chủ flip).
+  app.get('/api/v1/privacy/my-nicks', { preHandler: authMiddleware }, async (request, reply) => {
+    const user = (request as any).user;
+    if (!user) return reply.status(401).send({ error: 'unauthorized' });
+    const userId = user.userId ?? user.id;
+
+    const nicks = await prisma.zaloAccount.findMany({
+      where: { orgId: user.orgId, ownerUserId: userId },
+      select: {
+        id: true,
+        zaloUid: true,
+        displayName: true,
+        avatarUrl: true,
+        phone: true,
+        status: true,
+        privacyMode: true,
+        lastConnectedAt: true,
+        ownerUserId: true,
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    return reply.send({ nicks });
+  });
+
   // PATCH /zalo-accounts/:id/privacy-mode — flip nick main/sub
   // Chỉ owner của nick mới flip được.
   app.patch('/api/v1/zalo-accounts/:id/privacy-mode', { preHandler: authMiddleware }, async (request, reply) => {

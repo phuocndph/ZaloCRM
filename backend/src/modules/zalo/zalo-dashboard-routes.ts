@@ -16,6 +16,7 @@ import { requireRole } from '../auth/role-middleware.js';
 import { prisma } from '../../shared/database/prisma-client.js';
 import { zaloPool } from './zalo-pool.js';
 import { logger } from '../../shared/utils/logger.js';
+import { getZaloScope, canManageAccount } from './zalo-scope.js';
 
 const DAILY_QUOTA = 500; // per-nick soft cap shown in UI (msg today X / 500)
 
@@ -48,10 +49,14 @@ export async function zaloDashboardRoutes(app: FastifyInstance): Promise<void> {
   // ───────────────────────────────────────────────────────────────────
   app.get('/api/v1/zalo-accounts/stats', async (request) => {
     const user = request.user!;
+    const userId = (user as any).userId ?? user.id;
     const today = startOfDay(new Date());
 
+    // RBAC scope 2026-05-22: stats chỉ tính trên nicks user được thấy.
+    const scope = await getZaloScope(userId, user.orgId, user.role);
+
     const accounts = await prisma.zaloAccount.findMany({
-      where: { orgId: user.orgId },
+      where: { orgId: user.orgId, id: { in: scope.accessibleIds } },
       select: { id: true, status: true, lastConnectedAt: true },
     });
 
@@ -123,11 +128,15 @@ export async function zaloDashboardRoutes(app: FastifyInstance): Promise<void> {
   // ───────────────────────────────────────────────────────────────────
   app.get('/api/v1/zalo-accounts/enriched', async (request) => {
     const user = request.user!;
+    const userId = (user as any).userId ?? user.id;
     const today = startOfDay(new Date());
     const { start: weekStart } = lastNDays(7);
 
+    // RBAC scope 2026-05-22: chỉ trả nicks user được phép xem.
+    const scope = await getZaloScope(userId, user.orgId, user.role);
+
     const accounts = await prisma.zaloAccount.findMany({
-      where: { orgId: user.orgId },
+      where: { orgId: user.orgId, id: { in: scope.accessibleIds } },
       select: {
         id: true,
         zaloUid: true,
@@ -135,6 +144,7 @@ export async function zaloDashboardRoutes(app: FastifyInstance): Promise<void> {
         avatarUrl: true,
         phone: true,
         status: true,
+        ownerUserId: true,
         proxyUrl: true,
         lastConnectedAt: true,
         createdAt: true,
@@ -209,6 +219,10 @@ export async function zaloDashboardRoutes(app: FastifyInstance): Promise<void> {
         lastConnectedAt: a.lastConnectedAt,
         createdAt: a.createdAt,
         owner: a.owner,
+        ownerUserId: a.ownerUserId,
+        // RBAC 2026-05-22: gate Action buttons trên frontend
+        canManage: canManageAccount(a.ownerUserId, userId, user.role),
+        isOwnedByMe: a.ownerUserId === userId,
         // Multi-sale crew with role mapping → UI badges (admin=Owner, chat=Editor, read=Viewer)
         crew: a.access.map((ac) => ({
           accessId: ac.id,
