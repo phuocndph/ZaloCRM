@@ -93,6 +93,11 @@ model User {
   permissionGroupId  String?          @map("permission_group_id")
   permissionGroup    PermissionGroup? @relation(fields: [permissionGroupId], references: [id], onDelete: SetNull)
   departmentMember   DepartmentMember?
+  // Phase Riêng Tư 2026-05-22 — PIN-gated visual privacy cho main nicks của user
+  privacyPinHash     String?          @map("privacy_pin_hash")
+  privacyFailedCount Int              @default(0) @map("privacy_failed_count")
+  privacyLockedUntil DateTime?        @map("privacy_locked_until")
+  privacySessions    UserPrivacySession[]
   isActive     Boolean  @default(true) @map("is_active")
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
@@ -137,6 +142,10 @@ model ZaloAccount {
   proxyUrl        String?   @map("proxy_url") // per-account proxy (PR#11)
   sessionData     Json?     @map("session_data")
   lastConnectedAt DateTime? @map("last_connected_at")
+  // Phase Riêng Tư 2026-05-22: sale gắn nick là 'main' → blur content cho user khác,
+  // chỉ owner unlock PIN xem được. Default 'sub' (org public). Xem design doc:
+  // ~/.gstack/projects/zalocrm/thanh-private-mode-design-20260521.md
+  privacyMode     String    @default("sub") @map("privacy_mode")
   createdAt       DateTime  @default(now()) @map("created_at")
 
   org                Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
@@ -1881,4 +1890,30 @@ model PermissionGroup {
 
   @@index([orgId])
   @@map("permission_groups")
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// PHASE RIÊNG TƯ — 2026-05-22
+// PIN-gated visual privacy cho main nicks của user.
+// Reference: ~/.gstack/projects/zalocrm/thanh-private-mode-design-20260521.md
+// ════════════════════════════════════════════════════════════════════════
+
+model UserPrivacySession {
+  id             String   @id @default(uuid())
+  userId         String   @map("user_id")
+  // Random 32-byte base64 token, set as HttpOnly cookie + sent qua axios interceptor (anh chốt Q3 Issue 3).
+  sessionToken   String   @unique @map("session_token")
+  unlockedAt     DateTime @default(now()) @map("unlocked_at")
+  expiresAt      DateTime @map("expires_at")
+  // Idle timeout 30 phút: client request đến → update lastActivityAt; nếu now() - lastActivityAt > 30m → server revoke.
+  lastActivityAt DateTime @default(now()) @map("last_activity_at")
+  ipHash         String?  @map("ip_hash")  // audit
+  userAgent      String?  @map("user_agent")  // audit
+  revokedAt      DateTime? @map("revoked_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([sessionToken])
+  @@index([userId, expiresAt])
+  @@map("user_privacy_sessions")
 }

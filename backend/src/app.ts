@@ -175,6 +175,9 @@ async function bootstrap() {
   await registerPermissionGroupRoutes(app);
   const { registerUserAssignmentRoutes } = await import('./modules/rbac/user-assignment-routes.js');
   await registerUserAssignmentRoutes(app);
+  // Phase Riêng Tư 2026-05-22 — PIN-gated visual privacy
+  const { registerPrivacyRoutes } = await import('./modules/privacy/privacy-routes.js');
+  await registerPrivacyRoutes(app);
   await app.register(zaloLabelsRoutes);
   await app.register(zinstantProxyRoutes);
   await app.register(dashboardRoutes);
