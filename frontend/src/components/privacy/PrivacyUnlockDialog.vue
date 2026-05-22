@@ -152,8 +152,17 @@ const DURATION_OPTIONS = [
 // Lockout durations theo cấp sai (anh chốt): 5s → 30s → 5p → 10p → 30p
 const LOCKOUT_DURATIONS_S = [5, 30, 300, 600, 1800];
 
+type SessionDuration = 5 | 15 | 480 | 720;
+
 const step = ref<'pin' | 'duration'>('pin');
 const pin = ref('');
+// Anh chốt 2026-05-22: cache PIN giữa step 1 và 2 để có thể re-unlock khi user
+// chọn duration khác mặc định. Clear ngay khi dialog đóng (security).
+const cachedPin = ref('');
+// Track duration hiện tại đang active (step 1 default = 15p recommended).
+// User pick khác sẽ trigger re-unlock với duration mới.
+const DEFAULT_MINUTES: SessionDuration = 15;
+const currentMinutes = ref<SessionDuration>(DEFAULT_MINUTES);
 const wrongCount = ref(0);
 const hasError = ref(false);
 const checking = ref(false);
@@ -174,7 +183,11 @@ watch(() => props.modelValue, (open) => {
     step.value = 'pin';
     pin.value = '';
     hasError.value = false;
+    currentMinutes.value = DEFAULT_MINUTES;
     // wrongCount + lockout giữ nguyên (tránh user spam đóng/mở để bypass)
+  } else {
+    // Đóng dialog → clear cached PIN ngay (security: PIN không sống quá session UI).
+    cachedPin.value = '';
   }
 });
 
@@ -205,14 +218,13 @@ async function checkPin() {
   if (pin.value.length !== 4 || checking.value) return;
   checking.value = true;
   try {
-    // Validate by attempting unlock with shortest duration (5p) — if PIN wrong server
-    // returns error. If correct, server creates session → we keep it and prompt
-    // duration; user changes by re-unlocking (since BE updates session expiresAt).
-    // Simpler: defer actual unlock to step 2. Here just verify by status endpoint.
-    // → Em dùng cách: unlock với 5p, nếu success → chuyển step 2 cho user chọn lại.
-    //   Nếu user chọn khác 5p → re-call unlock với duration mới (BE replace session).
-    await privacyStore.unlock(pin.value, 5);
-    // Success → chuyển step duration
+    // Anh chốt 2026-05-22: step 1 unlock với 15p (recommended default). User
+    // không pick gì ở step 2 cũng đã có session 15p ngon lành (không phải 5p).
+    // Cache PIN để step 2 có thể re-unlock duration khác. BE đã revoke prior
+    // active session khi tạo mới → không bị orphan multi-session.
+    await privacyStore.unlock(pin.value, DEFAULT_MINUTES);
+    cachedPin.value = pin.value;
+    currentMinutes.value = DEFAULT_MINUTES;
     step.value = 'duration';
     wrongCount.value = 0;
     hasError.value = false;
@@ -244,20 +256,27 @@ function startLockout(seconds: number) {
   }, 1000);
 }
 
-async function confirmDuration(minutes: 5 | 15 | 480 | 720) {
+async function confirmDuration(minutes: SessionDuration) {
   if (submitting.value) return;
   submitting.value = true;
   try {
-    // Nếu user chọn duration > 5 (default đã unlock từ step 1) → re-unlock
-    // với duration mới. PIN vẫn còn cache ở step 1, nhưng vì security em không
-    // store pin sau check → chỉ apply duration nếu khác 5.
-    if (minutes !== 5) {
-      // Re-unlock với duration mới — cần re-input PIN. Simpler: BE auto-extend session.
-      // Tạm thời chấp nhận 5p default; FE refetch status để pick up expiresAt.
-      // TODO: thêm endpoint PATCH /privacy/session để update duration.
+    // Nếu user pick DURATION KHÁC current → re-unlock với duration mới.
+    // BE: unlock revoke prior session trước khi create → cookie luôn trỏ session
+    // mới nhất, activeSessionCount=1. Lock badge revoke ALL → thật sự lock.
+    if (minutes !== currentMinutes.value) {
+      if (!cachedPin.value) {
+        toast.error('Session đã hết hạn cache PIN — vui lòng nhập lại');
+        step.value = 'pin';
+        pin.value = '';
+        return;
+      }
+      await privacyStore.unlock(cachedPin.value, minutes);
+      currentMinutes.value = minutes;
+    } else {
+      // Same duration → just refresh status (no API call needed).
       await privacyStore.fetchStatus(true);
     }
-    toast.success('🔓 Đã mở khoá Riêng tư');
+    toast.success(`🔓 Đã mở khoá Riêng tư · ${labelFor(minutes)}`);
     emit('unlocked');
     emit('update:modelValue', false);
   } catch (e: any) {
@@ -265,6 +284,13 @@ async function confirmDuration(minutes: 5 | 15 | 480 | 720) {
   } finally {
     submitting.value = false;
   }
+}
+
+function labelFor(m: SessionDuration): string {
+  if (m === 5) return '5 phút';
+  if (m === 15) return '15 phút';
+  if (m === 480) return '8 giờ';
+  return '12 giờ';
 }
 
 function initials(name?: string | null): string {

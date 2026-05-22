@@ -21,6 +21,7 @@ import {
   lock,
   getStatus,
   adminResetPin,
+  revokeAllSessions,
   type SessionDuration,
 } from './pin-service.js';
 
@@ -90,10 +91,18 @@ export async function registerPrivacyRoutes(app: FastifyInstance): Promise<void>
     }
   });
 
-  // POST /privacy/lock — revoke current session
+  // POST /privacy/lock — revoke session(s).
+  // Anh chốt 2026-05-22: revoke ALL active sessions cho user (không chỉ theo cookie).
+  // Đảm bảo lock thật sự lock dù cookie thiếu/lệch hoặc có orphan session từ
+  // các browser khác. activeSessionCount=0 ngay sau request → bubble blur kích hoạt.
   app.post('/api/v1/privacy/lock', { preHandler: authMiddleware }, async (request, reply) => {
-    const token = (request as any).cookies?.[COOKIE_NAME] || extractCookie(request, COOKIE_NAME);
-    if (token) await lock(token);
+    const user = (request as any).user;
+    const userId = user?.userId ?? user?.id;
+    if (userId) {
+      await revokeAllSessions(userId);
+    }
+    const cookieToken = (request as any).cookies?.[COOKIE_NAME] || extractCookie(request, COOKIE_NAME);
+    if (cookieToken) await lock(cookieToken); // belt-and-braces (no-op nếu đã revoke ở trên)
     reply.header('Set-Cookie', `${COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);
     return reply.send({ ok: true });
   });

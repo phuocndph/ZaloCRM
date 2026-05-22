@@ -118,6 +118,7 @@ import FolderManagePopup from '@/components/chat/FolderManagePopup.vue';
 import { useChat } from '@/composables/use-chat';
 import { useInboxFilters } from '@/composables/use-inbox-filters';
 import { useAuthStore } from '@/stores/auth';
+import { usePrivacyStore } from '@/stores/privacy';
 import { useChatOperations } from '@/composables/use-chat-operations';
 import { useZaloAccounts } from '@/composables/use-zalo-accounts';
 import MobileChatView from '@/views/MobileChatView.vue';
@@ -224,6 +225,19 @@ watch(
     }, 150);
   },
   { deep: true }
+);
+
+// Anh chốt 2026-05-22: khi privacy state đổi (lock/unlock) → refetch conversation
+// list + messages thread đang mở. Server sẽ trả msg.redacted + conv.redacted
+// theo state mới → bubble blur cập nhật đúng cả cột 2 + cột 3 ngay lập tức
+// (không phải F5 mới apply). Skip lần đầu mount.
+const _privacyStore = usePrivacyStore();
+watch(
+  () => _privacyStore.isUnlocked,
+  () => {
+    fetchConversations();
+    if (selectedConvId.value) fetchMessages(selectedConvId.value);
+  },
 );
 
 // ════════ Existing handlers ════════

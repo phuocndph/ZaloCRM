@@ -130,7 +130,11 @@ export async function unlock(input: {
     );
   }
 
-  // Verified: reset fail counter, tạo session
+  // Verified: reset fail counter, tạo session.
+  // Anh chốt 2026-05-22: revoke ALL prior active sessions trước khi tạo mới —
+  // tránh orphan sessions khi user re-unlock với duration khác. Nhờ vậy
+  // activeSessionCount luôn ≤ 1 cho mỗi user, lock badge revoke đúng 1 session
+  // duy nhất → click lock = thật sự lock.
   const expiresAt = new Date(Date.now() + input.durationMinutes * 60 * 1000);
   const sessionToken = genToken();
 
@@ -138,6 +142,10 @@ export async function unlock(input: {
     await tx.user.update({
       where: { id: input.userId },
       data: { privacyFailedCount: 0, privacyLockedUntil: null },
+    });
+    await tx.userPrivacySession.updateMany({
+      where: { userId: input.userId, revokedAt: null },
+      data: { revokedAt: new Date() },
     });
     await tx.userPrivacySession.create({
       data: {

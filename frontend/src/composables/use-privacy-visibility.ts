@@ -37,15 +37,22 @@ export function usePrivacyVisibility() {
    *   - hoặc client-side check: privacyMode='main' && ownerUserId !== currentUser && !unlocked
    */
   function shouldBlurConv(conv: ConvLike | null | undefined): boolean {
+    // Anh chốt 2026-05-22: access reactive deps EAGER ngay đầu function — Vue cần
+    // track isUnlocked + currentUserId trên MỌI invocation để re-render khi state
+    // đổi. Trước fix: nhánh `conv.redacted===true` short-circuit trước khi đụng
+    // isUnlocked → cột 3 không re-render khi lock (msg.redacted vẫn false từ
+    // fetch trước, nhưng Vue không track isUnlocked nên không invalidate).
+    const unlocked = isUnlocked.value;
+    const myId = currentUserId.value;
     if (!conv) return false;
     if (conv.redacted === true) return true;
     const acc = conv.zaloAccount;
     if (!acc) return false;
     if (acc.privacyMode !== 'main') return false;
     // Owner + unlocked → see full
-    if (acc.ownerUserId === currentUserId.value && isUnlocked.value) return false;
+    if (acc.ownerUserId === myId && unlocked) return false;
     // Owner but locked → still blur (anh chốt: ai cũng phải unlock kể cả owner)
-    if (acc.ownerUserId === currentUserId.value) return true;
+    if (acc.ownerUserId === myId) return true;
     // Non-owner → always blur on main nick
     return true;
   }
@@ -68,8 +75,19 @@ export function usePrivacyVisibility() {
    * Dùng cho từng bubble trong MessageThread.
    */
   function shouldBlurMessage(msg: { redacted?: boolean } | null | undefined, conv: ConvLike | null | undefined): boolean {
+    // EAGER access: cùng lý do như shouldBlurConv. Vue cần track isUnlocked
+    // trên MỌI invocation kể cả khi msg.redacted=true short-circuit.
+    const unlocked = isUnlocked.value;
     if (!msg) return false;
-    if (msg.redacted === true) return true;
+    // msg.redacted=true (server đã redact lúc fetch) → blur, NHƯNG vẫn check
+    // unlocked: nếu user đã unlock thì FE force unblur (chờ refetch sẽ lấy
+    // msg.redacted=false từ server). Tránh trường hợp lock→unlock→blur kẹt
+    // do msg state cũ chưa refresh.
+    if (msg.redacted === true && !unlocked) return true;
+    if (msg.redacted === true && unlocked) {
+      // Server đã redact lúc lock, user unlock rồi → check conv level
+      return shouldBlurConv(conv);
+    }
     return shouldBlurConv(conv);
   }
 
