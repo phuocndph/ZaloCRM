@@ -162,12 +162,16 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
           emoji: displayEmoji,
         },
       });
+      // ANTI-DRIFT FIX 2026-05-22: emit totalCount real từ DB → FE set không increment.
+      const newCount = await prisma.messageReaction.count({
+        where: { messageId: refs.messageId, emoji: displayEmoji },
+      });
       const io = (app as any).io as Server;
       io?.emit('chat:reactions', {
         conversationId: id,
         messageId: refs.messageId,
         msgId: refs.messageId,
-        reactions: [{ userId: user.id, userName: user.email, reaction: displayEmoji, action: 'add' }],
+        reactions: [{ userId: user.id, userName: user.email, reaction: displayEmoji, action: 'add', totalCount: newCount }],
       });
       void applyContactInteraction({
         conversationId: id,
@@ -196,12 +200,16 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
     await prisma.messageReaction.deleteMany({
       where: { messageId: refs.messageId, reactorId: user.id, emoji: displayEmoji },
     });
+    // ANTI-DRIFT FIX 2026-05-22: emit totalCount post-delete.
+    const newCount = await prisma.messageReaction.count({
+      where: { messageId: refs.messageId, emoji: displayEmoji },
+    });
     const io = (app as any).io as Server;
     io?.emit('chat:reactions', {
       conversationId: id,
       messageId: refs.messageId,
       msgId: refs.messageId,
-      reactions: [{ userId: user.id, userName: user.email, reaction: displayEmoji, action: 'remove' }],
+      reactions: [{ userId: user.id, userName: user.email, reaction: displayEmoji, action: 'remove', totalCount: newCount }],
     });
     return { success: true };
   });

@@ -665,7 +665,7 @@ export function useChat() {
       }
     });
 
-    socket.on('chat:reactions', (data: { messageId?: string; msgId?: string; zaloMsgId?: string; reactions: { userId: string; userName: string; reaction: string; action: 'add' | 'remove' }[] }) => {
+    socket.on('chat:reactions', (data: { messageId?: string; msgId?: string; zaloMsgId?: string; reactions: { userId: string; userName: string; reaction: string; action: 'add' | 'remove'; totalCount?: number }[] }) => {
       const msg = messages.value.find(m => m.id === data.messageId || m.id === data.msgId || m.zaloMsgId === data.zaloMsgId);
       if (!msg) return;
       // Merge với reactions hiện có thay vì replace — tránh mất emoji của user khác
@@ -679,7 +679,19 @@ export function useChat() {
       for (const r of data.reactions) {
         const emoji = r.reaction;
         const isMine = r.userId === myId;
-        if (r.action === 'add') {
+        // ANTI-DRIFT FIX 2026-05-22: prefer authoritative totalCount từ BE post-mutation.
+        // Trước fix: Zalo gửi 10 events → FE increment +1 mỗi event → count=10 realtime,
+        // refresh REST trả 1 (DB composite key msg×reactor×emoji = 1 row) → mismatch.
+        // Giờ BE emit totalCount = count thực từ DB → FE set thay vì increment.
+        if (typeof r.totalCount === 'number') {
+          if (r.totalCount > 0) counts.set(emoji, r.totalCount);
+          else counts.delete(emoji);
+          if (isMine) {
+            if (r.action === 'add') myEmojis.add(emoji);
+            else if (r.action === 'remove') myEmojis.delete(emoji);
+          }
+        } else if (r.action === 'add') {
+          // Fallback cho legacy emit không kèm totalCount
           counts.set(emoji, (counts.get(emoji) || 0) + 1);
           if (isMine) myEmojis.add(emoji);
         } else if (r.action === 'remove') {

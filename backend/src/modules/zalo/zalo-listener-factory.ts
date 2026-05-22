@@ -93,6 +93,16 @@ async function handleZaloReaction(accountId: string, io: Server | null, reaction
       });
     }
 
+    // ANTI-DRIFT FIX 2026-05-22: emit authoritative totalCount từ DB sau upsert/delete.
+    // Trước fix: Zalo gửi 10 reaction events liên tiếp → 10 socket emits với action='add'
+    // → FE increment +1 mỗi event → count=10 realtime. Refresh page → REST trả 1 (DB chỉ
+    // 1 row do composite key msg×reactor×emoji) → UI "rollback" về 1 → drift confused user.
+    // Fix: query messageReaction.count({where: msg×emoji}) → emit totalCount. FE set thay
+    // vì increment → realtime count = persisted count luôn.
+    const newCount = await prisma.messageReaction.count({
+      where: { messageId: message.id, emoji: displayEmoji },
+    });
+
     io?.emit('chat:reactions', {
       conversationId: conversation.id,
       messageId: message.id,
@@ -103,6 +113,7 @@ async function handleZaloReaction(accountId: string, io: Server | null, reaction
         reaction: displayEmoji,
         action: (!rawIcon || rType < 0) ? 'remove' : 'add',
         source: 'zalo',
+        totalCount: newCount, // authoritative count post-mutation
       }],
     });
 
