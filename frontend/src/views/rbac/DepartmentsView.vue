@@ -122,7 +122,7 @@ import DepartmentEditPanel from '@/components/rbac/DepartmentEditPanel.vue';
 
 const store = useRbacStore();
 const allUsers = ref<RbacUser[]>([]);
-const viewMode = ref<'tree' | 'org'>('tree');
+const viewMode = ref<'tree' | 'org'>('org');
 const searchQ = ref('');
 const expandedIds = reactive(new Set<string>());
 
