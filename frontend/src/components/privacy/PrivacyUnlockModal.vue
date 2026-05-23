@@ -6,10 +6,11 @@
         <p class="muted">Nhập PIN 4 số để xem nội dung các nick chính của bạn.</p>
       </header>
 
+      <!-- Honeypot input — bắt autofill cache thay vì cho chui vào PIN field. -->
+      <input type="password" name="fake-password" autocomplete="current-password" tabindex="-1" class="honeypot-input" />
+
       <div v-if="!hasPin" class="setup-first">
         <p>Anh chưa setup PIN. Đặt PIN 4 số mới (KHÔNG cần password):</p>
-        <!-- Phase Privacy v2 2026-05-23: setup chỉ cần PIN, không cần password.
-             autocomplete=off + random name chặn browser autofill cache. -->
         <input
           v-model="newPin"
           type="password"
@@ -17,8 +18,10 @@
           maxlength="4"
           inputmode="numeric"
           pattern="[0-9]*"
-          autocomplete="off"
-          :name="`pinNew_${Date.now()}`"
+          autocomplete="new-password"
+          :name="`pinNew_${nameSalt}`"
+          :readonly="newPinReadonly"
+          @focus="newPinReadonly = false"
           @input="newPin = newPin.replace(/\D/g, '')"
         />
         <div class="actions">
@@ -30,8 +33,6 @@
       </div>
 
       <div v-else class="unlock-form">
-        <!-- Phase Privacy v2 2026-05-23: autocomplete=off + name động chặn Chrome/Cốc Cốc
-             auto-fill password đã save vào ô PIN. Strip non-digit on input. -->
         <input
           ref="pinInput"
           v-model="pin"
@@ -39,10 +40,12 @@
           maxlength="4"
           inputmode="numeric"
           pattern="[0-9]*"
-          autocomplete="off"
-          :name="`pinUnlock_${Date.now()}`"
+          autocomplete="new-password"
+          :name="`pinUnlock_${nameSalt}`"
+          :readonly="pinReadonly"
           placeholder="• • • •"
           class="pin-input"
+          @focus="pinReadonly = false"
           @input="pin = pin.replace(/\D/g, '')"
           @keyup.enter="submit"
         />
@@ -87,6 +90,10 @@ const hasPin = computed(() => store.hasPin);
 const pin = ref('');
 const newPin = ref('');
 const currentPwd = ref('');
+// Phase Privacy v2 fix 2026-05-23: readonly trick chặn Chrome autofill cache password.
+const pinReadonly = ref(true);
+const newPinReadonly = ref(true);
+const nameSalt = ref(Date.now().toString());
 const duration = ref<5 | 15 | 480 | 720>(15);
 const submitting = ref(false);
 const error = ref('');
@@ -110,14 +117,15 @@ watch(() => props.show, async (v) => {
     pin.value = '';
     newPin.value = '';
     currentPwd.value = '';
+    // Phase Privacy v2 fix 2026-05-23: reset readonly + re-randomize name → autofill cache invalidate.
+    pinReadonly.value = true;
+    newPinReadonly.value = true;
+    nameSalt.value = Date.now().toString() + Math.random().toString(36).slice(2, 7);
     await store.fetchStatus(true);
     await nextTick();
-    // Phase Privacy v2 2026-05-23: clear input value DOM-level + focus.
-    // Chống Chrome/Cốc Cốc autofill cache password vào ô PIN (anh báo bug 2026-05-23).
-    if (pinInput.value) {
-      pinInput.value.value = '';
-      pinInput.value.focus();
-    }
+    // DOM-level clear + delay focus 100ms để honeypot bắt autofill trước.
+    if (pinInput.value) pinInput.value.value = '';
+    setTimeout(() => pinInput.value?.focus(), 100);
   }
 });
 
@@ -156,7 +164,19 @@ async function setupPin() {
 
 <style scoped>
 .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 9999; }
-.modal { background: white; padding: 28px; border-radius: 12px; min-width: 380px; max-width: 440px; }
+.modal { background: white; padding: 28px; border-radius: 12px; min-width: 380px; max-width: 440px; position: relative; }
+/* Honeypot input — bắt autofill cache thay vì để chui vào PIN field */
+.honeypot-input {
+  position: absolute !important;
+  top: -9999px !important; left: -9999px !important;
+  width: 1px !important; height: 1px !important;
+  opacity: 0 !important; pointer-events: none !important;
+}
+/* Placeholder reset letter-spacing — chỉ digit input thật mới giãn rộng */
+.pin-input::placeholder {
+  letter-spacing: 6px;
+  font-size: 18px;
+}
 .modal h3 { margin: 0 0 4px; font-size: 16px; font-weight: 700; }
 .muted { color: #6B7280; font-size: 12px; margin: 0 0 18px; }
 .pin-input { width: 100%; padding: 14px; font-size: 28px; letter-spacing: 18px; text-align: center; border: 2px solid #E4E5E9; border-radius: 8px; margin-bottom: 12px; font-family: monospace; }

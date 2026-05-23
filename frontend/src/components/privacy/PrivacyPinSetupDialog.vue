@@ -38,6 +38,9 @@
         </div>
 
         <div class="ps-form">
+          <!-- Honeypot hidden input — browser autofill chui vào field FAKE này, không vào PIN.
+               Phase Privacy v2 fix 2026-05-23 bug autofill 1 ký tự cache. -->
+          <input type="password" name="fake-password" autocomplete="current-password" tabindex="-1" class="ps-honeypot" />
           <input
             ref="oldPinInput"
             v-model="oldPin"
@@ -47,8 +50,10 @@
             maxlength="4"
             inputmode="numeric"
             pattern="[0-9]*"
-            autocomplete="off"
+            autocomplete="new-password"
             :name="`oldPin_${nameSalt}`"
+            :readonly="oldPinReadonly"
+            @focus="oldPinReadonly = false"
             @input="oldPin = oldPin.replace(/\D/g, '')"
             @keyup.enter="canVerifyOldPin && onVerifyOldPin()"
           />
@@ -95,6 +100,8 @@
         </div>
 
         <div class="ps-form">
+          <!-- Honeypot hidden — bắt autofill cache thay vì cho chui vào PIN fields -->
+          <input type="password" name="fake-newpin" autocomplete="new-password" tabindex="-1" class="ps-honeypot" />
           <input
             ref="newPinInput"
             v-model="newPin"
@@ -104,8 +111,10 @@
             maxlength="4"
             inputmode="numeric"
             pattern="[0-9]*"
-            autocomplete="off"
+            autocomplete="new-password"
             :name="`newPin_${nameSalt}`"
+            :readonly="newPinReadonly"
+            @focus="newPinReadonly = false"
             @input="newPin = newPin.replace(/\D/g, '')"
           />
           <input
@@ -116,8 +125,10 @@
             maxlength="4"
             inputmode="numeric"
             pattern="[0-9]*"
-            autocomplete="off"
+            autocomplete="new-password"
             :name="`confirmPin_${nameSalt}`"
+            :readonly="confirmPinReadonly"
+            @focus="confirmPinReadonly = false"
             @input="confirmPin = confirmPin.replace(/\D/g, '')"
             @keyup.enter="canSavePin && onSavePin()"
           />
@@ -179,6 +190,11 @@ const submitting = ref(false);
 const verifying = ref(false);
 // Random salt cho name field — chặn Chrome/Cốc Cốc autofill cache PIN cũ.
 const nameSalt = ref(Date.now().toString());
+// Phase Privacy v2 fix 2026-05-23: readonly trick — input bắt đầu readonly,
+// chỉ remove khi user focus (Chrome KHÔNG autofill vào readonly input).
+const oldPinReadonly = ref(true);
+const newPinReadonly = ref(true);
+const confirmPinReadonly = ref(true);
 
 const oldPinInput = ref<HTMLInputElement | null>(null);
 const newPinInput = ref<HTMLInputElement | null>(null);
@@ -190,13 +206,20 @@ watch(() => props.modelValue, async (open) => {
     newPin.value = '';
     confirmPin.value = '';
     errorMsg.value = '';
+    // Reset readonly state — chặn autofill khi mở lại dialog
+    oldPinReadonly.value = true;
+    newPinReadonly.value = true;
+    confirmPinReadonly.value = true;
     // Re-randomize name salt mỗi lần mở dialog → autofill cache invalidated
     nameSalt.value = Date.now().toString() + Math.random().toString(36).slice(2, 7);
     await nextTick();
-    // DOM-level clear chống autofill cache
+    // DOM-level clear chống autofill cache (kể cả khi nó chui qua được)
     if (oldPinInput.value) oldPinInput.value.value = '';
     if (newPinInput.value) newPinInput.value.value = '';
-    (step.value === 'old' ? oldPinInput.value : newPinInput.value)?.focus();
+    // Defer focus 100ms để browser autofill (nếu có) chui vào honeypot trước
+    setTimeout(() => {
+      (step.value === 'old' ? oldPinInput.value : newPinInput.value)?.focus();
+    }, 100);
   }
 });
 
@@ -381,6 +404,18 @@ function close() {
   position: relative; z-index: 2;
   display: flex; flex-direction: column; gap: 8px;
   margin-bottom: 14px;
+}
+/* Honeypot hidden input — bắt browser autofill cache password cũ chui vào field FAKE
+   thay vì chui vào ô PIN thật. KHÔNG dùng display:none vì browser skip autofill cho
+   hidden field. Dùng absolute + opacity 0 + size 1px để invisible nhưng vẫn "tồn tại". */
+.ps-honeypot {
+  position: absolute !important;
+  top: -9999px !important;
+  left: -9999px !important;
+  width: 1px !important;
+  height: 1px !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
 }
 .ps-input {
   width: 100%; padding: 11px 14px;
