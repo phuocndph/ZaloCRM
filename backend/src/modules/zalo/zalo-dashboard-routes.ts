@@ -162,6 +162,8 @@ export async function zaloDashboardRoutes(app: FastifyInstance): Promise<void> {
         createdAt: true,
         // Phase 4 redesign 2026-05-22: include owner's department để FE hiển thị
         // cột Department + cascade visibility filter chip "Phòng ban".
+        // Phase Privacy v2 2026-05-23: include reverse "internalContactForUsers" để show
+        // badge "🏠 Liên lạc nội bộ" trong AccountsTable owner cell.
         owner: {
           select: {
             id: true,
@@ -175,6 +177,8 @@ export async function zaloDashboardRoutes(app: FastifyInstance): Promise<void> {
             },
           },
         },
+        // Users đang dùng nick này làm internal contact (thường 0-1 user)
+        internalContactForUsers: { select: { id: true, fullName: true } },
         access: {
           select: {
             id: true,
@@ -233,6 +237,9 @@ export async function zaloDashboardRoutes(app: FastifyInstance): Promise<void> {
         ownerUserId: a.ownerUserId,
         ownerDepartment: ownerDept,
         ownerDeptRole: a.owner?.departmentMember?.deptRole ?? null,
+        // Phase Privacy v2 2026-05-23 — nick là internal contact của user nào (thường = owner).
+        // FE render badge "🏠 Liên lạc nội bộ" trong owner cell.
+        isInternalContactFor: a.internalContactForUsers?.[0] ?? null,
         privacyMode: a.privacyMode,
         // RBAC 2026-05-22: gate Action buttons trên frontend
         canManage: canManageAccount(a.ownerUserId, userId, user.role),

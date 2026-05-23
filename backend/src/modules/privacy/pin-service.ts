@@ -71,6 +71,54 @@ export async function setupPin(userId: string, newPin: string): Promise<void> {
 }
 
 /**
+ * Phase Privacy v2 2026-05-23 — Đổi PIN bằng PIN cũ.
+ * Verify oldPin → set newPin → revoke ALL sessions ngay (no grace, force re-unlock).
+ */
+export async function changePin(userId: string, oldPin: string, newPin: string): Promise<void> {
+  validatePinFormat(newPin);
+  if (oldPin === newPin) throw new Error('PIN mới phải khác PIN cũ');
+
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { privacyPinHash: true, privacyLockedUntil: true },
+  });
+  if (!user) throw new Error('User không tồn tại');
+  if (!user.privacyPinHash) throw new Error('Chưa setup PIN — gọi /privacy/setup-pin trước');
+
+  if (user.privacyLockedUntil && user.privacyLockedUntil > new Date()) {
+    const secs = Math.ceil((user.privacyLockedUntil.getTime() - Date.now()) / 1000);
+    throw new Error(`PIN đang khoá. Thử lại sau ${secs}s.`);
+  }
+
+  const valid = await bcrypt.compare(oldPin, user.privacyPinHash);
+  if (!valid) {
+    // Increment fail count (atomic, race-safe)
+    await prisma.user.update({
+      where: { id: userId },
+      data: { privacyFailedCount: { increment: 1 } },
+    });
+    throw new Error('PIN cũ sai');
+  }
+
+  const newHash = await bcrypt.hash(newPin, 10);
+  await prisma.$transaction(async (tx) => {
+    await tx.user.update({
+      where: { id: userId },
+      data: {
+        privacyPinHash: newHash,
+        privacyFailedCount: 0,
+        privacyLockedUntil: null,
+      },
+    });
+    // Revoke ALL sessions ngay (security: PIN đổi → tất cả device phải re-unlock).
+    await tx.userPrivacySession.updateMany({
+      where: { userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+  });
+}
+
+/**
  * Unlock: verify PIN, tạo session token, return.
  * Rate limit: 5 sai → 5p lock, 10 sai → 1h lock.
  */
@@ -153,6 +201,9 @@ export async function unlock(input: {
         sessionToken,
         expiresAt,
         ipHash: hashIp(input.ip),
+        // Phase Privacy v2 2026-05-23: raw IP cho user thấy device session của mình.
+        // BE filter session theo userId → không cross-user leak.
+        ipAddress: input.ip?.slice(0, 45) ?? null, // 45 chars = max IPv6 length
         userAgent: input.userAgent?.slice(0, 200),
       },
     });
@@ -261,7 +312,13 @@ export async function getStatus(userId: string): Promise<{
   hasPin: boolean;
   lockedUntil: Date | null;
   activeSessionCount: number;
-  activeSessions: Array<{ id: string; expiresAt: Date; userAgent: string | null; unlockedAt: Date }>;
+  activeSessions: Array<{
+    id: string;
+    expiresAt: Date;
+    userAgent: string | null;
+    ipAddress: string | null;
+    unlockedAt: Date;
+  }>;
 }> {
   const [user, sessions] = await Promise.all([
     prisma.user.findUnique({
@@ -274,7 +331,8 @@ export async function getStatus(userId: string): Promise<{
         revokedAt: null,
         expiresAt: { gt: new Date() },
       },
-      select: { id: true, expiresAt: true, userAgent: true, unlockedAt: true },
+      // Phase Privacy v2 2026-05-23: include ipAddress raw cho user display device
+      select: { id: true, expiresAt: true, userAgent: true, ipAddress: true, unlockedAt: true },
       orderBy: { unlockedAt: 'desc' },
     }),
   ]);

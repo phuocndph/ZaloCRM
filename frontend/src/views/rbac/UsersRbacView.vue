@@ -81,6 +81,7 @@
             <th class="th-dept">Phòng ban</th>
             <th class="th-role">Chức vụ</th>
             <th class="th-group">Nhóm quyền</th>
+            <th class="th-internal">🏠 Liên lạc nội bộ</th>
             <th class="th-status">Trạng thái</th>
             <th class="th-actions"></th>
           </tr>
@@ -129,6 +130,19 @@
               </template>
               <span v-else class="at-empty">—</span>
             </td>
+            <td class="cell-internal">
+              <!-- Phase Privacy v2 2026-05-23 — Nick liên lạc nội bộ -->
+              <RouterLink
+                v-if="(u as any).internalContactNick"
+                :to="'/settings/channels/zalo?tab=privacy'"
+                class="at-chip chip-internal"
+                @click.stop
+                :title="`Nick: ${(u as any).internalContactNick.displayName || '(chưa đặt tên)'}`"
+              >
+                🏠 {{ (u as any).internalContactNick.displayName || '(chưa đặt tên)' }}
+              </RouterLink>
+              <span v-else class="at-empty" :title="`Max ${(u as any).maxPrivacyNicks ?? 2} nick riêng tư`">—</span>
+            </td>
             <td class="cell-status">
               <span v-if="u.isActive" class="at-chip chip-active">🟢 Hoạt động</span>
               <span v-else class="at-chip chip-inactive">⚪ Vô hiệu</span>
@@ -155,6 +169,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
+import { RouterLink } from 'vue-router';
 import {
   useRbacStore,
   type RbacUser,
@@ -433,6 +448,12 @@ function avatarColor(name: string): string {
 .chip-member { background: #f0f1f3; color: #41454d; }
 .chip-system { background: #fdf3df; color: #7a5818; }
 .chip-custom { background: #e0e9f5; color: #1b61c9; }
+/* Phase Privacy v2 2026-05-23 — Nick liên lạc nội bộ chip */
+.chip-internal {
+  background: #FEF3C7; color: #92400E;
+  text-decoration: none; cursor: pointer;
+}
+.chip-internal:hover { background: #FDE68A; }
 .chip-active { background: #d8ecda; color: #0a2e0e; }
 .chip-inactive { background: #f0f1f3; color: #9297a0; }
 

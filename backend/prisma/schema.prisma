@@ -2002,8 +2002,11 @@ model UserPrivacySession {
   expiresAt      DateTime @map("expires_at")
   // Idle timeout 30 phút: client request đến → update lastActivityAt; nếu now() - lastActivityAt > 30m → server revoke.
   lastActivityAt DateTime @default(now()) @map("last_activity_at")
-  ipHash         String?  @map("ip_hash")  // audit
-  userAgent      String?  @map("user_agent")  // audit
+  ipHash         String?  @map("ip_hash")  // audit cross-user (hash chống PII leak)
+  // Phase Privacy v2 2026-05-23: raw IP để user thấy session DEVICE của chính mình (vd "192.168.1.200").
+  // BE strict scope: chỉ user xem session ownership của mình → không cross-user leak.
+  ipAddress      String?  @map("ip_address")
+  userAgent      String?  @map("user_agent")  // audit + render "Cốc Cốc" / "Chrome" etc
   revokedAt      DateTime? @map("revoked_at")
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)

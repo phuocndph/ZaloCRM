@@ -22,6 +22,7 @@ import {
   getStatus,
   adminResetPin,
   revokeAllSessions,
+  changePin,
   type SessionDuration,
 } from './pin-service.js';
 
@@ -53,6 +54,25 @@ export async function registerPrivacyRoutes(app: FastifyInstance): Promise<void>
 
     try {
       await setupPin(user.userId ?? user.id, body.pin);
+      return reply.send({ ok: true });
+    } catch (e: any) {
+      return reply.status(400).send({ error: e.message });
+    }
+  });
+
+  // Phase Privacy v2 2026-05-23 — POST /privacy/change-pin
+  // Đổi PIN bằng PIN cũ (KHÔNG cần password login). Revoke all sessions sau khi đổi.
+  app.post('/api/v1/privacy/change-pin', { preHandler: authMiddleware }, async (request, reply) => {
+    const user = (request as any).user;
+    if (!user) return reply.status(401).send({ error: 'unauthorized' });
+    const body = (request.body ?? {}) as { oldPin?: string; newPin?: string };
+    if (!body.oldPin || !body.newPin) {
+      return reply.status(400).send({ error: 'Cần oldPin + newPin' });
+    }
+    try {
+      await changePin(user.userId ?? user.id, body.oldPin, body.newPin);
+      // Clear cookie vì session đã revoke
+      reply.header('Set-Cookie', `${COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);
       return reply.send({ ok: true });
     } catch (e: any) {
       return reply.status(400).send({ error: e.message });
@@ -118,6 +138,7 @@ export async function registerPrivacyRoutes(app: FastifyInstance): Promise<void>
   // GET /privacy/my-nicks — trả CHỈ nicks user là chính chủ (owner) trong org.
   // Anh chốt 2026-05-22: Privacy page chỉ thấy nick mình owner — không bao gồm
   // granted access cross-sale (vì privacy phải chính chủ flip).
+  // Phase Privacy v2 2026-05-23: include friendCount per nick để auto-default internal contact.
   app.get('/api/v1/privacy/my-nicks', { preHandler: authMiddleware }, async (request, reply) => {
     const user = (request as any).user;
     if (!user) return reply.status(401).send({ error: 'unauthorized' });
@@ -135,11 +156,18 @@ export async function registerPrivacyRoutes(app: FastifyInstance): Promise<void>
         privacyMode: true,
         lastConnectedAt: true,
         ownerUserId: true,
+        _count: { select: { friends: true } },
       },
       orderBy: { createdAt: 'asc' },
     });
 
-    return reply.send({ nicks });
+    const shaped = nicks.map((n) => ({
+      ...n,
+      friendCount: n._count?.friends ?? 0,
+      _count: undefined,
+    }));
+
+    return reply.send({ nicks: shaped });
   });
 
   // PATCH /zalo-accounts/:id/privacy-mode — flip nick main/sub

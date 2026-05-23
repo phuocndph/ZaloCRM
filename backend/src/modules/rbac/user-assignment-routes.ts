@@ -54,6 +54,12 @@ export async function registerUserAssignmentRoutes(app: FastifyInstance): Promis
             department: { select: { id: true, name: true, path: true } },
           },
         },
+        // Phase Privacy v2 2026-05-23 — cột "🏠 Liên lạc nội bộ" trong UsersRbacView
+        maxPrivacyNicks: true,
+        internalContactZaloAccountId: true,
+        internalContactNick: {
+          select: { id: true, displayName: true, avatarUrl: true, zaloUid: true, status: true },
+        },
         isActive: true,
       },
       orderBy: { fullName: 'asc' },

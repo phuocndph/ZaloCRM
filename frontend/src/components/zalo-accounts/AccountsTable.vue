@@ -90,6 +90,14 @@
                 <div class="owner-tag">
                   <span class="badge-owner">Chính chủ</span>
                   <span v-if="acct.isOwnedByMe" class="badge-self">Bạn</span>
+                  <!-- Phase Privacy v2 2026-05-23 — badge nick này là internal contact của ai -->
+                  <span
+                    v-if="acct.isInternalContactFor"
+                    class="badge-internal"
+                    :title="`Đang là nick liên lạc nội bộ của ${acct.isInternalContactFor.fullName || acct.isInternalContactFor.id}`"
+                  >
+                    🏠 Liên lạc nội bộ
+                  </span>
                 </div>
               </div>
               <svg v-if="acct.canManage" class="owner-edit-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
@@ -636,6 +644,14 @@ tbody tr.alert:hover { background: #FFF5F5 }
   border-radius: 9999px;
   background: #181D26;
   color: white;
+}
+/* Phase Privacy v2 2026-05-23 — nick là internal contact */
+.badge-internal {
+  font-size: 9px; font-weight: 700;
+  padding: 1px 7px; border-radius: 9999px;
+  background: #FEF3C7; color: #92400E;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
 }
 
 /* Permission dot on crew avatar */

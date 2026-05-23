@@ -31,6 +31,8 @@ export interface EnrichedAccount {
   /** Phase 4 2026-05-22: phòng ban của owner (cho cột Department + filter chip Phòng ban) */
   ownerDepartment: { id: string; name: string; path: string } | null;
   ownerDeptRole: 'leader' | 'deputy' | 'member' | null;
+  /** Phase Privacy v2 2026-05-23: nick này đang là internal contact của user nào (thường = owner). null nếu chưa ai pick. */
+  isInternalContactFor: { id: string; fullName: string | null } | null;
   /** True nếu user hiện tại có quyền edit/delete nick (owner-of-nick HOẶC org admin) */
   canManage: boolean;
   /** True nếu user hiện tại là owner của nick (chính chủ) */

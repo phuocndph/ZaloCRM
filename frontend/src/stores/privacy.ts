@@ -11,7 +11,14 @@ export interface PrivacyStatus {
   hasPin: boolean;
   lockedUntil: string | null;
   activeSessionCount: number;
-  activeSessions: Array<{ id: string; expiresAt: string; userAgent: string | null; unlockedAt: string }>;
+  // Phase Privacy v2 2026-05-23: ipAddress raw cho user thấy device session của mình.
+  activeSessions: Array<{
+    id: string;
+    expiresAt: string;
+    userAgent: string | null;
+    ipAddress: string | null;
+    unlockedAt: string;
+  }>;
 }
 
 export const usePrivacyStore = defineStore('privacy', {
@@ -68,6 +75,11 @@ export const usePrivacyStore = defineStore('privacy', {
     },
     async flipNickPrivacyMode(zaloAccountId: string, mode: 'main' | 'sub') {
       await api.patch(`/zalo-accounts/${zaloAccountId}/privacy-mode`, { mode });
+    },
+    // Phase Privacy v2 2026-05-23 — đổi PIN bằng PIN cũ (KHÔNG cần password).
+    async changePin(oldPin: string, newPin: string) {
+      await api.post('/privacy/change-pin', { oldPin, newPin });
+      await this.fetchStatus(true);
     },
   },
 });
