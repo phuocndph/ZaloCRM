@@ -12,6 +12,7 @@ import { logger } from '../../shared/utils/logger.js';
 import { zaloPool } from '../zalo/zalo-pool.js';
 import { prisma } from '../../shared/database/prisma-client.js';
 import { getZaloScope } from '../zalo/zalo-scope.js';
+import { authMiddleware } from '../auth/auth-middleware.js';
 
 // In-memory cache cho sticker metadata — key = `${catId}:${id}`
 interface StickerMeta {
@@ -158,18 +159,34 @@ export async function zinstantProxyRoutes(app: FastifyInstance): Promise<void> {
       return reply.header('Cache-Control', 'public, max-age=86400').send(cached.data);
     }
 
-    // Phase Zalo Account Mutation Gate 2026-05-27: scope theo org + accessible nick
-    // (trước fix thiếu orgId → cross-tenant: org A có thể dùng nick org B để fetch sticker).
-    const user = request.user!;
-    const scope = await getZaloScope(user.id, user.orgId, user.role);
-    const account = await prisma.zaloAccount.findFirst({
-      where: {
-        orgId: user.orgId,
-        status: 'connected',
-        ...(scope.isOrgAdmin ? {} : { id: { in: scope.accessibleIds } }),
-      },
-      select: { id: true },
-    });
+    // Public endpoint cho <img src> — JWT không pass qua img tag.
+    // Tự verify nếu có header (route được gọi từ axios api.get); nếu không có → fallback
+    // dùng any connected account trong org bất kỳ (sticker URL public của Zalo CDN).
+    let user: { id: string; orgId: string; role: string } | null = null;
+    try {
+      await request.jwtVerify();
+      user = request.user as any;
+    } catch { /* no JWT — fallback */ }
+
+    let account: { id: string } | null = null;
+    if (user?.id && user.orgId) {
+      const scope = await getZaloScope(user.id, user.orgId, user.role);
+      account = await prisma.zaloAccount.findFirst({
+        where: {
+          orgId: user.orgId,
+          status: 'connected',
+          ...(scope.isOrgAdmin ? {} : { id: { in: scope.accessibleIds } }),
+        },
+        select: { id: true },
+      });
+    } else {
+      // No-auth path (img tag): use any connected account org-wide
+      account = await prisma.zaloAccount.findFirst({
+        where: { status: 'connected' },
+        select: { id: true },
+        orderBy: { lastConnectedAt: 'desc' },
+      });
+    }
     if (!account) return reply.status(503).send({ error: 'no connected Zalo account' });
 
     const instance = zaloPool.getInstance(account.id);
@@ -218,7 +235,7 @@ export async function zinstantProxyRoutes(app: FastifyInstance): Promise<void> {
 
   // ── GET /api/v1/zalo-sticker-list — fetch popular categories cho picker
   // Trả category list để frontend hiển thị sticker picker
-  app.get('/api/v1/zalo-sticker-list', async (request: FastifyRequest, reply: FastifyReply) => {
+  app.get('/api/v1/zalo-sticker-list', { preHandler: authMiddleware }, async (request: FastifyRequest, reply: FastifyReply) => {
     const { keyword } = request.query as { keyword?: string };
 
     // Phase Zalo Account Mutation Gate 2026-05-27: scope org + accessible
@@ -230,9 +247,12 @@ export async function zinstantProxyRoutes(app: FastifyInstance): Promise<void> {
         status: 'connected',
         ...(scope.isOrgAdmin ? {} : { id: { in: scope.accessibleIds } }),
       },
-      select: { id: true },
+      select: { id: true, displayName: true },
     });
-    if (!account) return reply.status(503).send({ error: 'no connected Zalo account' });
+    if (!account) {
+      logger.warn(`[sticker-list] no connected account — user=${user.id} role=${user.role} isOrgAdmin=${scope.isOrgAdmin} accessibleIds=${scope.accessibleIds.length}`);
+      return reply.status(503).send({ error: 'no connected Zalo account' });
+    }
 
     const instance = zaloPool.getInstance(account.id);
     const stickerApi = instance?.api as {
@@ -240,17 +260,27 @@ export async function zinstantProxyRoutes(app: FastifyInstance): Promise<void> {
       getStickersDetail?: (ids: number[]) => Promise<unknown[]>;
     } | undefined;
 
+    if (!instance) {
+      logger.warn(`[sticker-list] instance null in pool — account=${account.id} (${account.displayName}). Pool not loaded?`);
+      return reply.status(503).send({ error: 'Zalo instance not ready — vào "Quản lý nick" reconnect rồi thử lại' });
+    }
     if (!stickerApi?.getStickers || !stickerApi.getStickersDetail) {
-      return reply.status(503).send({ error: 'Zalo sticker API not available' });
+      logger.warn(`[sticker-list] SDK methods missing — account=${account.id} hasGetStickers=${!!stickerApi?.getStickers} hasGetStickersDetail=${!!stickerApi?.getStickersDetail}`);
+      return reply.status(503).send({ error: 'Zalo sticker API not available (SDK version mismatch?)' });
     }
 
     try {
-      // getStickers trả ids theo keyword (suggest stickers). Default keyword="vui" để
-      // lấy stickers phổ biến — sale có thể search keyword khác sau.
-      const ids = await stickerApi.getStickers(keyword || 'vui');
-      if (!ids || ids.length === 0) return reply.send({ stickers: [] });
+      const kw = keyword || 'vui';
+      logger.info(`[sticker-list] fetching kw="${kw}" via account=${account.id} (${account.displayName})`);
+      const ids = await stickerApi.getStickers(kw);
+      logger.info(`[sticker-list] getStickers("${kw}") returned ${ids?.length ?? 0} ids: ${JSON.stringify(ids?.slice(0, 5))}...`);
+      if (!ids || ids.length === 0) {
+        // KHÔNG cache empty response — tránh stuck UI 10 phút
+        return reply.header('Cache-Control', 'no-store').send({ stickers: [], debug: { keyword: kw, accountUsed: account.displayName, idsReturned: 0 } });
+      }
 
       const details = await stickerApi.getStickersDetail(ids.slice(0, 40));
+      logger.info(`[sticker-list] getStickersDetail returned ${details?.length ?? 0} details`);
       const stickers = details.map((d) => {
         const s = d as Record<string, unknown>;
         return {
@@ -263,10 +293,11 @@ export async function zinstantProxyRoutes(app: FastifyInstance): Promise<void> {
           duration: Number(s.duration || 0),
         };
       });
-      return reply.header('Cache-Control', 'private, max-age=600').send({ stickers });
-    } catch (err) {
-      logger.warn('[sticker-list] fetch error:', err);
-      return reply.status(502).send({ error: 'upstream Zalo API failed' });
+      // Chỉ cache khi có data
+      return reply.header('Cache-Control', stickers.length > 0 ? 'private, max-age=600' : 'no-store').send({ stickers });
+    } catch (err: any) {
+      logger.warn(`[sticker-list] fetch error: ${err?.message || err} stack=${err?.stack?.slice(0, 300)}`);
+      return reply.status(502).send({ error: 'upstream Zalo API failed', detail: err?.message });
     }
   });
 

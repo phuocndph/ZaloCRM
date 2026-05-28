@@ -99,10 +99,14 @@ async function loadStickers(keyword: string) {
   loading.value = true;
   currentKeyword.value = keyword;
   try {
-    const res = await api.get('/zalo-sticker-list', { params: { keyword } });
+    // _t bypass browser cache — Cache-Control max-age=600 đã từng cache empty response
+    const res = await api.get('/zalo-sticker-list', { params: { keyword, _t: Date.now() } });
     stickers.value = res.data?.stickers || [];
-  } catch (err) {
-    console.error('[sticker-picker] load error:', err);
+    if ((stickers.value?.length ?? 0) === 0) {
+      console.warn('[sticker-picker] empty list from API', res.data);
+    }
+  } catch (err: any) {
+    console.error('[sticker-picker] load error:', err?.response?.status, err?.response?.data);
     stickers.value = [];
   } finally {
     loading.value = false;
