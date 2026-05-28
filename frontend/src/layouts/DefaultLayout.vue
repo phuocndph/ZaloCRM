@@ -1,28 +1,14 @@
 <template>
   <v-app class="smax-app">
-    <!-- ════════ TOP NAV (Smax-style dark, h=52px) ════════ -->
+    <!-- ════════ TOP NAV — light theme HD-first 1366×648 (chốt 2026-05-28, anh duyệt Variant A) ════════ -->
+    <!-- Height 46px · 7 primary tabs + Báo cáo + Cài đặt dropdown · MDI line icons · bg-fill active state -->
     <header class="smax-topnav">
-      <!-- Logo + Workspace selector -->
+      <!-- Logo — square primary, no workspace selector (single-tenant) -->
       <RouterLink to="/" class="logo" title="ZaloCRM">
         <img src="/brand/zalocrm-logo.png" alt="ZaloCRM" />
       </RouterLink>
 
-      <v-menu open-on-hover>
-        <template #activator="{ props: act }">
-          <button class="workspace" v-bind="act">
-            <span class="ws-logo">{{ workspaceShort }}</span>
-            <span>{{ workspaceName }}</span>
-            <span class="opacity-50">▾</span>
-          </button>
-        </template>
-        <v-list density="compact" min-width="220">
-          <v-list-item v-for="ws in workspaces" :key="ws.id" :title="ws.name" />
-          <v-divider />
-          <v-list-item title="Quản lý workspace" prepend-icon="mdi-cog" />
-        </v-list>
-      </v-menu>
-
-      <!-- Primary nav tabs (Excel structure) -->
+      <!-- Primary nav tabs -->
       <nav class="nav-tabs">
         <RouterLink
           v-for="tab in primaryTabs"
@@ -31,30 +17,27 @@
           class="nav-tab"
           :class="{ active: isActive(tab) }"
         >
-          <span class="ic">{{ tab.icon }}</span>{{ tab.label }}
+          <v-icon :icon="tab.icon" size="16" class="ic-svg" />{{ tab.label }}
         </RouterLink>
 
-        <!-- Legacy automation dropdown (kept for backward compat — Phase 7 Marketing
-             is now a top-level primary tab via primaryTabs array above) -->
+        <!-- Báo cáo dropdown — gộp Phân tích + Báo cáo (anh chốt 2026-05-28) -->
         <v-menu open-on-hover>
           <template #activator="{ props: act }">
-            <button
-              class="nav-tab"
-              :class="{ active: isLegacyAutomationActive }"
-              v-bind="act"
-            >
-              <span class="ic">⚡</span>Automation<span class="caret">▾</span>
+            <button class="nav-tab" :class="{ active: isReportsActive }" v-bind="act">
+              <v-icon icon="mdi-chart-box-outline" size="16" class="ic-svg" />Báo cáo<span class="caret">▾</span>
             </button>
           </template>
-          <v-list density="compact" min-width="220">
-            <v-list-item to="/automation" title="Rules &amp; Templates (legacy)" prepend-icon="mdi-chart-box-outline" />
+          <v-list density="compact" min-width="200">
+            <v-list-item to="/analytics" title="Phân tích" prepend-icon="mdi-chart-line" />
+            <v-list-item to="/reports" title="Báo cáo tổng hợp" prepend-icon="mdi-chart-bar" />
           </v-list>
         </v-menu>
 
+        <!-- Cài đặt dropdown -->
         <v-menu open-on-hover>
           <template #activator="{ props: act }">
             <button class="nav-tab" :class="{ active: isSettingsActive }" v-bind="act">
-              <span class="ic">⚙</span>Cài đặt<span class="caret">▾</span>
+              <v-icon icon="mdi-cog-outline" size="16" class="ic-svg" />Cài đặt<span class="caret">▾</span>
             </button>
           </template>
           <v-list density="compact" min-width="240">
@@ -204,19 +187,17 @@ interface NavTab {
   matchPrefix?: string;
 }
 
-// Excel-driven menu (cấp 1) — Automation/Cài đặt được render riêng với dropdown.
-// Marketing (Phase 7) là tab top-level riêng (giống smax.ai), tách hẳn khỏi
-// legacy Automation dropdown để user không bị nhầm 2 hệ thống.
+// HD-first redesign 2026-05-28 (anh chốt Variant A): 7 primary tabs + 2 dropdown.
+// Bỏ: "KH đình trệ" (move vào Dashboard alert), "Phân tích" (gộp Báo cáo dropdown),
+//     "Báo cáo" tab riêng (gộp dropdown), Automation legacy dropdown (Marketing thay).
+// Icons MDI line stroke-2 (mdi-*-outline) thay emoji để nhất quán + đổi màu theo theme.
 const primaryTabs: NavTab[] = [
-  { path: '/',                       label: 'Dashboard',   icon: '🏠', matchPrefix: '/$' },
-  { path: '/chat',                   label: 'Tin nhắn',    icon: '💬' },
-  { path: '/friends',                label: 'Bạn bè',      icon: '👥' },
-  { path: '/contacts',               label: 'Khách hàng',  icon: '🧑' },
-  { path: '/leads/stuck',            label: 'KH đình trệ', icon: '🚨' },
-  { path: '/appointments',           label: 'Lịch hẹn',    icon: '📅' },
-  { path: '/marketing/triggers',     label: 'Marketing',   icon: '📣', matchPrefix: '/marketing' },
-  { path: '/analytics',              label: 'Phân tích',   icon: '📈' },
-  { path: '/reports',                label: 'Báo cáo',     icon: '📊' },
+  { path: '/',                       label: 'Dashboard',   icon: 'mdi-view-dashboard-outline', matchPrefix: '/$' },
+  { path: '/chat',                   label: 'Tin nhắn',    icon: 'mdi-message-text-outline' },
+  { path: '/friends',                label: 'Bạn bè',      icon: 'mdi-account-multiple-outline' },
+  { path: '/contacts',               label: 'Khách hàng',  icon: 'mdi-account-outline' },
+  { path: '/appointments',           label: 'Lịch hẹn',    icon: 'mdi-calendar-outline' },
+  { path: '/marketing/triggers',     label: 'Marketing',   icon: 'mdi-bullhorn-outline', matchPrefix: '/marketing' },
 ];
 
 function isActive(tab: NavTab): boolean {
@@ -229,20 +210,13 @@ function isActive(tab: NavTab): boolean {
 const isSettingsActive = computed(() =>
   route.path === '/settings' || route.path.startsWith('/settings/'),
 );
-// Highlight legacy Automation dropdown ONLY when on /automation (exact) — do NOT
-// activate when on /marketing/* (that's the top-level Marketing tab).
-const isLegacyAutomationActive = computed(
-  () => route.path === '/automation' || (route.path.startsWith('/automation') && !route.path.startsWith('/marketing')),
+// Báo cáo dropdown active khi ở /analytics hoặc /reports
+const isReportsActive = computed(
+  () => route.path.startsWith('/analytics') || route.path.startsWith('/reports'),
 );
 
-// Workspace — placeholder single-tenant cho Phase 1
-const workspaceName = computed(() => authStore.user?.fullName?.split(' ')[0] || 'hsholding');
-const workspaceShort = computed(() =>
-  workspaceName.value.slice(0, 2).toUpperCase(),
-);
-const workspaces = [
-  { id: 'default', name: workspaceName.value },
-];
+// Workspace selector đã ẩn ở Variant A 2026-05-28 (single-tenant chưa cần switch).
+// Sau này multi-tenant → revert back template + uncomment block dưới.
 
 const initials = computed(() => {
   const name = authStore.user?.fullName || 'U';
@@ -290,21 +264,25 @@ function logout() {
 }
 .ic-banner-dismiss:hover { color: #78350F; }
 
+/* HD-first redesign 2026-05-28 (Variant A) — light theme, 46px height */
 .smax-topnav {
-  background: var(--smax-header-bg);
-  color: white;
-  height: var(--smax-topnav-h);
+  background: #ffffff;
+  color: #1f2937;
+  height: 46px;
   display: flex; align-items: center;
-  padding: 0 13px; gap: 4px;
+  padding: 0 14px; gap: 4px;
   flex-shrink: 0;
   position: sticky; top: 0; z-index: 100;
+  border-bottom: 1px solid #e5e7eb;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
 }
 
 .logo {
-  width: 35px; height: 35px;
-  background: white; border-radius: 7px;
+  width: 30px; height: 30px;
+  background: var(--smax-primary, #2962ff);
+  border-radius: 7px;
   display: flex; align-items: center; justify-content: center;
-  margin-right: 4px;
+  margin-right: 10px;
   text-decoration: none;
   overflow: hidden;
   padding: 2px;
@@ -312,61 +290,44 @@ function logout() {
 .logo img {
   width: 100%; height: 100%;
   object-fit: contain;
+  filter: brightness(0) invert(1); /* white logo trên bg primary */
 }
-
-.workspace {
-  background: rgba(255,255,255,0.06);
-  border: none;
-  display: flex; align-items: center; gap: 7px;
-  padding: 7px 11px; border-radius: 7px;
-  margin-right: 13px;
-  cursor: pointer; color: white;
-  font-size: 13px;
-}
-.workspace:hover { background: rgba(255,255,255,0.10); }
-.ws-logo {
-  width: 24px; height: 24px;
-  background: linear-gradient(135deg, #ff5722, #d84315);
-  border-radius: 5px;
-  display: flex; align-items: center; justify-content: center;
-  color: white; font-size: 11px; font-weight: 600;
-}
-.opacity-50 { opacity: 0.5; }
 
 .nav-tabs {
-  display: flex; align-items: center; gap: 2px;
+  display: flex; align-items: center; gap: 1px;
   flex-wrap: nowrap;
-  flex-shrink: 0; /* never compress — menu must stay visible */
+  flex-shrink: 0;
 }
 .nav-tab {
-  display: inline-flex; align-items: center; gap: 5px;
-  padding: 9px 13px; border-radius: 7px;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 7px 12px; border-radius: 6px;
   cursor: pointer;
-  color: rgba(255,255,255,0.75);
-  font-size: 13px;
+  color: #374151;
+  font-size: 12.5px; font-weight: 500;
   background: transparent; border: none;
   white-space: nowrap;
   text-decoration: none;
+  height: 32px;
+  line-height: 1.2;
 }
+.nav-tab .ic-svg { color: currentColor; opacity: 0.85; }
+.nav-tab .caret { font-size: 9px; opacity: 0.5; margin-left: 1px; }
+.nav-tab:hover { background: #f3f4f6; color: #1f2937; }
+.nav-tab:hover .ic-svg { opacity: 1; }
+.nav-tab.active {
+  background: rgba(41, 98, 255, 0.10);
+  color: var(--smax-primary, #2962ff);
+  font-weight: 600;
+}
+.nav-tab.active .ic-svg { opacity: 1; }
 
-/* Compact nav progressively as viewport shrinks so all tabs stay visible */
-@media (max-width: 1500px) {
-  .nav-tab { padding: 9px 9px; gap: 4px; font-size: 12.5px; }
-}
+/* HD compact — chỉ kick in khi viewport < 1280 (rất hiếm với HD-first target) */
 @media (max-width: 1280px) {
-  .nav-tab { padding: 8px 7px; font-size: 12px; }
-  .nav-tab .ic { font-size: 13px; }
-  .workspace { padding: 6px 9px; margin-right: 8px; font-size: 12px; }
+  .nav-tab { padding: 7px 9px; font-size: 12px; gap: 5px; }
 }
 @media (max-width: 1100px) {
-  .nav-tab { padding: 7px 6px; gap: 3px; }
-  .nav-tab .ic { display: none; } /* drop emoji icons, keep labels */
-  .workspace span:nth-of-type(2) { display: none; } /* workspace name → only logo */
+  .nav-tab { padding: 6px 7px; gap: 4px; }
 }
-.nav-tab .ic { font-size: 14px; line-height: 1; }
-.nav-tab .caret { font-size: 10px; opacity: 0.7; margin-left: 2px; }
-.nav-tab:hover { background: rgba(255,255,255,0.06); color: white; }
-.nav-tab.active { background: rgba(255,255,255,0.12); color: white; font-weight: 500; }
 
 .topnav-spacer { flex: 1; min-width: 0; }
 
@@ -413,47 +374,49 @@ function logout() {
   flex-shrink: 1;
 }
 @media (max-width: 1500px) {
-  .topnav-search { max-width: 180px; }
+  .topnav-search { max-width: 200px; }
 }
 @media (max-width: 1280px) {
-  .topnav-search { max-width: 140px; }
+  .topnav-search { max-width: 160px; }
 }
 @media (max-width: 1100px) {
-  .topnav-search { display: none; } /* prioritize menu over inline search */
+  .topnav-search { display: none; }
 }
 .topnav-search :deep(.v-field) {
-  background: rgba(255,255,255,0.06) !important;
-  color: white;
+  background: #f3f4f6 !important;
+  color: #1f2937;
   border-radius: 7px !important;
 }
-.topnav-search :deep(input) { color: white !important; }
+.topnav-search :deep(input) { color: #1f2937 !important; }
+.topnav-search :deep(input::placeholder) { color: #9ca3af !important; }
 
 .icon-btn,
 :deep(.icon-btn-wrap) > * {
-  width: 39px; height: 39px;
-  border-radius: 50%;
+  width: 32px; height: 32px;
+  border-radius: 7px;
   cursor: pointer;
   display: flex; align-items: center; justify-content: center;
-  color: rgba(255,255,255,0.78);
+  color: #374151;
   position: relative;
   font-size: 16px;
   text-decoration: none;
   background: transparent; border: none;
+  margin-left: 2px;
 }
 .icon-btn:hover,
 :deep(.icon-btn-wrap) > *:hover {
-  background: rgba(255,255,255,0.08);
-  color: white;
+  background: #f3f4f6;
+  color: #1f2937;
 }
 
 .user-avatar {
-  width: 35px; height: 35px;
+  width: 32px; height: 32px;
   border-radius: 50%;
-  background: linear-gradient(135deg,#fbc02d,#f57c00);
-  color: white; font-weight: 600;
+  background: linear-gradient(135deg, #93c5fd, #2962ff);
+  color: white; font-weight: 700;
   border: none; cursor: pointer;
-  margin-left: 9px;
-  font-size: 12px;
+  margin-left: 6px;
+  font-size: 11.5px;
   display: flex; align-items: center; justify-content: center;
 }
 
