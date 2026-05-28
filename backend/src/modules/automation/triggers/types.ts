@@ -14,6 +14,8 @@ import type { BlockActionType } from '../blocks/types.js';
 // the event payload at dispatch time.
 
 export type TriggerEventType =
+  // Phase Friend Invite Queue 2026-05-28 — list-based auto kết bạn + bám đuổi
+  | 'friend_invite_to_list'  // Gửi lời mời kết bạn tới tệp KH + bám đuổi qua sequence
   // Zalo lifecycle (already emitted by friend-event-handler + message-handler)
   | 'friendship_accepted'   // Friend.friendshipStatus → 'accepted'
   | 'friendship_received'   // Friend.friendshipStatus → 'pending_received'
@@ -38,6 +40,7 @@ export type TriggerEventType =
   | 'order_success';         // webhook from external order system (future integration)
 
 export const SUPPORTED_EVENT_TYPES: readonly TriggerEventType[] = [
+  'friend_invite_to_list',
   'friendship_accepted',
   'friendship_received',
   'first_message_received',
@@ -134,6 +137,14 @@ export interface TriggerCatalogEntry {
 }
 
 export const TRIGGER_CATALOG: TriggerCatalogEntry[] = [
+  {
+    eventType: 'friend_invite_to_list',
+    category: 'general',
+    title: 'Tự động kết bạn từ tệp + bám đuổi',
+    description: '50 nick gửi lời mời tới 1000 SĐT, kèm bám đuổi 10 bước × 5 ngày dù KH có accept hay không (tin lạ vẫn gửi).',
+    recommendedBinding: 'sequence',
+    suggestedActionTypes: ['request_friend', 'send_message'],
+  },
   {
     eventType: 'friendship_accepted',
     category: 'general',

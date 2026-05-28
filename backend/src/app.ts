@@ -73,6 +73,9 @@ import { blockRoutes } from './modules/automation/blocks/block-routes.js';
 import { blockFolderRoutes } from './modules/automation/blocks/block-folder-routes.js';
 import { sequenceRoutes } from './modules/automation/sequences/sequence-routes.js';
 import { triggerRoutes } from './modules/automation/triggers/trigger-routes.js';
+import { friendInviteRoutes } from './modules/automation/friend-invite/friend-invite-routes.js';
+import { startFriendInviteSweepers, stopFriendInviteSweepers } from './modules/automation/friend-invite/sweepers.js';
+import { bootstrapFriendInviteWorkers, stopAllNickWorkers } from './modules/automation/friend-invite/nick-worker.js';
 import { broadcastRoutes } from './modules/automation/broadcasts/broadcast-routes.js';
 import { webhookRoutes as automationWebhookRoutes } from './modules/automation/webhooks/webhook-routes.js';
 // Tệp khách hàng (CustomerList) — Phase 7 audience layer
@@ -229,6 +232,7 @@ async function bootstrap() {
   await app.register(blockFolderRoutes);
   await app.register(sequenceRoutes);
   await app.register(triggerRoutes);
+  await app.register(friendInviteRoutes);
   await app.register(broadcastRoutes);
   await app.register(automationWebhookRoutes);
   // Tệp khách hàng — CustomerList CRUD + entries + enrichment + event handlers
@@ -327,6 +331,9 @@ async function bootstrap() {
       // Tệp khách hàng — enrichment worker + reverse-update event handlers
       startListEnrichmentWorker();
       registerCustomerListEventHandlers();
+      // Phase Friend Invite Queue 2026-05-28 — sweepers + per-nick workers
+      startFriendInviteSweepers();
+      await bootstrapFriendInviteWorkers();
     }
   } catch (err) {
     logger.error('Failed to start server:', err);

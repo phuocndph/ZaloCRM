@@ -111,10 +111,12 @@ export interface AutomationSequence {
 }
 
 export type TriggerEventType =
+  | 'friend_invite_to_list'
   | 'friendship_accepted' | 'friendship_received' | 'first_message_received'
   | 'message_received' | 'keyword_match'
   | 'contact_created' | 'contact_status_changed' | 'contact_imported'
   | 'birthday' | 'scheduled_cron' | 'time_elapsed'
+  | 'seen_no_reply' | 'silent_x_days' | 'lead_score_threshold'
   | 'manual_run' | 'order_success';
 
 export type TriggerCategory = 'general' | 'keyword' | 'bot_api' | 'livechat' | 'genai';
