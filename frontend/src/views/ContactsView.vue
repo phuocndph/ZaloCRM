@@ -233,17 +233,17 @@
                   {{ contact.crmName || contact.fullName || '—' }}
                   <span
                     v-if="(contact.childrenCount ?? 0) > 1"
-                    class="chip chip-multi-nick"
-                    :title="`${contact.childrenCount} Friend row (nick chăm × Zalo identity) — mở ▸ để xem chi tiết`"
+                    class="chip chip-cung-cham"
+                    :title="`${contact.childrenCount} nick chăm KH này (hiện chi tiết khi mở ▸ hoặc tab Nick chăm)`"
                   >
-                    👥 Đa nick ({{ contact.childrenCount }})
+                    🤝 Cùng chăm ({{ contact.childrenCount }})
                   </span>
                 </div>
                 <div v-if="contact.fullName && contact.crmName && contact.fullName !== contact.crmName" class="name-sub">
                   {{ contact.fullName }}
                 </div>
               </td>
-              <td>{{ contact.phone || '—' }}</td>
+              <td><span class="phone-cell">{{ formatVnPhone(contact.phone) }}</span></td>
               <td>
                 <template v-if="contact.gender">
                   {{ genderLabel(contact.gender) }}
@@ -1025,6 +1025,25 @@ function sourceLabel(value: string) {
 function statusLabel(value: string) {
   return STATUS_OPTIONS.find(o => o.value === value)?.text ?? value;
 }
+
+/**
+ * Format SĐT chuẩn Việt Nam — anh chốt 2026-05-28.
+ * Input có thể là:
+ *   - "84936668266"   → "0936 668 266"  (84xxx → 0xxx, group 4-3-3)
+ *   - "0936668266"    → "0936 668 266"
+ *   - "+84 936 668 266" → "0936 668 266"
+ *   - "936668266"     → "0936 668 266"  (thiếu 0/84 → prepend 0)
+ *   - null/empty       → "—"
+ */
+function formatVnPhone(phone: string | null | undefined): string {
+  if (!phone) return '—';
+  let s = String(phone).replace(/\D/g, '');
+  if (s.startsWith('84') && s.length === 11) s = '0' + s.slice(2);   // 84936... → 0936...
+  else if (s.length === 9 && !s.startsWith('0')) s = '0' + s;        // 936... → 0936... (rare)
+  if (s.length === 10) return s.slice(0, 4) + ' ' + s.slice(4, 7) + ' ' + s.slice(7);
+  if (s.length === 11) return s.slice(0, 4) + ' ' + s.slice(4, 7) + ' ' + s.slice(7);
+  return phone; // fallback giữ nguyên nếu không match
+}
 function statusChipClass(status: string): string {
   const map: Record<string, string> = {
     new: 'chip-grey',
@@ -1537,6 +1556,15 @@ onMounted(() => {
 .chip-multi-nick {
   background: linear-gradient(135deg, rgba(124,77,255,0.14), rgba(33,150,243,0.10));
   color: #4527a0;
+  margin-left: 6px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+/* "Cùng chăm (N)" badge — vàng cam theo Airtable signature (anh chốt 2026-05-28) */
+.chip-cung-cham {
+  background: #FEF3C7;
+  color: #92400E;
+  border: 1px solid #F59E0B66;
   margin-left: 6px;
   font-weight: 600;
   letter-spacing: 0.2px;

@@ -358,7 +358,7 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
       const privacyCtx = await buildPrivacyContext(request);
       const shouldRedact = await shouldRedactContactPii(contact.id, privacyCtx);
       const merged = { ...contact, ...(preview ?? {}), ...display, viewerRole };
-      return shouldRedact ? redactContact(merged as any) : merged;
+      return shouldRedact ? redactContact(merged as any, privacyCtx) : merged;
     } catch (err) {
       logger.error('[contacts] Detail error:', err);
       return reply.status(500).send({ error: 'Failed to fetch contact' });

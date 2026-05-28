@@ -135,7 +135,16 @@ export async function shouldRedactContactPii(
  * Strip: fullName, crmName, phone(*), email, address, social, demographic, notes,
  *   zalo* (uid, globalId, username), avatar, assigned user info, tags content.
  */
-export function redactContact(contact: any): any {
+export function redactContact(contact: any, ctx?: PrivacyContext): any {
+  // Phase Dual View Fix 2026-05-28: giữ friends array (redact từng friend riêng)
+  // để UI cột "Cùng chăm (N)" + expand Friend rows vẫn hoạt động. Trước fix
+  // strip toàn bộ friends → KH có ≥1 nick main non-owned bị "biến mất" Friend rows
+  // ở client kể cả khi viewer là owner các nick sub khác.
+  const friends = Array.isArray(contact.friends) && ctx
+    ? contact.friends.map((f: any) =>
+        f?.zaloAccount ? redactFriend(f, ctx) : f,
+      )
+    : (contact.friends ?? []);
   return {
     id: contact.id,
     orgId: contact.orgId,
@@ -151,10 +160,19 @@ export function redactContact(contact: any): any {
     priorityScore: contact.priorityScore,
     // Count aggregates
     _count: contact._count ?? null,
+    childrenCount: contact.childrenCount ?? friends.length,
+    // Counters per relationship kind (cho UI badge "Cùng chăm")
+    acceptedNicksCount: contact.acceptedNicksCount ?? null,
+    pendingNicksCount: contact.pendingNicksCount ?? null,
+    chattingNicksCount: contact.chattingNicksCount ?? null,
+    // Friend rows (mỗi friend bị redact bởi redactFriend nếu thuộc main-nick non-owned)
+    friends,
     // Timestamps
     createdAt: contact.createdAt,
     updatedAt: contact.updatedAt,
     lastActivity: contact.lastActivity,
+    // hasZalo cần preserved cho cột Zalo 3 trạng thái mutex (UI render)
+    hasZalo: contact.hasZalo,
     // BLUR placeholder cho UI
     fullName: BLUR_TOKEN,
     redacted: true,
