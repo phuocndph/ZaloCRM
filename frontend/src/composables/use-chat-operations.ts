@@ -88,7 +88,7 @@ export function useChatOperations() {
 
   async function pinConversation(convId: string): Promise<void> {
     try {
-      await api.post(`/conversations/${convId}/pin`);
+      await api.post(`/conversations/${convId}/pin`, {});
     } catch (err) {
       console.error('Failed to pin conversation:', err);
       throw err;
@@ -97,7 +97,7 @@ export function useChatOperations() {
 
   async function unpinConversation(convId: string): Promise<void> {
     try {
-      await api.post(`/conversations/${convId}/unpin`);
+      await api.post(`/conversations/${convId}/unpin`, {});
     } catch (err) {
       console.error('Failed to unpin conversation:', err);
       throw err;
