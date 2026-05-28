@@ -243,11 +243,14 @@ model ZaloAccount {
 
   // Phase 7 — Per-nick automation caps (configurable, default theo memory rule:
   //   300 msg/day/nick, 30-50 friend-add/day/nick)
-  dailyFriendAddCap   Int       @default(30) @map("daily_friend_add_cap")
-  dailyMessageCap     Int       @default(300) @map("daily_message_cap")
+  dailyFriendAddCap       Int       @default(30) @map("daily_friend_add_cap")
+  dailyMessageCap         Int       @default(300) @map("daily_message_cap")
   // Per-nick throttle gate cross-campaign (memory: project_zalocrm_per_nick_throttle_gate)
-  lastFriendReqSentAt DateTime? @map("last_friend_req_sent_at")
-  lastMessageSentAt   DateTime? @map("last_message_sent_at")
+  lastFriendReqSentAt     DateTime? @map("last_friend_req_sent_at")
+  lastMessageSentAt       DateTime? @map("last_message_sent_at")
+  // Phase Friend Invite 2026-05-28 — stranger message cap riêng (anh chốt 300/ngày default)
+  dailyStrangerMessageCap Int       @default(300) @map("daily_stranger_message_cap")
+  lastStrangerMessageAt   DateTime? @map("last_stranger_message_at")
 
   // Phase ZaloAccounts redesign 2026-05-22: status log để tính uptime thật.
   // Xem design doc: ~/.gstack/projects/zalocrm/EVO-THANH-private-hs-design-20260522-184345.md
@@ -1782,22 +1785,26 @@ model AutomationSequence {
 // `ruleOverrides` JSON: override sequence.runtimeRules tại trigger level
 // (vd trigger sinh nhật chỉ chạy giờ 9-18).
 model AutomationTrigger {
-  id            String   @id @default(uuid())
-  orgId         String   @map("org_id")
-  name          String
-  category      String   @default("general") // 'general' | 'keyword' | 'bot_api' | 'livechat' | 'genai'
-  eventType     String   @map("event_type")
-  eventFilter   Json?    @map("event_filter")
-  bindingKind   String   @map("binding_kind") // 'sequence' | 'block' | 'broadcast'
-  sequenceId    String?  @map("sequence_id")
-  blockId       String?  @map("block_id")
-  broadcastId   String?  @map("broadcast_id")
-  segmentSpec   Json?    @map("segment_spec")
-  ruleOverrides Json?    @map("rule_overrides")
-  enabled       Boolean  @default(true)
-  createdById   String   @map("created_by_id")
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
+  id                  String   @id @default(uuid())
+  orgId               String   @map("org_id")
+  name                String
+  category            String   @default("general") // 'general' | 'keyword' | 'bot_api' | 'livechat' | 'genai'
+  eventType           String   @map("event_type")
+  eventFilter         Json?    @map("event_filter")
+  bindingKind         String   @map("binding_kind") // 'sequence' | 'block' | 'broadcast'
+  sequenceId          String?  @map("sequence_id")
+  blockId             String?  @map("block_id")
+  broadcastId         String?  @map("broadcast_id")
+  segmentSpec         Json?    @map("segment_spec")
+  ruleOverrides       Json?    @map("rule_overrides")
+  enabled             Boolean  @default(true)
+  // Phase Friend Invite 2026-05-28 — successor sequence + greeting template
+  successorSequenceId String?  @map("successor_sequence_id")
+  greetingTemplate    String?  @map("greeting_template") @db.Text
+  state               String   @default("draft") // 'draft' | 'active' | 'paused' | 'cancelling' | 'cancelled' | 'completed'
+  createdById         String   @map("created_by_id")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
 
   org       Organization         @relation(fields: [orgId], references: [id], onDelete: Cascade)
   sequence  AutomationSequence?  @relation("TriggerSequence", fields: [sequenceId], references: [id], onDelete: SetNull)
@@ -2105,6 +2112,17 @@ model CustomerListEntry {
   customFields Json? @map("custom_fields")
   sourceMeta   Json? @map("source_meta")
 
+  // Phase Friend Invite Queue 2026-05-28 — producer-consumer queue mode.
+  // null = entry KHÔNG thuộc Mục tiêu nào (legacy enrichment workflow).
+  // ENUM: queued_for_pickup | processing | processed | skipped_friend_cap |
+  //       skipped_recency | skipped_status | failed_permanent | failed_stuck | cancelled
+  queueStatus        String?   @map("queue_status")
+  claimedByNickId    String?   @map("claimed_by_nick_id")
+  lockedAt           DateTime? @map("locked_at")
+  failedNickIds      Json      @default("[]") @map("failed_nick_ids") @db.JsonB // string[] nick đã fail entry này
+  stuckRecoveryCount Int       @default(0) @map("stuck_recovery_count")
+  triggerId          String?   @map("trigger_id") // FK to AutomationTrigger (no relation enforced)
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -2112,6 +2130,9 @@ model CustomerListEntry {
   @@index([customerListId, status])
   @@index([phoneE164]) // hot index for cross-list dedup + reverse update
   @@index([phoneLocal])
+  // Phase Friend Invite Queue 2026-05-28 — hot pickup query
+  @@index([queueStatus, triggerId, rowIndex])
+  @@index([queueStatus, lockedAt])
   @@map("customer_list_entries")
 }
 
@@ -2412,4 +2433,42 @@ model NotifyDedupState {
   @@unique([orgId, notifyKey])
   @@index([expiresAt])
   @@map("notify_dedup_state")
+}
+
+// =============================================================================
+// Phase Friend Invite Queue 2026-05-28 — Outbox cho atomic send + sequence materialize
+// =============================================================================
+//
+// Worker dispatch flow 3-phase:
+//   Phase 1 CLAIM: UPDATE entry status=processing (short DB tx)
+//   Phase 2 HTTP:  Zalo SDK call (NO DB tx, 30s timeout)
+//   Phase 3 RESULT (short DB tx):
+//     - Success → UPDATE entry status=processed + INSERT outbox sendStatus=success
+//     - Fail → UPDATE entry status=queued_for_pickup, append failedNickIds
+//     - Timeout → UPDATE entry status=processed + INSERT outbox sendStatus=tentative
+//
+// Outbox drainer cron 30s: pick outbox WHERE sendStatus=success AND sequenceMaterializedAt IS NULL
+// → call materializeSequenceForContact() → UPDATE sequenceMaterializedAt
+//
+// Crash recovery: nếu worker crash giữa Phase 2 và Phase 3 → entry stuck processing
+// → stuck sweeper after 5 phút release back to pool (documented duplicate-send risk).
+model FriendRequestOutbox {
+  id                      String    @id @default(uuid())
+  customerListEntryId     String    @unique @map("customer_list_entry_id")
+  triggerId               String    @map("trigger_id")
+  nickId                  String    @map("nick_id")
+  contactId               String    @map("contact_id")
+  successorSequenceId     String?   @map("successor_sequence_id")
+  // Snapshot Sequence steps tại insert time → edit Sequence mid-run KHÔNG affect
+  sequenceVersionSnapshot Json?     @map("sequence_version_snapshot")
+  sendStatus              String    @map("send_status") // success | tentative | failed
+  zaloLeadgenId           String?   @map("zalo_leadgen_id")
+  sequenceMaterializedAt  DateTime? @map("sequence_materialized_at")
+  attemptCount            Int       @default(0) @map("attempt_count")
+  lastErrorMessage        String?   @map("last_error_message") @db.Text
+  createdAt               DateTime  @default(now()) @map("created_at")
+
+  @@index([sendStatus, sequenceMaterializedAt])
+  @@index([nickId, createdAt]) // hot index for todayCount recovery on worker restart
+  @@map("friend_request_outbox")
 }

@@ -88,15 +88,28 @@ export async function sendMessageHandler(ctx: ActionContext): Promise<ActionResu
   // friends; cold-message via 'none' should use request_friend action instead.
   // Exception: 'pending_sent' with hasConversation=true (KH đã reply qua stranger
   // window) — Zalo allows that path. Worker check below.
+  //
+  // Phase Friend Invite 2026-05-28 — `allowStrangerMessage` flag in rulesSnapshot
+  // bypass FRIENDSHIP_NOT_ACCEPTED check cho friend-invite sequences (KH reject vẫn
+  // bám đuổi vào tin nhắn lạ). Anh chốt SKIP safeguard, cap 300 tin lạ/nick/ngày.
+  const allowStranger =
+    (ctx.rulesSnapshot as { allowStrangerMessage?: boolean } | undefined)?.allowStrangerMessage ===
+    true;
+
   if (friend.friendshipStatus !== 'accepted') {
-    if (friend.friendshipStatus === 'pending_sent' && friend.hasConversation) {
+    if (allowStranger) {
+      logger.info(
+        `[send-message] stranger mode: friend.status='${friend.friendshipStatus}' allowed by sequence rules for contact=${ctx.contactId}`,
+      );
+      // proceed — tin sẽ vào "Tin nhắn từ người lạ" của KH
+    } else if (friend.friendshipStatus === 'pending_sent' && friend.hasConversation) {
       // Allow: KH replied while friend req pending — Zalo allows continued chat
       logger.info(`[send-message] proceeding with pending_sent + hasConversation for contact=${ctx.contactId}`);
     } else {
       return {
         outcome: 'failure',
         errorCode: 'FRIENDSHIP_NOT_ACCEPTED',
-        errorMessage: `Friend status '${friend.friendshipStatus}' không cho phép gửi tin (cần 'accepted')`,
+        errorMessage: `Friend status '${friend.friendshipStatus}' không cho phép gửi tin (cần 'accepted' hoặc bật allowStrangerMessage)`,
         retryable: false,
       };
     }

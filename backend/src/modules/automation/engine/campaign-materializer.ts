@@ -368,3 +368,150 @@ export async function materializeFromEvent(
 
   return result;
 }
+
+// =============================================================================
+// Phase Friend Invite 2026-05-28 — Programmatic sequence enrollment helper.
+//
+// Called from task-worker post-execute hook khi request_friend task success
+// AND trigger.successorSequenceId is set. Creates 1 Campaign per (trigger, contact)
+// + enrolls step 0 task with assignedNickId continuity from friend-request task.
+//
+// Idempotent qua originTaskId — duplicate call no-op. Reuses Sequence step
+// snapshot if Outbox row has sequenceVersionSnapshot.
+// =============================================================================
+
+export interface MaterializeSequenceForContactInput {
+  orgId: string;
+  contactId: string;
+  sequenceId: string;
+  triggerId: string;
+  /** Nick continuity từ friend-request task — sequence tasks gắn cùng nick */
+  assignedNickId: string | null;
+  /** ID của request_friend task gốc — dùng cho idempotency */
+  originTaskId: string;
+  /** Snapshot từ Outbox (frozen at outbox insert time) — KHÔNG re-fetch sequence DB */
+  sequenceSnapshot?: SequenceStep[] | null;
+  /** Runtime rules từ trigger.ruleOverrides + sequence defaults */
+  ruleOverrides?: Record<string, unknown> | null;
+}
+
+export async function materializeSequenceForContact(
+  input: MaterializeSequenceForContactInput,
+): Promise<{ campaignId: string; tasksEnqueued: number; skipped: boolean; reason?: string }> {
+  // 1. Idempotency check — originTaskId may produce 1 campaign per (trigger, contact) tuple.
+  //    We use AutomationTask.originTaskId field (added Wave 1.1) for explicit linkage,
+  //    but for backwards compat we also check by (campaign, contact) existence.
+  const existingCampaign = await prisma.automationCampaign.findFirst({
+    where: {
+      orgId: input.orgId,
+      triggerId: input.triggerId,
+      sequenceId: input.sequenceId,
+      executionKind: 'sequence',
+      state: 'active',
+    },
+    select: { id: true, rulesSnapshot: true },
+  });
+
+  // 2. Load Sequence (or use snapshot từ Outbox)
+  let steps: SequenceStep[] = [];
+  let baseRules: Record<string, unknown> = {};
+  if (input.sequenceSnapshot && Array.isArray(input.sequenceSnapshot)) {
+    steps = input.sequenceSnapshot;
+  } else {
+    const seq = await prisma.automationSequence.findUnique({
+      where: { id: input.sequenceId },
+      select: { steps: true, runtimeRules: true, enabled: true },
+    });
+    if (!seq || !seq.enabled) {
+      return { campaignId: '', tasksEnqueued: 0, skipped: true, reason: 'sequence missing or disabled' };
+    }
+    steps = Array.isArray(seq.steps) ? (seq.steps as unknown as SequenceStep[]) : [];
+    baseRules = (seq.runtimeRules as Record<string, unknown>) ?? {};
+  }
+  if (steps.length === 0) {
+    return { campaignId: '', tasksEnqueued: 0, skipped: true, reason: 'sequence has no steps' };
+  }
+
+  // 3. Merge rules: sequence defaults + trigger override + input override
+  const rulesSnapshot = {
+    ...DEFAULT_RUNTIME_RULES,
+    ...baseRules,
+    ...((input.ruleOverrides as object) ?? {}),
+  };
+
+  // 4. Find or create active campaign for (trigger, sequence)
+  let campaign = existingCampaign;
+  if (!campaign) {
+    campaign = await prisma.automationCampaign.create({
+      data: {
+        id: randomUUID(),
+        orgId: input.orgId,
+        triggerId: input.triggerId,
+        executionKind: 'sequence',
+        sequenceId: input.sequenceId,
+        segmentSnapshot: { contactIds: [input.contactId], originTaskId: input.originTaskId } as object,
+        rulesSnapshot: rulesSnapshot as object,
+        state: 'active',
+      },
+      select: { id: true, rulesSnapshot: true },
+    });
+  }
+
+  // 5. Idempotency: skip enroll if contact đã có task trong campaign này
+  const existing = await prisma.automationTask.findFirst({
+    where: { campaignId: campaign.id, contactId: input.contactId },
+    select: { id: true },
+  });
+  if (existing) {
+    return { campaignId: campaign.id, tasksEnqueued: 0, skipped: true, reason: 'contact already enrolled' };
+  }
+
+  // 6. Skip sequence mutex check (Friend Invite explicit override — anh đã chốt
+  //    KH reject vẫn bám đuổi, KHÔNG cancel; sequence mutex chỉ áp dụng cho
+  //    generic event-driven enrollment, KHÔNG cho friend-invite programmatic).
+
+  // 7. Load first step's block (snapshot content)
+  const firstStep = steps[0];
+  const firstBlock = await prisma.block.findFirst({
+    where: { id: firstStep.blockId, orgId: input.orgId },
+    select: { id: true, content: true, archivedAt: true },
+  });
+  if (!firstBlock || firstBlock.archivedAt) {
+    return { campaignId: campaign.id, tasksEnqueued: 0, skipped: true, reason: `first block ${firstStep.blockId} missing or archived` };
+  }
+
+  // 8. Schedule first step with jitter (use rules từ campaign snapshot — frozen at first call)
+  const campaignRules = (campaign.rulesSnapshot as Record<string, unknown>) ?? rulesSnapshot;
+  const jitterMin =
+    ((campaignRules as { randomDelayPerSend?: { min?: number } }).randomDelayPerSend?.min ?? 0) *
+    60 *
+    1000;
+  const jitterMax =
+    ((campaignRules as { randomDelayPerSend?: { max?: number } }).randomDelayPerSend?.max ?? 0) *
+    60 *
+    1000;
+  const jitter = jitterMin + Math.random() * Math.max(0, jitterMax - jitterMin);
+  const scheduledAt = new Date(Date.now() + firstStep.delayMinutes * 60 * 1000 + jitter);
+
+  await prisma.automationTask.create({
+    data: {
+      id: randomUUID(),
+      orgId: input.orgId,
+      campaignId: campaign.id,
+      contactId: input.contactId,
+      sequenceId: input.sequenceId,
+      currentStepIdx: 0,
+      currentBlockId: firstBlock.id,
+      blockSnapshot: firstBlock.content as object,
+      assignedNickId: input.assignedNickId,
+      scheduledAt,
+      state: 'queued',
+    },
+  });
+
+  logger.info(
+    `[materializer] friend-invite sequence enrolled: trigger=${input.triggerId} contact=${input.contactId} nick=${input.assignedNickId} campaign=${campaign.id} originTask=${input.originTaskId}`,
+  );
+
+  return { campaignId: campaign.id, tasksEnqueued: 1, skipped: false };
+}

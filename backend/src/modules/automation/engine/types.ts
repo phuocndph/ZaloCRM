@@ -58,6 +58,9 @@ export interface ActionContext {
   blockSnapshot: Record<string, unknown>; // content frozen at enroll time
   actionType: BlockActionType;
   attemptCount: number;
+  // Phase Friend Invite 2026-05-28 — Campaign rulesSnapshot for handler-level
+  // overrides (vd: allowStrangerMessage flag bypass FRIENDSHIP_NOT_ACCEPTED).
+  rulesSnapshot?: Record<string, unknown>;
 }
 
 export interface ActionResult {

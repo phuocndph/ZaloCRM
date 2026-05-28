@@ -303,6 +303,9 @@ async function processTask(taskId: string): Promise<void> {
     blockSnapshot: task.blockSnapshot as Record<string, unknown>,
     actionType,
     attemptCount: task.attemptCount,
+    // Phase Friend Invite 2026-05-28 — pass campaign rulesSnapshot to handlers
+    // for handler-level overrides (vd: allowStrangerMessage bypass FRIENDSHIP check).
+    rulesSnapshot: task.campaign.rulesSnapshot as Record<string, unknown> | undefined,
   };
 
   const result = await dispatchAction(ctx);
@@ -408,6 +411,61 @@ async function markDoneAndAdvance(
       where: { id: nickId },
       data: { [field]: now },
     });
+  }
+
+  // ── Phase Friend Invite 2026-05-28 — Post-execute successor sequence hook ──
+  // When request_friend task succeeds AND parent trigger has successorSequenceId,
+  // INSERT FriendRequestOutbox row (atomic with task DONE state) for drainer.
+  // Drainer cron picks outbox WHERE sendStatus='success' AND sequenceMaterializedAt IS NULL
+  // → calls materializeSequenceForContact() → updates sequenceMaterializedAt.
+  if (
+    actionType === 'request_friend' &&
+    nickId &&
+    outcomeData &&
+    typeof outcomeData === 'object' &&
+    'ok' in outcomeData &&
+    (outcomeData as Record<string, unknown>).ok === true
+  ) {
+    try {
+      const campaign = await prisma.automationCampaign.findUnique({
+        where: { id: task.campaignId },
+        select: { triggerId: true },
+      });
+      if (campaign?.triggerId) {
+        const trigger = await prisma.automationTrigger.findUnique({
+          where: { id: campaign.triggerId },
+          select: { successorSequenceId: true, eventType: true },
+        });
+        if (trigger?.successorSequenceId && trigger.eventType === 'friend_invite_to_list') {
+          const sequence = await prisma.automationSequence.findUnique({
+            where: { id: trigger.successorSequenceId },
+            select: { steps: true, runtimeRules: true },
+          });
+          await prisma.friendRequestOutbox.create({
+            data: {
+              id: randomUUID(),
+              customerListEntryId: task.id, // reuse task id as outbox dedup key
+              triggerId: campaign.triggerId,
+              nickId,
+              contactId: task.contactId,
+              successorSequenceId: trigger.successorSequenceId,
+              sequenceVersionSnapshot: sequence?.steps ?? undefined,
+              sendStatus: 'success',
+            },
+          });
+          logger.info(
+            `[task-worker] friend-invite outbox row created for task=${task.id} contact=${task.contactId} → drainer will materialize sequence ${trigger.successorSequenceId}`,
+          );
+        }
+      }
+    } catch (err) {
+      // Outbox row creation failure must NOT block task DONE state.
+      // Log error; admin can manual replay via outbox UI.
+      logger.error(
+        `[task-worker] friend-invite outbox insert failed for task=${task.id}:`,
+        err,
+      );
+    }
   }
 
   // Sequence advance — schedule next step if any
