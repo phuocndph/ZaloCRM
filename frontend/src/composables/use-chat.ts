@@ -505,8 +505,14 @@ export function useChat() {
     await fetchMessages(convId);
     try {
       const convDetail = await api.get(`/conversations/${convId}`);
-      const conv = conversations.value.find(c => c.id === convId);
-      if (conv) {
+      let conv = conversations.value.find(c => c.id === convId);
+      if (!conv) {
+        // 2026-05-28: Conv stub từ Lead Pool có thể không nằm trong 100 conv top
+        // (lastMessageAt=null, sort sau hết). Push detail vào list để MessageThread
+        // render được — selectedConv computed find sẽ resolve.
+        conversations.value = [convDetail.data, ...conversations.value];
+        conv = convDetail.data;
+      } else {
         if (convDetail.data.contact) conv.contact = convDetail.data.contact;
         // friendship per-pair (counter, leadScore, status RIÊNG cặp nick×KH).
         // KHÔNG fallback contact aggregate vì các trường này khác semantics.
