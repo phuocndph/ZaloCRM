@@ -206,6 +206,9 @@ export interface ContactAggregateResult {
   autoTags: AutoTagKey[]; // UNION từ Friend.autoTags
   stuckSinceAggregate: Date | null; // MIN(Friend.stuckSince) khi all Friend stuck
   lastActivity: Date | null; // MAX(Friend.lastInboundAt | lastOutboundAt | lastInteractionAt)
+  // Phase Lead Pool v2.A 2026-05-29 — tách riêng để forgotten pool query đúng nghĩa
+  lastInboundAt: Date | null;  // MAX(Friend.lastInboundAt) — lần KH reply cuối
+  lastOutboundAt: Date | null; // MAX(Friend.lastOutboundAt) — lần sale gửi cuối
 }
 
 // ─── Scoring config snapshot ──────────────────────────────────────────────

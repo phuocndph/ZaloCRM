@@ -318,19 +318,23 @@ async function queryForgottenCandidates(orgId: string, userId: string, config: P
   // sale mới gọi findUser qua nick mình tìm UID per-viewer của họ.
   const phoneFilter = config.requirePhoneInPool ? `AND c.phone_normalized IS NOT NULL` : '';
 
+  // Phase Lead Pool v2.A 2026-05-29 — đổi "lãng quên" sang `last_inbound_at` thay vì
+  // `last_activity`. Lý do: lastActivity = MAX(inbound, outbound) → sale spam outbound
+  // giữ lead vĩnh viễn. Anh chốt: "lãng quên = KH không reply >= threshold ngày".
+  // Fallback: KH chưa từng inbound (lastInboundAt IS NULL) → dùng created_at làm anchor
+  // (đúng cho KH import từ Excel/Facebook lead chưa từng chat).
   const rows = await prisma.$queryRawUnsafe<Array<{ id: string; priority_score: number }>>(
     `
     SELECT c.id,
       (
-        EXTRACT(EPOCH FROM (NOW() - c.last_activity)) / 86400 * 2
+        EXTRACT(EPOCH FROM (NOW() - COALESCE(c.last_inbound_at, c.created_at))) / 86400 * 2
         + CASE WHEN c.phone_normalized IS NOT NULL THEN 5 ELSE 0 END
         + CASE WHEN c.has_zalo = true THEN 10 ELSE 0 END
         - c.zalo_lookup_attempts * 3
       )::INTEGER AS priority_score
     FROM contacts c
     WHERE c.org_id = $1
-      AND c.last_activity IS NOT NULL
-      AND c.last_activity < $2
+      AND COALESCE(c.last_inbound_at, c.created_at) < $2
       AND c.consent_status != 'revoked'
       AND (c.status IS NULL OR c.status != ALL($3::text[]))
       AND (c.assigned_user_id IS NULL OR c.assigned_user_id != $4)
@@ -510,8 +514,10 @@ async function buildLeadPayload(
   });
   if (!contact) return null;
 
-  // Insights derive
-  const daysIdle = contact.lastActivity ? Math.floor((Date.now() - contact.lastActivity.getTime()) / 86400000) : null;
+  // Insights derive — Phase v2.A: "lãng quên" giờ tính theo lastInboundAt (KH reply cuối)
+  // thay vì lastActivity (bao gồm cả outbound). Fallback createdAt nếu KH chưa từng inbound.
+  const idleAnchor = contact.lastInboundAt ?? contact.createdAt;
+  const daysIdle = idleAnchor ? Math.floor((Date.now() - idleAnchor.getTime()) / 86400000) : null;
   const noShowCount = contact.appointments.filter((a) => a.status === 'no_show').length;
   const acceptedFriendCount = contact.friends.filter((f) => f.friendshipStatus === 'accepted').length;
 
@@ -542,6 +548,8 @@ async function buildLeadPayload(
       hasZalo: contact.hasZalo,
       leadScore: contact.leadScore,
       lastActivity: contact.lastActivity,
+      lastInboundAt: contact.lastInboundAt,
+      lastOutboundAt: contact.lastOutboundAt,
       daysIdle,
       province: contact.province,
       district: contact.district,

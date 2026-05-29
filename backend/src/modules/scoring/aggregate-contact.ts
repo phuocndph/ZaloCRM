@@ -60,6 +60,8 @@ export async function computeContactAggregate(
       autoTags: [],
       stuckSinceAggregate: null,
       lastActivity: null,
+      lastInboundAt: null,
+      lastOutboundAt: null,
     };
   }
 
@@ -125,12 +127,17 @@ export async function computeContactAggregate(
   }
 
   // ── 6. lastActivity = MAX(lastInboundAt | lastOutboundAt | lastInteractionAt) ──
+  // Phase Lead Pool v2.A 2026-05-29: tách lastInboundAt + lastOutboundAt riêng.
+  // forgotten pool query đổi sang dùng lastInboundAt để chỉ tính lần KH reply
+  // (sale spam outbound KHÔNG còn giữ lead vĩnh viễn).
   let lastActivity: Date | null = null;
+  let lastInboundAt: Date | null = null;
+  let lastOutboundAt: Date | null = null;
   for (const f of friends) {
+    if (f.lastInboundAt && (!lastInboundAt || f.lastInboundAt > lastInboundAt)) lastInboundAt = f.lastInboundAt;
+    if (f.lastOutboundAt && (!lastOutboundAt || f.lastOutboundAt > lastOutboundAt)) lastOutboundAt = f.lastOutboundAt;
     for (const ts of [f.lastInboundAt, f.lastOutboundAt, f.lastInteractionAt]) {
-      if (ts && (!lastActivity || ts > lastActivity)) {
-        lastActivity = ts;
-      }
+      if (ts && (!lastActivity || ts > lastActivity)) lastActivity = ts;
     }
   }
 
@@ -142,6 +149,8 @@ export async function computeContactAggregate(
     autoTags,
     stuckSinceAggregate,
     lastActivity,
+    lastInboundAt,
+    lastOutboundAt,
   };
 }
 
@@ -167,6 +176,8 @@ export async function updateContactAggregate(contactId: string): Promise<void> {
         autoTags: result.autoTags,
         stuckSinceAggregate: result.stuckSinceAggregate,
         lastActivity: result.lastActivity,
+        lastInboundAt: result.lastInboundAt,
+        lastOutboundAt: result.lastOutboundAt,
         aggregateScoreUpdatedAt: new Date(),
       },
     });
