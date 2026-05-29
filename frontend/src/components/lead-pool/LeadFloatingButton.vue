@@ -13,7 +13,12 @@
         <div v-else-if="!stats" class="lfb-tip-loading">Không tải được dữ liệu</div>
         <template v-else>
           <div class="lfb-tip-head">
-            <span class="lfb-tip-title">🎁 Pool Lead — {{ stats.poolAvailable }} lead đang chờ</span>
+            <div class="lfb-tip-head-main">
+              <span class="lfb-tip-title">🎁 Pool Lead</span>
+              <span class="lfb-tip-subtitle">
+                <strong>{{ stats.poolAvailable }}</strong> lead đang chờ
+              </span>
+            </div>
             <span class="lfb-tip-role">{{ roleLabel }}</span>
           </div>
 
@@ -426,20 +431,37 @@ watch(() => route.path, (path) => {
 /* Tooltip rich */
 .lfb-tooltip-rich {
   background: white; border: 1px solid #E5E7EB; border-radius: 12px;
-  padding: 14px 16px; box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.18);
   width: 320px; max-height: 60vh; overflow-y: auto;
   font-size: 12.5px; color: #0F172A;
   animation: lfb-tip-in 0.15s ease-out;
+  overflow: hidden; /* để header gradient không lòi qua border-radius */
 }
 @keyframes lfb-tip-in {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
 }
 .lfb-tip-loading { padding: 20px; text-align: center; color: #94A3B8; }
-.lfb-tip-head { display: flex; justify-content: space-between; align-items: center; padding-bottom: 8px; border-bottom: 1px solid #E5E7EB; margin-bottom: 8px; gap: 8px; }
-.lfb-tip-title { font-weight: 700; color: #5E6AD2; font-size: 13px; }
-.lfb-tip-role { font-size: 11px; background: #F1F5F9; color: #475569; padding: 2px 8px; border-radius: 9999px; font-weight: 600; white-space: nowrap; }
-.lfb-tip-section { padding: 8px 0; }
+
+/* Header gradient indigo — anh chốt 2026-05-29 */
+.lfb-tip-head {
+  background: linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%);
+  padding: 10px 14px; display: flex; justify-content: space-between;
+  align-items: center; gap: 8px; color: white;
+}
+.lfb-tip-head-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.lfb-tip-title { font-weight: 800; color: white; font-size: 14px; letter-spacing: -0.01em; line-height: 1.15; }
+.lfb-tip-subtitle { font-size: 11px; color: rgba(255, 255, 255, 0.82); font-weight: 500; line-height: 1.2; }
+.lfb-tip-subtitle strong { color: #FCD34D; font-weight: 800; font-size: 12px; }
+.lfb-tip-role {
+  font-size: 10.5px; background: rgba(255, 255, 255, 0.18);
+  color: white; padding: 3px 9px; border-radius: 9999px;
+  font-weight: 700; white-space: nowrap; flex-shrink: 0;
+  border: 1px solid rgba(255, 255, 255, 0.22); letter-spacing: 0.01em;
+  backdrop-filter: blur(2px);
+}
+
+.lfb-tip-section { padding: 10px 14px; }
 .lfb-tip-section + .lfb-tip-section { border-top: 1px dashed #E5E7EB; }
 .lfb-tip-section-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: #94A3B8; font-weight: 700; margin-bottom: 6px; }
 .lfb-tip-row { display: flex; justify-content: space-between; align-items: center; padding: 3px 0; }
