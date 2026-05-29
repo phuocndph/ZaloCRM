@@ -135,7 +135,7 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
         const org = await prisma.organization.findUnique({
           where: { id: user.orgId },
           select: {
-            welcomeMessageTemplate: true,
+            friendInviteWelcomeTemplate: true,
             welcomeDelayAfterFriendReqSec: true,
             welcomeStrangerInboxEnabled: true,
             welcomeMaxRetries: true,
@@ -143,7 +143,12 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
           },
         });
         if (!org) return reply.status(404).send({ error: 'Organization not found' });
-        return org;
+        // Backward-compat: expose welcomeMessageTemplate as a read-only mirror
+        // for old UI clients that haven't migrated to friendInviteWelcomeTemplate yet.
+        return {
+          ...org,
+          welcomeMessageTemplate: org.friendInviteWelcomeTemplate,
+        };
       } catch {
         return reply.status(500).send({ error: 'Failed to fetch welcome config' });
       }
@@ -156,7 +161,8 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
     async (request: FastifyRequest, reply: FastifyReply) => {
       const user = request.user!;
       const body = (request.body ?? {}) as {
-        welcomeMessageTemplate?: string | null;
+        friendInviteWelcomeTemplate?: string | null;
+        welcomeMessageTemplate?: string | null; // backward-compat alias (read-only on GET; accepted on PATCH for old UI)
         welcomeDelayAfterFriendReqSec?: number;
         welcomeStrangerInboxEnabled?: boolean;
         welcomeMaxRetries?: number;
@@ -165,16 +171,20 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
 
       const data: Record<string, unknown> = {};
 
-      if (body.welcomeMessageTemplate !== undefined) {
-        const raw = body.welcomeMessageTemplate;
-        if (raw === null || raw === '') {
-          data.welcomeMessageTemplate = null;
-        } else if (typeof raw === 'string') {
-          const trimmed = raw.trim();
+      // Prefer the new field name; fall back to the legacy alias if the new one is absent.
+      const templateRaw =
+        body.friendInviteWelcomeTemplate !== undefined
+          ? body.friendInviteWelcomeTemplate
+          : body.welcomeMessageTemplate;
+      if (templateRaw !== undefined) {
+        if (templateRaw === null || templateRaw === '') {
+          data.friendInviteWelcomeTemplate = null;
+        } else if (typeof templateRaw === 'string') {
+          const trimmed = templateRaw.trim();
           if (trimmed.length > 4000) {
             return reply.status(400).send({ error: 'Mẫu tin nhắn không được dài hơn 4000 ký tự' });
           }
-          data.welcomeMessageTemplate = trimmed;
+          data.friendInviteWelcomeTemplate = trimmed;
         }
       }
 
@@ -211,7 +221,7 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
           where: { id: user.orgId },
           data,
           select: {
-            welcomeMessageTemplate: true,
+            friendInviteWelcomeTemplate: true,
             welcomeDelayAfterFriendReqSec: true,
             welcomeStrangerInboxEnabled: true,
             welcomeMaxRetries: true,
@@ -219,7 +229,11 @@ export async function orgRoutes(app: FastifyInstance): Promise<void> {
           },
         });
         logger.info(`Org welcome-config updated by ${user.email} (org=${user.orgId})`);
-        return org;
+        // Backward-compat: mirror new field as legacy alias for old UI.
+        return {
+          ...org,
+          welcomeMessageTemplate: org.friendInviteWelcomeTemplate,
+        };
       } catch {
         return reply.status(500).send({ error: 'Failed to update welcome config' });
       }

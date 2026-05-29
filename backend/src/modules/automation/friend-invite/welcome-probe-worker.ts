@@ -70,19 +70,19 @@ async function processRow(row: ProbeRow): Promise<void> {
   const org = await prisma.organization.findUnique({
     where: { id: row.org_id },
     select: {
-      welcomeMessageTemplate: true,
+      friendInviteWelcomeTemplate: true,
       welcomeMaxRetries: true,
       welcomeStrangerInboxEnabled: true,
     },
   });
-  if (!org?.welcomeMessageTemplate) {
+  if (!org?.friendInviteWelcomeTemplate) {
     // Contact may not exist yet (early Wave 1.5 rows had contact_id = null).
     // Guard the contact update so a missing contact doesn't crash the tx and
     // strand the row with the claim token still set in welcome_last_error.
     await prisma.$transaction(async (tx) => {
       await tx.friendRequestOutbox.update({
         where: { id: row.id },
-        data: { welcomeOutcome: 'HARD_FAIL', welcomeLastError: 'no template configured', welcomeSentAt: new Date() },
+        data: { welcomeOutcome: 'HARD_FAIL', welcomeLastError: 'no friend-invite template configured', welcomeSentAt: new Date() },
       });
       if (row.contact_id) {
         await tx.contact.updateMany({
@@ -141,7 +141,7 @@ async function processRow(row: ProbeRow): Promise<void> {
 
   const channel = isWarm ? 'SENT_FRIEND' : 'SENT_STRANGER';
   const channelLabel = isWarm ? 'friend_msg' : 'stranger_inbox';
-  const msg = await renderGreeting(org.welcomeMessageTemplate, row.contact_id, row.nick_id);
+  const msg = await renderGreeting(org.friendInviteWelcomeTemplate, row.contact_id, row.nick_id);
 
   // Race-safe contact lock: atomically claim welcomeSentAt before network send.
   // Any concurrent worker (or replay) that also picked this contact will get 0 rows.

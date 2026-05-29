@@ -80,6 +80,7 @@ model Organization {
   // Ảnh upload 1 lần, dùng cho mọi tin login. SĐT admin fallback nhận credentials
   // khi tin gửi sale fail (để admin chuyển thủ công).
   welcomeMessageTemplate String? @map("welcome_message_template") @db.Text
+  friendInviteWelcomeTemplate String? @map("friend_invite_welcome_template") @db.Text
   welcomeImageUrl        String? @map("welcome_image_url")
   adminFallbackPhone     String? @map("admin_fallback_phone")
 

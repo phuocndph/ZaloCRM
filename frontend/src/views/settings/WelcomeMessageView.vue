@@ -10,11 +10,14 @@
 <template>
   <div class="wm-page">
     <header class="wm-head">
-      <h1>💌 Tin nhắn chào mừng tự động</h1>
+      <h1>💌 Tin chào khách sau khi gửi lời mời kết bạn</h1>
       <p class="wm-sub">
-        Tin nhắn gửi <b>NGAY sau khi gửi lời mời kết bạn</b> (không đợi đồng ý). Mục đích:
-        kiểm tra khách có cho phép nhận tin từ người lạ không, để quyết định có gắn vào
-        <b>luồng bám đuổi</b> hay không.
+        Tin chào <b>khách lạ (stranger)</b> gửi NGAY sau khi nick sale gửi lời mời kết bạn
+        (không đợi khách đồng ý). Mục đích: kiểm tra khách có cho phép nhận tin từ người lạ
+        không, để quyết định có gắn vào <b>luồng bám đuổi</b> hay không.
+        <br />
+        <b>Lưu ý:</b> đây <u>KHÔNG phải</u> tin onboarding gửi cho user mới của hệ thống —
+        đây là tin marketing gửi cho khách hàng Zalo.
       </p>
     </header>
 
@@ -39,16 +42,16 @@
 
       <!-- Template -->
       <section class="wm-card">
-        <h3>📝 Mẫu tin chào mừng</h3>
+        <h3>📝 Mẫu tin chào khách</h3>
         <p class="wm-detail">
-          Hỗ trợ 3 biến — bấm để chèn nhanh:
+          Chỉ hỗ trợ <b>3 biến</b> dưới đây — bấm để chèn nhanh. Không có biến khác.
         </p>
         <div class="wm-chips">
           <button type="button" class="wm-chip" @click="insertVar('{gender}')">
             <code>{gender}</code> → Anh / Chị / AnhChị
           </button>
           <button type="button" class="wm-chip" @click="insertVar('{name}')">
-            <code>{name}</code> → Tên khách
+            <code>{name}</code> → Tên khách (chữ cuối họ tên)
           </button>
           <button type="button" class="wm-chip" @click="insertVar('{sale}')">
             <code>{sale}</code> → Tên sale (chữ cuối họ tên)
@@ -56,19 +59,23 @@
         </div>
         <textarea
           ref="templateRef"
-          v-model="form.welcomeMessageTemplate"
+          v-model="form.friendInviteWelcomeTemplate"
           rows="5"
           maxlength="4000"
           class="wm-textarea"
-          placeholder="Vd: Chào {gender} {name}, em {sale} bên dự án đây ạ. Em vừa kết nối Zalo với {gender}, có gì {gender} hỗ trợ em nhé."
+          placeholder="Em chào {gender} {name}, em là {sale}, em vừa kết bạn để tiện hỗ trợ Anh/Chị ạ."
         />
-        <small class="wm-hint">Tối đa 4000 ký tự. Để trống = không gửi tin.</small>
+        <small class="wm-hint">Tối đa 4000 ký tự. Để trống = không gửi tin chào khách.</small>
       </section>
 
       <!-- Live preview -->
       <section class="wm-card wm-card-preview">
         <h3>👀 Xem trước</h3>
-        <p class="wm-detail">Render với mock data: khách là <b>Chị Linh</b>, sale là <b>Thành</b>.</p>
+        <p class="wm-detail">
+          Render với mock data: <code>{gender}</code> = <b>Chị</b>,
+          <code>{name}</code> = <b>Linh</b>, <code>{sale}</code> = <b>Thành</b>.
+          Chỉ 3 biến này được thay; mọi ký tự khác giữ nguyên.
+        </p>
         <div class="wm-preview">
           <div class="wm-preview-bubble">
             <pre>{{ preview || '(Mẫu trống — bạn cần nhập nội dung phía trên)' }}</pre>
@@ -132,8 +139,12 @@ const saveStatus = ref<'' | 'saved' | 'error'>('');
 const saveError = ref('');
 const templateRef = ref<HTMLTextAreaElement | null>(null);
 
+// Pre-fill default template để admin quick-start (anh chốt 2026-05-29).
+const DEFAULT_FRIEND_INVITE_TEMPLATE =
+  'Em chào {gender} {name}, em là {sale}, em vừa kết bạn để tiện hỗ trợ Anh/Chị ạ.';
+
 const form = ref({
-  welcomeMessageTemplate: '' as string,
+  friendInviteWelcomeTemplate: '' as string,
   welcomeDelayAfterFriendReqSec: 60,
   welcomeMaxRetries: 2,
   welcomeStrangerInboxEnabled: true,
@@ -141,7 +152,7 @@ const form = ref({
 });
 
 const preview = computed(() => {
-  const tpl = form.value.welcomeMessageTemplate || '';
+  const tpl = form.value.friendInviteWelcomeTemplate || '';
   return tpl
     .replace(/\{gender\}/g, 'Chị')
     .replace(/\{name\}/g, 'Linh')
@@ -151,13 +162,15 @@ const preview = computed(() => {
 function insertVar(token: string) {
   const ta = templateRef.value;
   if (!ta) {
-    form.value.welcomeMessageTemplate = (form.value.welcomeMessageTemplate || '') + token;
+    form.value.friendInviteWelcomeTemplate =
+      (form.value.friendInviteWelcomeTemplate || '') + token;
     return;
   }
   const start = ta.selectionStart ?? 0;
   const end = ta.selectionEnd ?? 0;
-  const current = form.value.welcomeMessageTemplate || '';
-  form.value.welcomeMessageTemplate = current.slice(0, start) + token + current.slice(end);
+  const current = form.value.friendInviteWelcomeTemplate || '';
+  form.value.friendInviteWelcomeTemplate =
+    current.slice(0, start) + token + current.slice(end);
   // Đặt lại con trỏ sau token vừa chèn
   requestAnimationFrame(() => {
     ta.focus();
@@ -170,8 +183,11 @@ async function fetchConfig() {
   loading.value = true;
   try {
     const { data } = await api.get('/organization/welcome-config');
+    // BE prefers friendInviteWelcomeTemplate; fall back to legacy alias for safety.
+    const tpl =
+      data.friendInviteWelcomeTemplate ?? data.welcomeMessageTemplate ?? '';
     form.value = {
-      welcomeMessageTemplate: data.welcomeMessageTemplate ?? '',
+      friendInviteWelcomeTemplate: tpl || DEFAULT_FRIEND_INVITE_TEMPLATE,
       welcomeDelayAfterFriendReqSec: data.welcomeDelayAfterFriendReqSec ?? 60,
       welcomeMaxRetries: data.welcomeMaxRetries ?? 2,
       welcomeStrangerInboxEnabled: data.welcomeStrangerInboxEnabled ?? true,
@@ -190,7 +206,8 @@ async function onSave() {
   saveStatus.value = '';
   try {
     const payload = {
-      welcomeMessageTemplate: form.value.welcomeMessageTemplate?.trim() || null,
+      friendInviteWelcomeTemplate:
+        form.value.friendInviteWelcomeTemplate?.trim() || null,
       welcomeDelayAfterFriendReqSec: form.value.welcomeDelayAfterFriendReqSec,
       welcomeMaxRetries: form.value.welcomeMaxRetries,
       welcomeStrangerInboxEnabled: form.value.welcomeStrangerInboxEnabled,
