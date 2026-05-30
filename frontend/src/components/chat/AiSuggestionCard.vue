@@ -301,7 +301,7 @@ function onSkip() {
 .suggest-table tr:hover { background: #f8fafc; }   /* AT.surfaceSoft */
 
 .suggest-table td {
-  padding: 12px 8px;                    /* row height ~48px Airtable-density */
+  padding: 10px 8px;                    /* M55.9: giảm 12→10px (-10% row height) anh chốt */
   vertical-align: middle;               /* M55.6: căn giữa toàn bộ cells trong row */
   font-size: 14px;
   line-height: 1.4;                     /* M55.6: line-height đồng nhất tránh lệch dòng */
