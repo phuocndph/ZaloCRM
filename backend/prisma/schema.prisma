@@ -13,6 +13,14 @@ model Organization {
   // Múi giờ mặc định của tổ chức (offset cố định, không tự DST). Format "+07:00" / "-05:00".
   // Mặc định +07:00 (Việt Nam) để mọi timestamp render trong UI và log đều đồng nhất, dễ decode.
   timezone  String   @default("+07:00")
+
+  // Phase FB Pull 2026-05-30 — System User token (vĩnh viễn, quyền leads_retrieval) để
+  // KÉO lead chủ động từ form quảng cáo (chính chủ, không cần App Review). 1 SU token đọc
+  // được mọi Page mà System User được gán → lưu cấp Org. AES-256-GCM blob, decrypt tại fetch.
+  encryptedFbSystemUserToken String?  @map("encrypted_fb_system_user_token") @db.Text
+  fbPullEnabled              Boolean  @default(false) @map("fb_pull_enabled")
+  fbSystemUserId             String?  @map("fb_system_user_id") // audit: SU id, debug khi revoke
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -29,6 +37,7 @@ model Organization {
   duplicateGroups           DuplicateGroup[]
   savedReports              SavedReport[]
   integrations              Integration[]
+  facebookLeadgenForms      FacebookLeadgenForm[]
   automationRules           AutomationRule[]
   messageTemplates          MessageTemplate[]
   aiConfig                  AiConfig?
@@ -1856,7 +1865,11 @@ model AutomationTrigger {
   // Wave 2 2026-05-29 — per-trigger welcome probe (split from Org-level)
   welcomeMessageTemplate String?  @map("welcome_message_template") @db.Text
   welcomeDelaySeconds    Int      @default(60) @map("welcome_delay_seconds")
-  state                  String   @default("draft") // 'draft' | 'active' | 'paused' | 'cancelling' | 'cancelled' | 'completed'
+  state                  String   @default("draft") // 'draft' | 'active' | 'paused' | 'cancelling' | 'cancelled' | 'completed' (UI derive 'scheduled' khi state=draft + scheduledAt set)
+  // BE T4 2026-05-30 — friend-invite lên lịch hẹn giờ. NULL = activate ngay khi gọi /activate.
+  // Có giá trị + startMode=scheduled → giữ state='draft', cron sweep flip sang 'active' khi tới giờ VN.
+  // Cột riêng (KHÔNG nhét vào eventFilter JSON) để query cron pickup dùng index hiệu quả.
+  scheduledAt            DateTime? @map("scheduled_at")
   createdById            String   @map("created_by_id")
   createdAt              DateTime @default(now()) @map("created_at")
   updatedAt              DateTime @updatedAt @map("updated_at")
@@ -1869,6 +1882,7 @@ model AutomationTrigger {
 
   @@index([orgId, eventType, enabled])
   @@index([orgId, category])
+  @@index([state, scheduledAt])
   @@map("automation_triggers")
 }
 
@@ -2448,6 +2462,39 @@ model FacebookPageAccount {
   @@map("facebook_page_accounts")
 }
 
+// Phase FB Pull 2026-05-30 — registry mỗi leadgen_form của Page + checkpoint cho
+// incremental pull. Watermark lastPulledLeadCreatedTime là checkpoint chính (bền vững
+// hơn Graph cursor giữa các tick). Cursor chỉ phân trang trong cùng 1 lần pull.
+model FacebookLeadgenForm {
+  id       String  @id @default(uuid())
+  orgId    String  @map("org_id")
+  pageId   String  @map("page_id") // FK logic tới FacebookPageAccount.pageId
+  formId   String  @map("form_id") // FB leadgen form ID
+  formName String? @map("form_name")
+  status   String  @default("active") // 'active' | 'archived' | 'deleted'
+
+  // Checkpoint incremental pull
+  lastPulledLeadCreatedTime DateTime? @map("last_pulled_lead_created_time") // watermark (UTC)
+  lastPulledCursor          String?   @map("last_pulled_cursor") @db.Text // Graph "after" cursor
+  lastPullAt                DateTime? @map("last_pull_at")
+  lastPullLeadCount         Int       @default(0) @map("last_pull_lead_count")
+  lastPullError             String?   @map("last_pull_error") @db.Text
+  consecutiveErrors         Int       @default(0) @map("consecutive_errors")
+  // historyBackfilled=false → lần pull tiếp theo kéo TOÀN BỘ lead lịch sử (anh chốt kéo lead cũ).
+  // Sau khi backfill xong → true, các tick sau chỉ kéo lead mới qua watermark.
+  historyBackfilled Boolean @default(false) @map("history_backfilled")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([pageId, formId])
+  @@index([orgId, status])
+  @@index([status, lastPullAt])
+  @@map("facebook_leadgen_forms")
+}
+
 // Outbox + audit cho mọi webhook delivery từ ad-network. Idempotent qua
 // externalLeadId unique. processingSteps = timing trace cho Phase 2 timeline UI.
 // orgId nullable cho early-error stage (page chưa connect). createdEntryId fill
@@ -2554,4 +2601,27 @@ model FriendRequestOutbox {
   @@index([kind, sendStatus], map: "idx_outbox_kind_send_status_run_at")
   @@index([welcomeOutcome], map: "idx_outbox_welcome_outcome")
   @@map("friend_request_outbox")
+}
+
+// Wave 3 Event Log 2026-05-30 — Append-only feed cho Mục tiêu Detail timeline + Monitor live.
+// Mọi event Wave 1-3 (friend_sent / friend_accepted / welcome_blocked / customer_reply ...) đều
+// log vào đây qua logEvent() fire-and-forget. Retention 30 ngày, cron daily 06:00 VN xoá row cũ.
+model AutomationEventLog {
+  id            String   @id @default(uuid())
+  orgId         String   @map("org_id")
+  triggerId     String   @map("trigger_id")
+  taskId        String?  @map("task_id")
+  contactId     String?  @map("contact_id")
+  nickId        String?  @map("nick_id")
+  eventType     String   @map("event_type")
+  // info | warning | urgent — UI tô màu chip + sort order trong timeline
+  eventPriority String   @default("info") @map("event_priority")
+  summary       String   @db.Text
+  metadata      Json?
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([triggerId, createdAt(sort: Desc)], map: "idx_event_log_trigger_time")
+  @@index([orgId, createdAt(sort: Desc)], map: "idx_event_log_org_time")
+  @@index([eventType], map: "idx_event_log_type")
+  @@map("automation_event_log")
 }

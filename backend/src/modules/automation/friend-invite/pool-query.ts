@@ -114,6 +114,16 @@ export async function markEntrySent(input: {
   // request was accepted, and broke P2002 composite unique on retries.
   const kind = input.kind ?? 'FRIEND_REQUEST';
   await prisma.$transaction(async (tx) => {
+    // Fix 2026-05-30 23:35 — re-test cùng KH trên trigger mới phải reset outbox cũ
+    // (composite unique entry+kind chặn create row mới). Pattern: delete outbox của
+    // trigger CŨ trước upsert nếu workflow của trigger mới. Idempotent: nếu cùng
+    // triggerId thì upsert tiếp tục no-op như cũ.
+    await tx.friendRequestOutbox.deleteMany({
+      where: {
+        customerListEntryId: input.entryId,
+        triggerId: { not: input.triggerId },
+      },
+    });
     await tx.customerListEntry.update({
       where: { id: input.entryId },
       data: {

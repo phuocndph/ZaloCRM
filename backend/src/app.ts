@@ -323,6 +323,12 @@ async function bootstrap() {
     // dispatch fb webhook logs → Graph API fetch → normalize → route → insert entry.
     registerLogProcessor('fb-leadads', processFbWebhookLog);
     startOutboxWorker().catch((err) => logger.error('[outbox-worker] startup failed:', err));
+    // Phase FB Pull 2026-05-30 — kéo lead chủ động bằng System User token (chính chủ,
+    // không App Review). Chỉ chạy thật khi có Org bật fbPullEnabled. Skip lúc test.
+    if (config.nodeEnv !== 'test') {
+      const { startFbPullWorker } = await import('./modules/integrations/facebook-leadads/fb-pull-worker.js');
+      startFbPullWorker();
+    }
     await eventBuffer.start(io);
     // Phase 7 — Automation engine (event bus + materializer + task worker + 3 action handlers)
     if (config.nodeEnv !== 'test') {

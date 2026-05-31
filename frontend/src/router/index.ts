@@ -193,6 +193,26 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/automation/MucTieuWizard.vue'),
     meta: { requiresAuth: true },
   },
+  // Wave 3 (2026-05-30) — MucTieuListView v1 (table + side panel)
+  // Đặt dưới shell BotAutoShell để có sidebar Marketing chung.
+  {
+    path: '/automation/muc-tieu',
+    component: () => import('@/views/automation/BotAutoShell.vue'),
+    meta: { requiresAuth: true },
+    children: [
+      { path: '', name: 'Marketing.MucTieuList', component: () => import('@/views/automation/MucTieuListView.vue') },
+      // Wave 3 Day 1 (2026-05-30) — Mục tiêu detail v1 (Dashboard + Log tab).
+      // Legacy /marketing/triggers/:id (TriggerDetailView.vue) vẫn alive cho deep link cũ.
+      { path: ':id', name: 'Marketing.MucTieuDetail', component: () => import('@/views/automation/MucTieuDetailView.vue') },
+    ],
+  },
+  // Alias mới /marketing/muc-tieu trỏ về list view (giữ namespace marketing thống nhất)
+  { path: '/marketing/muc-tieu', redirect: '/automation/muc-tieu' },
+  // Alias detail page dưới namespace marketing/* (memory: keep marketing namespace unified)
+  {
+    path: '/marketing/muc-tieu/:id',
+    redirect: (to: RouteLocation) => ({ path: `/automation/muc-tieu/${to.params.id}` }),
+  },
   // Backward compat redirect — URL /automation/bot/* cũ vẫn hoạt động
   { path: '/automation/bot',              redirect: '/marketing/triggers' },
   { path: '/automation/bot/triggers',     redirect: '/marketing/triggers' },

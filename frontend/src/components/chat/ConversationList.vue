@@ -296,6 +296,9 @@ const props = defineProps<{
    *  animation cross-tab. Reorder trong cùng tab (tin mới đến) vẫn animate.
    *  Không bắt buộc; nếu missing thì TransitionGroup hoạt động như trước. */
   activeTabKey?: string;
+  /** Phase 2026-05-30 — SĐT từ lead Facebook (/chat?compose=SĐT). Khi có giá trị →
+   *  tự mở "Tin nhắn mới" + điền sẵn SĐT để dialog lookup Zalo + tạo hội thoại. */
+  autoComposePhone?: string;
 }>();
 
 const emit = defineEmits<{
@@ -363,6 +366,17 @@ function onComposeOpened(conversationId: string) {
   // conv list vẫn filter SĐT → conv mới biến mất → phải xoá search thủ công.
   emit('update:search', '');
 }
+
+// Phase 2026-05-30 — Mở chat từ lead Facebook: khi có autoComposePhone → tự mở
+// "Tin nhắn mới" + điền sẵn SĐT. Dialog tự lookup Zalo + tạo hội thoại.
+function triggerAutoCompose(phone: string) {
+  if (!phone) return;
+  newMsgInitialQuery.value = phone.trim();
+  newMsgPickedAccountId.value = null; // sale chọn nick trong dialog
+  newMsgOpen.value = true;
+}
+watch(() => props.autoComposePhone, (p) => { if (p) triggerAutoCompose(p); });
+onMounted(() => { if (props.autoComposePhone) triggerAutoCompose(props.autoComposePhone); });
 
 // ── Tab state ──────────────────────────────────────────────────────────────
 const activeTab = ref<'main' | 'other'>('main');

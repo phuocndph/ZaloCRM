@@ -22,6 +22,7 @@
 import { prisma } from '../../../shared/database/prisma-client.js';
 import { logger } from '../../../shared/utils/logger.js';
 import { zaloOps } from '../../../shared/zalo-operations.js';
+import { logEvent } from './event-log-service.js';
 
 let probeInterval: NodeJS.Timeout | null = null;
 let busy = false;
@@ -36,9 +37,38 @@ interface ProbeRow {
   welcome_retry_count: number;
 }
 
-function isWithinWorkingHours(): boolean {
+/**
+ * Working hours check — đọc UNION allowedHourRange từ Sequence của trigger active.
+ * Fix 2026-05-30 22:46 (M57 extension) — hardcode 6-22 trước đây gây bug khi anh
+ * chỉnh giờ qua UI Sequence không có hiệu lực với welcome-probe-worker.
+ */
+async function isWithinWorkingHours(): Promise<boolean> {
   const vnHour = (new Date().getUTCHours() + 7) % 24;
-  return vnHour >= 6 && vnHour < 22;
+  try {
+    // Fix 2026-05-30 22:55 — lookup từ Sequence nào liên kết với outbox WELCOME_PROBE
+    // đang pending (kể cả trigger completed). Trước đây query trigger.state='active'
+    // bỏ sót outbox của trigger đã completed → tin chào không bao giờ gửi.
+    const seqs = await prisma.automationSequence.findMany({
+      where: {
+        triggers: { some: { eventType: 'friend_invite_to_list' } },
+      },
+      select: { runtimeRules: true },
+    });
+    let s = 24, e = 0;
+    for (const seq of seqs) {
+      const rules = seq.runtimeRules as { allowedHourRange?: [number, number] } | null;
+      const range = rules?.allowedHourRange;
+      if (Array.isArray(range) && range.length === 2) {
+        if (range[0] < s) s = range[0];
+        if (range[1] > e) e = range[1];
+      }
+    }
+    // Fix 2026-05-30 23:08 — đổi `vnHour < e` thành `vnHour <= e` để 23h trong UI
+    // có nghĩa "tới hết 23h59" thay vì "tới 22h59". Anh chỉnh 23h kỳ vọng gửi
+    // được 23:00-23:59, không phải block ngay khi đồng hồ sang 23:00.
+    if (seqs.length > 0 && s < e) return vnHour >= s && vnHour <= e;
+  } catch { /* fallthrough default */ }
+  return vnHour >= 6 && vnHour <= 22;
 }
 
 function classifyError(msg: string): 'BLOCKED_STRANGER' | 'TRANSIENT' | 'HARD_FAIL' {
@@ -155,6 +185,16 @@ async function processRow(row: ProbeRow): Promise<void> {
       where: { id: row.id },
       data: { welcomeOutcome: 'BLOCKED_STRANGER', welcomeLastError: 'stranger inbox disabled' },
     });
+    // Wave 3 Event Log — welcome_blocked (org tắt stranger inbox)
+    if (row.trigger_id) {
+      void logBlockedStranger({
+        orgId: row.org_id,
+        triggerId: row.trigger_id,
+        contactId: row.contact_id,
+        nickId: row.nick_id,
+        reason: 'stranger inbox disabled',
+      });
+    }
     return;
   }
 
@@ -192,6 +232,42 @@ async function processRow(row: ProbeRow): Promise<void> {
       }),
     ]);
     logger.info(`[welcome-probe] sent outbox=${row.id} channel=${channelLabel}`);
+
+    // Wave 3 Event Log — welcome_sent vào Mục tiêu timeline
+    if (row.trigger_id) {
+      void (async () => {
+        try {
+          const [contactRow, nickRow] = await Promise.all([
+            prisma.contact.findUnique({
+              where: { id: row.contact_id },
+              select: { fullName: true, crmName: true, phone: true },
+            }),
+            prisma.zaloAccount.findUnique({
+              where: { id: row.nick_id },
+              select: { displayName: true },
+            }),
+          ]);
+          const contactDisplay =
+            contactRow?.crmName?.trim() ||
+            contactRow?.fullName?.trim() ||
+            contactRow?.phone ||
+            'KH';
+          const nickDisplay = nickRow?.displayName?.trim() || row.nick_id.slice(0, 8);
+          void logEvent({
+            orgId: row.org_id,
+            triggerId: row.trigger_id!,
+            contactId: row.contact_id,
+            nickId: row.nick_id,
+            eventType: 'welcome_sent',
+            eventPriority: 'info',
+            summary: `Nick ${nickDisplay} gửi tin chào mừng cho ${contactDisplay}`,
+            metadata: { outboxId: row.id, channel: channelLabel },
+          });
+        } catch (err) {
+          logger.warn(`[welcome-probe] event-log enrichment failed outbox=${row.id}:`, err);
+        }
+      })();
+    }
   } catch (err: any) {
     const errMsg = (err?.message ?? String(err)).slice(0, 500);
     const kind = classifyError(errMsg);
@@ -200,6 +276,16 @@ async function processRow(row: ProbeRow): Promise<void> {
         where: { id: row.id },
         data: { welcomeOutcome: 'BLOCKED_STRANGER', welcomeLastError: errMsg, welcomeSentAt: new Date() },
       });
+      // Wave 3 Event Log — welcome_blocked (Zalo trả lỗi chặn tin chào)
+      if (row.trigger_id) {
+        void logBlockedStranger({
+          orgId: row.org_id,
+          triggerId: row.trigger_id,
+          contactId: row.contact_id,
+          nickId: row.nick_id,
+          reason: errMsg,
+        });
+      }
     } else if (kind === 'TRANSIENT' && row.welcome_retry_count < org.welcomeMaxRetries) {
       // Transient retry: release the lock so retry can re-claim cleanly.
       await prisma.$transaction([
@@ -224,7 +310,7 @@ async function processRow(row: ProbeRow): Promise<void> {
 
 async function runProbeTick(): Promise<void> {
   if (busy) return;
-  if (!isWithinWorkingHours()) return;
+  if (!(await isWithinWorkingHours())) return;
   busy = true;
   try {
     // Atomic UPDATE ... RETURNING claim pattern (replaces SELECT FOR UPDATE SKIP LOCKED).
@@ -304,5 +390,46 @@ export function stopWelcomeProbeWorker(): void {
     clearInterval(probeInterval);
     probeInterval = null;
     logger.info('[welcome-probe] worker stopped');
+  }
+}
+
+// Wave 3 Event Log — helper: log welcome_blocked với enrichment contact + nick.
+// Tách hàm để 2 BLOCKED_STRANGER path (org disabled / Zalo lỗi) share logic.
+async function logBlockedStranger(args: {
+  orgId: string;
+  triggerId: string;
+  contactId: string;
+  nickId: string;
+  reason: string;
+}): Promise<void> {
+  try {
+    const [contactRow, nickRow] = await Promise.all([
+      prisma.contact.findUnique({
+        where: { id: args.contactId },
+        select: { fullName: true, crmName: true, phone: true },
+      }),
+      prisma.zaloAccount.findUnique({
+        where: { id: args.nickId },
+        select: { displayName: true },
+      }),
+    ]);
+    const contactDisplay =
+      contactRow?.crmName?.trim() ||
+      contactRow?.fullName?.trim() ||
+      contactRow?.phone ||
+      'KH';
+    const nickDisplay = nickRow?.displayName?.trim() || args.nickId.slice(0, 8);
+    void logEvent({
+      orgId: args.orgId,
+      triggerId: args.triggerId,
+      contactId: args.contactId,
+      nickId: args.nickId,
+      eventType: 'welcome_blocked',
+      eventPriority: 'warning',
+      summary: `${contactDisplay} chặn tin chào từ nick ${nickDisplay} — Mục tiêu dừng cho nick này`,
+      metadata: { reason: args.reason },
+    });
+  } catch (err) {
+    logger.warn(`[welcome-probe] logBlockedStranger enrichment failed contact=${args.contactId}:`, err);
   }
 }
