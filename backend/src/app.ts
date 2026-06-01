@@ -75,6 +75,7 @@ import { blockFolderRoutes } from './modules/automation/blocks/block-folder-rout
 import { sequenceRoutes } from './modules/automation/sequences/sequence-routes.js';
 import { registerSequenceStatsRoutes } from './modules/automation/sequences/stats-routes.js';
 import { registerBullBoardRoutes } from './modules/automation/queues/bull-board-routes.js';
+import { registerManualControlRoutes } from './modules/automation/queues/manual-control-routes.js';
 import { triggerRoutes } from './modules/automation/triggers/trigger-routes.js';
 import { friendInviteRoutes } from './modules/automation/friend-invite/friend-invite-routes.js';
 import { startFriendInviteSweepers, stopFriendInviteSweepers } from './modules/automation/friend-invite/sweepers.js';
@@ -240,6 +241,8 @@ async function bootstrap() {
   await registerSequenceStatsRoutes(app);
   // Luồng Mục Tiêu M7 Bull Board admin UI
   await registerBullBoardRoutes(app);
+  // Luồng Mục Tiêu M9 manual control endpoints
+  await registerManualControlRoutes(app);
   await app.register(triggerRoutes);
   await app.register(friendInviteRoutes);
   await app.register(broadcastRoutes);
