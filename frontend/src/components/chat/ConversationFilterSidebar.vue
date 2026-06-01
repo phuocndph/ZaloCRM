@@ -2137,4 +2137,43 @@ onMounted(async () => {
   display: flex;
   justify-content: center;
 }
+
+/* Collapsed mode — chỉ icon hộp quà 44×44, ẩn text "Nhận khách".
+   Override lfb internal layout (deep selectors qua scoped style). */
+.c-nhan-khach-wrap :deep(.lfb-wrap) {
+  width: 44px !important;
+  align-items: center !important;
+}
+.c-nhan-khach-wrap :deep(.lfb-btn) {
+  width: 44px !important;
+  min-width: 44px !important;
+  height: 44px !important;
+  padding: 0 !important;
+  border-radius: 10px !important;
+  justify-content: center !important;
+  gap: 0 !important;
+  position: relative;
+}
+.c-nhan-khach-wrap :deep(.lfb-btn .lfb-text),
+.c-nhan-khach-wrap :deep(.lfb-btn .lfb-pending-info),
+.c-nhan-khach-wrap :deep(.lfb-btn .lfb-pending-countdown) {
+  display: none !important;
+}
+.c-nhan-khach-wrap :deep(.lfb-btn .lfb-icon) {
+  font-size: 20px;
+  margin: 0;
+}
+.c-nhan-khach-wrap :deep(.lfb-btn .lfb-badge) {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  margin: 0;
+  min-width: 18px;
+  padding: 2px 5px;
+  font-size: 10px;
+  font-weight: 800;
+  border: 1.5px solid white;
+  border-radius: 10px;
+  line-height: 1;
+}
 </style>
