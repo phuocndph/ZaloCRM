@@ -404,13 +404,13 @@
 
       <!-- ════════ Input area: toolbar trên textarea (Smax-style) ════════ -->
       <div class="input-area">
-        <!-- CRM tag pills (Smax-style) — chỉ KH chat 1-1, ẩn ở group -->
+        <!-- Tag bar Friend-cấp (per-pair sale-nick × KH) — chỉ KH chat 1-1.
+             Refactor 2026-06-01: 3 nhóm [Zalo Real] | [Auto] | [Manual per Nick + button].
+             Đọc/ghi qua endpoint /api/v1/friends/:id/tags (Tag v2 junction). -->
         <TagCrmBar
-          v-if="conversation.contact && conversation.threadType === 'user'"
+          v-if="conversation.contact && conversation.threadType === 'user' && conversation.friendship?.id"
+          :friend-id="conversation.friendship.id"
           :contact-id="conversation.contact.id"
-          :model-value="contactTags"
-          :auto-tags="conversationAutoTags"
-          @update:model-value="onUpdateTags"
         />
 
         <ReplyPreviewBar
@@ -1167,7 +1167,10 @@ function goToLabelsSettings() {
 // Source of truth: 2 fields khác nhau. Dedup, Zalo tags lên trước.
 const contactTags = ref<string[]>([]);
 
-// Phase 6 polish — auto-tags từ Friend (đính kèm conversation.friendship khi BE trả)
+// Phase 6 polish — auto-tags từ Friend (đính kèm conversation.friendship khi BE trả).
+// Refactor 2026-06-01: TagCrmBar đã tự load qua /friends/:id/tags Tag v2, không cần
+// pass prop nữa. Giữ computed làm reference cho activity log + future use cases.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const conversationAutoTags = computed<string[]>(() => {
   const conv = props.conversation as any;
   const fromFriendship = conv?.friendship?.autoTags;
@@ -1175,6 +1178,7 @@ const conversationAutoTags = computed<string[]>(() => {
   const list = (fromFriendship ?? fromContact ?? []) as unknown;
   return Array.isArray(list) ? (list as string[]) : [];
 });
+void conversationAutoTags;
 function recomputeTags() {
   const ct = Array.isArray(props.conversation?.contact?.tags)
     ? (props.conversation!.contact!.tags as string[])
@@ -1197,11 +1201,13 @@ watch(() => [
   (props.conversation?.friendship as { crmTagsPerNick?: string[] } | null | undefined)?.crmTagsPerNick,
 ], recomputeTags, { immediate: true, deep: true });
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
 function onUpdateTags(next: string[]) {
-  // TagCrmBar PUT only updates Contact.tags. Zalo-managed (🔵) tags stay in
-  // Friend.crmTagsPerNick (read-only). Merge view-side preserves both.
+  // Legacy handler — TagCrmBar refactor 2026-06-01 tự manage state qua API mới,
+  // không emit update:modelValue nữa. Giữ function để các caller cũ không break.
   contactTags.value = next;
 }
+void onUpdateTags;
 const msgOutCount = computed(() => props.conversation?.friendship?.totalOutbound ?? 0);
 const contactTotalIn = computed(() => props.conversation?.contact?.totalInbound ?? 0);
 const contactTotalOut = computed(() => props.conversation?.contact?.totalOutbound ?? 0);
