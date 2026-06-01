@@ -35,12 +35,17 @@
 // override per-nick trong /settings/channels/zalo).
 
 import { Worker, DelayedError, UnrecoverableError, type Job, type WorkerOptions } from 'bullmq';
+import { randomUUID } from 'node:crypto';
 import { prisma } from '../../../shared/database/prisma-client.js';
 import { logger } from '../../../shared/utils/logger.js';
 import { getBullMQRedis } from './redis-connection.js';
 import { QUEUE_NAMES, buildFriendInviteJobId } from './queue-registry.js';
 import { runAllGuards, type TriggerGuardConfig, recordNickSend, consumeQuotaAfterSend } from './worker-guards.js';
 import { classifyError } from './error-classify.js';
+import { requestFriendHandler } from '../engine/action-handlers/request-friend.js';
+import { markEntrySent, releaseEntryFailed } from '../friend-invite/pool-query.js';
+import { notifyNoZalo, notifySendError } from './internal-notify-worker.js';
+import type { ActionContext } from '../engine/types.js';
 
 export interface FriendInviteJobData {
   triggerId: string;
@@ -164,44 +169,194 @@ async function processJob(
     return { status: 'skipped', reason: guard.reason };
   }
 
-  // ── STEP 4: Dispatch Zalo SDK (M2b STILL STUB — actual call sẽ wire trong M3 với
-  //           pool-query.markEntrySent + welcome-probe enqueue) ──
-  // M2b: framework đầy đủ guards, nhưng chưa wire Zalo SDK + outbox INSERT.
-  // M3 sẽ thay đoạn này bằng:
-  //   const zaloResult = await sendFriendRequestViaSDK(nick, entry);
-  //   const result = classifyError(...) or markEntrySent(...);
+  // ── STEP 4: Load greeting template từ trigger ──
+  // Friend-invite trigger có greetingTemplate hoặc dùng default
+  const triggerFull = await prisma.automationTrigger.findUnique({
+    where: { id: triggerId },
+    select: {
+      greetingTemplate: true,
+      successorSequenceId: true,
+      segmentSpec: true,
+    },
+  });
+
+  const greetingTemplate = triggerFull?.greetingTemplate ??
+    'Chào anh/chị, em liên hệ giới thiệu sản phẩm. Anh/chị duyệt kết bạn để em gửi thông tin nhé!';
+
+  // ── STEP 5: Dispatch requestFriendHandler (M2c wire actual SDK) ──
+  const taskPseudoId = job.id ?? randomUUID();
+  const ctx: ActionContext = {
+    orgId,
+    taskId: taskPseudoId,
+    contactId: entry.contactId,
+    assignedNickId: nickId,
+    blockSnapshot: { greetingVariants: [greetingTemplate] },
+    actionType: 'request_friend',
+    attemptCount: (job.attemptsMade ?? 0) + 1,
+  };
+
   logger.info(
-    `${tag} guards PASS contact=${entry.contactId} nick=${nickId} ` +
-    `phone=${entry.phoneE164 ?? entry.phoneRaw} — [M2b STUB] would dispatch sendFriendRequest`,
+    `${tag} dispatching request_friend contact=${entry.contactId} nick=${nickId} phone=${entry.phoneE164 ?? entry.phoneRaw}`,
   );
 
-  // Simulate success — M3 sẽ wire actual SDK + classifyError
+  let actionResult: Awaited<ReturnType<typeof requestFriendHandler>>;
   try {
-    // ── STEP 5: After successful send ──
-    await consumeQuotaAfterSend(nickId, nick.dailyFriendAddCap);
-    await recordNickSend(nickId);
-
-    await prisma.customerListEntry.update({
-      where: { id: entryId },
-      data: { queueStatus: 'processed', lockedAt: null, claimedByNickId: nickId },
-    });
-
-    return { status: 'sent', reason: 'm2b_guards_pass' };
+    actionResult = await requestFriendHandler(ctx);
   } catch (err) {
-    // T4A retry classification
     const classified = classifyError(err);
-    logger.error(`${tag} error: ${classified.classification} — ${classified.message}`);
-
+    logger.error(`${tag} handler threw ${classified.classification}: ${classified.message}`);
     if (classified.classification === 'permanent') {
-      await prisma.customerListEntry.update({
-        where: { id: entryId },
-        data: { queueStatus: 'failed_permanent' },
-      });
+      await releaseEntryFailed({ entryId, nickId, reason: classified.errorCode });
       throw new UnrecoverableError(`Permanent: ${classified.errorCode}`);
     }
-    // Transient + unknown → throw → BullMQ retry attempts
     throw err;
   }
+
+  // Handle outcome
+  if (actionResult.outcome === 'no_zalo') {
+    // P4: notify sale gọi điện
+    await prisma.customerListEntry.update({
+      where: { id: entryId },
+      data: { queueStatus: 'failed_permanent', lockedAt: null },
+    });
+    await prisma.automationEventLog.create({
+      data: {
+        orgId,
+        triggerId,
+        contactId: entry.contactId,
+        nickId,
+        eventType: 'no_zalo',
+      },
+    });
+
+    // Resolve sale owner of this nick
+    const nickOwner = await prisma.zaloAccount.findUnique({
+      where: { id: nickId },
+      select: { ownerUserId: true },
+    });
+    const contact = await prisma.contact.findUnique({
+      where: { id: entry.contactId },
+      select: { fullName: true, phone: true },
+    });
+    if (nickOwner?.ownerUserId) {
+      await notifyNoZalo({
+        orgId,
+        targetUserId: nickOwner.ownerUserId,
+        contactId: entry.contactId,
+        contactName: contact?.fullName ?? '',
+        contactPhone: contact?.phone ?? entry.phoneE164 ?? entry.phoneRaw,
+        nickId,
+      });
+    }
+    return { status: 'skipped', reason: 'no_zalo' };
+  }
+
+  if (actionResult.outcome === 'already_friend') {
+    await prisma.customerListEntry.update({
+      where: { id: entryId },
+      data: { queueStatus: 'processed', lockedAt: null },
+    });
+    await prisma.automationEventLog.create({
+      data: {
+        orgId,
+        triggerId,
+        contactId: entry.contactId,
+        nickId,
+        eventType: 'friend_already',
+      },
+    });
+    return { status: 'skipped', reason: 'already_friend' };
+  }
+
+  if (actionResult.outcome === 'failure') {
+    const classified = classifyError(
+      new Error(actionResult.errorMessage ?? actionResult.errorCode ?? 'unknown'),
+    );
+    logger.error(
+      `${tag} action failed code=${actionResult.errorCode} msg=${actionResult.errorMessage} classified=${classified.classification}`,
+    );
+
+    await prisma.automationEventLog.create({
+      data: {
+        orgId,
+        triggerId,
+        contactId: entry.contactId,
+        nickId,
+        eventType: 'send_error',
+        detail: `${actionResult.errorCode}: ${(actionResult.errorMessage ?? '').slice(0, 200)}`,
+      },
+    });
+
+    if (actionResult.retryable === false || classified.classification === 'permanent') {
+      // P5: markPermanent + notify Zalo nội bộ
+      await releaseEntryFailed({
+        entryId,
+        nickId,
+        reason: actionResult.errorCode ?? classified.errorCode,
+      });
+
+      const nickOwner = await prisma.zaloAccount.findUnique({
+        where: { id: nickId },
+        select: { ownerUserId: true, displayName: true },
+      });
+      const contact = await prisma.contact.findUnique({
+        where: { id: entry.contactId },
+        select: { fullName: true, phone: true },
+      });
+      if (nickOwner?.ownerUserId) {
+        await notifySendError({
+          orgId,
+          targetUserId: nickOwner.ownerUserId,
+          contactId: entry.contactId,
+          contactName: contact?.fullName ?? '',
+          contactPhone: contact?.phone ?? entry.phoneE164 ?? entry.phoneRaw,
+          nickId,
+          nickName: nickOwner.displayName ?? '',
+          triggerId,
+          errorMessage: actionResult.errorMessage,
+        });
+      }
+
+      throw new UnrecoverableError(`Permanent: ${actionResult.errorCode}`);
+    }
+
+    // Transient: release entry để nick khác pick + throw retry
+    await releaseEntryFailed({
+      entryId,
+      nickId,
+      reason: actionResult.errorCode ?? 'transient',
+    });
+    throw new Error(actionResult.errorMessage ?? 'transient failure');
+  }
+
+  // ── STEP 6: Success — INCR quota + mark entry sent + outbox ──
+  await consumeQuotaAfterSend(nickId, nick.dailyFriendAddCap);
+  await recordNickSend(nickId);
+
+  const zaloLeadgenId = (actionResult.data?.uid as string | undefined) ?? '';
+  await markEntrySent({
+    entryId,
+    triggerId,
+    nickId,
+    contactId: entry.contactId,
+    successorSequenceId: triggerFull?.successorSequenceId ?? null,
+    sequenceSnapshot: null,
+    zaloLeadgenId,
+    isTentative: false,
+  });
+
+  await prisma.automationEventLog.create({
+    data: {
+      orgId,
+      triggerId,
+      contactId: entry.contactId,
+      nickId,
+      eventType: 'friend_request_sent',
+      detail: `entry=${entryId} uid=${zaloLeadgenId}`,
+    },
+  });
+
+  return { status: 'sent', outboxId: zaloLeadgenId };
 }
 
 // ════════════════════════════════════════════════════════════════════════
