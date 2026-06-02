@@ -6,7 +6,7 @@
  Tab Thống kê cho 1 Sequence. Hero KPI + Funnel per-step + Outcome donut + Health alert.
 
  6 endpoints wire (BE đã ship Day 1+2):
-   GET /api/v1/automation/sequences/:id/stats/overview     (60s cache)
+   GET /automation/sequences/:id/stats/overview     (60s cache)
    GET .../stats/outcomes?range=24h|7d|30d                 (5min cache)
    GET .../stats/funnel?range=7d|30d                       (60s cache)
    GET .../stats/funnel/:stepIdx/skip-breakdown
@@ -542,7 +542,7 @@ async function fetchOverview(): Promise<void> {
   loadingOverview.value = true;
   try {
     const res = await api.get<Overview>(
-      `/api/v1/automation/sequences/${sequenceId.value}/stats/overview`,
+      `/automation/sequences/${sequenceId.value}/stats/overview`,
       { params: { includeSystemTrigger: includeSystem.value } },
     );
     overview.value = res.data;
@@ -558,7 +558,7 @@ async function fetchOutcomes(): Promise<void> {
   try {
     const apiRange = range.value === 'all' ? '30d' : range.value;
     const res = await api.get<Outcomes>(
-      `/api/v1/automation/sequences/${sequenceId.value}/stats/outcomes`,
+      `/automation/sequences/${sequenceId.value}/stats/outcomes`,
       { params: { range: apiRange, includeSystemTrigger: includeSystem.value } },
     );
     outcomes.value = res.data;
@@ -572,7 +572,7 @@ async function fetchFunnel(): Promise<void> {
   try {
     const apiRange = range.value === '30d' || range.value === 'all' ? '30d' : '7d';
     const res = await api.get<Funnel>(
-      `/api/v1/automation/sequences/${sequenceId.value}/stats/funnel`,
+      `/automation/sequences/${sequenceId.value}/stats/funnel`,
       { params: { range: apiRange, includeSystemTrigger: includeSystem.value } },
     );
     funnel.value = res.data;
@@ -585,10 +585,10 @@ async function fetchHealth(): Promise<void> {
   if (!sequenceId.value) return;
   try {
     const [healthRes, nicksRes] = await Promise.all([
-      api.get<Health>(`/api/v1/automation/sequences/${sequenceId.value}/stats/health`, {
+      api.get<Health>(`/automation/sequences/${sequenceId.value}/stats/health`, {
         params: { includeSystemTrigger: includeSystem.value },
       }),
-      api.get<NickHealth[]>(`/api/v1/automation/sequences/${sequenceId.value}/stats/health/nicks`, {
+      api.get<NickHealth[]>(`/automation/sequences/${sequenceId.value}/stats/health/nicks`, {
         params: { includeSystemTrigger: includeSystem.value },
       }),
     ]);
@@ -606,7 +606,7 @@ async function fetchSequenceMeta(): Promise<void> {
       id: string;
       name: string;
       steps: Array<{ name?: string; blockId?: string }>;
-    }>(`/api/v1/automation/sequences/${sequenceId.value}`);
+    }>(`/automation/sequences/${sequenceId.value}`);
     sequenceSteps.value = res.data.steps ?? [];
   } catch (err) {
     console.error('[sequence meta] fetch failed', err);
@@ -628,7 +628,7 @@ function goBack(): void {
 
 async function reconcileNow(): Promise<void> {
   try {
-    await api.post('/api/v1/automation/sequences/stats/reconcile-counters');
+    await api.post('/automation/sequences/stats/reconcile-counters');
     await fetchOverview();
     window.alert('Reconcile xong. Đã refresh dữ liệu.');
   } catch (err) {
