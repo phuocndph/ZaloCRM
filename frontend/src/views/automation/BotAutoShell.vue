@@ -21,7 +21,7 @@
         </div>
         <div class="sidebar-header__body">
           <div class="sidebar-title">Marketing</div>
-          <div class="sidebar-subtitle">Phase 7 — Marketing engine</div>
+          <div class="sidebar-subtitle">Mục tiêu · Luồng kịch bản</div>
         </div>
         <button class="drawer-close" @click="drawerOpen = false" aria-label="Đóng menu">
           <v-icon size="20">mdi-close</v-icon>
@@ -34,6 +34,7 @@
           :key="item.to"
           :to="item.to"
           class="sidebar-link"
+          :class="{ 'is-primary': item.isPrimary }"
           active-class="is-active"
           :title="item.label"
           @click="drawerOpen = false"
@@ -45,10 +46,10 @@
 
       <div class="sidebar-footer">
         <div class="sidebar-foot-card">
-          <div class="sidebar-foot-card__title">Phase 7</div>
+          <div class="sidebar-foot-card__title">Marketing</div>
           <p class="sidebar-foot-card__desc">
-            Khối · Luồng kịch bản · Mục tiêu · Broadcast.
-            Channel: Zalo cá nhân.
+            Tạo Mục tiêu · Theo dõi · Gửi tin hàng loạt.
+            Kênh: Zalo cá nhân.
           </p>
         </div>
       </div>
@@ -69,13 +70,12 @@ const route = useRoute();
 const drawerOpen = ref(false);
 
 const navItems = [
-  // Wave 3 (2026-05-30) — danh sách Mục tiêu mới v1 (table + side panel)
-  { to: '/automation/muc-tieu',  label: 'Mục tiêu',          icon: 'mdi-target' },
-  { to: '/marketing/triggers',   label: 'Catalog Trigger',   icon: 'mdi-lightning-bolt' },
-  { to: '/marketing/blocks',     label: 'Khối',              icon: 'mdi-puzzle' },
-  { to: '/marketing/sequences',  label: 'Luồng kịch bản',    icon: 'mdi-format-list-numbered' },
-  { to: '/marketing/broadcasts', label: 'Broadcast',         icon: 'mdi-bullhorn' },
-  { to: '/marketing/lists',      label: 'Tệp khách hàng',    icon: 'mdi-folder-account' },
+  // Wave 4 (2026-06-02) — IA "Mục tiêu là trung tâm" — 5 mục, CTA Tạo Mục tiêu mới nổi bật
+  { to: '/automation/muc-tieu/tao-moi', label: 'Tạo Mục tiêu mới',  icon: 'mdi-plus-circle',        isPrimary: true },
+  { to: '/automation/muc-tieu',         label: 'Mục tiêu đang chạy', icon: 'mdi-target' },
+  { to: '/marketing/broadcasts',        label: 'Gửi tin hàng loạt',  icon: 'mdi-bullhorn' },
+  { to: '/marketing/lists',             label: 'Tệp khách hàng',     icon: 'mdi-folder-account' },
+  { to: '/marketing/sequences',         label: 'Kho mẫu kịch bản',   icon: 'mdi-format-list-numbered' },
 ];
 
 const activeNavLabel = computed(() => {
@@ -208,6 +208,22 @@ watch(() => route.path, () => { drawerOpen.value = false; });
   background: var(--at-ink);
   color: var(--at-on-primary);
   border-color: var(--at-ink);
+}
+/* Wave 4 (2026-06-02) — CTA "Tạo Mục tiêu mới" nổi bật so với các mục theo dõi. */
+.sidebar-link.is-primary {
+  background: #0068ff;
+  color: #ffffff;
+  border-color: #0068ff;
+  font-weight: 600;
+}
+.sidebar-link.is-primary:hover {
+  background: #0747a6;
+  border-color: #0747a6;
+}
+.sidebar-link.is-primary.is-active {
+  background: #0747a6;
+  border-color: #0747a6;
+  box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.3);
 }
 .sidebar-link__icon { flex-shrink: 0; }
 .sidebar-link__label {
