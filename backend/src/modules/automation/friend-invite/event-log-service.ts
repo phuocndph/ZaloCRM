@@ -39,7 +39,11 @@ export type EventType =
   | 'friend_already'
   // 2026-06-02 — Zalo SDK trả code 215 lúc sendFriendRequest → KH đã chặn nick từ trước.
   // Phân biệt với 'customer_block' (event handler sau khi accept rồi mới chặn).
-  | 'customer_block_detected_on_invite';
+  | 'customer_block_detected_on_invite'
+  // P2 2026-06-02 — campaign-timeout-sweeper flip automation_campaigns.state='active'
+  // bị kẹt (worker crash + Redis mất việc) sang 'timeout' sau >12h không advance + zero
+  // pending sequence-step jobs trong BullMQ. Alert urgent vì cần ops kiểm tra.
+  | 'campaign_timeout';
 
 export interface LogEventInput {
   orgId: string;

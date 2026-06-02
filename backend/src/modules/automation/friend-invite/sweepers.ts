@@ -15,11 +15,14 @@
 import { prisma } from '../../../shared/database/prisma-client.js';
 import { logger } from '../../../shared/utils/logger.js';
 import { materializeSequenceForContact } from '../engine/campaign-materializer.js';
+import { getSequenceStepQueue } from '../queues/queue-registry.js';
+import { logEvent } from './event-log-service.js';
 
 let stuckSweeperInterval: NodeJS.Timeout | null = null;
 let triggerSweeperInterval: NodeJS.Timeout | null = null;
 let exhaustedSweeperInterval: NodeJS.Timeout | null = null;
 let drainerInterval: NodeJS.Timeout | null = null;
+let campaignTimeoutSweeperInterval: NodeJS.Timeout | null = null;
 
 /**
  * Stuck sweeper — release entries stuck >5min back to pool.
@@ -278,10 +281,137 @@ async function runWelcomeFailedCleanup(): Promise<void> {
 let welcomeFailedCleanupInterval: NodeJS.Timeout | null = null;
 
 /**
+ * Campaign timeout sweeper — P2 2026-06-02.
+ *
+ * Vấn đề: AutomationCampaign.state='active' có thể kẹt vĩnh viễn khi:
+ *   1) sequence-step-worker crash giữa khi xử lý step cuối (chưa kịp flip campaign
+ *      sang 'completed' trong tryCompleteCampaign).
+ *   2) Redis mất job (eviction policy sai, OOM, restart không persistent) → jobs
+ *      delayed của step N+1 bốc hơi → không bao giờ có call nào kích flip state.
+ *   3) Trigger event-hook hủy hết jobs (KH block/reject) nhưng quên flip campaign.
+ *
+ * Hệ quả: trigger sweeper (runTriggerCompletionSweeper) check NOT EXISTS active
+ * campaign → false vĩnh viễn → trigger kẹt 'active' → UI hiện đang chạy trong
+ * khi thực tế đã chết.
+ *
+ * Threshold: 12h. Lý do (đối thoại design 2026-06-02):
+ *   - 6h quá ngắn: sequence dài 10 step × 1h delay = 10h vẫn còn legit.
+ *   - 24h quá lâu: sale thấy "đang chạy" cả ngày dù chết, mất trust UI.
+ *   - 12h compromise: cover sequence dài 10h + buffer 2h cho delay worker chậm,
+ *     vẫn detect kịp trong nửa ngày.
+ *
+ * Double-check an toàn: trước khi flip, scan BullMQ delayed/waiting/active jobs
+ * theo prefix `${triggerId}-` (buildSequenceStepJobId pattern). Nếu vẫn còn jobs
+ * → KHÔNG flip (campaign vẫn alive, chỉ là DB updatedAt chưa refresh). Chỉ flip
+ * khi zero jobs pending — đó là evidence chắc chắn Redis đã mất việc.
+ *
+ * Flow:
+ *   1. SELECT campaigns WHERE state='active' AND updatedAt < NOW() - INTERVAL '12 hours'
+ *      AND triggerId IS NOT NULL.
+ *   2. Với mỗi campaign: scan BullMQ jobs prefix=`${triggerId}-`. Nếu count > 0 → skip.
+ *   3. UPDATE campaign SET state='timeout', completedAt=NOW().
+ *   4. Log AutomationEventLog eventType='campaign_timeout' priority='urgent'.
+ */
+async function runCampaignTimeoutSweeper(): Promise<void> {
+  try {
+    // Step 1: pick candidate campaigns đã stale > 12h
+    const stale = await prisma.automationCampaign.findMany({
+      where: {
+        state: 'active',
+        triggerId: { not: null },
+        updatedAt: { lt: new Date(Date.now() - 12 * 60 * 60_000) },
+      },
+      select: {
+        id: true,
+        orgId: true,
+        triggerId: true,
+        sequenceId: true,
+        updatedAt: true,
+      },
+      take: 200,
+    });
+
+    if (stale.length === 0) return;
+
+    // Step 2: scan BullMQ pending jobs ONE TIME — getJobs across all triggers,
+    // sau đó group theo triggerId prefix để check per-campaign.
+    let pendingJobs: Awaited<ReturnType<ReturnType<typeof getSequenceStepQueue>['getJobs']>> = [];
+    try {
+      const queue = getSequenceStepQueue();
+      pendingJobs = await queue.getJobs(['delayed', 'waiting', 'active'], 0, 10_000);
+    } catch (err) {
+      logger.warn(
+        `[campaign-timeout-sweeper] BullMQ scan failed, skip this tick (sẽ retry tick sau): ${(err as Error).message}`,
+      );
+      return; // Defensive: nếu Redis down, KHÔNG flip oan (có thể jobs vẫn tồn tại sau khi Redis hồi).
+    }
+
+    let flipped = 0;
+    for (const c of stale) {
+      if (!c.triggerId) continue;
+      const prefix = `${c.triggerId}-`;
+      const hasPendingJob = pendingJobs.some((j) => j.id && j.id.startsWith(prefix));
+      if (hasPendingJob) {
+        logger.debug(
+          `[campaign-timeout-sweeper] skip campaign=${c.id} trigger=${c.triggerId} — vẫn còn job pending trong BullMQ`,
+        );
+        continue;
+      }
+
+      // Step 3: atomic flip — đảm bảo vẫn 'active' (tránh race với tryCompleteCampaign).
+      const updated = await prisma.automationCampaign.updateMany({
+        where: { id: c.id, state: 'active' },
+        data: { state: 'timeout', completedAt: new Date() },
+      });
+      if (updated.count === 0) continue; // race lost, ai đó đã flip rồi
+
+      flipped++;
+      const staleHours = Math.round(
+        (Date.now() - c.updatedAt.getTime()) / 3_600_000,
+      );
+      logger.warn(
+        `[campaign-timeout-sweeper] FLIPPED campaign=${c.id} trigger=${c.triggerId} ` +
+          `sequence=${c.sequenceId ?? 'null'} state='timeout' (stale ${staleHours}h, zero BullMQ jobs)`,
+      );
+
+      // Step 4: alert event log (fire-and-forget).
+      void logEvent({
+        orgId: c.orgId,
+        triggerId: c.triggerId,
+        eventType: 'campaign_timeout',
+        eventPriority: 'urgent',
+        summary: `Campaign ${c.id} bị timeout sau ${staleHours}h không advance (worker crash hoặc Redis mất việc).`,
+        metadata: {
+          campaignId: c.id,
+          sequenceId: c.sequenceId,
+          staleHours,
+          flippedAt: new Date().toISOString(),
+        },
+      });
+    }
+
+    if (flipped > 0) {
+      logger.warn(
+        `[campaign-timeout-sweeper] flipped ${flipped}/${stale.length} stale campaigns to state='timeout'`,
+      );
+    }
+  } catch (err) {
+    logger.error('[campaign-timeout-sweeper] error:', err);
+  }
+}
+
+/**
  * Start all 3 sweepers.
  */
 export function startFriendInviteSweepers(): void {
-  if (stuckSweeperInterval || triggerSweeperInterval || exhaustedSweeperInterval || drainerInterval || welcomeFailedCleanupInterval) {
+  if (
+    stuckSweeperInterval ||
+    triggerSweeperInterval ||
+    exhaustedSweeperInterval ||
+    drainerInterval ||
+    welcomeFailedCleanupInterval ||
+    campaignTimeoutSweeperInterval
+  ) {
     logger.warn('[friend-invite] sweepers already running, skip start');
     return;
   }
@@ -291,8 +421,16 @@ export function startFriendInviteSweepers(): void {
   exhaustedSweeperInterval = setInterval(() => void runExhaustedNicksSweeper(), 60_000);
   drainerInterval = setInterval(() => void runOutboxDrainer(), 30_000);
   welcomeFailedCleanupInterval = setInterval(() => void runWelcomeFailedCleanup(), 60_000);
+  // P2 2026-06-02 — campaign timeout sweeper (5 min). 12h threshold + BullMQ
+  // pending-job double-check trước khi flip state='timeout'.
+  campaignTimeoutSweeperInterval = setInterval(
+    () => void runCampaignTimeoutSweeper(),
+    5 * 60_000,
+  );
 
-  logger.info('[friend-invite] sweepers started: stuck(60s) + trigger-complete(60s) + exhausted-nicks(60s) + outbox-drainer(30s) + welcome-failed-cleanup(60s)');
+  logger.info(
+    '[friend-invite] sweepers started: stuck(60s) + trigger-complete(60s) + exhausted-nicks(60s) + outbox-drainer(30s) + welcome-failed-cleanup(60s) + campaign-timeout(5min)',
+  );
 
   // Initial run on start
   void runStuckSweeper();
@@ -300,6 +438,7 @@ export function startFriendInviteSweepers(): void {
   void runTriggerCompletionSweeper();
   void runOutboxDrainer();
   void runWelcomeFailedCleanup();
+  void runCampaignTimeoutSweeper();
 }
 
 /**
@@ -311,10 +450,12 @@ export function stopFriendInviteSweepers(): void {
   if (exhaustedSweeperInterval) clearInterval(exhaustedSweeperInterval);
   if (drainerInterval) clearInterval(drainerInterval);
   if (welcomeFailedCleanupInterval) clearInterval(welcomeFailedCleanupInterval);
+  if (campaignTimeoutSweeperInterval) clearInterval(campaignTimeoutSweeperInterval);
   stuckSweeperInterval = null;
   triggerSweeperInterval = null;
   exhaustedSweeperInterval = null;
   drainerInterval = null;
   welcomeFailedCleanupInterval = null;
+  campaignTimeoutSweeperInterval = null;
   logger.info('[friend-invite] sweepers stopped');
 }
