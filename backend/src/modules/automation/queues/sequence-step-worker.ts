@@ -193,6 +193,11 @@ async function processJob(
   if (!sequence) return { status: 'skipped', stepIdx, reason: 'sequence_not_found' };
   if (!sequence.enabled) return { status: 'skipped', stepIdx, reason: 'sequence_disabled' };
   if (!trigger) return { status: 'skipped', stepIdx, reason: 'trigger_not_found' };
+  // 2026-06-02 — intentional asymmetry vs welcome-probe-worker L48-56 (which ignores
+  // trigger.state for working-hours lookup so welcome can fire on completed triggers):
+  // sequence steps respect trigger.state because paused/archived triggers must NOT
+  // continue firing steps. Re-engage workflow uses a NEW trigger (new triggerId) under
+  // the per-(contact, trigger) semantic — original trigger stays where it is.
   if (trigger.state !== 'active') return { status: 'skipped', stepIdx, reason: `trigger_${trigger.state}` };
   if (!nick) return { status: 'skipped', stepIdx, reason: 'nick_not_found' };
   if (nick.status !== 'connected') return { status: 'skipped', stepIdx, reason: `nick_${nick.status}` };

@@ -1,4 +1,5 @@
 // Phase Friend Invite Wave 2 — Welcome Probe Worker 2026-05-29.
+// Semantic refactor 2026-06-02 — per-(contact, trigger) dedup (anh chốt logic B).
 //
 // Poll FriendRequestOutbox WHERE kind='WELCOME_PROBE' AND welcome_outcome IS NULL
 // AND created_at <= NOW() - INTERVAL '<welcomeDelayAfterFriendReqSec> seconds'.
@@ -6,8 +7,9 @@
 //
 // Per row:
 //  1. Load org config (template + maxRetries + strangerInboxEnabled)
-//  2. Load contact + friend record (per-nick UID)
-//  3. If contact.welcomeSentAt set → outcome=DUPLICATE_SKIP
+//  2. Load contact + friend record (per-nick UID) + prior outbox SENT_* sibling for (contact, trigger)
+//  3. If sibling SENT_STRANGER|SENT_FRIEND exists for this (contactId, triggerId) → outcome=DUPLICATE_SKIP
+//     (Contact.welcomeSentAt is LEGACY and NEVER read here.)
 //  4. Detect warm = friend.friendshipStatus='accepted' AND contact.lastInboundAt < 30d
 //     → channel=FRIEND, else STRANGER (only if org.welcomeStrangerInboxEnabled)
 //  5. Render template via {gender}/{name}/{sale}
@@ -16,7 +18,9 @@
 //     transient (timeout/5xx) + retry_count < maxRetries → increment, leave null
 //     else → HARD_FAIL
 //  8. Success → tx: outbox welcomeOutcome=SENT_STRANGER|SENT_FRIEND + welcomeSentAt,
-//     contact welcomeSentAt + welcomeChannel
+//     contact welcomeChannel + welcomeSentAt (LEGACY hint, write-only)
+//     If two concurrent workers race the same (contact, trigger), the partial unique index
+//     uniq_outbox_welcome_sent_per_contact_trigger fires P2002 on the loser → DUPLICATE_SKIP.
 //  9. Honor hour 6-22 VN window
 
 import { prisma } from '../../../shared/database/prisma-client.js';
@@ -127,48 +131,56 @@ async function processRow(row: ProbeRow): Promise<void> {
   // Fallback: trigger has no welcome template → mark SKIPPED so the drainer
   // can still enroll the contact into the successor Sequence. The welcome gate
   // is intentionally a no-op for triggers configured without a greeting.
+  // 2026-06-02: under the new per-(contact, trigger) semantic, SKIPPED MUST NOT
+  // write Contact.welcomeSentAt — that would lock the contact across all future
+  // triggers via legacy column reads (now removed). Only the outbox row records SKIPPED.
   if (!trigger?.welcomeMessageTemplate) {
-    await prisma.$transaction(async (tx) => {
-      await tx.friendRequestOutbox.update({
-        where: { id: row.id },
-        data: { welcomeOutcome: 'SKIPPED', welcomeSentAt: new Date() },
-      });
-      if (row.contact_id) {
-        await tx.contact.updateMany({
-          where: { id: row.contact_id },
-          data: { welcomeSentAt: new Date() },
-        });
-      }
+    await prisma.friendRequestOutbox.update({
+      where: { id: row.id },
+      data: { welcomeOutcome: 'SKIPPED', welcomeSentAt: new Date() },
     });
     return;
   }
 
-  const [contact, friend] = await Promise.all([
+  // 2026-06-02 — per-(contact, trigger) dedup: load lastInbound for warm-detection,
+  // friend record for per-nick UID + accepted check, and any sibling outbox row that
+  // already won the (contact, trigger) lane (only SENT_* outcomes contend — BLOCKED /
+  // HARD_FAIL / SKIPPED do NOT block a future trigger from re-engaging).
+  const [contact, friend, priorSent] = await Promise.all([
     prisma.contact.findUnique({
       where: { id: row.contact_id },
-      select: { welcomeSentAt: true, lastInboundAt: true },
+      select: { lastInboundAt: true },
     }),
     prisma.friend.findFirst({
       where: { zaloAccountId: row.nick_id, contactId: row.contact_id },
       select: { zaloUidInNick: true, friendshipStatus: true },
     }),
+    row.trigger_id
+      ? prisma.friendRequestOutbox.findFirst({
+          where: {
+            contactId: row.contact_id,
+            triggerId: row.trigger_id,
+            kind: 'WELCOME_PROBE',
+            welcomeOutcome: { in: ['SENT_STRANGER', 'SENT_FRIEND'] },
+            id: { not: row.id },
+          },
+          select: { id: true },
+        })
+      : Promise.resolve(null),
   ]);
 
   if (!friend) {
-    await prisma.$transaction([
-      prisma.friendRequestOutbox.update({
-        where: { id: row.id },
-        data: { welcomeOutcome: 'HARD_FAIL', welcomeLastError: 'friend record missing', welcomeSentAt: new Date() },
-      }),
-      prisma.contact.update({
-        where: { id: row.contact_id },
-        data: { welcomeSentAt: new Date() },
-      }),
-    ]);
+    // 2026-06-02: no Contact.welcomeSentAt write — HARD_FAIL is per-row on the outbox only.
+    await prisma.friendRequestOutbox.update({
+      where: { id: row.id },
+      data: { welcomeOutcome: 'HARD_FAIL', welcomeLastError: 'friend record missing', welcomeSentAt: new Date() },
+    });
     return;
   }
 
-  if (contact?.welcomeSentAt) {
+  if (priorSent) {
+    // A sibling outbox row for the same (contact, trigger) already sent — dup-skip this attempt.
+    // Different trigger → priorSent is null → flow continues (re-engage allowed).
     await prisma.friendRequestOutbox.update({
       where: { id: row.id },
       data: { welcomeOutcome: 'DUPLICATE_SKIP', welcomeSentAt: new Date() },
@@ -202,19 +214,11 @@ async function processRow(row: ProbeRow): Promise<void> {
   const channelLabel = isWarm ? 'friend_msg' : 'stranger_inbox';
   const msg = await renderGreeting(trigger.welcomeMessageTemplate, row.contact_id, row.nick_id);
 
-  // Race-safe contact lock: atomically claim welcomeSentAt before network send.
-  // Any concurrent worker (or replay) that also picked this contact will get 0 rows.
-  const lockClaim = await prisma.contact.updateMany({
-    where: { id: row.contact_id, welcomeSentAt: null },
-    data: { welcomeSentAt: new Date() },
-  });
-  if (lockClaim.count === 0) {
-    await prisma.friendRequestOutbox.update({
-      where: { id: row.id },
-      data: { welcomeOutcome: 'DUPLICATE_SKIP', welcomeSentAt: new Date() },
-    });
-    return;
-  }
+  // 2026-06-02 — Race-safety: in-flight exclusivity comes from the per-row claim-token
+  // pattern (welcome_last_error LIKE 'claim:%') at runProbeTick L321-336. Cross-row
+  // dedup on (contact, trigger) is enforced by the partial unique index
+  // uniq_outbox_welcome_sent_per_contact_trigger which fires P2002 when a second
+  // worker tries to write SENT_* for an already-won (contact, trigger) pair.
 
   try {
     await zaloOps.sendMessage(row.nick_id, friend.zaloUidInNick, 0, {
@@ -224,11 +228,13 @@ async function processRow(row: ProbeRow): Promise<void> {
     await prisma.$transaction([
       prisma.friendRequestOutbox.update({
         where: { id: row.id },
+        // PARTIAL UNIQUE FIRES HERE on race-loss → caught below, mapped to DUPLICATE_SKIP.
         data: { welcomeOutcome: channel, welcomeSentAt: new Date() },
       }),
       prisma.contact.update({
         where: { id: row.contact_id },
-        data: { welcomeChannel: channelLabel },
+        // Legacy hint, write-only — NOT used for gating under the new semantic.
+        data: { welcomeChannel: channelLabel, welcomeSentAt: new Date() },
       }),
     ]);
     logger.info(`[welcome-probe] sent outbox=${row.id} channel=${channelLabel}`);
@@ -270,6 +276,23 @@ async function processRow(row: ProbeRow): Promise<void> {
     }
   } catch (err: any) {
     const errMsg = (err?.message ?? String(err)).slice(0, 500);
+
+    // 2026-06-02 — P2002 on the partial unique uniq_outbox_welcome_sent_per_contact_trigger
+    // means another worker won the (contact, trigger) lane between our pre-flight read
+    // and our success-tx write. Map to DUPLICATE_SKIP, do NOT log as failure.
+    if (err?.code === 'P2002' &&
+        String(err?.meta?.target ?? '').includes('welcome_sent_per_contact_trigger')) {
+      await prisma.friendRequestOutbox.update({
+        where: { id: row.id },
+        data: {
+          welcomeOutcome: 'DUPLICATE_SKIP',
+          welcomeSentAt: new Date(),
+          welcomeLastError: 'race_lost',
+        },
+      });
+      return;
+    }
+
     const kind = classifyError(errMsg);
     if (kind === 'BLOCKED_STRANGER') {
       await prisma.friendRequestOutbox.update({
@@ -287,19 +310,16 @@ async function processRow(row: ProbeRow): Promise<void> {
         });
       }
     } else if (kind === 'TRANSIENT' && row.welcome_retry_count < org.welcomeMaxRetries) {
-      // Transient retry: release the lock so retry can re-claim cleanly.
-      await prisma.$transaction([
-        prisma.friendRequestOutbox.update({
-          where: { id: row.id },
-          data: { welcomeRetryCount: { increment: 1 }, welcomeLastError: errMsg },
-        }),
-        prisma.contact.update({
-          where: { id: row.contact_id },
-          data: { welcomeSentAt: null },
-        }),
-      ]);
+      // Transient retry: per-row claim-token at runProbeTick handles re-pickup.
+      // 2026-06-02 — under the new semantic the legacy Contact.welcomeSentAt no longer
+      // gates anything, so we don't null it on retry. The previous release was tightly
+      // coupled to the now-removed lockClaim at L207-217.
+      await prisma.friendRequestOutbox.update({
+        where: { id: row.id },
+        data: { welcomeRetryCount: { increment: 1 }, welcomeLastError: errMsg },
+      });
     } else {
-      // HARD_FAIL (including max retries exhausted) — terminal, keep contact lock set.
+      // HARD_FAIL (including max retries exhausted) — terminal, outbox row only.
       await prisma.friendRequestOutbox.update({
         where: { id: row.id },
         data: { welcomeOutcome: 'HARD_FAIL', welcomeLastError: errMsg, welcomeSentAt: new Date() },

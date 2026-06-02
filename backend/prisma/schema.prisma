@@ -496,6 +496,9 @@ model Contact {
   priorityUpdatedAt DateTime? @map("priority_updated_at")
 
   // Wave 2 Welcome Probe 2026-05-29 — last welcome sent (after friend accept)
+  // LEGACY 2026-06-02: display hint only (last welcome ever). Dedup source of truth
+  // moved to FriendRequestOutbox (contactId, triggerId) — per-(contact, trigger) semantic.
+  // Written for compat, NEVER read by the welcome gate. Do not re-introduce reads on this column.
   welcomeSentAt  DateTime? @map("welcome_sent_at")
   welcomeChannel String?   @map("welcome_channel") // friend_msg | stranger_inbox
 
@@ -2833,6 +2836,10 @@ model FriendRequestOutbox {
   @@index([nickId, createdAt]) // hot index for todayCount recovery on worker restart
   @@index([kind, sendStatus], map: "idx_outbox_kind_send_status_run_at")
   @@index([welcomeOutcome], map: "idx_outbox_welcome_outcome")
+  // Welcome per-(contact, trigger) 2026-06-02 — DB-enforced dedup guard.
+  // Partial unique index defined in 20260602170000_welcome_per_trigger migration.sql
+  // (Prisma cannot express PARTIAL UNIQUE WHERE in schema; declared manually via SQL).
+  // Helper read index idx_outbox_welcome_dedup also declared in same migration.
   @@map("friend_request_outbox")
 }
 
