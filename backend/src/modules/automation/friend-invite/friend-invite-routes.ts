@@ -19,9 +19,157 @@ import {
   type PreviewInput,
 } from './preview-eta-service.js';
 import { listMucTieuForOrg } from './muc-tieu-list-service.js';
-import { automationTaskStub as _automationTaskStub } from '../engine/_automation-task-stub.js';
+import { getSequenceStepQueue } from '../queues/queue-registry.js';
 
 const BASE = '/api/v1/automation/triggers';
+
+// ════════════════════════════════════════════════════════════════════════
+// Per-trigger task-progress cache (P1 2026-06-02)
+// ════════════════════════════════════════════════════════════════════════
+// Rebuild "Bước hiện tại / Lần gửi gần nhất / Lần gửi tiếp theo" cho dashboard
+// đọc 2 nguồn: BullMQ sequence-step queue (delayed/waiting/active) + bảng
+// AutomationEventLog (eventType='sequence_step_sent'). Mỗi lần dashboard load
+// gọi getJobs(['delayed','waiting','active'], 0, 5000) → scan O(N_jobs). Nếu 10
+// sale F5 cùng lúc → 10× scan. Cache 60s in-memory per triggerId để tránh
+// stampede. Cache reset mỗi 60s (TTL absolute, không sliding) — đủ tươi cho UI
+// timeline đồng thời giảm tải Redis.
+interface TaskProgress {
+  currentStepIdx: number | null;
+  state: string | null;
+  lastSentAt: Date | null;
+  nextRunAt: Date | null;
+}
+interface TaskProgressCacheEntry {
+  expiresAt: number;
+  byContact: Map<string, TaskProgress>;
+}
+const TASK_PROGRESS_TTL_MS = 60_000;
+const taskProgressCache = new Map<string, TaskProgressCacheEntry>();
+
+async function getTaskProgressForTrigger(
+  triggerId: string,
+): Promise<Map<string, TaskProgress>> {
+  const now = Date.now();
+  const cached = taskProgressCache.get(triggerId);
+  if (cached && cached.expiresAt > now) {
+    return cached.byContact;
+  }
+
+  const byContact = new Map<string, TaskProgress>();
+
+  // ── 1) BullMQ jobs (delayed/waiting/active) cho trigger này ──
+  // jobId pattern (queue-registry.ts:buildSequenceStepJobId) = `${triggerId}-${contactId}-${stepIdx}`.
+  // Filter strict bằng prefix `${triggerId}-` để loại jobs của trigger khác
+  // (BullMQ getJobs return MANY across triggers).
+  try {
+    const queue = getSequenceStepQueue();
+    const jobs = await queue.getJobs(['delayed', 'waiting', 'active'], 0, 5000);
+    const prefix = `${triggerId}-`;
+    for (const job of jobs) {
+      if (!job.id || !job.id.startsWith(prefix)) continue;
+      // Parse `${triggerId}-${contactId}-${stepIdx}` — triggerId là UUID có dash,
+      // contactId cũng UUID có dash → KHÔNG split('-'). Strip prefix rồi tách
+      // stepIdx ở cuối (digits sau dash cuối).
+      const rest = job.id.slice(prefix.length);
+      const lastDash = rest.lastIndexOf('-');
+      if (lastDash < 1) continue;
+      const contactId = rest.slice(0, lastDash);
+      const stepIdxStr = rest.slice(lastDash + 1);
+      const stepIdx = parseInt(stepIdxStr, 10);
+      if (!Number.isFinite(stepIdx) || !contactId) continue;
+
+      // job.timestamp = ms epoch khi enqueue; job.opts.delay = ms delay.
+      // nextRunAt = timestamp + delay (cho delayed jobs). active/waiting → now-ish.
+      const delayMs = job.opts?.delay ?? 0;
+      const ts = job.timestamp ?? now;
+      const nextRunAt = new Date(ts + delayMs);
+      // Synthesize task state cho deriveKHFinalState: active→running, else queued.
+      // BullMQ không expose `getState` synchronously trên job object trả từ
+      // getJobs (cần await job.getState()). Để tránh N×Redis-roundtrip, em treat
+      // bất kỳ pending job nào (delayed/waiting/active) là 'queued' — derive
+      // dashboard chỉ phân biệt queued/running vs done/failed, cả 2 nhánh ra
+      // 'in_sequence' nên không ảnh hưởng UI.
+      const synthState = 'queued';
+
+      const existing = byContact.get(contactId);
+      if (!existing) {
+        byContact.set(contactId, {
+          currentStepIdx: stepIdx,
+          state: synthState,
+          lastSentAt: null,
+          nextRunAt,
+        });
+      } else {
+        // Cùng contact có nhiều jobs (edge: race sweeper) → pick EARLIEST
+        // nextRunAt (giống pattern cũ orderBy scheduledAt asc).
+        if (!existing.nextRunAt || nextRunAt < existing.nextRunAt) {
+          existing.nextRunAt = nextRunAt;
+          existing.currentStepIdx = stepIdx;
+        }
+      }
+    }
+  } catch (err) {
+    logger.warn(
+      `[friend-invite] getTaskProgressForTrigger BullMQ scan failed trigger=${triggerId}: ${(err as Error).message}`,
+    );
+  }
+
+  // ── 2) AutomationEventLog groupBy contactId → MAX(createdAt) cho eventType=sequence_step_sent ──
+  // Đây là "Lần gửi gần nhất". sequence-step-worker.ts L356-366 ghi event này
+  // sau mỗi lần gửi thành công.
+  try {
+    const sentGroups = await prisma.automationEventLog.groupBy({
+      by: ['contactId'],
+      where: {
+        triggerId,
+        eventType: 'sequence_step_sent',
+        contactId: { not: null },
+      },
+      _max: { createdAt: true },
+    });
+    for (const g of sentGroups) {
+      if (!g.contactId) continue;
+      const lastSentAt = g._max.createdAt ?? null;
+      const existing = byContact.get(g.contactId);
+      if (existing) {
+        existing.lastSentAt = lastSentAt;
+      } else {
+        // Có history gửi nhưng queue empty cho contact này → sequence likely
+        // hoàn tất (hết step) hoặc job đã complete. nextRunAt=null, state=null
+        // để derive logic rơi về fallback (friendAccepted → phase1_done hoặc
+        // queueStatus chi phối).
+        byContact.set(g.contactId, {
+          currentStepIdx: null,
+          state: null,
+          lastSentAt,
+          nextRunAt: null,
+        });
+      }
+    }
+  } catch (err) {
+    logger.warn(
+      `[friend-invite] getTaskProgressForTrigger event_log groupBy failed trigger=${triggerId}: ${(err as Error).message}`,
+    );
+  }
+
+  taskProgressCache.set(triggerId, {
+    expiresAt: now + TASK_PROGRESS_TTL_MS,
+    byContact,
+  });
+  return byContact;
+}
+
+/**
+ * Test/admin hook — invalidate cache cho trigger cụ thể (hoặc tất cả nếu null).
+ * Export để outbox sweeper hoặc unit test có thể bust cache khi cần.
+ */
+export function invalidateTaskProgressCache(triggerId?: string | null): void {
+  if (triggerId) {
+    taskProgressCache.delete(triggerId);
+  } else {
+    taskProgressCache.clear();
+  }
+}
 
 // ── Helper: parse quiet/working hour "HH:MM" → int hour 0-23 (Wave 4 #C) ───
 // Wizard B3 gửi `quietHoursStart`/`quietHoursEnd` dạng "HH:MM" (label UI:
@@ -853,116 +1001,31 @@ export async function friendInviteRoutes(app: FastifyInstance): Promise<void> {
       },
     });
 
-    // Look up task currentStepIdx for the Sequence-bound contacts (Phase 2 progress).
-    // Phase Friend Invite UI 2026-05-30 — thêm executedAt (lastSentAt) + scheduledAt (nextRunAt)
-    // để FE detail render timeline + countdown.
-    //
-    // P0-3 2026-05-30 — DETERMINISTIC current step:
-    //   Trước đây dùng `orderBy updatedAt desc` + last-write-wins map → 2 task cùng
-    //   contact thì step hiện tại phụ thuộc thứ tự worker update → nondeterministic.
-    //   Bây giờ chia 2 query:
-    //     (a) ACTIVE task: state IN ('queued','running') orderBy scheduledAt ASC.
-    //         Per contact → pick EARLIEST scheduledAt làm "Bước hiện tại" → render
-    //         `Step (currentStepIdx+1)/sequenceTotalSteps`.
-    //     (b) AGG task (mọi state): tính lastSentAt = MAX(executedAt).
-    //   nextRunAt vẫn lấy từ active task earliest scheduledAt (đã pick ở (a)).
+    // P1 2026-06-02 — Reconstruct task progress (currentStepIdx + lastSentAt + nextRunAt)
+    // từ BullMQ sequence-step queue + AutomationEventLog. Trước đây đọc bảng
+    // automation_tasks qua stub no-op (luôn trả []) → 3 cột "Bước hiện tại / Lần
+    // gửi gần nhất / Lần gửi tiếp theo" trên FE detail rỗng. Model AutomationTask
+    // đã drop trong migration 20260601182155 → phải dựng lại từ 2 nguồn truth:
+    //   (a) BullMQ jobs (delayed/waiting/active) → "Bước hiện tại" + "Lần gửi tiếp theo"
+    //   (b) AutomationEventLog WHERE eventType='sequence_step_sent' → "Lần gửi gần nhất"
+    // Cache 60s in-memory per triggerId để tránh stampede khi nhiều sale F5 cùng lúc.
+    // Logic chi tiết: getTaskProgressForTrigger (top of file).
     const contactIds = entriesRaw.map((e) => e.contactId).filter((x): x is string => !!x);
 
-    // (a) Active queued/running tasks → deterministic current step per contact.
-    const activeTasks =
-      contactIds.length > 0
-        ? await ((prisma as any).automationTask ?? _automationTaskStub).findMany({
-            where: {
-              orgId: user.orgId,
-              contactId: { in: contactIds },
-              sequenceId: trigger.sequenceId ?? undefined,
-              state: { in: ['queued', 'running'] },
-            },
-            orderBy: { scheduledAt: 'asc' },
-            select: {
-              contactId: true,
-              currentStepIdx: true,
-              state: true,
-              scheduledAt: true,
-            },
-          })
-        : [];
-    // DISTINCT ON contactId in JS: first hit per contactId wins (already sorted ASC).
-    const activeTaskByContact = new Map<
-      string,
-      {
-        currentStepIdx: number | null;
-        state: string;
-        scheduledAt: Date | null;
-      }
-    >();
-    for (const t of activeTasks) {
-      if (!t.contactId) continue;
-      if (activeTaskByContact.has(t.contactId)) continue;
-      activeTaskByContact.set(t.contactId, {
-        currentStepIdx: t.currentStepIdx,
-        state: t.state,
-        scheduledAt: t.scheduledAt ?? null,
-      });
-    }
-
-    // (b) Aggregate over ALL tasks for lastSentAt + fallback currentStepIdx (when no active task).
-    const allTasks =
-      contactIds.length > 0
-        ? await ((prisma as any).automationTask ?? _automationTaskStub).findMany({
-            where: {
-              orgId: user.orgId,
-              contactId: { in: contactIds },
-              sequenceId: trigger.sequenceId ?? undefined,
-            },
-            orderBy: { updatedAt: 'desc' },
-            select: {
-              contactId: true,
-              currentStepIdx: true,
-              state: true,
-              executedAt: true,
-            },
-          })
-        : [];
+    const triggerProgressMap = await getTaskProgressForTrigger(trigger.id);
     const taskByContact = new Map<
       string,
       {
         currentStepIdx: number | null;
-        state: string;
+        state: string | null;
         lastSentAt: Date | null;
         nextRunAt: Date | null;
       }
     >();
-    for (const t of allTasks) {
-      if (!t.contactId) continue;
-      const active = activeTaskByContact.get(t.contactId);
-      const existing = taskByContact.get(t.contactId);
-      if (!existing) {
-        // Prefer ACTIVE task's currentStepIdx/state when present (deterministic).
-        taskByContact.set(t.contactId, {
-          currentStepIdx: active?.currentStepIdx ?? t.currentStepIdx,
-          state: active?.state ?? t.state,
-          lastSentAt: t.executedAt ?? null,
-          nextRunAt: active?.scheduledAt ?? null,
-        });
-      } else {
-        // Aggregate lastSentAt = MAX(executedAt) across all tasks.
-        if (t.executedAt && (!existing.lastSentAt || t.executedAt > existing.lastSentAt)) {
-          existing.lastSentAt = t.executedAt;
-        }
-      }
-    }
-    // Cover contacts that HAVE an active task but no row in allTasks (edge case: same set,
-    // but ensure deterministic insertion).
-    for (const [cid, active] of activeTaskByContact) {
-      if (!taskByContact.has(cid)) {
-        taskByContact.set(cid, {
-          currentStepIdx: active.currentStepIdx,
-          state: active.state,
-          lastSentAt: null,
-          nextRunAt: active.scheduledAt,
-        });
-      }
+    // Project xuống chỉ những contact thuộc page hiện tại (entriesRaw đã paginate).
+    for (const cid of contactIds) {
+      const p = triggerProgressMap.get(cid);
+      if (p) taskByContact.set(cid, p);
     }
 
     // P0-3 2026-05-30 — lastInviteNickId per entry: nick GẦN NHẤT đã gửi friend-invite
