@@ -458,6 +458,18 @@
           <button class="icon-tool" title="Template tin nhắn (gõ /)" @click="openTemplatePopup">
             <ZapIcon :size="18" :stroke-width="1.5" />
           </button>
+          <!-- M14 (2026-06-02) — Chèn Khối "Gửi tin nhắn" từ Automation Blocks vào composer.
+               Ẩn ở group thread (memory feedback_crm_filter_1to1_not_group: Block 1-1 only).
+               Disable khi composer bị Privacy lock hoặc đang edit message để tránh ghi đè text edit. -->
+          <button
+            v-if="conversation.threadType === 'user'"
+            class="icon-tool"
+            title="Chèn Khối tin nhắn (Automation Blocks)"
+            :disabled="!privacyVisibility.canSendInConv(conversation) || !!editingMessage"
+            @click="openBlockPicker"
+          >
+            <PackageIcon :size="18" :stroke-width="1.5" />
+          </button>
           <button class="icon-tool ai-btn" title="AI compose" :disabled="aiSuggestionLoading" @click="$emit('ask-ai')">
             <SparklesIcon :size="18" :stroke-width="1.5" />
           </button>
@@ -532,6 +544,20 @@
             <v-icon v-else size="20">mdi-send</v-icon>
           </button>
         </div>
+
+        <!-- M14 (2026-06-02) — Popup chèn Khối tin nhắn -->
+        <BlockPickerPopup
+          :visible="showBlockPicker"
+          :contact="conversation.contact ? {
+            fullName: conversation.contact.fullName,
+            gender: (conversation.contact as any).gender ?? null,
+            phone: conversation.contact.phone ?? null,
+          } : null"
+          :current-user-name="_authStore.user?.fullName ?? null"
+          :owner-nick-id="conversation.zaloAccount?.id ?? null"
+          @select="onBlockPick"
+          @close="showBlockPicker = false"
+        />
 
         <!-- Modal "Nhắc hẹn" — unified UI giống trang /appointments -->
         <AppointmentEditor
@@ -693,6 +719,8 @@ import ContactDealStageSelector from '@/components/chat/ContactDealStageSelector
 import Avatar from '@/components/ui/Avatar.vue';
 import EmojiPicker from '@/components/chat/EmojiPicker.vue';
 import QuickTemplatePopup from '@/components/chat/quick-template-popup.vue';
+// M14 (2026-06-02) — Popup chọn "Khối tin nhắn" từ Automation Blocks
+import BlockPickerPopup from '@/components/chat/BlockPickerPopup.vue';
 import MessageBubble from '@/components/chat/message-bubble.vue';
 // M53 2026-05-30: Trợ lý AI cho virtual chat
 import AiAssistantMessage from '@/components/chat/AiAssistantMessage.vue';
@@ -741,6 +769,7 @@ import {
   CalendarClock as CalendarClockIcon,
   Zap as ZapIcon,
   Sparkles as SparklesIcon,
+  Package as PackageIcon,
 } from 'lucide-vue-next';
 
 // Reaction detail popup state — anh chốt 2026-05-22: click reaction box → popup
@@ -2085,6 +2114,27 @@ function onTemplateSelect(rendered: string) {
   inputText.value = lastSlash >= 0 ? inputText.value.slice(0, lastSlash) + rendered : rendered;
   showTemplatePopup.value = false;
   templateQuery.value = '';
+}
+
+// ── M14 (2026-06-02): Chèn Khối tin nhắn (Automation Blocks) vào composer ──
+// Flow: sale bấm nút 🧩 → popup mở → pick Block → FE render {gender}/{name}/{sale}
+// → fill vào inputText (append nếu đã có text, KHÔNG auto-send).
+// Tránh ghi đè khi đang edit message (nút đã disable ở toolbar, double-check ở handler).
+const showBlockPicker = ref(false);
+function openBlockPicker() {
+  if (props.editingMessage) return;
+  if (!privacyVisibility.canSendInConv(props.conversation)) return;
+  showBlockPicker.value = true;
+}
+async function onBlockPick(rendered: string) {
+  if (!rendered) { showBlockPicker.value = false; return; }
+  // Append với 1 space nếu composer đã có text; thay thế trực tiếp nếu rỗng.
+  inputText.value = inputText.value.trim()
+    ? `${inputText.value.replace(/\s+$/, '')} ${rendered}`
+    : rendered;
+  showBlockPicker.value = false;
+  await nextTick();
+  setTimeout(() => editorRef.value?.focus('end'), 30);
 }
 
 // ── Send ────────────────────────────────────────────────────────────────────
