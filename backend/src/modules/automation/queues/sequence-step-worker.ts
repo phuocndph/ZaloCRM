@@ -206,9 +206,55 @@ async function processJob(
   // sequence steps respect trigger.state because paused/archived triggers must NOT
   // continue firing steps. Re-engage workflow uses a NEW trigger (new triggerId) under
   // the per-(contact, trigger) semantic — original trigger stays where it is.
-  if (trigger.state !== 'active') return { status: 'skipped', stepIdx, reason: `trigger_${trigger.state}` };
+  if (trigger.state !== 'active' && trigger.state !== 'on_hold') {
+    return { status: 'skipped', stepIdx, reason: `trigger_${trigger.state}` };
+  }
   if (!nick) return { status: 'skipped', stepIdx, reason: 'nick_not_found' };
-  if (nick.status !== 'connected') return { status: 'skipped', stepIdx, reason: `nick_${nick.status}` };
+
+  // ── Sprint v3 (2026-06-03) — Sửa 5.2 + 5.3 ──
+  // Anh chốt: nick gốc offline → KHÔNG return 'skipped' bare (chuỗi gãy luôn).
+  // Thay bằng moveToDelayed(30 phút) — BullMQ tự retry, sequence không gãy.
+  // Đồng thời:
+  // (a) Set entry.nickHoldSince (nếu NULL) → sweeper sticky-hold đếm 23h.
+  // (b) Set campaign.nickFirstOfflineAt + flip state='on_hold' (nếu NULL).
+  // (c) Khi nick hồi: delayed job fire → gửi xong → flip campaign='active' +
+  //     clear nick_hold_since (logic ở STEP success path bên dưới).
+  if (nick.status !== 'connected' && token) {
+    const now = new Date();
+    await Promise.all([
+      prisma.customerListEntry.updateMany({
+        where: {
+          contactId,
+          triggerId,
+          claimedByNickId: nickId,
+          nickHoldSince: null,
+        },
+        data: { nickHoldSince: now },
+      }),
+      prisma.automationCampaign.updateMany({
+        where: {
+          triggerId,
+          sequenceId,
+          state: 'active',
+        },
+        data: {
+          state: 'on_hold',
+          nickFirstOfflineAt: now,
+        },
+      }),
+    ]).catch((err) => {
+      logger.warn(`${tag} set nickHoldSince failed nick=${nickId}: ${err?.message ?? err}`);
+    });
+    const delayMs = 30 * 60 * 1000;
+    await job.moveToDelayed(Date.now() + delayMs, token);
+    logger.info(
+      `${tag} nick=${nickId} status=${nick.status} — hold 30 phút (Sprint v3 sticky 24h)`,
+    );
+    throw new DelayedError();
+  }
+  if (nick.status !== 'connected') {
+    return { status: 'skipped', stepIdx, reason: `nick_${nick.status}` };
+  }
 
   const steps = (sequence.steps as unknown as SequenceStepConfig[]) ?? [];
   if (stepIdx >= steps.length) {
@@ -338,6 +384,22 @@ async function processJob(
 
   await consumeQuotaAfterSend(nickId, nick.dailyMessageCap);
   await recordNickSend(nickId);
+
+  // ── Sprint v3 (2026-06-03) — Clear hold khi nick hồi + gửi step xong ──
+  // Nick gốc đã hồi và gửi tin thành công → clear cờ hold cho entry này +
+  // flip campaign về 'active'. KH tiếp tục bám đuổi bình thường.
+  await Promise.all([
+    prisma.customerListEntry.updateMany({
+      where: { contactId, triggerId, nickHoldSince: { not: null } },
+      data: { nickHoldSince: null, lastResetReason: null },
+    }),
+    prisma.automationCampaign.updateMany({
+      where: { triggerId, sequenceId, state: 'on_hold' },
+      data: { state: 'active', nickFirstOfflineAt: null },
+    }),
+  ]).catch((err) => {
+    logger.warn(`${tag} clear nickHoldSince failed: ${err?.message ?? err}`);
+  });
 
   // Increment enrolled counter (chỉ ở step 0)
   if (stepIdx === 0) {

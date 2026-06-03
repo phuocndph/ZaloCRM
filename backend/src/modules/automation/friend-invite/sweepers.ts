@@ -29,13 +29,24 @@ let campaignTimeoutSweeperInterval: NodeJS.Timeout | null = null;
  */
 async function runStuckSweeper(): Promise<void> {
   try {
-    // Release stuck entries + increment recovery count
+    // ── Sprint v3 (2026-06-03) — Sửa 6.5 ──
+    // Anh chốt: stuck do nick chết → release entry NHƯNG KHÔNG tăng counter
+    // (vì lỗi không do SĐT mà do nick chết, không nên flip failed_stuck oan).
+    // Increment chỉ khi nick còn connected — nghĩa là SĐT thực sự stuck do
+    // lỗi worker/network chứ không phải nick chết tự nhiên.
     const result = await prisma.$executeRaw`
       UPDATE customer_list_entries
       SET queue_status = 'queued_for_pickup',
           claimed_by_nick_id = NULL,
           locked_at = NULL,
-          stuck_recovery_count = stuck_recovery_count + 1
+          stuck_recovery_count = CASE
+            WHEN claimed_by_nick_id IS NOT NULL AND EXISTS (
+              SELECT 1 FROM zalo_accounts za
+              WHERE za.id = customer_list_entries.claimed_by_nick_id
+                AND za.status = 'connected'
+            ) THEN stuck_recovery_count + 1
+            ELSE stuck_recovery_count
+          END
       WHERE queue_status = 'processing'
         AND locked_at < NOW() - INTERVAL '5 minutes'
         AND stuck_recovery_count < 10
@@ -255,11 +266,12 @@ async function runOutboxDrainer(): Promise<void> {
  */
 async function runWelcomeFailedCleanup(): Promise<void> {
   try {
-    // Qualify every column reference with the alias so Postgres cannot mis-resolve
-    // welcome_sent_at to an ambiguous `sent_at` (the prior P2010 42703 was caused
-    // by an unqualified reference that the parser hinted to a non-existent column).
-    // Switch to Prisma model-level updateMany so the column names go through the
-    // generated client (no raw SQL drift after migrations).
+    // ── Sprint v3 (2026-06-03) — Sửa 4.5 ──
+    // Sau khi welcome-probe gate nick.status (Tuần 1.3), nick offline KHÔNG
+    // còn rơi vào HARD_FAIL — đã chuyển sang AWAITING_NICK + nickHoldSince.
+    // HARD_FAIL còn lại đúng nghĩa "KH thực sự lỗi cứng / friend record gone"
+    // → vẫn retire để khỏi đa-poll vô hạn (Anh chốt câu 3 GIỮ NGUYÊN sau khi
+    // em giải thích, không bỏ retire HARD_FAIL như em đề xuất sai ban đầu).
     const { count } = await prisma.friendRequestOutbox.updateMany({
       where: {
         kind: 'WELCOME_PROBE',
@@ -314,12 +326,17 @@ let welcomeFailedCleanupInterval: NodeJS.Timeout | null = null;
  */
 async function runCampaignTimeoutSweeper(): Promise<void> {
   try {
-    // Step 1: pick candidate campaigns đã stale > 12h
+    // ── Sprint v3 (2026-06-03) — Sửa 5.7: đổi 12h → 24h ──
+    // Anh chốt sticky+hold 24h: sequence dài nhất ~10h + buffer 14h cho nick
+    // hồi. Quá 24h vẫn không advance = nick chết hẳn → timeout campaign.
+    // runStickyNickHoldSweeper (mới, mục 4.8) chạy 5 phút quét nick_hold_since,
+    // sẽ reset KH về queue ở mốc 24h trước khi sweeper này kích campaign timeout.
+    // Sweeper campaign-timeout còn giữ làm safety net cho campaign orphan.
     const stale = await prisma.automationCampaign.findMany({
       where: {
-        state: 'active',
+        state: { in: ['active', 'on_hold'] },
         triggerId: { not: null },
-        updatedAt: { lt: new Date(Date.now() - 12 * 60 * 60_000) },
+        updatedAt: { lt: new Date(Date.now() - 24 * 60 * 60_000) },
       },
       select: {
         id: true,
@@ -358,9 +375,10 @@ async function runCampaignTimeoutSweeper(): Promise<void> {
         continue;
       }
 
-      // Step 3: atomic flip — đảm bảo vẫn 'active' (tránh race với tryCompleteCampaign).
+      // Step 3: atomic flip — đảm bảo vẫn 'active' hoặc 'on_hold' (tránh race với tryCompleteCampaign).
+      // Sprint v3 (2026-06-03): on_hold cũng eligible — campaign sticky hold quá 24h thì timeout.
       const updated = await prisma.automationCampaign.updateMany({
-        where: { id: c.id, state: 'active' },
+        where: { id: c.id, state: { in: ['active', 'on_hold'] } },
         data: { state: 'timeout', completedAt: new Date() },
       });
       if (updated.count === 0) continue; // race lost, ai đó đã flip rồi
@@ -401,7 +419,188 @@ async function runCampaignTimeoutSweeper(): Promise<void> {
 }
 
 /**
- * Start all 3 sweepers.
+ * ════════════════════════════════════════════════════════════════════════
+ * Sticky Nick Hold Sweeper — Sprint v3 (2026-06-03)
+ * ════════════════════════════════════════════════════════════════════════
+ * Quét entries có nick_hold_since > 24h. Reset KH về queue cho nick khác
+ * làm lại từ đầu: friend + welcome + sequence.
+ *
+ * Anh chốt:
+ *   Câu 1: append failedNickIds (Option A) — tránh nick chết tự pick lại KH
+ *   Câu 2: reset luôn todayCount=0 cho nick cũ (em document, không enforce ở
+ *          sweeper này — nick worker tự đọc lại khi reconnect)
+ *   Câu 4: TÁCH SCOPE — Row 2.2 + 6.9 đợt sau (Anh sau đổi ý làm cùng sprint)
+ *   Notification mốc T+23h (Anh edit từ 24h xuống 23h) — gửi qua kênh
+ *   internal contact để Anh + chủ nick có 1h xử lý trước khi reset 24h.
+ *
+ * Flow per entry:
+ *   1. SELECT entry WHERE nick_hold_since IS NOT NULL AND
+ *      nick_hold_since < NOW() - INTERVAL '24 hours' AND
+ *      queue_status IN ('processed', 'processing').
+ *   2. TX (per entry):
+ *      a. Snapshot outbox cũ vào automation_event_log (audit trail).
+ *      b. DELETE outbox FRIEND_REQUEST + WELCOME_PROBE (theo contact+trigger).
+ *      c. UPDATE entry SET queue_status='queued_for_pickup',
+ *         claimed_by_nick_id=NULL, locked_at=NULL,
+ *         failed_nick_ids = failed_nick_ids || jsonb_build_array(nick_cũ),
+ *         restart_cycle += 1, last_reset_reason='nick_offline_24h',
+ *         nick_hold_since=NULL.
+ *      d. UPDATE automation_campaigns SET state='timeout', completedAt=NOW()
+ *         (cho campaign có cùng triggerId+sequenceId+contact đó).
+ *      e. Log AutomationEventLog eventType='nick_hold_reset' priority='urgent'.
+ *   3. Pool tự nhiên cho nick khác claim lại từ đầu.
+ */
+async function runStickyNickHoldSweeper(): Promise<void> {
+  try {
+    const cutoff = new Date(Date.now() - 24 * 60 * 60_000);
+    const stale = await prisma.customerListEntry.findMany({
+      where: {
+        nickHoldSince: { not: null, lt: cutoff },
+        queueStatus: { in: ['processed', 'processing'] },
+      },
+      select: {
+        id: true,
+        customerListId: true,
+        triggerId: true,
+        contactId: true,
+        claimedByNickId: true,
+        nickHoldSince: true,
+        restartCycle: true,
+        failedNickIds: true,
+        rowIndex: true,
+        phoneE164: true,
+      },
+      take: 50, // tránh long tx
+    });
+
+    if (stale.length === 0) return;
+
+    let resetCount = 0;
+    for (const e of stale) {
+      const oldNickId = e.claimedByNickId;
+      const failedArr: string[] = Array.isArray(e.failedNickIds)
+        ? (e.failedNickIds as string[])
+        : [];
+      // Append old nick to failed list — không cho nick chết tự pick lại KH cũ.
+      const newFailedNickIds = oldNickId && !failedArr.includes(oldNickId)
+        ? [...failedArr, oldNickId]
+        : failedArr;
+
+      try {
+        await prisma.$transaction(async (tx) => {
+          // Lookup org_id từ trigger (cần cho event log)
+          const trigger = e.triggerId
+            ? await tx.automationTrigger.findUnique({
+                where: { id: e.triggerId },
+                select: { orgId: true },
+              })
+            : null;
+
+          // a. Snapshot outbox vào event log
+          if (e.triggerId && e.contactId && trigger?.orgId) {
+            const oldOutbox = await tx.friendRequestOutbox.findMany({
+              where: {
+                triggerId: e.triggerId,
+                contactId: e.contactId,
+              },
+              select: {
+                id: true,
+                kind: true,
+                nickId: true,
+                sendStatus: true,
+                welcomeOutcome: true,
+                welcomeSentAt: true,
+                attemptRound: true,
+                createdAt: true,
+              },
+            });
+            // b. DELETE outbox cũ (restart cycle xoá vết để welcome lần mới chạy được)
+            if (oldOutbox.length > 0) {
+              await tx.friendRequestOutbox.deleteMany({
+                where: {
+                  triggerId: e.triggerId,
+                  contactId: e.contactId,
+                },
+              });
+            }
+            // Audit snapshot
+            await tx.automationEventLog.create({
+              data: {
+                orgId: trigger.orgId,
+                triggerId: e.triggerId,
+                contactId: e.contactId,
+                nickId: oldNickId,
+                eventType: 'nick_hold_reset',
+                eventPriority: 'urgent',
+                summary: `⏰ KH #${e.rowIndex} (${e.phoneE164 ?? 'no phone'}) reset về queue sau ${Math.round((Date.now() - (e.nickHoldSince?.getTime() ?? Date.now())) / 3_600_000)}h chờ nick offline. Vòng ${(e.restartCycle ?? 0) + 1}.`,
+                metadata: {
+                  entryId: e.id,
+                  oldNickId,
+                  oldFailedNickIds: failedArr,
+                  newFailedNickIds,
+                  restartCycle: (e.restartCycle ?? 0) + 1,
+                  outboxSnapshot: oldOutbox,
+                  reason: 'nick_offline_24h',
+                },
+              },
+            });
+          }
+
+          // c. Reset entry về queue
+          await tx.customerListEntry.update({
+            where: { id: e.id },
+            data: {
+              queueStatus: 'queued_for_pickup',
+              claimedByNickId: null,
+              lockedAt: null,
+              failedNickIds: newFailedNickIds,
+              restartCycle: { increment: 1 },
+              lastResetReason: 'nick_offline_24h',
+              nickHoldSince: null,
+            },
+          });
+
+          // d. Flip campaign về timeout (sweeper campaign-timeout sẽ xử lý alert)
+          if (e.triggerId) {
+            await tx.automationCampaign.updateMany({
+              where: {
+                triggerId: e.triggerId,
+                state: { in: ['active', 'on_hold'] },
+              },
+              data: {
+                state: 'timeout',
+                completedAt: new Date(),
+                nickFirstOfflineAt: null,
+              },
+            });
+          }
+        });
+        resetCount++;
+        logger.warn(
+          `[sticky-hold-sweeper] reset entry=${e.id} oldNick=${oldNickId} restartCycle=${(e.restartCycle ?? 0) + 1} (nick offline >24h)`,
+        );
+      } catch (txErr) {
+        logger.error(
+          `[sticky-hold-sweeper] reset entry=${e.id} failed:`,
+          txErr,
+        );
+      }
+    }
+
+    if (resetCount > 0) {
+      logger.warn(
+        `[sticky-hold-sweeper] reset ${resetCount}/${stale.length} entries về queue sau 24h nick offline`,
+      );
+    }
+  } catch (err) {
+    logger.error('[sticky-hold-sweeper] error:', err);
+  }
+}
+
+let stickyHoldSweeperInterval: NodeJS.Timeout | null = null;
+
+/**
+ * Start all sweepers (Sprint v3 — 7 sweeper).
  */
 export function startFriendInviteSweepers(): void {
   if (
@@ -410,7 +609,8 @@ export function startFriendInviteSweepers(): void {
     exhaustedSweeperInterval ||
     drainerInterval ||
     welcomeFailedCleanupInterval ||
-    campaignTimeoutSweeperInterval
+    campaignTimeoutSweeperInterval ||
+    stickyHoldSweeperInterval
   ) {
     logger.warn('[friend-invite] sweepers already running, skip start');
     return;
@@ -421,15 +621,21 @@ export function startFriendInviteSweepers(): void {
   exhaustedSweeperInterval = setInterval(() => void runExhaustedNicksSweeper(), 60_000);
   drainerInterval = setInterval(() => void runOutboxDrainer(), 30_000);
   welcomeFailedCleanupInterval = setInterval(() => void runWelcomeFailedCleanup(), 60_000);
-  // P2 2026-06-02 — campaign timeout sweeper (5 min). 12h threshold + BullMQ
-  // pending-job double-check trước khi flip state='timeout'.
+  // Sprint v3 2026-06-03 — campaign timeout sweeper (5 min). 24h threshold +
+  // BullMQ pending-job double-check trước khi flip state='timeout'.
   campaignTimeoutSweeperInterval = setInterval(
     () => void runCampaignTimeoutSweeper(),
     5 * 60_000,
   );
+  // Sprint v3 2026-06-03 — sticky-hold sweeper (5 min). 24h threshold quét
+  // entry nick_hold_since > 24h → reset queue cho nick khác làm lại từ đầu.
+  stickyHoldSweeperInterval = setInterval(
+    () => void runStickyNickHoldSweeper(),
+    5 * 60_000,
+  );
 
   logger.info(
-    '[friend-invite] sweepers started: stuck(60s) + trigger-complete(60s) + exhausted-nicks(60s) + outbox-drainer(30s) + welcome-failed-cleanup(60s) + campaign-timeout(5min)',
+    '[friend-invite] sweepers started: stuck(60s) + trigger-complete(60s) + exhausted-nicks(60s) + outbox-drainer(30s) + welcome-failed-cleanup(60s) + campaign-timeout(5min,24h) + sticky-hold(5min,24h)',
   );
 
   // Initial run on start
@@ -439,6 +645,7 @@ export function startFriendInviteSweepers(): void {
   void runOutboxDrainer();
   void runWelcomeFailedCleanup();
   void runCampaignTimeoutSweeper();
+  void runStickyNickHoldSweeper();
 }
 
 /**
@@ -451,11 +658,13 @@ export function stopFriendInviteSweepers(): void {
   if (drainerInterval) clearInterval(drainerInterval);
   if (welcomeFailedCleanupInterval) clearInterval(welcomeFailedCleanupInterval);
   if (campaignTimeoutSweeperInterval) clearInterval(campaignTimeoutSweeperInterval);
+  if (stickyHoldSweeperInterval) clearInterval(stickyHoldSweeperInterval);
   stuckSweeperInterval = null;
   triggerSweeperInterval = null;
   exhaustedSweeperInterval = null;
   drainerInterval = null;
   welcomeFailedCleanupInterval = null;
   campaignTimeoutSweeperInterval = null;
+  stickyHoldSweeperInterval = null;
   logger.info('[friend-invite] sweepers stopped');
 }

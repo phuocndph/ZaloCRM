@@ -76,6 +76,11 @@ class ZaloAccountPool {
   // Circuit breaker: track disconnect timestamps per account
   private disconnectHistory = new Map<string, number[]>();
 
+  // ── Sprint v3 (2026-06-03) — Sticky 24h Hold notification timers ──
+  // Mỗi nick disconnect tạo 3 setTimeout (T+2 phút, T+6h, T+23h). Khi nick
+  // reconnect, clear toàn bộ chain. Tránh notify "trễ" sau khi nick đã hồi.
+  private stickyHoldNotificationTimers = new Map<string, NodeJS.Timeout[]>();
+
   setIO(io: Server): void {
     this.io = io;
   }
@@ -208,6 +213,16 @@ class ZaloAccountPool {
         .then((rec) => rec && emitWebhook(rec.orgId, 'zalo.connected', { accountId }))
         .catch(() => {});
 
+      // ── Sprint v3 (2026-06-03) — Sticky 24h Hold reconnect hook ──
+      // Nick hồi: clear notification chain (T+2p/6h/23h) + log event.
+      // KHÔNG cần clear nick_hold_since ở đây — sequence-step-worker khi gửi
+      // step tiếp theo thành công sẽ tự clear cho entry của nó (per-entry).
+      // Welcome-probe-worker khi tick lại + gửi welcome thành công sẽ tự
+      // xoá welcomeLastError. Hold timestamp giữ tới khi worker xử xong KH.
+      void this.handleStickyHoldReconnect(accountId).catch((err) =>
+        logger.error(`[zalo:${accountId}] sticky-hold onConnected error:`, err),
+      );
+
       // Fire-and-forget: link orphaned conversations on reconnect
       this.backfillOrphanedConversations(accountId, api).catch((err) => {
         logger.warn(`[zalo:${accountId}] Backfill orphaned conversations failed:`, err);
@@ -260,9 +275,17 @@ class ZaloAccountPool {
         this.updateAccountDB(id, 'disconnected', null, 'disconnect');
         stopMessageSync(id);
         // Emit webhook for disconnect (fire-and-forget)
-        prisma.zaloAccount.findUnique({ where: { id }, select: { orgId: true } })
+        prisma.zaloAccount.findUnique({ where: { id }, select: { orgId: true, displayName: true } })
           .then((rec) => rec && emitWebhook(rec.orgId, 'zalo.disconnected', { accountId: id }))
           .catch(() => {});
+
+        // ── Sprint v3 (2026-06-03) — Sticky 24h Hold hook ──
+        // Khi nick chết, tag tất cả entries + outbox đang giữ với nick_hold_since=NOW().
+        // Sweeper sticky-hold sẽ reset KH về queue sau 24h nếu nick chưa hồi.
+        // Notification 3 mốc: T+2 phút, T+6h, T+23h gửi cho Anh + chủ nick.
+        void this.handleStickyHoldDisconnect(id).catch((err) =>
+          logger.error(`[zalo:${id}] sticky-hold onDisconnected error:`, err),
+        );
 
         // Circuit breaker: track disconnect count per account
         const now = Date.now();
@@ -429,6 +452,233 @@ class ZaloAccountPool {
     }
 
     logger.info(`[zalo:${accountId}] Backfill complete: ${orphaned.length} conversation(s) linked`);
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
+  // Sprint v3 (2026-06-03) — Sticky 24h Hold helpers
+  // ──────────────────────────────────────────────────────────────────────
+
+  /**
+   * Khi nick disconnect:
+   * 1. Tag tất cả entries có claimed_by_nick_id=accountId + queueStatus in
+   *    (processing, processed) với nick_hold_since=NOW() (nếu NULL).
+   * 2. Tag outbox WELCOME_PROBE chưa gửi của nick này với
+   *    nick_first_offline_at=NOW() (nếu NULL).
+   * 3. Lên lịch 3 notification: T+2 phút, T+6h, T+23h.
+   *    Anh chốt T+23h (không phải 24h) để Anh có 1 tiếng xử lý trước reset.
+   */
+  private async handleStickyHoldDisconnect(accountId: string): Promise<void> {
+    const now = new Date();
+    try {
+      const [entryCount, outboxCount, nick] = await Promise.all([
+        prisma.customerListEntry.updateMany({
+          where: {
+            claimedByNickId: accountId,
+            queueStatus: { in: ['processing', 'processed'] },
+            nickHoldSince: null,
+          },
+          data: { nickHoldSince: now },
+        }),
+        prisma.friendRequestOutbox.updateMany({
+          where: {
+            nickId: accountId,
+            kind: 'WELCOME_PROBE',
+            welcomeOutcome: null,
+            nickFirstOfflineAt: null,
+          },
+          data: { nickFirstOfflineAt: now },
+        }),
+        prisma.zaloAccount.findUnique({
+          where: { id: accountId },
+          select: { displayName: true, ownerUserId: true, orgId: true },
+        }),
+      ]);
+
+      if (!nick) return;
+
+      const affectedKh = entryCount.count + outboxCount.count;
+      if (affectedKh === 0) {
+        logger.debug(`[sticky-hold] ${accountId} disconnect — 0 KH bị ảnh hưởng, skip notification`);
+        return;
+      }
+
+      logger.info(
+        `[sticky-hold] ${accountId} disconnect — tag ${entryCount.count} entries + ${outboxCount.count} outbox. Lên lịch 3 mốc notification.`,
+      );
+
+      // Log event nick_disconnected
+      await prisma.automationEventLog.create({
+        data: {
+          orgId: nick.orgId,
+          nickId: accountId,
+          eventType: 'nick_disconnected',
+          eventPriority: 'warning',
+          summary: `📡 Nick ${nick.displayName ?? accountId.slice(0, 8)} mất kết nối — ${affectedKh} KH bắt đầu hold 24h chờ nick hồi.`,
+          metadata: {
+            disconnectedAt: now.toISOString(),
+            affectedEntries: entryCount.count,
+            affectedOutbox: outboxCount.count,
+          },
+        },
+      }).catch((err) => logger.warn(`[sticky-hold] log nick_disconnected failed:`, err));
+
+      // Clear timer cũ nếu có (tránh duplicate khi disconnect 2 lần trong 5 phút)
+      const existing = this.stickyHoldNotificationTimers.get(accountId) ?? [];
+      existing.forEach(clearTimeout);
+
+      // Schedule 3 mốc notification: T+2p / T+6h / T+23h
+      const timers: NodeJS.Timeout[] = [
+        setTimeout(() => void this.sendStickyHoldNotification(accountId, 'T+2p'), 2 * 60_000),
+        setTimeout(() => void this.sendStickyHoldNotification(accountId, 'T+6h'), 6 * 60 * 60_000),
+        setTimeout(() => void this.sendStickyHoldNotification(accountId, 'T+23h'), 23 * 60 * 60_000),
+      ];
+      this.stickyHoldNotificationTimers.set(accountId, timers);
+    } catch (err) {
+      logger.error(`[sticky-hold] handleStickyHoldDisconnect ${accountId} error:`, err);
+    }
+  }
+
+  /**
+   * Khi nick reconnect: clear notification timer chain. KHÔNG clear
+   * nick_hold_since (per-entry, worker tự xử xong khi gửi step tiếp theo).
+   */
+  private async handleStickyHoldReconnect(accountId: string): Promise<void> {
+    const timers = this.stickyHoldNotificationTimers.get(accountId);
+    if (timers && timers.length > 0) {
+      timers.forEach(clearTimeout);
+      this.stickyHoldNotificationTimers.delete(accountId);
+      logger.info(`[sticky-hold] ${accountId} reconnect — clear ${timers.length} pending notifications`);
+    }
+
+    // Log event nick_reconnected
+    try {
+      const nick = await prisma.zaloAccount.findUnique({
+        where: { id: accountId },
+        select: { displayName: true, orgId: true },
+      });
+      if (!nick) return;
+      await prisma.automationEventLog.create({
+        data: {
+          orgId: nick.orgId,
+          nickId: accountId,
+          eventType: 'nick_reconnected',
+          eventPriority: 'info',
+          summary: `✅ Nick ${nick.displayName ?? accountId.slice(0, 8)} hồi tỉnh — KH đang hold tiếp tục được chăm.`,
+          metadata: { reconnectedAt: new Date().toISOString() },
+        },
+      });
+    } catch (err) {
+      logger.warn(`[sticky-hold] log nick_reconnected failed:`, err);
+    }
+  }
+
+  /**
+   * Gửi notification 1 trong 3 mốc (T+2p / T+6h / T+23h) qua kênh Zalo nội bộ
+   * tới Anh (system notify nick) + chủ nick.
+   *
+   * Anh chốt câu 4: gửi cho cả 2 (Anh + chủ nick).
+   */
+  private async sendStickyHoldNotification(
+    accountId: string,
+    milestone: 'T+2p' | 'T+6h' | 'T+23h',
+  ): Promise<void> {
+    try {
+      const nick = await prisma.zaloAccount.findUnique({
+        where: { id: accountId },
+        select: {
+          displayName: true,
+          status: true,
+          ownerUserId: true,
+          orgId: true,
+        },
+      });
+      if (!nick) return;
+
+      // Nick đã hồi → bỏ qua (defensive race check)
+      if (nick.status === 'connected') {
+        logger.debug(`[sticky-hold] ${accountId} ${milestone}: nick đã hồi, skip notification`);
+        return;
+      }
+
+      const affectedCount = await prisma.customerListEntry.count({
+        where: {
+          claimedByNickId: accountId,
+          nickHoldSince: { not: null },
+        },
+      });
+
+      const nickDisplay = nick.displayName ?? accountId.slice(0, 8);
+      let summary = '';
+      if (milestone === 'T+2p') {
+        summary = `📡 Nick ${nickDisplay} mất kết nối 2 phút — đang ảnh hưởng ${affectedCount} KH chờ welcome+sequence. Anh kiểm tra giúp.`;
+      } else if (milestone === 'T+6h') {
+        summary = `⏰ Nick ${nickDisplay} chết 6 giờ — ${affectedCount} KH chờ. Còn 18h nữa sẽ tự reset sang nick khác nếu nick chưa hồi.`;
+      } else if (milestone === 'T+23h') {
+        summary = `🚨 Nick ${nickDisplay} chết 23 giờ — ${affectedCount} KH chờ. CÒN 1 GIỜ nữa hệ thống sẽ reset KH về queue cho nick khác. Anh quyết định!`;
+      }
+
+      // Log event notification_sent
+      await prisma.automationEventLog.create({
+        data: {
+          orgId: nick.orgId,
+          nickId: accountId,
+          eventType: 'notification_sent',
+          eventPriority: milestone === 'T+23h' ? 'urgent' : 'warning',
+          summary,
+          metadata: {
+            milestone,
+            affectedCount,
+            ownerUserId: nick.ownerUserId,
+          },
+        },
+      });
+
+      // ── Sprint v3 (2026-06-03) — Gửi tin Zalo nội bộ thật qua systemNotifyZaloAccount ──
+      // Anh chốt câu 4: gửi cho Anh (org owner) + chủ nick. Dùng helper
+      // sendSystemNotificationToUser từ module system-notifications.
+      try {
+        // Lazy-load để tránh circular dependency với private-hs module
+        const mod = await import('../system-notifications/system-notify-service.js').catch(() => null);
+        if (!mod) {
+          logger.warn(`[sticky-hold] system-notify-service không khả dụng (private-hs path), skip Zalo send`);
+          return;
+        }
+        const recipients = new Set<string>();
+        // 1. Chủ nick
+        if (nick.ownerUserId) recipients.add(nick.ownerUserId);
+        // 2. Org owner (Anh Lộc)
+        const orgOwner = await prisma.user.findFirst({
+          where: { orgId: nick.orgId, role: 'owner' },
+          select: { id: true },
+        });
+        if (orgOwner) recipients.add(orgOwner.id);
+
+        const priority: 'normal' | 'high' = milestone === 'T+23h' ? 'high' : 'normal';
+        const title = milestone === 'T+23h'
+          ? `🚨 Còn 1h tới reset nick ${nickDisplay}`
+          : milestone === 'T+6h'
+            ? `⏰ Nick ${nickDisplay} chết 6h`
+            : `📡 Nick ${nickDisplay} mất kết nối`;
+
+        for (const userId of recipients) {
+          void mod.sendSystemNotificationToUser({
+            orgId: nick.orgId,
+            targetUserId: userId,
+            type: 'sticky_hold_notification',
+            title,
+            content: summary,
+            priority,
+          }).catch((err) =>
+            logger.warn(`[sticky-hold] sendSystemNotificationToUser ${userId} failed: ${err?.message ?? err}`),
+          );
+        }
+      } catch (sendErr) {
+        logger.warn(`[sticky-hold] gửi Zalo nội bộ thất bại: ${(sendErr as Error)?.message ?? sendErr}`);
+      }
+      logger.info(`[sticky-hold] ${accountId} ${milestone}: ${summary}`);
+    } catch (err) {
+      logger.error(`[sticky-hold] sendStickyHoldNotification ${accountId} ${milestone}:`, err);
+    }
   }
 }
 

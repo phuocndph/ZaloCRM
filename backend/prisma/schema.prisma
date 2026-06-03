@@ -2148,9 +2148,15 @@ model AutomationCampaign {
   blockId         String?   @map("block_id")
   segmentSnapshot Json      @map("segment_snapshot")
   rulesSnapshot   Json      @map("rules_snapshot")
-  state           String    @default("active") // 'active' | 'paused' | 'completed' | 'cancelled'
+  state           String    @default("active") // 'active' | 'paused' | 'completed' | 'cancelled' | 'on_hold' | 'timeout'
   activatedAt     DateTime  @default(now()) @map("activated_at")
   completedAt     DateTime? @map("completed_at")
+  // ── Sticky Nick 24h Hold (Sprint v3 2026-06-03) ──
+  // Mốc nick sticky của campaign offline lần đầu. Sequence-step worker SET
+  // khi gặp nick.status != connected → flip campaign state='on_hold' +
+  // moveToDelayed(30 phút). Sweeper sticky-hold đọc để compute 23h timeout.
+  // Reset NULL khi nick hồi → state='active'.
+  nickFirstOfflineAt DateTime? @map("nick_first_offline_at")
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @updatedAt @map("updated_at")
 
@@ -2415,12 +2421,21 @@ model CustomerListEntry {
   failedNickIds      Json      @default("[]") @map("failed_nick_ids") @db.JsonB // string[] nick đã fail entry này
   stuckRecoveryCount Int       @default(0) @map("stuck_recovery_count")
   // P2 2026-06-02 — đếm số lần soft fail (RATE_LIMITED/NOT_CONNECTED/timeout).
-  // Cap = 3 (hardcoded trong nick-worker). Khi đạt cap → escalate hard fail
-  // (releaseEntryFailed append failed_nick_ids). Tách khỏi stuckRecoveryCount
-  // để 2 cap (3 vs 10) + 2 semantic không trộn lẫn — stuck-sweeper KHÔNG reset
-  // count, nên reuse sẽ inflate rate-limit cap khi entry vốn chỉ stuck mạng.
+  // Sprint v3 2026-06-03 — BỎ escalate SOFT_FAIL_CAP. Counter giữ cho metric
+  // nhưng KHÔNG còn append failedNickIds khi đạt cap. Skip turn, online lại
+  // nick tiếp tục pick (Anh chốt câu 2.5).
   rateLimitCount     Int       @default(0) @map("rate_limit_count")
   triggerId          String?   @map("trigger_id") // FK to AutomationTrigger (no relation enforced)
+
+  // ── Sticky Nick 24h Hold Flow (Sprint v3 2026-06-03) ──
+  // Anh Lộc chốt: nick gắn chặt 1 KH hết welcome+sequence. Nick chết →
+  // hold 23h chờ nick hồi → quá hạn reset queue cho nick khác làm lại từ đầu.
+  // nickHoldSince = NOW() khi nick gốc disconnect lần đầu cho entry này.
+  // restart_cycle = đếm số lần KH bị reset (Vòng 0, Vòng 1, ...). UI chip "Vòng N".
+  // last_reset_reason = audit lý do reset (nick_offline_23h | manual | etc).
+  nickHoldSince    DateTime? @map("nick_hold_since")
+  restartCycle     Int       @default(0) @map("restart_cycle")
+  lastResetReason  String?   @map("last_reset_reason")
 
   // ── M9 Bám đuổi thủ công overrides (Luồng Mục Tiêu 2026-06-01) ──
   // Sale ở /chat enroll 1 KH vào "Mục tiêu hệ thống" → set override per-entry:
@@ -2836,10 +2851,19 @@ model FriendRequestOutbox {
   kind                 String    @default("FRIEND_REQUEST") @map("kind") // FRIEND_REQUEST | WELCOME
   parentTaskId         String?   @map("parent_task_id") // link welcome → friend_request gốc
   allowStrangerMessage Boolean   @default(false) @map("allow_stranger_message")
-  welcomeOutcome       String?   @map("welcome_outcome") // sent | retry | dropped | blocked
+  welcomeOutcome       String?   @map("welcome_outcome") // sent | retry | dropped | blocked | awaiting_nick
   welcomeSentAt        DateTime? @map("welcome_sent_at")
   welcomeRetryCount    Int       @default(0) @map("welcome_retry_count")
   welcomeLastError     String?   @map("welcome_last_error") @db.Text
+
+  // ── Sticky Nick 24h Hold (Sprint v3 2026-06-03) ──
+  // attemptRound = vòng welcome thứ N cho cùng (contact, trigger). Tăng khi
+  // sweeper reset KH (đồng bộ với entry.restartCycle). Cho phép gửi welcome
+  // lại sau reset mà không vi phạm unique index.
+  // nickFirstOfflineAt = mốc nick gốc disconnect lần đầu khi welcome-probe
+  // gặp nick offline → set 1 lần, dùng để compute thời gian chờ nick hồi.
+  attemptRound         Int       @default(0) @map("attempt_round")
+  nickFirstOfflineAt   DateTime? @map("nick_first_offline_at")
 
   // Legacy unique constraint từ Wave 2 Welcome Probe (di sản DB).
   // Declare lại trong schema để Prisma db push không cố drop khi restart container.

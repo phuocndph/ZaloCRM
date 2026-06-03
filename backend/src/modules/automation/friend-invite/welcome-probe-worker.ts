@@ -39,6 +39,10 @@ interface ProbeRow {
   contact_id: string;
   trigger_id: string | null;
   welcome_retry_count: number;
+  // Sprint v3 (2026-06-03) — sticky 24h hold: mốc nick offline lần đầu với
+  // outbox này. NULL = chưa từng offline. Set khi gate check / catch
+  // AWAITING_NICK lần đầu. Sweeper sticky-hold đọc để compute 23h timeout.
+  nick_first_offline_at: Date | null;
 }
 
 /**
@@ -75,11 +79,20 @@ async function isWithinWorkingHours(): Promise<boolean> {
   return vnHour >= 6 && vnHour <= 22;
 }
 
-function classifyError(msg: string): 'BLOCKED_STRANGER' | 'TRANSIENT' | 'HARD_FAIL' {
+function classifyError(msg: string): 'BLOCKED_STRANGER' | 'TRANSIENT' | 'AWAITING_NICK' | 'HARD_FAIL' {
   const m = msg.toLowerCase();
   if (m.includes('cannot_message_stranger') || m.includes('user_blocked') ||
       m.includes('spam') || msg.includes('Tham số không hợp lệ')) {
     return 'BLOCKED_STRANGER';
+  }
+  // ── Sprint v3 (2026-06-03) — Sửa 4.4 ──
+  // Nick gốc chết / disconnect → KHÔNG mark HARD_FAIL. Giữ welcome_outcome=NULL
+  // để worker tick lại khi nick hồi. Sweeper sticky-hold sẽ reset KH sau 23h
+  // nếu nick chưa hồi. AWAITING_NICK chỉ là chỉ báo classify, KHÔNG mark vào
+  // welcome_outcome — outcome NULL để re-poll.
+  if (m.includes('not_connected') || m.includes('account not connected') ||
+      m.includes('disconnected') || m.includes('qr_pending')) {
+    return 'AWAITING_NICK';
   }
   if (m.includes('timeout') || m.includes('etimedout') || /\b5\d\d\b/.test(msg) ||
       m.includes('econnreset') || m.includes('socket')) {
@@ -214,6 +227,42 @@ async function processRow(row: ProbeRow): Promise<void> {
   const channelLabel = isWarm ? 'friend_msg' : 'stranger_inbox';
   const msg = await renderGreeting(trigger.welcomeMessageTemplate, row.contact_id, row.nick_id);
 
+  // ── Sprint v3 (2026-06-03) — Sửa 4.4: gate nick.status TRƯỚC sendMessage ──
+  // Nếu nick gốc offline → KHÔNG gọi sendMessage. Set nickFirstOfflineAt
+  // (nếu NULL) + set entry.nickHoldSince (nếu NULL) + giữ welcome_outcome=NULL.
+  // Khi nick hồi, worker tick lại sẽ thấy connected → gửi xong.
+  // Sweeper sticky-hold sẽ reset KH sau 23h nếu nick chưa hồi.
+  const nickStatusCheck = await prisma.zaloAccount.findUnique({
+    where: { id: row.nick_id },
+    select: { status: true },
+  });
+  if (!nickStatusCheck || nickStatusCheck.status !== 'connected') {
+    const now = new Date();
+    await prisma.$transaction([
+      prisma.friendRequestOutbox.update({
+        where: { id: row.id },
+        data: {
+          // Giữ welcome_outcome=NULL để re-poll khi nick hồi
+          nickFirstOfflineAt: row.nick_first_offline_at ?? now,
+          welcomeLastError: `nick_offline status=${nickStatusCheck?.status ?? 'missing'}`,
+        },
+      }),
+      prisma.customerListEntry.updateMany({
+        where: {
+          contactId: row.contact_id,
+          triggerId: row.trigger_id,
+          claimedByNickId: row.nick_id,
+          nickHoldSince: null,
+        },
+        data: { nickHoldSince: now },
+      }),
+    ]);
+    logger.warn(
+      `[welcome-probe] outbox=${row.id} nick=${row.nick_id} offline status=${nickStatusCheck?.status ?? 'missing'} — hold welcome, chờ nick hồi (Sprint v3)`,
+    );
+    return;
+  }
+
   // 2026-06-02 — Race-safety: in-flight exclusivity comes from the per-row claim-token
   // pattern (welcome_last_error LIKE 'claim:%') at runProbeTick L321-336. Cross-row
   // dedup on (contact, trigger) is enforced by the partial unique index
@@ -294,7 +343,34 @@ async function processRow(row: ProbeRow): Promise<void> {
     }
 
     const kind = classifyError(errMsg);
-    if (kind === 'BLOCKED_STRANGER') {
+    if (kind === 'AWAITING_NICK') {
+      // ── Sprint v3 (2026-06-03) — Sửa 4.4 ──
+      // Race: nick disconnect ngay giữa gate check ↔ sendMessage. Cùng hành xử
+      // như gate trên: giữ welcome_outcome=NULL, set nickFirstOfflineAt, đẩy
+      // entry.nickHoldSince. Sweeper sticky-hold reset sau 23h nếu nick chưa hồi.
+      const now = new Date();
+      await prisma.$transaction([
+        prisma.friendRequestOutbox.update({
+          where: { id: row.id },
+          data: {
+            nickFirstOfflineAt: row.nick_first_offline_at ?? now,
+            welcomeLastError: `awaiting_nick ${errMsg}`.slice(0, 500),
+          },
+        }),
+        prisma.customerListEntry.updateMany({
+          where: {
+            contactId: row.contact_id,
+            triggerId: row.trigger_id,
+            claimedByNickId: row.nick_id,
+            nickHoldSince: null,
+          },
+          data: { nickHoldSince: now },
+        }),
+      ]);
+      logger.warn(
+        `[welcome-probe] outbox=${row.id} nick=${row.nick_id} AWAITING_NICK (race) — hold welcome: ${errMsg}`,
+      );
+    } else if (kind === 'BLOCKED_STRANGER') {
       await prisma.friendRequestOutbox.update({
         where: { id: row.id },
         data: { welcomeOutcome: 'BLOCKED_STRANGER', welcomeLastError: errMsg, welcomeSentAt: new Date() },
@@ -363,6 +439,7 @@ async function runProbeTick(): Promise<void> {
         contact_id,
         trigger_id,
         welcome_retry_count,
+        nick_first_offline_at,
         (SELECT org_id FROM automation_triggers WHERE id = friend_request_outbox.trigger_id) AS org_id
     `;
     for (const row of rows) {

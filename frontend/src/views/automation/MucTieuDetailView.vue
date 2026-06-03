@@ -117,6 +117,30 @@
               </button>
             </div>
           </div>
+          <!-- Sprint v3 (2026-06-03) — Chip filter 6 nhóm + sound toggle -->
+          <div class="monitor-filter-row">
+            <span class="mon-chip" :class="{ active: monitorFilter === 'all' }" @click="monitorFilter = 'all'">
+              Tất cả <span class="mon-chip-count">{{ monitorChipCounts.all }}</span>
+            </span>
+            <span class="mon-chip" :class="{ active: monitorFilter === 'rescue' }" @click="monitorFilter = 'rescue'">
+              🔥 KH cần cứu <span class="mon-chip-count">{{ monitorChipCounts.rescue }}</span>
+            </span>
+            <span class="mon-chip" :class="{ active: monitorFilter === 'lead' }" @click="monitorFilter = 'lead'">
+              💎 Lead <span class="mon-chip-count">{{ monitorChipCounts.lead }}</span>
+            </span>
+            <span class="mon-chip" :class="{ active: monitorFilter === 'reply' }" @click="monitorFilter = 'reply'">
+              💬 KH trả lời <span class="mon-chip-count">{{ monitorChipCounts.reply }}</span>
+            </span>
+            <span class="mon-chip" :class="{ active: monitorFilter === 'block' }" @click="monitorFilter = 'block'">
+              🛑 Chặn <span class="mon-chip-count">{{ monitorChipCounts.block }}</span>
+            </span>
+            <span class="mon-chip" :class="{ active: monitorFilter === 't23h' }" @click="monitorFilter = 't23h'">
+              ⏰ T+23h <span class="mon-chip-count">{{ monitorChipCounts.t23h }}</span>
+            </span>
+            <button class="sound-toggle" :class="{ on: soundEnabled }" @click="toggleSound" :title="soundEnabled ? 'Tắt âm' : 'Bật âm cảnh báo'">
+              {{ soundEnabled ? '🔔 Âm: BẬT' : '🔕 Âm: Tắt' }}
+            </button>
+          </div>
           <div ref="monitorBodyRef" class="ev-table-wrap mon-table-wrap" @scroll="onMonitorScroll">
             <table class="ev-table mon-table">
               <thead>
@@ -131,7 +155,7 @@
               </thead>
               <tbody>
                 <tr
-                  v-for="ev in monitorEvents"
+                  v-for="ev in monitorFilteredEvents"
                   :key="ev.id"
                   :class="[{ 'is-new': ev.isNew }]"
                 >
@@ -155,9 +179,11 @@
                   </td>
                   <td class="col-ago">{{ shortAgo(ev.at) }}</td>
                 </tr>
-                <tr v-if="monitorEvents.length === 0">
+                <tr v-if="monitorFilteredEvents.length === 0">
                   <td colspan="6" class="ev-empty-row">
-                    Chưa có sự kiện nào — feed sẽ xuất hiện ở đây khi worker chạy.
+                    {{ monitorEvents.length === 0
+                      ? 'Chưa có sự kiện nào — feed sẽ xuất hiện ở đây khi worker chạy.'
+                      : 'Không có sự kiện nào khớp bộ lọc — chọn "Tất cả" để xem hết.' }}
                   </td>
                 </tr>
               </tbody>
@@ -1004,6 +1030,96 @@ let monitorTimer: ReturnType<typeof setInterval> | null = null;
 let monitorPollPending = false;
 let lastMonitorSince: string | null = null;
 
+// ── Sprint v3 (2026-06-03) — Monitor filter + sound toggle ──
+// Chip filter 6 nhóm: tất cả / KH cần cứu / Lead / KH trả lời / Chặn / T+23h.
+// Sound toggle: localStorage per user, mặc định tắt. 3 âm Web Audio sin/sin/vuông.
+type MonitorFilter = 'all' | 'rescue' | 'lead' | 'reply' | 'block' | 't23h';
+const monitorFilter = ref<MonitorFilter>('all');
+const soundEnabled = ref<boolean>(
+  (typeof localStorage !== 'undefined' && localStorage.getItem('mt:monitor:sound') === '1') || false,
+);
+
+function toggleSound(): void {
+  soundEnabled.value = !soundEnabled.value;
+  if (typeof localStorage !== 'undefined') {
+    localStorage.setItem('mt:monitor:sound', soundEnabled.value ? '1' : '0');
+  }
+  if (soundEnabled.value) {
+    // Demo âm khi bật để Anh nghe
+    playTone('vui');
+  }
+}
+
+// Web Audio runtime: KHÔNG cần file mp3, sinh sóng sin/vuông tại runtime.
+let audioCtx: AudioContext | null = null;
+function playTone(kind: 'vui' | 'nhac' | 'canh'): void {
+  if (!soundEnabled.value) return;
+  if (typeof window === 'undefined' || typeof (window as any).AudioContext === 'undefined') return;
+  try {
+    if (!audioCtx) audioCtx = new ((window as any).AudioContext)();
+    const ctx = audioCtx!;
+    if (kind === 'canh') {
+      // "Tịt-tịt" 2 lần, sóng vuông 220Hz
+      [0, 130].forEach((delayMs) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'square';
+        osc.frequency.value = 220;
+        gain.gain.value = 0.25;
+        osc.connect(gain).connect(ctx.destination);
+        const start = ctx.currentTime + delayMs / 1000;
+        osc.start(start);
+        osc.stop(start + 0.1);
+      });
+    } else {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = kind === 'vui' ? 880 : 440;
+      gain.gain.value = 0.3;
+      osc.connect(gain).connect(ctx.destination);
+      const start = ctx.currentTime;
+      osc.start(start);
+      osc.stop(start + (kind === 'vui' ? 0.2 : 0.25));
+    }
+  } catch {
+    // Ignore audio errors (browser autoplay restriction)
+  }
+}
+
+// Phân loại P0/P1 event để filter + sound
+function eventClass(type: string): MonitorFilter[] {
+  const cl: MonitorFilter[] = ['all'];
+  if (type === 'customer_reply') cl.push('reply');
+  if (type === 'converted_lead') cl.push('lead');
+  if (type === 'customer_block' || type === 'welcome_blocked' || type === 'customer_block_detected_on_invite') {
+    cl.push('block');
+  }
+  if (type === 'nick_hold_reset' || type === 'campaign_timeout') cl.push('rescue', 't23h');
+  if (type === 'notification_sent') cl.push('t23h');
+  if (type === 'nick_disconnected') cl.push('rescue');
+  return cl;
+}
+
+// Filter chip count
+const monitorFilteredEvents = computed(() => {
+  if (monitorFilter.value === 'all') return monitorEvents.value;
+  return monitorEvents.value.filter((ev) => eventClass(ev.type).includes(monitorFilter.value));
+});
+
+const monitorChipCounts = computed(() => {
+  const counts: Record<MonitorFilter, number> = {
+    all: monitorEvents.value.length,
+    rescue: 0, lead: 0, reply: 0, block: 0, t23h: 0,
+  };
+  for (const ev of monitorEvents.value) {
+    for (const c of eventClass(ev.type)) {
+      if (c !== 'all') counts[c]++;
+    }
+  }
+  return counts;
+});
+
 // Menu
 const menuOpen = ref(false);
 const menuWrapRef = ref<HTMLDivElement | null>(null);
@@ -1571,6 +1687,23 @@ function mergeEvents(fresh: LiveEvent[]): void {
   // .reverse() trước đó đảo thành cũ → cũ lên đầu Monitor, mới xuống cuối (SAI).
   monitorEvents.value = [...fresh, ...monitorEvents.value].slice(0, 20);
   lastMonitorSince = fresh[0]?.at ?? lastMonitorSince;
+
+  // ── Sprint v3 (2026-06-03) — Play sound theo phân loại event ──
+  // 3 âm: vui (tin vui) / nhac (nhắc nhở) / canh (cảnh báo).
+  for (const ev of fresh) {
+    if (ev.type === 'friend_accepted' || ev.type === 'customer_reply' || ev.type === 'converted_lead') {
+      playTone('vui');
+      break; // chỉ play 1 lần per merge
+    }
+    if (ev.type === 'notification_sent' || ev.type === 'nick_hold_reset') {
+      playTone('nhac');
+      break;
+    }
+    if (ev.type === 'customer_block' || ev.type === 'welcome_blocked' || ev.type === 'sequence_step_failed' || ev.type === 'campaign_timeout') {
+      playTone('canh');
+      break;
+    }
+  }
   // Auto-scroll to top if user hasn't scrolled down
   if (!userScrolledAway.value) {
     requestAnimationFrame(() => {
@@ -1969,13 +2102,15 @@ function phaseTone(type: string): string {
     type === 'welcome_sent' ||
     type === 'follow_up' ||
     type === 'sequence_step_sent' ||
-    type === 'sequence_done'
+    type === 'sequence_done' ||
+    type === 'nick_reconnected' ||
+    type === 'nick_resumed'
   ) return 'success';
   if (type === 'customer_reply' || type === 'converted_lead') return 'info';
   if (type === 'reaction_positive') return 'success';
   if (type === 'reaction_negative') return 'danger';
-  if (type === 'customer_block' || type === 'nick_disconnected') return 'danger';
-  if (type === 'warning' || type.startsWith('failed_') || type === 'nick_resumed') return 'warn';
+  if (type === 'customer_block' || type === 'nick_hold_reset' || type === 'campaign_timeout') return 'danger';
+  if (type === 'warning' || type.startsWith('failed_') || type === 'nick_disconnected' || type === 'notification_sent') return 'warn';
   if (type === 'skipped' || type.startsWith('skipped_')) return 'neutral';
   return 'neutral';
 }
@@ -1996,6 +2131,12 @@ function phaseLabel(type: string): string {
     converted_lead: 'Chuyển lead',
     nick_disconnected: 'Nick ngắt',
     nick_resumed: 'Nick chạy tiếp',
+    // ── Sprint v3 (2026-06-03) — Sticky 24h Hold events ──
+    nick_reconnected: 'Nick hồi tỉnh',
+    nick_hold_reset: 'Reset 24h',
+    notification_sent: 'Đã báo nội bộ',
+    campaign_timeout: 'Hết hạn',
+    soft_fail_escalated: 'Soft fail',
     zalo_check: 'Kiểm Zalo',
     reaction_positive: 'Reaction +',
     reaction_negative: 'Reaction -',
@@ -2022,8 +2163,14 @@ function phaseIcon(type: string): string {
     customer_reply: '💬',
     customer_block: '🚫',
     converted_lead: '💎',
-    nick_disconnected: '⏸',
+    nick_disconnected: '📡',
     nick_resumed: '🔄',
+    // ── Sprint v3 (2026-06-03) — Sticky 24h Hold icons ──
+    nick_reconnected: '✅',
+    nick_hold_reset: '⏰',
+    notification_sent: '🔔',
+    campaign_timeout: '🚨',
+    soft_fail_escalated: '⚠️',
     zalo_check: '🔍',
     reaction_positive: '❤️',
     reaction_negative: '😡',
@@ -2358,9 +2505,59 @@ onUnmounted(() => {
   overflow-x: auto;
 }
 .mon-table-wrap {
-  max-height: 480px;
+  /* Sprint v3 (2026-06-03) — Anh chốt câu 3: 320px (gọn hơn 420 ban đầu) */
+  max-height: 320px;
   overflow-y: auto;
 }
+
+/* ── Sprint v3 (2026-06-03) — Monitor chip filter row ── */
+.monitor-filter-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--border);
+  background: #fafafa;
+  flex-wrap: wrap;
+}
+.mon-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 9px;
+  border-radius: 12px;
+  font-size: 11px; font-weight: 500;
+  cursor: pointer;
+  border: 1px solid var(--border);
+  background: white;
+  color: var(--text-2);
+  transition: all 0.15s;
+}
+.mon-chip:hover { background: var(--bg-soft); }
+.mon-chip.active {
+  background: #2d7ff9;
+  border-color: #2d7ff9;
+  color: white;
+}
+.mon-chip-count {
+  display: inline-block;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: rgba(0,0,0,0.08);
+  font-weight: 600;
+  font-size: 10px;
+}
+.mon-chip.active .mon-chip-count {
+  background: rgba(255,255,255,0.25);
+}
+.sound-toggle {
+  margin-left: auto;
+  padding: 3px 9px;
+  font-size: 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: white;
+  cursor: pointer;
+  color: var(--text-2);
+}
+.sound-toggle.on { background: #fff7e6; border-color: #fad08a; color: #b8740b; }
+.sound-toggle:hover { background: var(--bg-soft); }
 .ev-table {
   width: 100%;
   border-collapse: collapse;
