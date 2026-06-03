@@ -101,9 +101,28 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
         if (dateFrom) where.lastActivity.gte = new Date(dateFrom);
         if (dateTo) where.lastActivity.lte = new Date(dateTo + 'T23:59:59.999Z');
       }
-      // ThreadType filter qua Conversation relation: KH có ≥1 conv loại đó
-      if (threadType === 'user' || threadType === 'group') {
-        where.conversations = { some: { threadType, orgId: user.orgId } };
+      // 2026-06-03 fix: Loại = PHÂN LOẠI người vs nhóm (KHÔNG phải "có hội thoại mới lọc").
+      // Nhóm = contact đại diện 1 hội thoại group Zalo ("BTC Tuyển Sinh CEOSG11"): không SĐT
+      //        + có group conversation + không có user conversation.
+      // Cá nhân = người thật (có SĐT HOẶC user conv HOẶC không phải nhóm). KH no-Zalo/chưa chat
+      //        VẪN là cá nhân → hiện ra (trước đây 'user' bắt phải có conv nên ẩn hết no-Zalo).
+      if (threadType === 'group') {
+        where.AND = where.AND ?? [];
+        where.AND.push({ conversations: { some: { threadType: 'group', orgId: user.orgId } } });
+        where.AND.push({ conversations: { none: { threadType: 'user', orgId: user.orgId } } });
+        where.AND.push({ OR: [{ phone: null }, { phone: '' }] });
+      } else if (threadType === 'user') {
+        // Cá nhân = KHÔNG phải nhóm thuần. NOT(group-shape).
+        where.AND = where.AND ?? [];
+        where.AND.push({
+          NOT: {
+            AND: [
+              { conversations: { some: { threadType: 'group', orgId: user.orgId } } },
+              { conversations: { none: { threadType: 'user', orgId: user.orgId } } },
+              { OR: [{ phone: null }, { phone: '' }] },
+            ],
+          },
+        });
       }
       // RelationshipKind aggregate: KH có ≥1 Friend với kind trong list
       if (relationshipKindAny) {

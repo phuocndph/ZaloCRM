@@ -29,9 +29,9 @@
         placeholder="🔍 Tìm tên / SĐT / UID / @username / globalId…"
         @input="debouncedFetch"
       />
-      <select v-model="filters.threadType" @change="fetchContacts" title="Loại hội thoại">
-        <option value="">Loại: tất cả</option>
-        <option value="user">👤 User 1-1</option>
+      <select v-model="filters.threadType" @change="fetchContacts" title="Loại khách: cá nhân (người có SĐT) hay nhóm Zalo">
+        <option value="">Tất cả</option>
+        <option value="user">👤 Cá nhân</option>
         <option value="group">👥 Nhóm</option>
       </select>
       <!-- 2026-06-03: Trạng thái Zalo lên toolbar chính (đổi chỗ với Nguồn) -->
