@@ -2437,9 +2437,10 @@ watch(() => props.editingMessage?.id, async (id) => {
 /* ════════ Chat header (3-row layout — Anh chốt 2026-06-03) ════════
    Row 1: Tên KH + Gender (ưu tiên, tên đọc rõ)
    Row 2: Chips meta (Cùng-chăm + Giai đoạn + Phân loại)
-   Row 3: Nick + counts + Online
-   Avatar align-self center, Actions align-self flex-start (sticky row 1) */
+   Row 3: Nick + counts + Online — FULL-WIDTH lấn sang phải vùng actions
+   Actions absolute top-right để row 3 không bị nén. */
 .chat-header {
+  position: relative;
   background: var(--smax-bg);
   padding: 10px 17px;
   border-bottom: 1px solid var(--smax-grey-200);
@@ -2447,7 +2448,13 @@ watch(() => props.editingMessage?.id, async (id) => {
   flex-shrink: 0;
 }
 .chat-header > .ch-avatar-wrap { align-self: center; }
-.chat-header > .ch-actions { align-self: flex-start; margin-top: 2px; }
+.chat-header > .ch-actions {
+  position: absolute;
+  top: 8px;
+  right: 17px;
+}
+/* Row 1 chừa chỗ phải cho action cluster (~190px friendship + ⋮ + ⓘ) — row 2 & 3 full width */
+.ch-row-1 { padding-right: 200px; }
 
 /* Row chips (giữa row tên và row nick) — KHÔNG wrap, ép 1 dòng */
 .ch-row-chips {
