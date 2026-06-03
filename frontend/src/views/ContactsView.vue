@@ -422,9 +422,8 @@
               </td>
               <td>
                 <div class="action-cell">
-                  <button class="row-action-btn view-profile-btn" @click.stop="openProfile(contact)" title="Xem hồ sơ khách hàng tổng hợp">👤 Hồ sơ</button>
-                  <button class="row-action-btn" @click="goChat(contact)" title="Mở chat">💬</button>
-                  <button class="row-action-btn" @click.stop="openDetail(contact)" title="Sửa nhanh">✎</button>
+                  <button class="row-action-btn view-profile-btn" @click.stop="openProfile(contact)" title="Xem & sửa hồ sơ khách hàng">👤 Hồ sơ</button>
+                  <button class="row-action-btn" @click.stop="goChat(contact)" title="Mở chat">💬</button>
                 </div>
               </td>
             </tr>
@@ -547,8 +546,8 @@
       <button class="btn" :disabled="pagination.page >= totalPages" @click="changePage(pagination.page + 1)">Sau →</button>
     </div>
 
-    <!-- Dialogs (giữ nguyên) -->
-    <ContactDetailDialog v-model="showDialog" :contact="selectedContact" @saved="onSaved" @deleted="onDeleted" />
+    <!-- Dialogs -->
+    <!-- 2026-06-03: bỏ ContactDetailDialog Vuetify cũ — sửa KH giờ qua CustomerProfileDialog (UI Hồ sơ) -->
     <ParentCandidateDialog v-model="showCandidateDialog" @resolved="onCandidateResolved" />
 
     <!-- Hồ sơ KH tổng (modal tái dùng — mở từ nút "👤 Hồ sơ") -->
@@ -609,7 +608,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch, nextTick } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
-import ContactDetailDialog from '@/components/contacts/ContactDetailDialog.vue';
 import ContactDetailPanel from '@/components/contacts/ContactDetailPanel.vue';
 import CustomerProfileDialog from '@/components/contacts/CustomerProfileDialog.vue';
 import ParentCandidateDialog from '@/components/contacts/ParentCandidateDialog.vue';
@@ -690,7 +688,6 @@ function toggleChildColumn(key: ChildColKey) {
   try { localStorage.setItem(LS_KEY_CHILD_COLS, JSON.stringify(visibleChildCols.value)); } catch { /* ignore */ }
 }
 
-const showDialog = ref(false);
 const showDuplicateDialog = ref(false);
 const showCandidateDialog = ref(false);
 const showAddCustomerDialog = ref(false);
@@ -721,11 +718,9 @@ const viewMode = ref<'m1' | 'm2'>((localStorage.getItem(LS_KEY_VIEW) as 'm1' | '
 function setViewMode(m: 'm1' | 'm2') {
   viewMode.value = m;
   try { localStorage.setItem(LS_KEY_VIEW, m); } catch { /* ignore */ }
-  // Đổi mode → đóng detail pane / dialog đang mở
+  // Đổi mode m1 → đóng detail pane đang mở
   if (m === 'm1') {
     selectedContact.value = null;
-  } else {
-    showDialog.value = false;
   }
 }
 const candidateCount = ref(0);
@@ -1221,16 +1216,6 @@ function ageOf(c: Contact): number | null {
 function openCreate() {
   showCreateProfile.value = true;
 }
-function openDetail(c: Contact) {
-  // Phase Dual View 2026-05-28:
-  // - Mode 1 (Bảng đầy đủ): mở Dialog full screen như cũ
-  // - Mode 2 (Chi tiết bên): chỉ set selectedContact → inline DetailPanel hiện ra bên phải
-  selectedContact.value = c;
-  if (viewMode.value === 'm1') {
-    showDialog.value = true;
-  }
-  // m2: detail pane bind v-if với selectedContact, không cần showDialog
-}
 function closeDetailPane() {
   selectedContact.value = null;
 }
@@ -1408,7 +1393,6 @@ function formatCungChamTooltip(contact: Contact): string {
   return `${list.length} sale đang/đã chăm KH này:\n${lines.join('\n')}`;
 }
 function onSaved() { fetchContacts(); }
-function onDeleted() { fetchContacts(); }
 function onDuplicateMerged() {
   fetchContacts();
   fetchDuplicateGroups();
