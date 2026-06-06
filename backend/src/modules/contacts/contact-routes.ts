@@ -988,6 +988,30 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
             previousStatusId: existing.statusId,
           } as any,
         });
+
+        // 2026-06-06 (Anh chốt) — emit 'friend:updated' (kênh có sẵn) để sync realtime
+        // giai đoạn KH cross-device: cột 3 header / cột 4 / friend row / trang /friends.
+        // FE use-friend-socket mutate cache theo patch.statusId. Emit cho MỌI friend của contact.
+        try {
+          const io = (app as any).io as Server | undefined;
+          if (io) {
+            const friends = await prisma.friend.findMany({
+              where: { contactId: updated.id },
+              select: { id: true, zaloAccountId: true, zaloUidInNick: true },
+            });
+            for (const f of friends) {
+              io.to(`org:${user.orgId}`).emit('friend:updated', {
+                friendId: f.id,
+                contactId: updated.id,
+                zaloAccountId: f.zaloAccountId,
+                zaloUidInNick: f.zaloUidInNick,
+                patch: { statusId: updated.statusId },
+              });
+            }
+          }
+        } catch (err) {
+          logger.warn('[contacts] emit friend:updated (statusId) failed: %s', (err as Error).message);
+        }
       }
 
       // ── ACTIVITY LOG — diff với existing để log đúng action types ─────────

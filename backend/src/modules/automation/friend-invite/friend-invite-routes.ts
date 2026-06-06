@@ -214,18 +214,37 @@ export async function deleteFriendInviteTrigger(opts: {
     for (const nickId of spec.nickIds) void stopNickWorker(nickId);
   }
 
-  // FK order: campaigns (onDelete SetNull) → entries unlink (giữ KH trong tệp gốc)
-  // → outbox → eventlog → trigger. 3 bảng con KHÔNG cascade nên xóa thủ công.
+  // FK order: campaigns → queue rows (hàng đợi per-trigger) → outbox → eventlog → trigger.
+  // #2 2026-06-06 — xóa hàng đợi = DELETE row bảng nối (giữ KH trong tệp gốc, chỉ bỏ
+  // quan hệ với Mục tiêu này). KHÔNG còn null cột trên entry.
+  // (FK trigger_queue_entries.trigger_id ON DELETE CASCADE đằng nào cũng dọn khi delete
+  //  trigger; nhưng deleteMany tường minh để chạy trong cùng tx + log rõ ràng.)
   await prisma.$transaction([
     prisma.automationCampaign.deleteMany({ where: { orgId, triggerId: id } }),
-    prisma.customerListEntry.updateMany({
-      where: { triggerId: id },
-      data: { triggerId: null, queueStatus: null },
-    }),
+    prisma.triggerQueueEntry.deleteMany({ where: { triggerId: id } }),
     prisma.friendRequestOutbox.deleteMany({ where: { triggerId: id } }),
     prisma.automationEventLog.deleteMany({ where: { triggerId: id } }),
     prisma.automationTrigger.delete({ where: { id } }),
   ]);
+
+  // #2 2026-06-06 (vá lỗ hổng phát hiện 06-06h) — dọn BullMQ sequence-step jobs còn treo.
+  // Trước đây delete trigger không gỡ jobs → job cũ chạy ngầm gửi nhầm. Best-effort.
+  try {
+    const { getSequenceStepQueue } = await import('../queues/queue-registry.js');
+    const queue = getSequenceStepQueue();
+    const jobs = await queue.getJobs(['delayed', 'waiting', 'active', 'paused'], 0, 5000);
+    const prefix = `${id}-`;
+    let removed = 0;
+    for (const job of jobs) {
+      if (typeof job.id === 'string' && job.id.startsWith(prefix)) {
+        await job.remove().catch(() => {});
+        removed++;
+      }
+    }
+    if (removed > 0) logger.info(`[friend-invite] deleteTrigger ${id}: gỡ ${removed} BullMQ sequence-step jobs treo`);
+  } catch (err) {
+    logger.warn(`[friend-invite] deleteTrigger ${id}: dọn BullMQ jobs thất bại (non-fatal):`, err);
+  }
 
   invalidateTaskProgressCache(id);
   return { ok: true };
@@ -893,7 +912,8 @@ export async function friendInviteRoutes(app: FastifyInstance): Promise<void> {
         // P2 Wave 4 — clear pausedUntil để sweeper không re-pickup trigger đã terminal.
         data: { state: 'cancelled', pausedUntil: null },
       }),
-      prisma.customerListEntry.updateMany({
+      // #2 2026-06-06 — hàng đợi ở bảng nối per-trigger.
+      prisma.triggerQueueEntry.updateMany({
         where: { triggerId: trigger.id, queueStatus: 'queued_for_pickup' },
         data: { queueStatus: 'cancelled' },
       }),
@@ -961,8 +981,8 @@ export async function friendInviteRoutes(app: FastifyInstance): Promise<void> {
       sequenceStepsCount = (trigger.sequence.steps as unknown[]).length;
     }
 
-    // Counters via single GROUP BY query
-    const counts = await prisma.customerListEntry.groupBy({
+    // Counters via single GROUP BY query — #2 2026-06-06: bảng nối per-trigger.
+    const counts = await prisma.triggerQueueEntry.groupBy({
       by: ['queueStatus'],
       where: { triggerId: trigger.id },
       _count: { id: true },
@@ -1005,7 +1025,8 @@ export async function friendInviteRoutes(app: FastifyInstance): Promise<void> {
     // Wave 3 Day 5 — Tập hợp contactId thuộc Mục tiêu này (qua CustomerListEntry.triggerId).
     // Dùng cho 4 counter mới (accepted/waitingCrm/customer_*/converted_lead) +
     // NickStat.acceptedTotal. Quét 1 lần, share giữa các query bên dưới.
-    const triggerContactRows = await prisma.customerListEntry.findMany({
+    // #2 2026-06-06 — contactId thuộc Mục tiêu lấy từ bảng nối (contactId denormalized).
+    const triggerContactRows = await prisma.triggerQueueEntry.findMany({
       where: { triggerId: trigger.id, contactId: { not: null } },
       select: { contactId: true },
     });
@@ -1263,37 +1284,59 @@ export async function friendInviteRoutes(app: FastifyInstance): Promise<void> {
     const statusFilter =
       rawStatus && allowedStatuses.has(rawStatus) ? rawStatus : null;
 
-    const entriesWhere = statusFilter
+    // #2 2026-06-06 — query từ BẢNG NỐI (scope per-trigger), JOIN entry lấy data khách.
+    // queueStatus/claimedByNickId từ bảng nối; phone/zalo*/hasZalo/contactId từ entry.
+    const queueWhere = statusFilter
       ? { triggerId: trigger.id, queueStatus: statusFilter }
       : { triggerId: trigger.id };
 
-    const totalEntries = await prisma.customerListEntry.count({
-      where: entriesWhere,
+    const totalEntries = await prisma.triggerQueueEntry.count({
+      where: queueWhere,
     });
 
-    const entriesRaw = await prisma.customerListEntry.findMany({
-      where: entriesWhere,
-      orderBy: { rowIndex: 'asc' },
+    const queueRowsRaw = await prisma.triggerQueueEntry.findMany({
+      where: queueWhere,
+      orderBy: { entry: { rowIndex: 'asc' } },
       skip: offset,
       take: limit,
       select: {
-        id: true,
-        rowIndex: true,
-        phoneRaw: true,
-        nameRaw: true,
-        phoneE164: true,
-        zaloName: true,
-        zaloUid: true,
-        resolvedByNickId: true,
-        claimedByNickId: true,
         queueStatus: true,
-        hasZalo: true,
-        contactId: true,
-        dupWithContactId: true,
-        // Wave 3 Day 5 — FE timeline cần ISO timestamp dòng entry mới đổi lần cuối.
+        claimedByNickId: true,
         updatedAt: true,
+        entry: {
+          select: {
+            id: true,
+            rowIndex: true,
+            phoneRaw: true,
+            nameRaw: true,
+            phoneE164: true,
+            zaloName: true,
+            zaloUid: true,
+            resolvedByNickId: true,
+            hasZalo: true,
+            contactId: true,
+            dupWithContactId: true,
+          },
+        },
       },
     });
+    // Map về shape phẳng (giống select cũ) để phần dưới dùng e.queueStatus/e.id... như trước.
+    const entriesRaw = queueRowsRaw.map((q) => ({
+      id: q.entry.id,
+      rowIndex: q.entry.rowIndex,
+      phoneRaw: q.entry.phoneRaw,
+      nameRaw: q.entry.nameRaw,
+      phoneE164: q.entry.phoneE164,
+      zaloName: q.entry.zaloName,
+      zaloUid: q.entry.zaloUid,
+      resolvedByNickId: q.entry.resolvedByNickId,
+      claimedByNickId: q.claimedByNickId,
+      queueStatus: q.queueStatus,
+      hasZalo: q.entry.hasZalo,
+      contactId: q.entry.contactId,
+      dupWithContactId: q.entry.dupWithContactId,
+      updatedAt: q.updatedAt,
+    }));
 
     // P1 2026-06-02 — Reconstruct task progress (currentStepIdx + lastSentAt + nextRunAt)
     // từ BullMQ sequence-step queue + AutomationEventLog. Trước đây đọc bảng
@@ -2345,11 +2388,12 @@ async function enrichEventRows(
           select: { id: true, fullName: true, crmName: true, zaloUsername: true },
         })
       : Promise.resolve([]),
+    // #2 2026-06-06 — rowIndex theo (trigger, contact) lấy qua bảng nối → entry.
     distinctContactIds.length > 0
-      ? prisma.customerListEntry.findMany({
+      ? prisma.triggerQueueEntry.findMany({
           where: { triggerId, contactId: { in: distinctContactIds } },
-          select: { contactId: true, rowIndex: true },
-        })
+          select: { contactId: true, entry: { select: { rowIndex: true } } },
+        }).then((qs) => qs.map((q) => ({ contactId: q.contactId, rowIndex: q.entry?.rowIndex ?? null })))
       : Promise.resolve([]),
   ]);
 

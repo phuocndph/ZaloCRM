@@ -67,22 +67,25 @@ async function runStuckSweeper(): Promise<void> {
     // (vì lỗi không do SĐT mà do nick chết, không nên flip failed_stuck oan).
     // Increment chỉ khi nick còn connected — nghĩa là SĐT thực sự stuck do
     // lỗi worker/network chứ không phải nick chết tự nhiên.
+    // #2 2026-06-06 — hàng đợi ở bảng nối trigger_queue_entries (q). EXISTS join
+    // zalo_accounts đổi sang q.claimed_by_nick_id (cột giờ ở bảng nối).
     const result = await prisma.$executeRaw`
-      UPDATE customer_list_entries
+      UPDATE trigger_queue_entries q
       SET queue_status = 'queued_for_pickup',
           claimed_by_nick_id = NULL,
           locked_at = NULL,
+          updated_at = NOW(),
           stuck_recovery_count = CASE
-            WHEN claimed_by_nick_id IS NOT NULL AND EXISTS (
+            WHEN q.claimed_by_nick_id IS NOT NULL AND EXISTS (
               SELECT 1 FROM zalo_accounts za
-              WHERE za.id = customer_list_entries.claimed_by_nick_id
+              WHERE za.id = q.claimed_by_nick_id
                 AND za.status = 'connected'
-            ) THEN stuck_recovery_count + 1
-            ELSE stuck_recovery_count
+            ) THEN q.stuck_recovery_count + 1
+            ELSE q.stuck_recovery_count
           END
-      WHERE queue_status = 'processing'
-        AND locked_at < NOW() - make_interval(mins => ${stuckMinutes}::int)
-        AND stuck_recovery_count < ${stuckMaxRecovery}::int
+      WHERE q.queue_status = 'processing'
+        AND q.locked_at < NOW() - make_interval(mins => ${stuckMinutes}::int)
+        AND q.stuck_recovery_count < ${stuckMaxRecovery}::int
     `;
     if (result > 0) {
       logger.info(`[stuck-sweeper] released ${result} stuck entries back to pool`);
@@ -90,11 +93,11 @@ async function runStuckSweeper(): Promise<void> {
 
     // Mark entries that hit max recoveries as failed_stuck
     const failedStuck = await prisma.$executeRaw`
-      UPDATE customer_list_entries
-      SET queue_status = 'failed_stuck'
-      WHERE queue_status = 'processing'
-        AND locked_at < NOW() - make_interval(mins => ${stuckMinutes}::int)
-        AND stuck_recovery_count >= ${stuckMaxRecovery}::int
+      UPDATE trigger_queue_entries q
+      SET queue_status = 'failed_stuck', updated_at = NOW()
+      WHERE q.queue_status = 'processing'
+        AND q.locked_at < NOW() - make_interval(mins => ${stuckMinutes}::int)
+        AND q.stuck_recovery_count >= ${stuckMaxRecovery}::int
     `;
     if (failedStuck > 0) {
       logger.warn(`[stuck-sweeper] ${failedStuck} entries marked failed_stuck after 10 recoveries`);
@@ -129,13 +132,16 @@ async function runTriggerCompletionSweeper(): Promise<void> {
       WHERE state = 'active'
         AND event_type = 'friend_invite_to_list'
         AND id IN (
+          -- #2 2026-06-06 — đếm hàng đợi từ bảng nối (q) theo từng trigger. Đây CHÍNH LÀ
+          -- điểm sửa bug song song: trigger chỉ "hoàn tất" khi hàng đợi CỦA RIÊNG NÓ cạn,
+          -- không bị ảnh hưởng bởi Mục tiêu khác dùng chung tệp.
           SELECT t.id FROM automation_triggers t
-          LEFT JOIN customer_list_entries e ON e.trigger_id = t.id
+          LEFT JOIN trigger_queue_entries q ON q.trigger_id = t.id
           WHERE t.state = 'active'
             AND t.event_type = 'friend_invite_to_list'
           GROUP BY t.id
-          HAVING COUNT(e.id) > 0
-            AND COUNT(*) FILTER (WHERE e.queue_status IN ('queued_for_pickup', 'processing')) = 0
+          HAVING COUNT(q.id) > 0
+            AND COUNT(*) FILTER (WHERE q.queue_status IN ('queued_for_pickup', 'processing')) = 0
         )
         AND NOT EXISTS (
           -- Còn outbox WELCOME_PROBE chưa enroll sequence (chưa fail vĩnh viễn)
@@ -172,14 +178,15 @@ async function runTriggerCompletionSweeper(): Promise<void> {
  */
 async function runExhaustedNicksSweeper(): Promise<void> {
   try {
+    // #2 2026-06-06 — failedNickIds + queue ở bảng nối (q) theo từng trigger.
     const result = await prisma.$executeRaw`
-      UPDATE customer_list_entries e
-      SET queue_status = 'failed_permanent'
+      UPDATE trigger_queue_entries q
+      SET queue_status = 'failed_permanent', updated_at = NOW()
       FROM automation_triggers t
-      WHERE e.trigger_id = t.id
-        AND e.queue_status = 'queued_for_pickup'
+      WHERE q.trigger_id = t.id
+        AND q.queue_status = 'queued_for_pickup'
         AND t.event_type = 'friend_invite_to_list'
-        AND jsonb_array_length(e.failed_nick_ids) >= jsonb_array_length(t.segment_spec->'nickIds')
+        AND jsonb_array_length(q.failed_nick_ids) >= jsonb_array_length(t.segment_spec->'nickIds')
         AND jsonb_array_length(t.segment_spec->'nickIds') > 0
     `;
     if (result > 0) {
@@ -527,13 +534,14 @@ async function runStickyNickHoldSweeper(): Promise<void> {
     // #3 2026-06-06 — ngưỡng reset nick offline đọc từ Cài đặt kỹ thuật (Anh chỉnh được).
     const { nickOfflineResetHours } = await getTechThresholds();
     const cutoff = new Date(Date.now() - nickOfflineResetHours * 60 * 60_000);
-    const stale = await prisma.customerListEntry.findMany({
+    // #2 2026-06-06 — quét bảng nối (per-trigger). rowIndex/phoneE164 lấy qua relation entry.
+    const staleRows = await prisma.triggerQueueEntry.findMany({
       where: {
         nickHoldSince: { not: null, lt: cutoff },
         queueStatus: { in: ['processed', 'processing'] },
       },
       select: {
-        id: true,
+        customerListEntryId: true,
         customerListId: true,
         triggerId: true,
         contactId: true,
@@ -541,13 +549,26 @@ async function runStickyNickHoldSweeper(): Promise<void> {
         nickHoldSince: true,
         restartCycle: true,
         failedNickIds: true,
-        rowIndex: true,
-        phoneE164: true,
+        entry: { select: { rowIndex: true, phoneE164: true } },
       },
       take: 50, // tránh long tx
     });
 
-    if (stale.length === 0) return;
+    if (staleRows.length === 0) return;
+
+    // Map về shape cũ để phần dưới dùng e.id / e.rowIndex / e.phoneE164 như trước.
+    const stale = staleRows.map((q) => ({
+      id: q.customerListEntryId,
+      customerListId: q.customerListId,
+      triggerId: q.triggerId,
+      contactId: q.contactId,
+      claimedByNickId: q.claimedByNickId,
+      nickHoldSince: q.nickHoldSince,
+      restartCycle: q.restartCycle,
+      failedNickIds: q.failedNickIds,
+      rowIndex: q.entry?.rowIndex ?? 0,
+      phoneE164: q.entry?.phoneE164 ?? null,
+    }));
 
     let resetCount = 0;
     for (const e of stale) {
@@ -620,9 +641,9 @@ async function runStickyNickHoldSweeper(): Promise<void> {
             });
           }
 
-          // c. Reset entry về queue
-          await tx.customerListEntry.update({
-            where: { id: e.id },
+          // c. Reset hàng đợi về queue — #2: bảng nối per-trigger.
+          await tx.triggerQueueEntry.update({
+            where: { triggerId_customerListEntryId: { triggerId: e.triggerId, customerListEntryId: e.id } },
             data: {
               queueStatus: 'queued_for_pickup',
               claimedByNickId: null,

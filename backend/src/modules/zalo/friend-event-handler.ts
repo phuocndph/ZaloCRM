@@ -554,7 +554,8 @@ export async function handleFriendEvent(
           });
 
           try {
-            await prisma.customerListEntry.updateMany({
+            // #2 2026-06-06 — queueStatus ở bảng nối per-trigger.
+            await prisma.triggerQueueEntry.updateMany({
               where: {
                 triggerId: outbox.triggerId,
                 contactId: contact.id,
@@ -562,7 +563,7 @@ export async function handleFriendEvent(
                   notIn: ['customer_block', 'converted_lead', 'cancelled'],
                 },
               },
-              data: { queueStatus: 'customer_block', updatedAt: new Date() },
+              data: { queueStatus: 'customer_block' },
             });
           } catch (updErr) {
             logger.warn(

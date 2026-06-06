@@ -154,6 +154,19 @@ export async function sendMessageHandler(ctx: ActionContext): Promise<ActionResu
     });
   }
 
+  // Source attribution — UI chat hiển thị badge "⚙️ Tự động · {sequence} · Bước N/M".
+  // Format khớp MessageSourceBadge.vue: metadata.sender = { kind, name, detail, sequenceId, stepIdx }.
+  const sm = ctx.sequenceMeta;
+  const senderMeta = sm
+    ? {
+        kind: 'bot_automation',
+        name: sm.sequenceName,
+        detail: `Bước ${sm.stepIdx + 1}/${sm.totalSteps}`,
+        sequenceId: sm.sequenceId,
+        stepIdx: sm.stepIdx,
+      }
+    : { kind: 'bot_automation', name: 'Tự động' };
+
   // Step 3: LOOP gửi tuần tự từng tin trong Khối (ĐÚNG THỨ TỰ + delay giữa tin).
   let sentCount = 0;
   let lastMessageRow: { id: string; content: string | null; contentType: string; sentAt: Date } | null = null;
@@ -241,6 +254,8 @@ export async function sendMessageHandler(ctx: ActionContext): Promise<ActionResu
           contentType: persistContentType,
           sentAt: new Date(),
           sentVia: 'automation',
+          // metadata.sender → badge "⚙️ Tự động · {sequence} · Bước N/M" trong UI chat.
+          metadata: { sender: senderMeta },
         },
         select: { id: true, content: true, contentType: true, sentAt: true },
       });

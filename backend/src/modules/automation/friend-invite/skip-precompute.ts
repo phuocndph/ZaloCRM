@@ -59,54 +59,30 @@ export async function precomputeAndSeedPool(input: {
   const { triggerId, orgId, spec } = input;
   const { recencyDays, friendCap, entryStatuses } = spec.skipRules;
 
-  // 1. Release entries owned by completed/cancelled triggers (Bug fix 2026-05-30)
-  //    Khi Mục tiêu cũ đã 'completed' hoặc 'cancelled', entries của nó vẫn giữ triggerId
-  //    cũ → Mục tiêu mới không claim được → 0 entry → không bao giờ chạy.
-  //    Pattern: release đầu tiên rồi mới claim.
+  // #2 2026-06-06 (Anh chốt) — MỖI MỤC TIÊU ĐỘC LẬP, KHÔNG chống trùng.
+  // Trước đây "claim ownership" set trigger_id trên entry → 1 khách chỉ thuộc 1 Mục tiêu
+  // → 2 Mục tiêu chung tệp tranh nhau (release stale + chỉ claim trigger_id=null). BỎ HẲN
+  // logic đó. Giờ INSERT 1 hàng bảng nối cho MỌI entry của list (mỗi Mục tiêu hàng riêng).
+  // ON CONFLICT DO NOTHING: re-seed (cron re-activate) idempotent, KHÔNG xoá tiến độ đang chạy.
   await prisma.$executeRawUnsafe(
     `
-    UPDATE customer_list_entries e
-    SET trigger_id = NULL
-    WHERE e.customer_list_id = $1
-      AND e.trigger_id IS NOT NULL
-      AND EXISTS (
-        SELECT 1 FROM automation_triggers t
-        WHERE t.id = e.trigger_id
-          AND t.state IN ('completed', 'cancelled', 'archived')
-      )
+    INSERT INTO trigger_queue_entries
+      (id, trigger_id, customer_list_entry_id, org_id, customer_list_id, contact_id,
+       queue_status, failed_nick_ids, stuck_recovery_count, rate_limit_count, created_at, updated_at)
+    SELECT gen_random_uuid()::text, $1, e.id, $2, e.customer_list_id, e.contact_id,
+           'queued_for_pickup', '[]'::jsonb, 0, 0, NOW(), NOW()
+    FROM customer_list_entries e
+    WHERE e.customer_list_id = $3
+    ON CONFLICT (trigger_id, customer_list_entry_id) DO NOTHING
     `,
+    triggerId,
+    orgId,
     spec.listId,
   );
 
-  // 2. Set triggerId on entries (if not yet set) — claim ownership
-  //    Chỉ claim entry chưa có owner ACTIVE — entry đang thuộc trigger active/draft/paused
-  //    của Mục tiêu khác phải giữ nguyên (tránh 2 Mục tiêu giành cùng KH).
-  //
-  //    Bug fix 2026-05-30 #2: RESET failedNickIds + stuckRecoveryCount + claimedByNickId
-  //    cho entries claim mới. Lý do: failedNickIds tích lũy từ các Mục tiêu cũ → nếu cả
-  //    2 nick cùng có trong failedNickIds → Mục tiêu mới mark tất cả entries
-  //    'failed_permanent' ngay (xem pool-query.ts:73-74 — claimNextEntry yêu cầu
-  //    NOT failedNickIds @> [nickId]). Mục tiêu mới có thể đã đổi nick / template /
-  //    thời điểm — phải retry sạch.
-  await prisma.customerListEntry.updateMany({
-    where: {
-      customerListId: spec.listId,
-      triggerId: null,
-    },
-    data: {
-      triggerId,
-      failedNickIds: [],
-      claimedByNickId: null,
-      lockedAt: null,
-      stuckRecoveryCount: 0,
-      // P2 2026-06-02: reset rate-limit count khi entry claim trigger mới, tránh
-      // counter cũ từ Mục tiêu trước escalate hard fail trên Mục tiêu mới.
-      rateLimitCount: 0,
-    },
-  });
-
   // 2. Scoped batch UPDATE with CTE — per spike #1 query plan verified
   //    Replaces queue_status to: queued_for_pickup | skipped_* | unchanged.
+  //    #2 2026-06-06: target BẢNG NỐI (theo triggerId), đọc has_zalo/status từ entry.
   //    Uses Friend table for friend cap + Conversation+Message for recency.
   const entryStatusList =
     entryStatuses.length > 0 ? entryStatuses.map((s) => `'${s.replace(/'/g, "''")}'`).join(',') : "''";
@@ -129,21 +105,26 @@ export async function precomputeAndSeedPool(input: {
 
   const rawUpdateResult = await prisma.$executeRawUnsafe(
     `
-    UPDATE customer_list_entries e
+    UPDATE trigger_queue_entries q
     SET queue_status = CASE
       WHEN e.has_zalo = false THEN 'skipped_no_zalo'
       ${friendCapClause}
       ${recencyClause}
       WHEN e.status IN (${entryStatusList}) THEN 'skipped_status'
       ELSE 'queued_for_pickup'
-    END
-    WHERE e.trigger_id = $1
+    END,
+    updated_at = NOW()
+    FROM customer_list_entries e
+    WHERE q.customer_list_entry_id = e.id
+      AND q.trigger_id = $1
+      -- chỉ (re)tính cho hàng chưa xử lý — KHÔNG đụng hàng đang processing/processed
+      AND q.queue_status = 'queued_for_pickup'
     `,
     triggerId,
   );
 
-  // 3. Count results
-  const counts = await prisma.customerListEntry.groupBy({
+  // 3. Count results (bảng nối, theo triggerId)
+  const counts = await prisma.triggerQueueEntry.groupBy({
     by: ['queueStatus'],
     where: { triggerId },
     _count: { id: true },

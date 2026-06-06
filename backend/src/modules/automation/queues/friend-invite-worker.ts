@@ -72,28 +72,30 @@ async function processJob(
   const { triggerId, entryId, nickId, orgId } = job.data;
   const tag = `[friend-invite-worker job=${job.id}]`;
 
-  // ── STEP 1: Load entry + verify state ──
+  // ── STEP 1: Load entry (data khách) + hàng đợi bảng nối (per-trigger) ──
+  // #2 2026-06-06 — queueStatus/triggerId chuyển sang bảng nối trigger_queue_entries.
   const entry = await prisma.customerListEntry.findUnique({
     where: { id: entryId },
     select: {
       id: true,
-      queueStatus: true,
-      triggerId: true,
       phoneE164: true,
       phoneRaw: true,
       zaloUid: true,
       contactId: true,
     },
   });
-
   if (!entry) {
     return { status: 'skipped', reason: 'entry_not_found' };
   }
-  if (entry.queueStatus !== 'queued_for_pickup' && entry.queueStatus !== 'processing') {
-    return { status: 'skipped', reason: `state_${entry.queueStatus}` };
+  const queueRow = await prisma.triggerQueueEntry.findUnique({
+    where: { triggerId_customerListEntryId: { triggerId, customerListEntryId: entryId } },
+    select: { queueStatus: true },
+  });
+  if (!queueRow) {
+    return { status: 'skipped', reason: 'queue_row_not_found' };
   }
-  if (entry.triggerId !== triggerId) {
-    return { status: 'skipped', reason: 'trigger_mismatch' };
+  if (queueRow.queueStatus !== 'queued_for_pickup' && queueRow.queueStatus !== 'processing') {
+    return { status: 'skipped', reason: `state_${queueRow.queueStatus}` };
   }
   if (!entry.contactId) {
     return { status: 'skipped', reason: 'no_contact_id' };
@@ -157,9 +159,9 @@ async function processJob(
       await job.moveToDelayed(guard.deferUntilMs, token);
       throw new DelayedError();
     }
-    // Permanent skip (recency / multi-nick)
-    await prisma.customerListEntry.update({
-      where: { id: entryId },
+    // Permanent skip (recency / multi-nick) — #2: bảng nối per-trigger.
+    await prisma.triggerQueueEntry.update({
+      where: { triggerId_customerListEntryId: { triggerId, customerListEntryId: entryId } },
       data: {
         queueStatus: guard.reason?.startsWith('multi_nick') ? 'skipped_friend_cap' :
                      guard.reason?.startsWith('cross_nick_recency') ? 'skipped_recency' :
@@ -206,7 +208,7 @@ async function processJob(
     const classified = classifyError(err);
     logger.error(`${tag} handler threw ${classified.classification}: ${classified.message}`);
     if (classified.classification === 'permanent') {
-      await releaseEntryFailed({ entryId, nickId, reason: classified.errorCode });
+      await releaseEntryFailed({ entryId, triggerId, nickId, reason: classified.errorCode });
       throw new UnrecoverableError(`Permanent: ${classified.errorCode}`);
     }
     throw err;
@@ -214,9 +216,9 @@ async function processJob(
 
   // Handle outcome
   if (actionResult.outcome === 'no_zalo') {
-    // P4: notify sale gọi điện
-    await prisma.customerListEntry.update({
-      where: { id: entryId },
+    // P4: notify sale gọi điện — #2: hàng đợi bảng nối per-trigger.
+    await prisma.triggerQueueEntry.update({
+      where: { triggerId_customerListEntryId: { triggerId, customerListEntryId: entryId } },
       data: { queueStatus: 'failed_permanent', lockedAt: null },
     });
     await prisma.automationEventLog.create({
@@ -252,8 +254,8 @@ async function processJob(
   }
 
   if (actionResult.outcome === 'already_friend') {
-    await prisma.customerListEntry.update({
-      where: { id: entryId },
+    await prisma.triggerQueueEntry.update({
+      where: { triggerId_customerListEntryId: { triggerId, customerListEntryId: entryId } },
       data: { queueStatus: 'processed', lockedAt: null },
     });
     await prisma.automationEventLog.create({
@@ -291,6 +293,7 @@ async function processJob(
       // P5: markPermanent + notify Zalo nội bộ
       await releaseEntryFailed({
         entryId,
+        triggerId,
         nickId,
         reason: actionResult.errorCode ?? classified.errorCode,
       });
@@ -323,6 +326,7 @@ async function processJob(
     // Transient: release entry để nick khác pick + throw retry
     await releaseEntryFailed({
       entryId,
+      triggerId,
       nickId,
       reason: actionResult.errorCode ?? 'transient',
     });

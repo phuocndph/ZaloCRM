@@ -307,21 +307,22 @@ export async function listMucTieuForOrg(
         blockCount,
         lastOutbox,
       ] = await Promise.all([
+        // #2 2026-06-06 — đếm hàng đợi per-trigger từ bảng nối; hasZalo (data khách) qua relation entry.
         // 1. processed entries for this trigger
-        prisma.customerListEntry.count({
+        prisma.triggerQueueEntry.count({
           where: { triggerId: t.id, queueStatus: 'processed' },
         }),
         // 2. total entries assigned to this trigger (queue pool size)
-        prisma.customerListEntry.count({
+        prisma.triggerQueueEntry.count({
           where: { triggerId: t.id },
         }),
         // 2a. hasZalo=true entries (đã quét + có Zalo)
-        prisma.customerListEntry.count({
-          where: { triggerId: t.id, hasZalo: true },
+        prisma.triggerQueueEntry.count({
+          where: { triggerId: t.id, entry: { hasZalo: true } },
         }),
         // 2b. hasZalo=false entries (đã quét + không có Zalo / SDK 404)
-        prisma.customerListEntry.count({
-          where: { triggerId: t.id, hasZalo: false },
+        prisma.triggerQueueEntry.count({
+          where: { triggerId: t.id, entry: { hasZalo: false } },
         }),
         // 3. friendSent — PER-KH (2026-06-05 fix). Trước dùng .count() = per-row
         // (đếm LƯỢT gửi, 1 KH gửi qua nhiều nick = nhiều row → phình mẫu số Phase 1).
@@ -400,7 +401,7 @@ export async function listMucTieuForOrg(
           where: { orgId, triggerId: t.id, state: 'active' },
           _count: { id: true },
         }),
-        prisma.customerListEntry.count({
+        prisma.triggerQueueEntry.count({
           where: { triggerId: t.id, queueStatus: { in: ['queued_for_pickup', 'processing'] } },
         }),
       ]);

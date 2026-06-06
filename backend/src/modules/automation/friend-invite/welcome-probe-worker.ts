@@ -254,10 +254,11 @@ async function processRow(row: ProbeRow): Promise<void> {
           welcomeLastError: `nick_offline status=${nickStatusCheck?.status ?? 'missing'}`,
         },
       }),
-      prisma.customerListEntry.updateMany({
+      // #2 2026-06-06 — nickHoldSince ở bảng nối per-trigger (filter theo contactId denormalized).
+      prisma.triggerQueueEntry.updateMany({
         where: {
           contactId: row.contact_id,
-          triggerId: row.trigger_id,
+          triggerId: row.trigger_id ?? undefined,
           claimedByNickId: row.nick_id,
           nickHoldSince: null,
         },
@@ -364,10 +365,11 @@ async function processRow(row: ProbeRow): Promise<void> {
             welcomeLastError: `awaiting_nick ${errMsg}`.slice(0, 500),
           },
         }),
-        prisma.customerListEntry.updateMany({
+        // #2 2026-06-06 — nickHoldSince ở bảng nối per-trigger.
+        prisma.triggerQueueEntry.updateMany({
           where: {
             contactId: row.contact_id,
-            triggerId: row.trigger_id,
+            triggerId: row.trigger_id ?? undefined,
             claimedByNickId: row.nick_id,
             nickHoldSince: null,
           },

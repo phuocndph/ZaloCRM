@@ -613,7 +613,8 @@ export async function handleIncomingMessage(
             // ?status=customer_reply. Guard whereInclude tránh ghi đè terminal state
             // (customer_block, converted_lead, cancelled) hoặc trùng lặp (customer_reply).
             try {
-              await prisma.customerListEntry.updateMany({
+              // #2 2026-06-06 — queueStatus ở bảng nối per-trigger (filter theo contactId denormalized).
+              await prisma.triggerQueueEntry.updateMany({
                 where: {
                   triggerId: outbox.triggerId,
                   contactId,
@@ -621,7 +622,7 @@ export async function handleIncomingMessage(
                     notIn: ['customer_reply', 'customer_block', 'converted_lead', 'cancelled'],
                   },
                 },
-                data: { queueStatus: 'customer_reply', updatedAt: new Date() },
+                data: { queueStatus: 'customer_reply' },
               });
             } catch (updErr) {
               logger.warn('[message-handler] customer_reply entry update failed:', updErr);

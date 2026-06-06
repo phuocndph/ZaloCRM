@@ -939,7 +939,7 @@ function openFile(href: string) {
   border: 1px solid var(--smax-grey-200, #ebedf0);
 }
 .message-bubble.is-self {
-  background: var(--smax-bubble-self, #d0e6ff);
+  background: var(--smax-bubble-self, #d7ecf7);
   color: var(--smax-text, #212121);
   border-radius: 15px 15px 4px 15px;
 }

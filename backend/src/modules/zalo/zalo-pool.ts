@@ -534,7 +534,8 @@ class ZaloAccountPool {
     const now = new Date();
     try {
       const [entryCount, outboxCount, nick] = await Promise.all([
-        prisma.customerListEntry.updateMany({
+        // #2 2026-06-06 — nickHoldSince ở bảng nối per-trigger.
+        prisma.triggerQueueEntry.updateMany({
           where: {
             claimedByNickId: accountId,
             queueStatus: { in: ['processing', 'processed'] },
@@ -663,7 +664,8 @@ class ZaloAccountPool {
         return;
       }
 
-      const affectedCount = await prisma.customerListEntry.count({
+      // #2 2026-06-06 — đếm hàng đang hold ở bảng nối per-trigger.
+      const affectedCount = await prisma.triggerQueueEntry.count({
         where: {
           claimedByNickId: accountId,
           nickHoldSince: { not: null },

@@ -390,7 +390,7 @@ async function runTick(nickId: string): Promise<void> {
     }
     if (!entry.phoneE164) {
       // Should never happen (skip rule pre-filtered) but defensive
-      await releaseEntryFailed({ entryId: entry.id, nickId, reason: 'no phone_e164' });
+      await releaseEntryFailed({ entryId: entry.id, triggerId: entry.triggerId, nickId, reason: 'no phone_e164' });
       return;
     }
 
@@ -414,7 +414,7 @@ async function runTick(nickId: string): Promise<void> {
       },
     });
     if (!trigger) {
-      await releaseEntryFailed({ entryId: entry.id, nickId, reason: 'trigger not found' });
+      await releaseEntryFailed({ entryId: entry.id, triggerId: entry.triggerId, nickId, reason: 'trigger not found' });
       return;
     }
 
@@ -430,8 +430,9 @@ async function runTick(nickId: string): Promise<void> {
         orgId: trigger.orgId,
       });
       if (!mnGuard.passed) {
-        await prisma.customerListEntry.update({
-          where: { id: entry.id },
+        // #2 2026-06-06 — trạng thái hàng đợi ở bảng nối per-trigger.
+        await prisma.triggerQueueEntry.update({
+          where: { triggerId_customerListEntryId: { triggerId: entry.triggerId, customerListEntryId: entry.id } },
           data: { queueStatus: 'skipped_friend_cap', lockedAt: null, claimedByNickId: null },
         });
         logger.info(
@@ -468,9 +469,14 @@ async function runTick(nickId: string): Promise<void> {
         | undefined;
       if (!found || !found.uid) {
         // KH không có Zalo — mark hasZalo=false + skip (Lead Pool no-Zalo flow handles later)
+        // #2 2026-06-06 — TÁCH: hasZalo (data khách) giữ trên entry; queueStatus → bảng nối.
         await prisma.customerListEntry.update({
           where: { id: entry.id },
-          data: { queueStatus: 'skipped_status', hasZalo: false },
+          data: { hasZalo: false },
+        });
+        await prisma.triggerQueueEntry.update({
+          where: { triggerId_customerListEntryId: { triggerId: entry.triggerId, customerListEntryId: entry.id } },
+          data: { queueStatus: 'skipped_status' },
         });
         logger.info(`[nick-worker] ${nickId} entry=${entry.id} skipped: no Zalo profile for phone`);
         return;
@@ -676,6 +682,7 @@ async function runTick(nickId: string): Promise<void> {
         // đúng nghĩa "KH chặn cả org".
         await releaseEntryFailed({
           entryId: entry.id,
+          triggerId: entry.triggerId,
           nickId,
           reason: `code215_blocked_by_user ${msg}`.slice(0, 200),
         });
@@ -756,8 +763,9 @@ async function runTick(nickId: string): Promise<void> {
         // entry về queue, tăng rateLimitCount cho metric), nick online lại sẽ pick
         // bình thường. KHÔNG cấm nick vĩnh viễn vì lỗi tạm thời (timeout/socket/221).
         // failedNickIds CHỈ append khi lỗi cứng thật (KH chặn / KH không có Zalo).
-        const updated = await prisma.customerListEntry.update({
-          where: { id: entry.id },
+        // #2 2026-06-06 — trạng thái hàng đợi ở bảng nối per-trigger.
+        const updated = await prisma.triggerQueueEntry.update({
+          where: { triggerId_customerListEntryId: { triggerId: entry.triggerId, customerListEntryId: entry.id } },
           data: {
             queueStatus: 'queued_for_pickup',
             claimedByNickId: null,
@@ -773,6 +781,7 @@ async function runTick(nickId: string): Promise<void> {
         // Hard fail — append failedNickIds
         await releaseEntryFailed({
           entryId: entry.id,
+          triggerId: entry.triggerId,
           nickId,
           reason: `${code} ${msg}`.slice(0, 200),
         });

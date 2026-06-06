@@ -206,7 +206,7 @@ async function processJob(
   const [sequence, trigger, nick] = await Promise.all([
     prisma.automationSequence.findUnique({
       where: { id: sequenceId },
-      select: { id: true, steps: true, runtimeRules: true, enabled: true },
+      select: { id: true, name: true, steps: true, runtimeRules: true, enabled: true },
     }),
     prisma.automationTrigger.findUnique({
       where: { id: triggerId },
@@ -252,7 +252,8 @@ async function processJob(
   if (nick.status !== 'connected' && token) {
     const now = new Date();
     await Promise.all([
-      prisma.customerListEntry.updateMany({
+      // #2 2026-06-06 — nickHoldSince ở bảng nối per-trigger.
+      prisma.triggerQueueEntry.updateMany({
         where: {
           contactId,
           triggerId,
@@ -358,6 +359,13 @@ async function processJob(
     actionType: block.actionType as ActionContext['actionType'],
     attemptCount: (job.attemptsMade ?? 0) + 1,
     rulesSnapshot: (sequence.runtimeRules as Record<string, unknown>) ?? undefined,
+    // 2026-06-06 — attribution cho badge "⚙️ Tự động · {sequence} · Bước N/M".
+    sequenceMeta: {
+      sequenceId: sequence.id,
+      sequenceName: sequence.name ?? 'Luồng kịch bản',
+      stepIdx,
+      totalSteps,
+    },
   };
 
   logger.info(
@@ -419,7 +427,8 @@ async function processJob(
   // Nick gốc đã hồi và gửi tin thành công → clear cờ hold cho entry này +
   // flip campaign về 'active'. KH tiếp tục bám đuổi bình thường.
   await Promise.all([
-    prisma.customerListEntry.updateMany({
+    // #2 2026-06-06 — clear nickHoldSince ở bảng nối per-trigger.
+    prisma.triggerQueueEntry.updateMany({
       where: { contactId, triggerId, nickHoldSince: { not: null } },
       data: { nickHoldSince: null, lastResetReason: null },
     }),

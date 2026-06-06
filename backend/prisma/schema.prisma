@@ -2177,6 +2177,8 @@ model AutomationTrigger {
   broadcast AutomationBroadcast? @relation("TriggerBroadcast", fields: [broadcastId], references: [id], onDelete: SetNull)
   createdBy User                 @relation("TriggerCreatedBy", fields: [createdById], references: [id])
   campaigns AutomationCampaign[] @relation("CampaignTrigger")
+  // #2 2026-06-06 — hàng đợi per-trigger (mỗi Mục tiêu độc lập, không tranh khách).
+  queueEntries TriggerQueueEntry[]
 
   @@index([orgId, eventType, enabled])
   @@index([orgId, category])
@@ -2517,38 +2519,51 @@ model CustomerListEntry {
   customFields Json? @map("custom_fields")
   sourceMeta   Json? @map("source_meta")
 
-  // Phase Friend Invite Queue 2026-05-28 — producer-consumer queue mode.
-  // null = entry KHÔNG thuộc Mục tiêu nào (legacy enrichment workflow).
-  // ENUM: queued_for_pickup | processing | processed | skipped_friend_cap |
-  //       skipped_recency | skipped_status | failed_permanent | failed_stuck | cancelled
-  queueStatus        String?   @map("queue_status")
+  // #2 2026-06-06 (Anh chốt) — TOÀN BỘ cột hàng đợi + M9 override đã TÁCH sang bảng
+  // nối TriggerQueueEntry (per-trigger, mỗi Mục tiêu độc lập). CustomerListEntry giờ
+  // chỉ giữ data khách per-tệp (phone, zalo*, hasZalo, contactId, dup, status...).
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // #2 2026-06-06 — hàng đợi tách sang bảng nối per-trigger.
+  queueRows TriggerQueueEntry[]
+
+  @@unique([customerListId, rowIndex])
+  @@index([customerListId, status])
+  @@index([phoneE164]) // hot index for cross-list dedup + reverse update
+  @@index([phoneLocal])
+  @@map("customer_list_entries")
+}
+
+// #2 2026-06-06 (Anh chốt) — BẢNG NỐI hàng đợi per-Mục-tiêu.
+// Mỗi Mục tiêu (trigger) độc lập hoàn toàn về khách, KHÔNG chống trùng: 1 khách
+// (CustomerListEntry) có thể có N hàng — mỗi trigger 1 hàng, mỗi hàng 1 trạng thái
+// xử lý riêng. Trước đây các cột này nằm thẳng trên CustomerListEntry nên 1 khách chỉ
+// thuộc 1 trigger → 2 Mục tiêu chung tệp tranh nhau. Tách ra đây để chạy song song.
+// Denormalize orgId/customerListId/contactId để claim/sweeper/sticky-hold query nhanh
+// (sticky-hold + chat-handler filter theo contactId, không theo entryId).
+model TriggerQueueEntry {
+  id                  String  @id @default(uuid())
+  triggerId           String  @map("trigger_id")
+  customerListEntryId String  @map("customer_list_entry_id")
+  // Denormalized scope keys (đọc/where nhanh không cần JOIN entry).
+  orgId               String  @map("org_id")
+  customerListId      String  @map("customer_list_id")
+  contactId           String? @map("contact_id")
+
+  // ── Hàng đợi (di dời từ CustomerListEntry) ──
+  queueStatus        String    @default("queued_for_pickup") @map("queue_status")
   claimedByNickId    String?   @map("claimed_by_nick_id")
   lockedAt           DateTime? @map("locked_at")
-  failedNickIds      Json      @default("[]") @map("failed_nick_ids") @db.JsonB // string[] nick đã fail entry này
+  failedNickIds      Json      @default("[]") @map("failed_nick_ids") @db.JsonB
   stuckRecoveryCount Int       @default(0) @map("stuck_recovery_count")
-  // P2 2026-06-02 — đếm số lần soft fail (RATE_LIMITED/NOT_CONNECTED/timeout).
-  // Sprint v3 2026-06-03 — BỎ escalate SOFT_FAIL_CAP. Counter giữ cho metric
-  // nhưng KHÔNG còn append failedNickIds khi đạt cap. Skip turn, online lại
-  // nick tiếp tục pick (Anh chốt câu 2.5).
   rateLimitCount     Int       @default(0) @map("rate_limit_count")
-  triggerId          String?   @map("trigger_id") // FK to AutomationTrigger (no relation enforced)
+  nickHoldSince      DateTime? @map("nick_hold_since")
+  restartCycle       Int       @default(0) @map("restart_cycle")
+  lastResetReason    String?   @map("last_reset_reason")
 
-  // ── Sticky Nick 24h Hold Flow (Sprint v3 2026-06-03) ──
-  // Anh Lộc chốt: nick gắn chặt 1 KH hết welcome+sequence. Nick chết →
-  // hold 23h chờ nick hồi → quá hạn reset queue cho nick khác làm lại từ đầu.
-  // nickHoldSince = NOW() khi nick gốc disconnect lần đầu cho entry này.
-  // restart_cycle = đếm số lần KH bị reset (Vòng 0, Vòng 1, ...). UI chip "Vòng N".
-  // last_reset_reason = audit lý do reset (nick_offline_23h | manual | etc).
-  nickHoldSince    DateTime? @map("nick_hold_since")
-  restartCycle     Int       @default(0) @map("restart_cycle")
-  lastResetReason  String?   @map("last_reset_reason")
-
-  // ── M9 Bám đuổi thủ công overrides (Luồng Mục Tiêu 2026-06-01) ──
-  // Sale ở /chat enroll 1 KH vào "Mục tiêu hệ thống" → set override per-entry:
-  //   nickIdOverride = nick đang chat (KHÔNG trong segmentSpec.nickIds whitelist)
-  //   sequenceIdOverride = Sequence sale tự chọn trong modal
-  //   enrolledBy = userId sale ra quyết định
-  //   enrollReason = lý do bắt buộc nhập trong modal
+  // ── M9 manual-enroll override (di dời — per-trigger, Anh chốt dời) ──
   sequenceIdOverride String?   @map("sequence_id_override")
   nickIdOverride     String?   @map("nick_id_override")
   enrolledBy         String?   @map("enrolled_by")
@@ -2559,17 +2574,17 @@ model CustomerListEntry {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  @@unique([customerListId, rowIndex])
-  @@index([customerListId, status])
-  @@index([phoneE164]) // hot index for cross-list dedup + reverse update
-  @@index([phoneLocal])
-  // Phase Friend Invite Queue 2026-05-28 — hot pickup query
-  @@index([queueStatus, triggerId, rowIndex])
-  @@index([queueStatus, lockedAt])
-  // M9 — nick override + enrolledBy lookup
-  @@index([nickIdOverride])
-  @@index([enrolledBy, enrolledAt])
-  @@map("customer_list_entries")
+  trigger AutomationTrigger @relation(fields: [triggerId], references: [id], onDelete: Cascade)
+  entry   CustomerListEntry @relation(fields: [customerListEntryId], references: [id], onDelete: Cascade)
+
+  @@unique([triggerId, customerListEntryId]) // 1 cặp = 1 hàng đợi
+  @@index([queueStatus, triggerId])          // dashboard groupBy + completion sweeper
+  @@index([queueStatus, lockedAt])           // stuck sweeper
+  @@index([claimedByNickId, queueStatus])    // sticky-hold disconnect/reconnect
+  @@index([nickHoldSince])                   // sticky-hold sweeper
+  @@index([triggerId, contactId])            // chat-handler + accept/reject theo contact
+  @@index([customerListEntryId])             // join entry→queue cho dashboard
+  @@map("trigger_queue_entries")
 }
 
 // ════════════════════════════════════════════════════════════════════════

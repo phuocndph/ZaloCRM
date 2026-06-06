@@ -43,8 +43,9 @@ export interface ClaimedEntry {
  * Order: rowIndex ASC, then trigger creation time ASC (FIFO).
  */
 export async function claimNextEntry(nickId: string, orgId: string): Promise<ClaimedEntry | null> {
-  // Single atomic UPDATE...RETURNING with SKIP LOCKED subquery.
-  // Subquery checks trigger.nickIds (in segmentSpec JSONB) contains this nickId.
+  // #2 2026-06-06 — claim trên BẢNG NỐI trigger_queue_entries (mỗi Mục tiêu hàng đợi
+  // riêng). Lock row bảng nối (FOR UPDATE SKIP LOCKED), data khách JOIN từ entry.
+  // ClaimedEntry.id GIỮ là entryId (downstream dùng làm key + nguồn data khách).
   const rows = await prisma.$queryRaw<
     Array<{
       id: string;
@@ -57,26 +58,36 @@ export async function claimNextEntry(nickId: string, orgId: string): Promise<Cla
       row_index: number;
     }>
   >`
-    UPDATE customer_list_entries
+    UPDATE trigger_queue_entries
     SET claimed_by_nick_id = ${nickId},
         locked_at = NOW(),
-        queue_status = 'processing'
+        queue_status = 'processing',
+        updated_at = NOW()
     WHERE id = (
-      SELECT e.id
-      FROM customer_list_entries e
-      JOIN automation_triggers t ON t.id = e.trigger_id
-      WHERE e.queue_status = 'queued_for_pickup'
+      SELECT q.id
+      FROM trigger_queue_entries q
+      JOIN automation_triggers t ON t.id = q.trigger_id
+      JOIN customer_list_entries e ON e.id = q.customer_list_entry_id
+      WHERE q.queue_status = 'queued_for_pickup'
         AND t.state = 'active'
         AND t.org_id = ${orgId}
         AND t.event_type = 'friend_invite_to_list'
         AND (t.segment_spec->'nickIds')::jsonb @> to_jsonb(${nickId}::text)
-        AND NOT (e.failed_nick_ids @> to_jsonb(${nickId}::text))
-        AND jsonb_array_length(e.failed_nick_ids) < jsonb_array_length(t.segment_spec->'nickIds')
+        AND NOT (q.failed_nick_ids @> to_jsonb(${nickId}::text))
+        AND jsonb_array_length(q.failed_nick_ids) < jsonb_array_length(t.segment_spec->'nickIds')
       ORDER BY e.row_index ASC, t.created_at ASC
       LIMIT 1
       FOR UPDATE SKIP LOCKED
     )
-    RETURNING id, contact_id, phone_e164, phone_raw, name_raw, trigger_id, zalo_uid, row_index
+    RETURNING
+      customer_list_entry_id AS id,
+      contact_id,
+      (SELECT phone_e164 FROM customer_list_entries WHERE id = trigger_queue_entries.customer_list_entry_id) AS phone_e164,
+      (SELECT phone_raw  FROM customer_list_entries WHERE id = trigger_queue_entries.customer_list_entry_id) AS phone_raw,
+      (SELECT name_raw   FROM customer_list_entries WHERE id = trigger_queue_entries.customer_list_entry_id) AS name_raw,
+      trigger_id,
+      (SELECT zalo_uid   FROM customer_list_entries WHERE id = trigger_queue_entries.customer_list_entry_id) AS zalo_uid,
+      (SELECT row_index  FROM customer_list_entries WHERE id = trigger_queue_entries.customer_list_entry_id) AS row_index
   `;
   if (rows.length === 0) return null;
   const r = rows[0];
@@ -124,13 +135,17 @@ export async function markEntrySent(input: {
         triggerId: { not: input.triggerId },
       },
     });
-    await tx.customerListEntry.update({
-      where: { id: input.entryId },
+    // #2 2026-06-06 — trạng thái hàng đợi ở bảng nối (per-trigger), KHÔNG còn trên entry.
+    await tx.triggerQueueEntry.update({
+      where: {
+        triggerId_customerListEntryId: {
+          triggerId: input.triggerId,
+          customerListEntryId: input.entryId,
+        },
+      },
       data: {
         queueStatus: 'processed',
         lockedAt: null,
-        // processedAt is reused from enrichedAt? Keep enrichedAt for legacy;
-        // Phase Friend Invite uses Outbox.createdAt as send timestamp.
       },
     });
     // Upsert (idempotent) on composite unique [customerListEntryId, kind].
@@ -200,45 +215,54 @@ export async function markEntrySent(input: {
  * `failed_nick_ids = failed_nick_ids || to_jsonb(nick_id)` appends if not already present.
  * Idempotent: nếu cùng nick fail 2 lần (retry path), array vẫn unique.
  */
+// #2 2026-06-06 — BẮT BUỘC truyền triggerId (required, không default) để scope đúng
+// hàng đợi của Mục tiêu này; trước đây WHERE id=entryId đụng MỌI trigger (bug khi
+// 1 KH thuộc nhiều Mục tiêu).
 export async function releaseEntryFailed(input: {
   entryId: string;
+  triggerId: string;
   nickId: string;
   reason: string;
 }): Promise<void> {
   await prisma.$executeRaw`
-    UPDATE customer_list_entries
+    UPDATE trigger_queue_entries
     SET queue_status = 'queued_for_pickup',
         claimed_by_nick_id = NULL,
         locked_at = NULL,
+        updated_at = NOW(),
         failed_nick_ids = CASE
           WHEN failed_nick_ids @> to_jsonb(${input.nickId}::text)
             THEN failed_nick_ids
           ELSE failed_nick_ids || to_jsonb(${input.nickId}::text)
         END
-    WHERE id = ${input.entryId}
+    WHERE trigger_id = ${input.triggerId}
+      AND customer_list_entry_id = ${input.entryId}
   `;
   // After append, check if failedNickIds covers all trigger's nicks → mark failed_permanent.
   // Trigger's eligible nick count = segmentSpec.nickIds.length (config tại trigger create time).
-  // Race-safe: re-read array + trigger spec (no Prisma relation enforced — query separately).
-  const after = await prisma.customerListEntry.findUnique({
-    where: { id: input.entryId },
-    select: { failedNickIds: true, triggerId: true },
+  const after = await prisma.triggerQueueEntry.findUnique({
+    where: {
+      triggerId_customerListEntryId: { triggerId: input.triggerId, customerListEntryId: input.entryId },
+    },
+    select: { failedNickIds: true },
   });
-  if (!after || !after.triggerId) return;
+  if (!after) return;
   const failedArr = Array.isArray(after.failedNickIds) ? (after.failedNickIds as string[]) : [];
   const trigger = await prisma.automationTrigger.findUnique({
-    where: { id: after.triggerId },
+    where: { id: input.triggerId },
     select: { segmentSpec: true },
   });
   const spec = trigger?.segmentSpec as { nickIds?: string[] } | null;
   const triggerNickCount = Array.isArray(spec?.nickIds) ? spec!.nickIds!.length : 5;
   if (failedArr.length >= triggerNickCount) {
-    await prisma.customerListEntry.update({
-      where: { id: input.entryId },
+    await prisma.triggerQueueEntry.update({
+      where: {
+        triggerId_customerListEntryId: { triggerId: input.triggerId, customerListEntryId: input.entryId },
+      },
       data: { queueStatus: 'failed_permanent' },
     });
     logger.warn(
-      `[friend-invite] entry ${input.entryId} marked failed_permanent — all ${triggerNickCount} trigger nicks failed (last reason: ${input.reason})`,
+      `[friend-invite] entry ${input.entryId} (trigger ${input.triggerId}) marked failed_permanent — all ${triggerNickCount} trigger nicks failed (last reason: ${input.reason})`,
     );
   }
 }

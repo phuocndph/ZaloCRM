@@ -61,6 +61,15 @@ export interface ActionContext {
   // Phase Friend Invite 2026-05-28 — Campaign rulesSnapshot for handler-level
   // overrides (vd: allowStrangerMessage flag bypass FRIENDSHIP_NOT_ACCEPTED).
   rulesSnapshot?: Record<string, unknown>;
+  // 2026-06-06 — Source attribution cho Message.metadata.sender (badge "⚙️ Tự động"
+  // hiện tên Sequence + bước N/M trong UI chat). Optional vì friend-invite worker
+  // không có sequence context.
+  sequenceMeta?: {
+    sequenceId: string;
+    sequenceName: string;
+    stepIdx: number;     // 0-based
+    totalSteps: number;
+  };
 }
 
 export interface ActionResult {
