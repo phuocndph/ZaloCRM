@@ -59,6 +59,7 @@ import { zaloDashboardRoutes } from './modules/zalo/zalo-dashboard-routes.js';
 import { zaloPool } from './modules/zalo/zalo-pool.js';
 import { registerZaloSocketHandlers } from './modules/zalo/zalo-socket.js';
 import { registerSocketAuth } from './shared/realtime/socket-auth.js';
+import { registerSecurityHeaders } from './shared/security/security-headers.js';
 import { notificationRoutes } from './modules/notifications/notification-routes.js';
 import { searchRoutes } from './modules/search/search-routes.js';
 import { startZaloHealthCheck } from './modules/zalo/zalo-health-check.js';
@@ -122,6 +123,9 @@ async function bootstrap() {
   await app.register(fastifyJwt, {
     secret: config.jwtSecret,
   });
+
+  // Phase 3 2026-06-08 — security headers (CSP report-only mặc định) cho mọi response.
+  registerSecurityHeaders(app);
 
   await app.register(rateLimit, {
     max: 500,

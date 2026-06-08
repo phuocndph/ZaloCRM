@@ -15,7 +15,8 @@ export type ActivityCategory =
   | 'appointment'    // Lịch hẹn: create / update / complete / cancel / reschedule
   | 'interaction'     // Tổng hợp interaction (first_inbound, silent_30d...) — KHÔNG log từng msg
   | 'system'          // contact_link_parent, merge, import, migration
-  | 'automation';     // Bot actions (auto-tag, auto-score...)
+  | 'automation'      // Bot actions (auto-tag, auto-score...)
+  | 'security';       // Phase 3 2026-06-08 — auth/security events (login, refresh, revoke...)
 
 export type ActorType = 'user' | 'bot' | 'system';
 
@@ -32,6 +33,15 @@ export const ACTION_CATEGORY: Record<string, ActivityCategory> = {
   customer_assign: 'customer_info',
   friend_alias_change: 'customer_info',
   friend_zalo_name_change: 'customer_info',
+
+  // security (Phase 3 2026-06-08)
+  login_success: 'security',
+  logout: 'security',
+  refresh_rotate: 'security',
+  refresh_reuse: 'security',
+  password_change: 'security',
+  grant_change: 'security',
+  token_revoke: 'security',
 
   // tags_crm
   tag_add_crm: 'tags_crm',

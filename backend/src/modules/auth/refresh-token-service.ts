@@ -19,6 +19,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { prisma } from '../../shared/database/prisma-client.js';
 import { runSystemQuery } from '../../shared/tenant/tenant-context.js';
 import { config } from '../../config/index.js';
+import { auditSecurityCritical } from './security-audit.js';
 
 export interface DeviceMeta {
   ip?: string | null;
@@ -99,16 +100,16 @@ export async function revokeFamily(familyId: string): Promise<void> {
  * Logout: revoke family chứa rawToken. Im lặng nếu token không tồn tại (idempotent,
  * không lộ thông tin). Trả về true nếu tìm thấy + revoke.
  */
-export async function logoutByToken(rawToken: string): Promise<boolean> {
+export async function logoutByToken(rawToken: string): Promise<{ userId: string } | null> {
   const rec = await runSystemQuery(() =>
     prisma.refreshToken.findUnique({
       where: { tokenHash: hashToken(rawToken) },
-      select: { familyId: true },
+      select: { familyId: true, userId: true },
     }),
   );
-  if (!rec) return false;
+  if (!rec) return null;
   await revokeFamily(rec.familyId);
-  return true;
+  return { userId: rec.userId };
 }
 
 /**
@@ -130,6 +131,11 @@ export async function rotateRefreshToken(
   // Token đã bị thu hồi -> trình lại = dấu hiệu đánh cắp -> revoke family.
   if (rec.revokedAt) {
     await revokeFamily(rec.familyId);
+    await auditSecurityCritical({
+      action: 'refresh_reuse',
+      userId: rec.userId,
+      details: { familyId: rec.familyId, reason: 'revoked_token_presented', ip: meta.ip ?? null },
+    });
     throw new RefreshReuseError();
   }
 
@@ -148,6 +154,11 @@ export async function rotateRefreshToken(
     }
     // Reuse thật sự (ngoài grace) -> revoke family.
     await revokeFamily(rec.familyId);
+    await auditSecurityCritical({
+      action: 'refresh_reuse',
+      userId: rec.userId,
+      details: { familyId: rec.familyId, reason: 'used_token_replayed', ip: meta.ip ?? null },
+    });
     throw new RefreshReuseError();
   }
 

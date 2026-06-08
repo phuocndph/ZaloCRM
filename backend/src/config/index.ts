@@ -110,4 +110,15 @@ export const config = {
   // Grace window (ms) hấp thụ race đa tab: token vừa xoay trong cửa sổ này bị
   // gửi lại -> cấp token mới cùng family thay vì coi là reuse (đá session oan).
   refreshGraceMs: parseInt(envValue('REFRESH_GRACE_MS') || '20000'),
+
+  /* --- Phase 3 CSP 2026-06-08 --- */
+  // Content-Security-Policy mode:
+  //   report-only (mặc định) — browser CHỈ log vi phạm, KHÔNG chặn (rollout an toàn,
+  //                            không vỡ SPA prod; quan sát rồi mới enforce)
+  //   enforce — chặn thật (bật sau khi report-only sạch trên staging)
+  //   off     — không gửi CSP header
+  cspMode: (() => {
+    const v = (envValue('CSP_MODE') || 'report-only').toLowerCase();
+    return v === 'enforce' || v === 'off' ? v : 'report-only';
+  })() as 'report-only' | 'enforce' | 'off',
 };

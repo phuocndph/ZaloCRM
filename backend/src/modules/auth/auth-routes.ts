@@ -24,6 +24,7 @@ import {
   RefreshReuseError,
   RefreshInvalidError,
 } from './refresh-token-service.js';
+import { auditSecurityAsync } from './security-audit.js';
 import { seedScoringDefaults } from '../scoring/seed-defaults.js';
 import { logger } from '../../shared/utils/logger.js';
 import { config } from '../../config/index.js';
@@ -81,6 +82,12 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     const token = signAccess(app, payload);
     const refresh = await issueRefreshToken(payload.id, deviceMeta(request));
     autoSeedScoringIfNeeded(payload.orgId);
+    auditSecurityAsync({
+      action: 'login_success',
+      orgId: payload.orgId,
+      userId: payload.id,
+      details: { ip: request.ip },
+    });
     return { token, refreshToken: refresh.token, user: payload };
   });
 
@@ -114,7 +121,10 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     '/api/v1/auth/logout',
     async (request) => {
       const raw = (request.body?.refreshToken ?? '').trim();
-      if (raw) await logoutByToken(raw);
+      if (raw) {
+        const res = await logoutByToken(raw);
+        if (res) auditSecurityAsync({ action: 'logout', userId: res.userId, details: { ip: request.ip } });
+      }
       return { ok: true };
     },
   );
