@@ -411,10 +411,15 @@ async function runCampaignTimeoutSweeper(): Promise<void> {
     // sẽ reset KH về queue ở mốc ngưỡng trước khi sweeper này kích campaign timeout.
     // Sweeper campaign-timeout còn giữ làm safety net cho campaign orphan.
     const { campaignTimeoutHours } = await getTechThresholds();
+    // FIX C 2026-06-08 — BỎ điều kiện `triggerId NOT NULL`. Campaign mồ côi (trigger đã
+    // xoá → onDelete:SetNull set triggerId=null) trước đây KHÔNG bao giờ lọt vào đây →
+    // kẹt state='active' vĩnh viễn (quét thực tế 2026-06-08 thấy 3 row treo ~6 ngày).
+    // Trigger đã xoá thì không còn nguồn tạo job mới + jobId gắn triggerId cũ không khớp
+    // gì nữa → an toàn flip 'timeout'. Nhánh mồ côi xử lý riêng trong vòng lặp (không
+    // scan BullMQ vì không có triggerId để dựng prefix).
     const stale = await prisma.automationCampaign.findMany({
       where: {
         state: { in: ['active', 'on_hold'] },
-        triggerId: { not: null },
         updatedAt: { lt: new Date(Date.now() - campaignTimeoutHours * 60 * 60_000) },
       },
       select: {
@@ -444,14 +449,20 @@ async function runCampaignTimeoutSweeper(): Promise<void> {
 
     let flipped = 0;
     for (const c of stale) {
-      if (!c.triggerId) continue;
-      const prefix = `${c.triggerId}-`;
-      const hasPendingJob = pendingJobs.some((j) => j.id && j.id.startsWith(prefix));
-      if (hasPendingJob) {
-        logger.debug(
-          `[campaign-timeout-sweeper] skip campaign=${c.id} trigger=${c.triggerId} — vẫn còn job pending trong BullMQ`,
-        );
-        continue;
+      // FIX C 2026-06-08 — Campaign mồ côi (triggerId=null, trigger đã xoá): không thể
+      // scan BullMQ theo prefix triggerId. Trigger đã xoá → không nguồn job mới + jobId cũ
+      // không khớp gì → flip thẳng 'timeout', BỎ QUA double-check job và BỎ QUA logEvent
+      // (logEvent yêu cầu triggerId hợp lệ — xem event-log-service.ts). Nhánh trigger thật
+      // giữ nguyên double-check như cũ.
+      if (c.triggerId) {
+        const prefix = `${c.triggerId}-`;
+        const hasPendingJob = pendingJobs.some((j) => j.id && j.id.startsWith(prefix));
+        if (hasPendingJob) {
+          logger.debug(
+            `[campaign-timeout-sweeper] skip campaign=${c.id} trigger=${c.triggerId} — vẫn còn job pending trong BullMQ`,
+          );
+          continue;
+        }
       }
 
       // Step 3: atomic flip — đảm bảo vẫn 'active' hoặc 'on_hold' (tránh race với tryCompleteCampaign).
@@ -467,24 +478,27 @@ async function runCampaignTimeoutSweeper(): Promise<void> {
         (Date.now() - c.updatedAt.getTime()) / 3_600_000,
       );
       logger.warn(
-        `[campaign-timeout-sweeper] FLIPPED campaign=${c.id} trigger=${c.triggerId} ` +
+        `[campaign-timeout-sweeper] FLIPPED campaign=${c.id} trigger=${c.triggerId ?? 'orphan'} ` +
           `sequence=${c.sequenceId ?? 'null'} state='timeout' (stale ${staleHours}h, zero BullMQ jobs)`,
       );
 
-      // Step 4: alert event log (fire-and-forget).
-      void logEvent({
-        orgId: c.orgId,
-        triggerId: c.triggerId,
-        eventType: 'campaign_timeout',
-        eventPriority: 'urgent',
-        summary: `Campaign ${c.id} bị timeout sau ${staleHours}h không advance (worker crash hoặc Redis mất việc).`,
-        metadata: {
-          campaignId: c.id,
-          sequenceId: c.sequenceId,
-          staleHours,
-          flippedAt: new Date().toISOString(),
-        },
-      });
+      // Step 4: alert event log (fire-and-forget). Chỉ log khi có triggerId hợp lệ —
+      // campaign mồ côi (FIX C) không có Mục tiêu để gắn event nên bỏ qua, chỉ flip state.
+      if (c.triggerId) {
+        void logEvent({
+          orgId: c.orgId,
+          triggerId: c.triggerId,
+          eventType: 'campaign_timeout',
+          eventPriority: 'urgent',
+          summary: `Campaign ${c.id} bị timeout sau ${staleHours}h không advance (worker crash hoặc Redis mất việc).`,
+          metadata: {
+            campaignId: c.id,
+            sequenceId: c.sequenceId,
+            staleHours,
+            flippedAt: new Date().toISOString(),
+          },
+        });
+      }
     }
 
     if (flipped > 0) {

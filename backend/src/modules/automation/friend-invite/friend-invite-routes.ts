@@ -1127,6 +1127,12 @@ export async function friendInviteRoutes(app: FastifyInstance): Promise<void> {
     });
     const customerReply = replyGroups.length;
     const customerBlock = blockGroups.length;
+    // FIX A 2026-06-08 — Set contactId đã reply/block, dùng để loại khỏi "đang bám đuổi"
+    // (KH reply = tạm dừng chuỗi, KH block = dừng hẳn → KHÔNG còn đang xử lý).
+    const replyContactIds = new Set<string>();
+    for (const g of replyGroups) if (g.contactId) replyContactIds.add(g.contactId);
+    const blockContactIds = new Set<string>();
+    for (const g of blockGroups) if (g.contactId) blockContactIds.add(g.contactId);
 
     // converted_lead: Contact.status='converted' AND thuộc trigger này.
     // Semantic = KH đã chốt deal (xem status-migration.ts: 'converted' → 'Chốt').
@@ -1140,20 +1146,6 @@ export async function friendInviteRoutes(app: FastifyInstance): Promise<void> {
         })
       : 0;
 
-    // Wave 4 2026-06-03 — P2 thêm 2 counter campaign-level (sequence-aware).
-    // - enrollingSequence: KH đang trong sequence bám đuổi (AutomationCampaign.state='active')
-    // - completedSequence: KH đã chạy xong toàn bộ chuỗi (state='completed')
-    // Index @@index([triggerId, state]) đã cover → composite seek, không seq scan.
-    // Defense-in-depth: filter orgId thêm dù route đã verify trigger.orgId.
-    const campaignStateGroups = await prisma.automationCampaign.groupBy({
-      by: ['state'],
-      where: { orgId: user.orgId, triggerId: trigger.id },
-      _count: { id: true },
-    });
-    const campaignByState = new Map(
-      campaignStateGroups.map((g) => [g.state, g._count.id]),
-    );
-    const enrollingSequence = campaignByState.get('active') ?? 0;
     // FIX 2026-06-04: "Hoàn tất" = số KH (distinct contactId) đã gửi BƯỚC CUỐI của chuỗi,
     // KHÔNG phải campaign state='completed'. Campaign là per-trigger (1 row chung mọi KH)
     // + thường kẹt 'active' chưa flip → ra 0 dù KH đã gửi đủ 3/3. Đổi sang đếm distinct
@@ -1177,6 +1169,35 @@ export async function friendInviteRoutes(app: FastifyInstance): Promise<void> {
       });
       for (const g of doneGroups) if (g.contactId) completedContactIds.add(g.contactId);
       completedSequence = doneGroups.length;
+    }
+
+    // FIX A 2026-06-08 — "đang bám đuổi" (enrollingSequence) phải đếm SỐ KH THẬT đang
+    // dở chuỗi, KHÔNG phải số ROW campaign state='active'.
+    //
+    // Bug cũ: `campaignByState.get('active')`. AutomationCampaign là 1 row/trigger×sequence
+    // (xem campaign-materializer.ts:245 "1 campaign per trigger × sequence") → đếm row ra 0
+    // hoặc 1, hiểu nhầm thành "0/1 KH". Khi mọi KH đã gửi bước cuối nhưng campaign chưa flip
+    // 'completed' (race tryCompleteCampaign — xem FIX B) → ra "1 KH bám đuổi" ẢO dù thực tế 0.
+    //
+    // Cách đúng: KH đang bám đuổi = đã vào chuỗi (sequence_enrolled) NHƯNG chưa gửi bước cuối,
+    // chưa reply (tạm dừng), chưa block (dừng hẳn). Tính bằng phép trừ tập hợp → luôn ≥ 0.
+    const enrollGroups = await prisma.automationEventLog.groupBy({
+      by: ['contactId'],
+      where: {
+        orgId: user.orgId,
+        triggerId: trigger.id,
+        eventType: 'sequence_enrolled',
+        contactId: { not: null },
+      },
+    });
+    let enrollingSequence = 0;
+    for (const g of enrollGroups) {
+      const cid = g.contactId;
+      if (!cid) continue;
+      if (completedContactIds.has(cid)) continue; // đã xong chuỗi
+      if (replyContactIds.has(cid)) continue; // tạm dừng (KH trả lời)
+      if (blockContactIds.has(cid)) continue; // dừng hẳn (KH chặn)
+      enrollingSequence += 1;
     }
 
     // Wave 4 2026-06-03 — P1 fix counter "Còn X KH" semantic-aware.
