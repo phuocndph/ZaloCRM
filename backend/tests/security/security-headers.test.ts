@@ -29,6 +29,17 @@ describe('security-headers', () => {
     await app.close();
   });
 
+  it('connect-src GHIM host ws từ APP_URL (không phải ws:/wss: mở toang)', async () => {
+    config.cspMode = 'report-only';
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: '/ping' });
+    const csp = res.headers['content-security-policy-report-only'] as string;
+    // Test env APP_URL mặc định http://localhost:3000 -> ws://localhost:3000.
+    expect(csp).toContain("connect-src 'self' ws://localhost:3000");
+    expect(csp).not.toContain('wss: '); // không còn wss/ws mở toang
+    await app.close();
+  });
+
   it('enforce: gửi Content-Security-Policy (chặn thật)', async () => {
     config.cspMode = 'enforce';
     const app = await buildApp();

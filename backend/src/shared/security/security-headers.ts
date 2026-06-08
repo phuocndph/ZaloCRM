@@ -8,20 +8,38 @@
  *   - HSTS (chỉ prod/HTTPS), X-Content-Type-Options, X-Frame-Options,
  *     Referrer-Policy, X-Permitted-Cross-Domain-Policies.
  *
- *   connect-src gồm ws:/wss: cho Socket.IO; img/font/media nới cho avatar Zalo,
- *   data:/blob: (attachment preview).
+ *   connect-src GHIM host Socket.IO suy từ APP_URL (ws/wss đúng domain, không
+ *   mở toang); img/font/media nới cho avatar Zalo, data:/blob: (attachment preview).
  */
 import type { FastifyInstance } from 'fastify';
 import { config } from '../../config/index.js';
 
-// Một dòng CSP — script-src 'self' là điểm mấu chốt chống XSS.
+/**
+ * Suy ra origin WebSocket từ APP_URL để GHIM connect-src (không cho ws tới host
+ * lạ → chống XSS exfiltration). https -> wss, http -> ws. Mỗi môi trường tự đúng
+ * host của nó (dev: localhost, prod: domain thật) — không cần env mới.
+ * Trả '' nếu APP_URL không parse được (CSP vẫn còn 'self').
+ */
+function wsOriginFromAppUrl(): string {
+  try {
+    const u = new URL(config.appUrl);
+    const wsScheme = u.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${wsScheme}//${u.host}`;
+  } catch {
+    return '';
+  }
+}
+
+// Build 1 lần lúc khởi động (APP_URL cố định trong vòng đời process).
+// script-src 'self' là điểm mấu chốt chống XSS.
 const CSP_DIRECTIVES = [
   "default-src 'self'",
   "script-src 'self'",
   "style-src 'self' 'unsafe-inline'", // Vuetify inject runtime style — siết bằng nonce/hash sau
   "img-src 'self' data: blob: https:",
   "font-src 'self' data:",
-  "connect-src 'self' ws: wss:",
+  // connect-src ghim đúng host Socket.IO (từ APP_URL) thay vì ws:/wss: mở toang.
+  `connect-src 'self' ${wsOriginFromAppUrl()}`.trim(),
   "media-src 'self' blob: https:",
   "object-src 'none'",
   "base-uri 'self'",
