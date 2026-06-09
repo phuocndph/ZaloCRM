@@ -12,6 +12,7 @@
  * Bắt buộc theo memory: hasZalo=null (KHÔNG tự quét Zalo), timestamp UTC trong DB.
  */
 import { prisma } from '../../../shared/database/prisma-client.js';
+import { withTenant } from '../../../shared/tenant/tenant-context.js';
 import { logger } from '../../../shared/utils/logger.js';
 import { normalizePhone } from '../../../shared/utils/phone.js';
 import { decryptToken } from '../_shared/token-encryption.util.js';
@@ -374,13 +375,15 @@ export async function runFbPullTick(): Promise<void> {
   if (orgs.length === 0) return;
   pendingUnroutedNotify.clear(); // reset đầu mỗi tick (biến module-level)
 
-  for (const org of orgs) {
+  // Phase 1a RLS (Giai đoạn 0.2): mỗi org pull trong tenant context riêng (page/form/lead
+  // ingest đều org-scoped). `continue` cũ → `return` vì thân vòng giờ là closure.
+  for (const org of orgs) await withTenant(org.id, async () => {
     let suToken: string;
     try {
       suToken = decryptToken(org.encryptedFbSystemUserToken!);
     } catch (err) {
       logger.error(`[fb-pull] org ${org.id} decrypt SU token fail: ${(err as Error).message}`);
-      continue;
+      return;
     }
 
     const pages = await prisma.facebookPageAccount.findMany({
@@ -412,5 +415,5 @@ export async function runFbPullTick(): Promise<void> {
       try { await checkAndIncrementNotify(org.id, key); } catch { /* notify phụ, bỏ qua */ }
     }
     pendingUnroutedNotify.clear();
-  }
+  });
 }

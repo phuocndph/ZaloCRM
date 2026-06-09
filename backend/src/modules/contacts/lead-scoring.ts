@@ -8,6 +8,7 @@
 import { prisma } from '../../shared/database/prisma-client.js';
 import { logger } from '../../shared/utils/logger.js';
 import { emitLeadScoreThresholdIfCrossed } from '../automation/engine/lead-score-threshold-hook.js';
+import { withTenant, runSystemQuery } from '../../shared/tenant/tenant-context.js';
 
 export async function computeLeadScore(contactId: string): Promise<number> {
   const now = new Date();
@@ -73,15 +74,19 @@ export async function computeLeadScore(contactId: string): Promise<number> {
 }
 
 export async function computeAllLeadScores(): Promise<void> {
-  const contacts = await prisma.contact.findMany({
-    where: { mergedInto: null },
-    select: { id: true, orgId: true, updatedAt: true, leadScore: true },
-  });
+  // Cross-org scan (mọi org) → bypass RLS để liệt kê; xử lý từng contact trong tenant của nó.
+  const contacts = await runSystemQuery(() =>
+    prisma.contact.findMany({
+      where: { mergedInto: null },
+      select: { id: true, orgId: true, updatedAt: true, leadScore: true },
+    }),
+  );
 
   let updated = 0;
   const now = new Date();
 
-  for (const contact of contacts) {
+  // Phase 1a RLS (Giai đoạn 0.2): mỗi contact chạy trong tenant context của org nó.
+  for (const contact of contacts) await withTenant(contact.orgId, async () => {
     const score = await computeLeadScore(contact.id);
     const oldScore = contact.leadScore ?? 0;
 
@@ -119,7 +124,7 @@ export async function computeAllLeadScores(): Promise<void> {
     await emitLeadScoreThresholdIfCrossed(contact.orgId, contact.id, oldScore, score);
 
     updated++;
-  }
+  });
 
   logger.info(`[lead-scoring] Updated scores for ${updated} contact(s)`);
 }

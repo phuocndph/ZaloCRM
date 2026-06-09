@@ -18,6 +18,7 @@
 import { prisma } from '../../shared/database/prisma-client.js';
 import { logger } from '../../shared/utils/logger.js';
 import { mergeContacts } from './merge-service.js';
+import { withTenant } from '../../shared/tenant/tenant-context.js';
 
 interface ContactLite {
   id: string;
@@ -154,7 +155,9 @@ export async function detectDuplicates(): Promise<void> {
   let totalAutoMerged = 0;
   let totalConflictGroups = 0;
 
-  for (const org of orgs) {
+  // Phase 1a RLS (Giai đoạn 0.2): mỗi org chạy trong tenant context riêng để mọi
+  // org-scoped query (contact/duplicateGroup/parentCandidate...) set đúng app.current_org.
+  for (const org of orgs) await withTenant(org.id, async () => {
     const systemUserId = await resolveSystemUserId(org.id);
     if (!systemUserId) {
       logger.warn(`[duplicate-detector] org ${org.id} không có user active → skip auto-merge, chỉ flag DuplicateGroup`);
@@ -324,7 +327,7 @@ export async function detectDuplicates(): Promise<void> {
     }
 
     totalConflictGroups += conflictRef.count;
-  }
+  });
 
   logger.info(
     `[duplicate-detector] auto-merged=${totalAutoMerged} group(s); ` +
