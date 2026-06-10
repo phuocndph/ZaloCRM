@@ -74,6 +74,7 @@
     <template v-if="viewMode === 'simple'">
       <NickGridCards
         :accounts="visibleAccounts"
+        :reconnecting-ids="reconnectingIds"
         @reconnect="onCardReconnect"
         @delete="onConfirmDelete"
         @open-detail="openDrawer"
@@ -252,6 +253,7 @@ import ZaloAccessDialog from '@/components/settings/ZaloAccessDialog.vue';
 import { api } from '@/api/index';
 import { useRoute, useRouter } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
+import { useToast } from '@/composables/use-toast';
 import type { EnrichedAccount } from '@/composables/use-zalo-accounts-dashboard';
 
 const dash = useZaloAccountsDashboard();
@@ -320,6 +322,8 @@ const lastRefreshLabel = computed(() => relativeTime(lastRefresh.value.toISOStri
 const route = useRoute();
 const router = useRouter();
 const authStore = useAuthStore();
+const toast = useToast();
+const reconnectingIds = ref<Set<string>>(new Set());
 // RBAC 2026-06-08 — quản lý nick + sửa liên lạc nội bộ của sale theo grants 'zalo_account.edit'
 // (owner/admin tự bypass). Thay cho check legacy role.
 const canManageZalo = computed(() => authStore.canAccess('zalo_account', 'edit'));
@@ -530,17 +534,35 @@ watch(showQRDialog, async (open, was) => {
 });
 
 // ── Grid card (tab Đơn giản) handlers ──
-function onCardReconnect(account: any) {
+function openQrForReconnect(account: any) {
+  wizardStep.value = 'qr';
+  wizardOpen.value = true;
+  connectedNickName.value = account.displayName ?? null;
+  loginAccount(account.id);
+}
+
+async function onCardReconnect(account: any) {
   const live = (account.liveStatus || account.status || '').toLowerCase();
+  // qr_pending (session hết hạn / circuit breaker) → cần quét QR lại.
   if (live === 'qr_pending') {
-    // Session hết hạn / circuit breaker → cần quét QR lại: mở wizard thẳng bước QR.
-    wizardStep.value = 'qr';
-    wizardOpen.value = true;
-    connectedNickName.value = account.displayName ?? null;
-    loginAccount(account.id);
-  } else {
-    // Còn session → reconnect ngầm 1 chạm.
-    reconnectAccount(account.id);
+    openQrForReconnect(account);
+    return;
+  }
+  // Còn session → reconnect ngầm + báo feedback (trước đây nuốt lỗi im → "không hiện gì").
+  reconnectingIds.value.add(account.id);
+  try {
+    const result = await reconnectAccount(account.id);
+    if (result.success) {
+      toast.push('Đang kết nối lại nick…', 'success');
+    } else if (result.needsQR) {
+      // Nick chưa có phiên lưu → mở QR thay vì reconnect ngầm.
+      toast.push('Nick chưa có phiên lưu — mở quét QR để đăng nhập lại.', 'warning');
+      openQrForReconnect(account);
+    } else {
+      toast.push('Kết nối lại thất bại: ' + result.message, 'error');
+    }
+  } finally {
+    reconnectingIds.value.delete(account.id);
   }
 }
 function onConfirmDelete(account: any) {
@@ -698,6 +720,25 @@ onMounted(async () => {
   font-variant-numeric: tabular-nums;
 }
 .za-tab-counter.full { background: #FEF2F2; color: #B91C1C; }
+
+/* 2026-06-09 — sub-tab Đơn giản / Nâng cao (cấp 2): pill segmented, cùng tông brand Atlas v2. */
+.za-subtabs {
+  display: inline-flex; gap: 3px; padding: 3px;
+  background: #F3F4F6; border-radius: 10px;
+  margin-bottom: 16px;
+}
+.za-subtab {
+  background: transparent; border: none; cursor: pointer;
+  padding: 7px 16px; font-family: inherit; font-size: 13px; font-weight: 600;
+  color: #6B7280; border-radius: 7px;
+  display: inline-flex; align-items: center; gap: 6px;
+  transition: color .15s, background .15s, box-shadow .15s;
+}
+.za-subtab:hover { color: #374151; }
+.za-subtab.active {
+  color: #5E6AD2; background: #FFFFFF;
+  box-shadow: 0 1px 2px rgba(16,24,40,.08);
+}
 
 /* Phase 4 redesign 2026-05-22: filter chip Phòng ban + group-by toggle */
 .chip-multi { position: relative; }

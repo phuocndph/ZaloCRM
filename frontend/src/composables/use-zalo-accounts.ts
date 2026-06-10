@@ -111,12 +111,19 @@ export function useZaloAccounts() {
     }
   }
 
-  async function reconnectAccount(accountId: string) {
+  async function reconnectAccount(accountId: string): Promise<{ success: boolean; message: string; needsQR?: boolean }> {
     try {
       await api.post(`/zalo-accounts/${accountId}/reconnect`, {});
       await fetchAccounts();
+      return { success: true, message: 'Đang kết nối lại nick…' };
     } catch (err: any) {
+      const msg = err.response?.data?.error || err.message || 'Kết nối lại thất bại';
+      // Nick chưa có phiên lưu (chưa từng login qua QR) → cần quét QR thay vì reconnect ngầm.
+      if (err.response?.status === 400 && /no saved session/i.test(msg)) {
+        return { success: false, message: msg, needsQR: true };
+      }
       console.error('Reconnect failed:', err);
+      return { success: false, message: msg };
     }
   }
 

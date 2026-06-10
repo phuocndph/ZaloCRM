@@ -20,7 +20,7 @@
         :key="a.id"
         class="ngc-card"
         :class="stateClass(a)"
-        @click="$emit('open-detail', a)"
+        @click="$emit('open-detail', a.id)"
       >
         <!-- Trạng thái nổi bật góc trên -->
         <div class="ngc-top">
@@ -66,9 +66,11 @@
         <button
           v-if="a.canManage && !isOnline(a)"
           class="ngc-reconnect"
+          :disabled="isReconnecting(a.id)"
           @click.stop="$emit('reconnect', a)"
         >
-          <v-icon size="16">mdi-refresh</v-icon> Kết nối lại
+          <v-icon size="16" :class="{ 'ngc-spin': isReconnecting(a.id) }">{{ isReconnecting(a.id) ? 'mdi-loading' : 'mdi-refresh' }}</v-icon>
+          {{ isReconnecting(a.id) ? 'Đang kết nối…' : 'Kết nối lại' }}
         </button>
         <div v-else-if="isOnline(a)" class="ngc-online-hint">
           <v-icon size="13">mdi-check-circle</v-icon> Đang hoạt động
@@ -82,11 +84,14 @@
 interface Crew { id: string; fullName: string | null }
 
 // accounts: EnrichedAccount[] từ parent — component chỉ đọc field hiển thị (type lỏng).
-defineProps<{ accounts: any[] }>();
+const props = defineProps<{ accounts: any[]; reconnectingIds?: Set<string> }>();
+function isReconnecting(id: string): boolean {
+  return props.reconnectingIds?.has(id) ?? false;
+}
 defineEmits<{
   reconnect: [account: any];
   delete: [account: any];
-  'open-detail': [account: any];
+  'open-detail': [accountId: string];
   add: [];
 }>();
 
@@ -174,5 +179,8 @@ function initials(name?: string | null): string {
   padding: 9px; border: none; border-radius: 9px; background: #f04438; color: #fff; font-weight: 600; font-size: 13.5px; cursor: pointer;
 }
 .ngc-reconnect:hover { background: #d92d20; }
+.ngc-reconnect:disabled { opacity: .7; cursor: default; }
+.ngc-spin { animation: ngc-spin .8s linear infinite; }
+@keyframes ngc-spin { to { transform: rotate(360deg); } }
 .ngc-online-hint { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: #047857; justify-content: center; padding: 6px; }
 </style>
