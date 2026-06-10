@@ -900,38 +900,86 @@ DO $$ BEGIN
 END $$;
 
 -- RenameIndex
-ALTER INDEX "idx_triggers_system_kind" RENAME TO "automation_triggers_system_kind_idx";
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'idx_triggers_system_kind') AND NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'automation_triggers_system_kind_idx') THEN
+    ALTER INDEX "idx_triggers_system_kind" RENAME TO "automation_triggers_system_kind_idx";
+  END IF;
+END $$;
 
 -- RenameIndex
-ALTER INDEX "blocks_org_id_tag_ids_idx" RENAME TO "blocks_tag_ids_idx";
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'blocks_org_id_tag_ids_idx') AND NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'blocks_tag_ids_idx') THEN
+    ALTER INDEX "blocks_org_id_tag_ids_idx" RENAME TO "blocks_tag_ids_idx";
+  END IF;
+END $$;
 
 -- RenameIndex
-ALTER INDEX "contacts_forgotten_pool_idx" RENAME TO "contacts_org_id_last_activity_idx";
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'contacts_forgotten_pool_idx') AND NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'contacts_org_id_last_activity_idx') THEN
+    ALTER INDEX "contacts_forgotten_pool_idx" RENAME TO "contacts_org_id_last_activity_idx";
+  END IF;
+END $$;
 
 -- RenameIndex
-ALTER INDEX "friend_request_outbox_entry_kind_unique" RENAME TO "friend_request_outbox_customer_list_entry_id_kind_key";
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'friend_request_outbox_entry_kind_unique') AND NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'friend_request_outbox_customer_list_entry_id_kind_key') THEN
+    ALTER INDEX "friend_request_outbox_entry_kind_unique" RENAME TO "friend_request_outbox_customer_list_entry_id_kind_key";
+  END IF;
+END $$;
 
 -- RenameIndex
-ALTER INDEX "lead_requests_contact_requested_at_idx" RENAME TO "lead_requests_contact_id_requested_at_idx";
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'lead_requests_contact_requested_at_idx') AND NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'lead_requests_contact_id_requested_at_idx') THEN
+    ALTER INDEX "lead_requests_contact_requested_at_idx" RENAME TO "lead_requests_contact_id_requested_at_idx";
+  END IF;
+END $$;
 
 -- RenameIndex
-ALTER INDEX "lead_requests_expires_returned_idx" RENAME TO "lead_requests_expires_at_auto_returned_at_idx";
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'lead_requests_expires_returned_idx') AND NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'lead_requests_expires_at_auto_returned_at_idx') THEN
+    ALTER INDEX "lead_requests_expires_returned_idx" RENAME TO "lead_requests_expires_at_auto_returned_at_idx";
+  END IF;
+END $$;
 
 -- RenameIndex
-ALTER INDEX "lead_requests_org_user_requested_at_idx" RENAME TO "lead_requests_org_id_requested_by_user_id_requested_at_idx";
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'lead_requests_org_user_requested_at_idx') AND NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'lead_requests_org_id_requested_by_user_id_requested_at_idx') THEN
+    ALTER INDEX "lead_requests_org_user_requested_at_idx" RENAME TO "lead_requests_org_id_requested_by_user_id_requested_at_idx";
+  END IF;
+END $$;
 
 -- RenameIndex
-ALTER INDEX "lead_requests_user_note_idx" RENAME TO "lead_requests_requested_by_user_id_note_submitted_at_idx";
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'lead_requests_user_note_idx') AND NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'lead_requests_requested_by_user_id_note_submitted_at_idx') THEN
+    ALTER INDEX "lead_requests_user_note_idx" RENAME TO "lead_requests_requested_by_user_id_note_submitted_at_idx";
+  END IF;
+END $$;
 
 -- RenameIndex
-ALTER INDEX "idx_messages_automation_task" RENAME TO "messages_automation_task_id_sent_at_idx";
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'idx_messages_automation_task') AND NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'messages_automation_task_id_sent_at_idx') THEN
+    ALTER INDEX "idx_messages_automation_task" RENAME TO "messages_automation_task_id_sent_at_idx";
+  END IF;
+END $$;
 
 -- RenameIndex
-ALTER INDEX "idx_messages_sent_via_conv" RENAME TO "messages_sent_via_conversation_id_idx";
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'idx_messages_sent_via_conv') AND NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'messages_sent_via_conversation_id_idx') THEN
+    ALTER INDEX "idx_messages_sent_via_conv" RENAME TO "messages_sent_via_conversation_id_idx";
+  END IF;
+END $$;
 
 -- RenameIndex
-ALTER INDEX "system_notify_recipients_target_user_id_sender_zalo_account_id_" RENAME TO "system_notify_recipients_target_user_id_sender_zalo_account_key";
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'system_notify_recipients_target_user_id_sender_zalo_account_id_') AND NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'system_notify_recipients_target_user_id_sender_zalo_account_key') THEN
+    ALTER INDEX "system_notify_recipients_target_user_id_sender_zalo_account_id_" RENAME TO "system_notify_recipients_target_user_id_sender_zalo_account_key";
+  END IF;
+END $$;
 
 -- RenameIndex
-ALTER INDEX "uniq_recipient_sender_thread" RENAME TO "system_notify_recipients_sender_zalo_account_id_thread_id_i_key";
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'uniq_recipient_sender_thread') AND NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'system_notify_recipients_sender_zalo_account_id_thread_id_i_key') THEN
+    ALTER INDEX "uniq_recipient_sender_thread" RENAME TO "system_notify_recipients_sender_zalo_account_id_thread_id_i_key";
+  END IF;
+END $$;
 
