@@ -18,6 +18,8 @@
  */
 import sharp from 'sharp';
 import { imageSize } from 'image-size';
+import { readFile } from 'node:fs/promises';
+import { resolve as resolvePath } from 'node:path';
 import { prisma } from '../../shared/database/prisma-client.js';
 import { uploadBuffer } from '../../shared/storage/minio-client.js';
 import { logger } from '../../shared/utils/logger.js';
@@ -243,4 +245,102 @@ export async function bumpUsage(assetId: string): Promise<void> {
   await prisma.mediaAsset
     .update({ where: { id: assetId }, data: { usageCount: { increment: 1 }, lastUsedAt: new Date() } })
     .catch(() => { /* asset đã archive/xóa — bỏ qua */ });
+}
+
+// ── Watermark (GĐ2) — sinh blob variant 'watermarked' từ blob gốc ─────────────
+// Logo HS đặt ở static/brand. Cache buffer 1 lần (không đọc đĩa mỗi lần watermark).
+let _logoCache: Buffer | null = null;
+async function loadLogo(): Promise<Buffer> {
+  if (_logoCache) return _logoCache;
+  const logoPath = resolvePath(process.cwd(), 'static', 'brand', 'zalocrm-logo-ngang.png');
+  _logoCache = await readFile(logoPath);
+  return _logoCache;
+}
+
+/**
+ * Tạo bản WATERMARK của 1 asset (eng review E2/D13: watermark = blob variant MỚI).
+ * Lấy blob 'original' → composite logo HS góc dưới-phải → upload (dedup theo hash)
+ * → tạo MediaBlob variantType='watermarked'. Bản gốc giữ nguyên.
+ *
+ * @returns blob watermark (mới hoặc đã có nếu trùng hash).
+ * @throws nếu asset không phải ảnh / không có blob gốc.
+ */
+export async function generateWatermarkVariant(args: {
+  orgId: string;
+  assetId: string;
+  position?: 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left' | 'center';
+  opacity?: number; // 0..1, mặc định 0.65
+}): Promise<{ blobId: string; url: string; deduped: boolean }> {
+  const asset = await prisma.mediaAsset.findFirst({
+    where: { id: args.assetId, orgId: args.orgId },
+    include: { blobs: true },
+  });
+  if (!asset) throw new Error('Asset không tồn tại');
+  if (asset.kind !== 'image') throw new Error('Chỉ ảnh mới đóng được watermark');
+
+  // Đã có variant watermark? → trả luôn (không sinh lại).
+  const existed = asset.blobs.find((b) => b.variantType === 'watermarked');
+  if (existed) return { blobId: existed.id, url: existed.publicUrl, deduped: true };
+
+  const original = asset.blobs.find((b) => b.variantType === 'original');
+  if (!original) throw new Error('Asset chưa có dữ liệu gốc');
+
+  // Tải bytes gốc về (từ MinIO qua URL nội bộ).
+  const srcBuf = Buffer.from(await (await fetch(original.publicUrl)).arrayBuffer());
+  const logo = await loadLogo();
+
+  const base = sharp(srcBuf);
+  const meta = await base.metadata();
+  const bw = meta.width ?? 800;
+  // Logo rộng ~22% ảnh, mờ theo opacity (tô lớp alpha đè để giảm độ đậm).
+  const logoW = Math.max(80, Math.round(bw * 0.22));
+  const opacity = Math.min(1, Math.max(0.1, args.opacity ?? 0.65));
+  // resize logo rồi nhân alpha bằng 1 lớp đen trong suốt qua composite 'dest-in'.
+  const resized = await sharp(logo).resize(logoW).ensureAlpha().png().toBuffer();
+  const dims = await sharp(resized).metadata();
+  const alphaMask = await sharp({
+    create: {
+      width: dims.width ?? logoW,
+      height: dims.height ?? logoW,
+      channels: 4,
+      background: { r: 0, g: 0, b: 0, alpha: opacity },
+    },
+  }).png().toBuffer();
+  const logoResized = await sharp(resized)
+    .composite([{ input: alphaMask, blend: 'dest-in' }])
+    .png()
+    .toBuffer();
+  const gravity = {
+    'bottom-right': 'southeast', 'bottom-left': 'southwest',
+    'top-right': 'northeast', 'top-left': 'northwest', 'center': 'center',
+  }[args.position ?? 'bottom-right'] as string;
+
+  const out = await base
+    .composite([{ input: logoResized, gravity }])
+    .webp({ quality: 85 })
+    .toBuffer({ resolveWithObject: true });
+
+  const up = await uploadBuffer(out.data, 'image/webp', `${asset.name}-wm.webp`);
+  const blob = await prisma.mediaBlob.create({
+    data: {
+      orgId: args.orgId,
+      assetId: asset.id,
+      contentHash: up.contentHash,
+      variantType: 'watermarked',
+      minioKey: up.key,
+      publicUrl: up.url,
+      mimeType: up.mimeType,
+      sizeBytes: up.size,
+      width: out.info.width,
+      height: out.info.height,
+    },
+  }).catch(async (err) => {
+    // P2002: hash trùng blob khác (cực hiếm) → đọc lại.
+    if ((err as { code?: string }).code === 'P2002') {
+      const b = await prisma.mediaBlob.findUnique({ where: { orgId_contentHash: { orgId: args.orgId, contentHash: up.contentHash } } });
+      if (b) return b;
+    }
+    throw err;
+  });
+  return { blobId: blob.id, url: blob.publicUrl, deduped: up.deduped };
 }

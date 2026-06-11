@@ -64,3 +64,51 @@ export async function sendMediaToConversation(
   const { data } = await api.post(`/media/${assetId}/send`, { conversationId, caption });
   return data;
 }
+
+// ── GĐ2 ──────────────────────────────────────────────────────────────────────
+export interface MediaFolder {
+  id: string;
+  name: string;
+  kind: string;
+  visibility: 'private' | 'public';
+  ownerUserId: string | null;
+}
+
+/** Sửa quyền/tên/tag/thư mục của 1 asset. */
+export async function updateMedia(
+  id: string,
+  patch: { name?: string; visibility?: 'private' | 'public'; tagIds?: string[]; folderId?: string | null },
+): Promise<{ asset: { id: string; name: string; visibility: string; tagIds: string[] } }> {
+  const { data } = await api.patch(`/media/${id}`, patch);
+  return data;
+}
+
+/** Archive (xóa mềm) 1 asset khỏi kho. */
+export async function archiveMedia(id: string): Promise<{ ok: boolean }> {
+  const { data } = await api.delete(`/media/${id}`);
+  return data;
+}
+
+/** Đóng dấu logo HS lên 1 ảnh (sinh bản watermark). */
+export async function watermarkMedia(
+  id: string,
+  opts: { position?: string; opacity?: number } = {},
+): Promise<{ blobId: string; url: string }> {
+  const { data } = await api.post(`/media/${id}/watermark`, opts);
+  return data;
+}
+
+/** Liệt kê thư mục kho. */
+export async function listMediaFolders(): Promise<MediaFolder[]> {
+  const { data } = await api.get('/media/folders');
+  return data.folders as MediaFolder[];
+}
+
+/** Tạo thư mục. */
+export async function createMediaFolder(
+  name: string,
+  visibility: 'private' | 'public' = 'private',
+): Promise<{ folder: { id: string; name: string } }> {
+  const { data } = await api.post('/media/folders', { name, visibility });
+  return data;
+}

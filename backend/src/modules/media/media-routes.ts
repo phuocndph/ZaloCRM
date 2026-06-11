@@ -17,7 +17,7 @@ import { requireGrant } from '../rbac/rbac-middleware.js';
 import { userHasGrant } from '../rbac/permission-group-service.js';
 import { zaloPool } from '../zalo/zalo-pool.js';
 import { zaloRateLimiter } from '../zalo/zalo-rate-limiter.js';
-import { registerAsset, bumpUsage, resolveSavedVisibility, type MediaKind } from './media-service.js';
+import { registerAsset, bumpUsage, resolveSavedVisibility, generateWatermarkVariant, type MediaKind } from './media-service.js';
 import { downloadMediaToTemp } from '../chat/chat-media-helpers.js';
 import { createMediaMessage, getUserFullName } from '../chat/chat-helpers.js';
 import { emitChatMessage } from '../../shared/realtime/emit-chat.js';
@@ -354,6 +354,133 @@ export async function mediaRoutes(app: FastifyInstance) {
       } finally {
         await tmp?.cleanup().catch(() => {});
       }
+    },
+  );
+
+  // ── PATCH /api/v1/media/:id — sửa quyền/tên/tag (GĐ2) ──────────────────────
+  app.patch(
+    '/api/v1/media/:id',
+    { preHandler: requireGrant('media', 'edit') },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const user = request.user!;
+      const userId = (user as any).userId ?? user.id;
+      const { id } = request.params as { id: string };
+      const body = request.body as { name?: string; visibility?: 'private' | 'public'; tagIds?: string[]; folderId?: string | null };
+
+      const canViewAll = await userHasGrant(userId, 'media', 'view_all');
+      const asset = await prisma.mediaAsset.findFirst({
+        where: { id, orgId: user.orgId, archivedAt: null, ...(canViewAll ? {} : { ownerUserId: userId }) },
+      });
+      if (!asset) return reply.status(404).send({ error: 'Không tìm thấy media (hoặc không thuộc bạn)' });
+
+      // PRIVACY: asset lưu từ nick Riêng tư → KHÔNG cho đổi sang public (chống lộ PII khách).
+      if (body.visibility === 'public' && asset.sourceZaloAccountId) {
+        return reply.status(403).send({
+          error: 'Ảnh lưu từ nick Riêng tư — không thể chuyển Công khai (bảo vệ thông tin khách).',
+          code: 'PRIVACY_LOCKED',
+        });
+      }
+
+      const updated = await prisma.mediaAsset.update({
+        where: { id },
+        data: {
+          ...(body.name !== undefined ? { name: body.name } : {}),
+          ...(body.visibility !== undefined ? { visibility: body.visibility } : {}),
+          ...(body.tagIds !== undefined ? { tagIds: body.tagIds } : {}),
+          ...(body.folderId !== undefined ? { folderId: body.folderId } : {}),
+        },
+      });
+      return { asset: { id: updated.id, name: updated.name, visibility: updated.visibility, tagIds: updated.tagIds } };
+    },
+  );
+
+  // ── DELETE /api/v1/media/:id — archive (xóa MỀM, giữ object MinIO) ─────────
+  app.delete(
+    '/api/v1/media/:id',
+    { preHandler: requireGrant('media', 'delete') },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const user = request.user!;
+      const userId = (user as any).userId ?? user.id;
+      const { id } = request.params as { id: string };
+      const canViewAll = await userHasGrant(userId, 'media', 'view_all');
+      const asset = await prisma.mediaAsset.findFirst({
+        where: { id, orgId: user.orgId, archivedAt: null, ...(canViewAll ? {} : { ownerUserId: userId }) },
+      });
+      if (!asset) return reply.status(404).send({ error: 'Không tìm thấy media' });
+      // INVARIANT: archive thôi, KHÔNG xóa object MinIO (giữ lịch sử chat cũ trỏ tới).
+      await prisma.mediaAsset.update({ where: { id }, data: { archivedAt: new Date() } });
+      return { ok: true };
+    },
+  );
+
+  // ── POST /api/v1/media/:id/watermark — đóng dấu logo HS (sinh variant) ─────
+  app.post(
+    '/api/v1/media/:id/watermark',
+    { preHandler: requireGrant('media', 'edit') },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const user = request.user!;
+      const userId = (user as any).userId ?? user.id;
+      const { id } = request.params as { id: string };
+      const body = (request.body ?? {}) as { position?: any; opacity?: number };
+
+      const canViewAll = await userHasGrant(userId, 'media', 'view_all');
+      const asset = await prisma.mediaAsset.findFirst({
+        where: { id, orgId: user.orgId, archivedAt: null, ...(canViewAll ? {} : { ownerUserId: userId }) },
+        select: { id: true },
+      });
+      if (!asset) return reply.status(404).send({ error: 'Không tìm thấy media' });
+      try {
+        const res = await generateWatermarkVariant({
+          orgId: user.orgId, assetId: id, position: body.position, opacity: body.opacity,
+        });
+        return { blobId: res.blobId, url: res.url };
+      } catch (err: any) {
+        logger.error('[media] watermark error:', err);
+        return reply.status(400).send({ error: err?.message ?? 'watermark failed' });
+      }
+    },
+  );
+
+  // ── GET /api/v1/media/folders — cây thư mục (scope owner + visibility) ─────
+  app.get(
+    '/api/v1/media/folders',
+    { preHandler: requireGrant('media', 'access') },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const user = request.user!;
+      const userId = (user as any).userId ?? user.id;
+      const canViewAll = await userHasGrant(userId, 'media', 'view_all');
+      const folders = await prisma.mediaAlbum.findMany({
+        where: {
+          orgId: user.orgId,
+          ...(canViewAll ? {} : { OR: [{ ownerUserId: userId }, { visibility: 'public' }] }),
+        },
+        orderBy: { name: 'asc' },
+        select: { id: true, name: true, kind: true, visibility: true, ownerUserId: true },
+      });
+      return { folders };
+    },
+  );
+
+  // ── POST /api/v1/media/folders — tạo thư mục ──────────────────────────────
+  app.post(
+    '/api/v1/media/folders',
+    { preHandler: requireGrant('media', 'create') },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const user = request.user!;
+      const userId = (user as any).userId ?? user.id;
+      const body = request.body as { name: string; visibility?: 'private' | 'public' };
+      if (!body?.name?.trim()) return reply.status(400).send({ error: 'Tên thư mục bắt buộc' });
+      const folder = await prisma.mediaAlbum.create({
+        data: {
+          orgId: user.orgId,
+          name: body.name.trim(),
+          kind: 'folder',
+          visibility: body.visibility ?? 'private',
+          ownerUserId: userId,
+          createdById: userId,
+        },
+      });
+      return { folder: { id: folder.id, name: folder.name } };
     },
   );
 }
