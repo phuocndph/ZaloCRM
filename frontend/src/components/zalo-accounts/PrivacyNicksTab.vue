@@ -131,9 +131,10 @@ interface MyNick {
 
 const store = usePrivacyStore();
 
-// 2026-06-11 — Tạm khóa BẬT MỚI nick Riêng tư cho tới khi vá xong lỗ lộ nội dung
-// (audit bảo mật). Vẫn cho TẮT nick đang bật. Đặt false để mở lại sau khi vá.
-const privacyFeatureLocked = ref(true);
+// 2026-06-11 — MỞ LẠI bật mới nick Riêng tư sau khi vá xong 3 đợt lỗ lộ nội dung
+// (audit bảo mật: realtime redact + scope org + list/search + guard). Đặt true để
+// khóa khẩn nếu phát hiện lỗ mới (đồng bộ với BE env PRIVACY_ENABLE_NEW).
+const privacyFeatureLocked = ref(false);
 
 const nicks = ref<MyNick[]>([]);
 const loading = ref(true);

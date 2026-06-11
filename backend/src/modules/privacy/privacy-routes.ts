@@ -209,14 +209,14 @@ export async function registerPrivacyRoutes(app: FastifyInstance): Promise<void>
       return reply.status(403).send({ error: 'Chỉ owner của nick mới flip privacy mode' });
     }
 
-    // 2026-06-11 — TẠM KHÓA BẬT MỚI Riêng tư cho tới khi vá xong lỗ lộ nội dung
-    // (audit bảo mật: nick main còn lộ qua socket realtime + vài endpoint). Vẫn cho
-    // TẮT (mode='sub') để ai lỡ bật có thể gỡ. Phòng vệ tầng API vì FE chặn được
-    // nhưng người dùng kỹ thuật vẫn gọi thẳng API. Đặt env PRIVACY_ENABLE_NEW=1 để mở lại.
-    const privacyNewLocked = process.env.PRIVACY_ENABLE_NEW !== '1';
+    // 2026-06-11 — MỞ LẠI bật mới Riêng tư sau khi vá xong 3 đợt lỗ lộ nội dung
+    // (realtime redact server-side + scope org + list/search redact + leak-guard).
+    // Mặc định MỞ; chỉ khóa khẩn khi set env PRIVACY_LOCK_NEW=1 (cờ kill-switch nếu
+    // phát hiện lỗ mới). Vẫn luôn cho TẮT (mode='sub').
+    const privacyNewLocked = process.env.PRIVACY_LOCK_NEW === '1';
     if (privacyNewLocked && body.mode === 'main' && account.privacyMode !== 'main') {
       return reply.status(423).send({
-        error: 'Tính năng Riêng tư đang tạm nâng cấp bảo mật — chưa bật thêm nick mới được.',
+        error: 'Tính năng Riêng tư đang tạm khóa bật mới (kill-switch bảo mật).',
         code: 'PRIVACY_FEATURE_LOCKED',
       });
     }
