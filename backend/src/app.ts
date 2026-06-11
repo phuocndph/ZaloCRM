@@ -10,7 +10,7 @@
   return this.toString();
 };
 
-import Fastify from 'fastify';
+import Fastify, { type FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
 import fastifyJwt from '@fastify/jwt';
 import rateLimit from '@fastify/rate-limit';
@@ -116,7 +116,12 @@ import { facebookRoutes } from './modules/integrations/providers/facebook/facebo
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 async function bootstrap() {
-  const app = Fastify({ logger: false });
+  // trustProxy 2026-06-11 — app chạy sau Cloudflare + reverse proxy (nginx/Caddy).
+  // KHÔNG bật → Fastify thấy request.ip = IP proxy DUY NHẤT cho mọi user → rate-limit
+  // theo IP biến thành GLOBAL (500/phút CHUNG cho cả công ty) → 20-25 sale thao tác
+  // cùng lúc chạm trần ngay → 429 hàng loạt + chat lag. Bật để đọc X-Forwarded-For
+  // (IP thật) làm fallback khi request không có token.
+  const app = Fastify({ logger: false, trustProxy: true });
 
   // ── Plugins ──────────────────────────────────────────────────────────────
 
@@ -132,9 +137,30 @@ async function bootstrap() {
   // Phase 3 2026-06-08 — security headers (CSP report-only mặc định) cho mọi response.
   registerSecurityHeaders(app);
 
+  // Rate-limit 2026-06-11 — SỬA GỐC: đếm theo TỪNG USER CRM (id trong JWT) thay vì
+  // theo IP. Lý do: sau Cloudflare/proxy mọi user chung 1 IP → rate-limit theo IP =
+  // GLOBAL (500/phút chia chung cả công ty) → 20-25 sale chạm trần → 429 + chat lag.
+  // Mỗi lần mở 1 hội thoại UI bắn ~9-13 request (tin nhắn + nhãn + lead-pool + AI +
+  // hồ sơ KH + quan hệ + tags). Đếm PER-USER → mỗi sale có hạn mức riêng, không ảnh
+  // hưởng nhau. Token decode rẻ (không +DB). Fallback IP cho request không có token.
   await app.register(rateLimit, {
-    max: 500,
+    max: 1200,                    // /phút/USER — sale active mở ~40 conv/phút × 13 req + tab/panel vẫn dư
     timeWindow: '1 minute',
+    // Key theo user CRM (sub=id trong JWT access token). Không có/sai token → theo IP
+    // (đã đúng nhờ trustProxy đọc X-Forwarded-For).
+    keyGenerator: (request: FastifyRequest) => {
+      try {
+        const auth = request.headers['authorization'];
+        const token = typeof auth === 'string' ? auth.replace(/^Bearer\s+/i, '') : '';
+        if (token) {
+          const payload = app.jwt.verify<{ id?: string }>(token);
+          if (payload?.id) return `u:${payload.id}`;
+        }
+      } catch {
+        // token thiếu/hết hạn/sai → rơi xuống key theo IP
+      }
+      return `ip:${request.ip}`;
+    },
     // Skip rate limiting for static assets — only limit API routes
     allowList: (request: { url: string }) => !request.url.startsWith('/api/'),
   });
