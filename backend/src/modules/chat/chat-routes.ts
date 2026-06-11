@@ -145,10 +145,26 @@ export async function chatRoutes(app: FastifyInstance) {
   // distinct, scope org + zalo access. Phải đăng ký TRƯỚC /conversations/:id.
   app.get('/api/v1/conversations/event-counts', async (request: FastifyRequest, _reply: FastifyReply) => {
     const user = request.user!;
-    const { folderId = '', accountId = '' } = request.query as QueryParams;
+    const { folderId = '', accountId = '', tab = '', threadType = '' } = request.query as QueryParams;
 
     const now = new Date();
     const in24h = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+
+    // 2026-06-11 (anh chốt) — badge cột 1 đếm theo CÙNG key tab đang chọn.
+    //   tab Cá nhân/Chính/Ưu tiên → lọc các con số theo hộp tương ứng.
+    //   tab Nhóm (threadType=group) → 3 badge "Tin nhắn" (chưa rep/bot/sale) VÔ NGHĨA
+    //     (nhóm không có "sale đã trả lời") → FE ẩn, BE trả 0 cho chắc.
+    // Dịch sang bộ lọc Conversation: Cá nhân/Nhóm = threadType + (mặc định tab=main);
+    // Chính/Ưu tiên = tab. Birthday/Lịch hẹn: đếm Contact CÓ hội thoại khớp bộ lọc này.
+    const isGroupTab = threadType === 'group';
+    // Điều kiện tab áp lên alias cv (conversations) trong raw SQL.
+    let convTabSql = Prisma.empty;
+    if (tab === 'main' || tab === 'other') {
+      convTabSql = Prisma.sql`AND cv.tab = ${tab}`;
+    } else if (threadType === 'user' || threadType === 'group') {
+      // Cá nhân/Nhóm: loại trừ Ưu tiên (tab=other), giữ hộp Chính.
+      convTabSql = Prisma.sql`AND cv."threadType" = ${threadType} AND cv.tab = 'main'`;
+    }
 
     // FIX 2026-06-09 (Anh báo): badge "Tin nhắn" (chưa trả lời / bot / sale đã trả lời)
     // PHẢI thỏa CẢ 2 tầng (khớp logic sidebar-tags):
@@ -193,37 +209,57 @@ export async function chatRoutes(app: FastifyInstance) {
           ? Prisma.sql`AND cv.zalo_account_id IN (${Prisma.join(effectiveAccountIds)})`
           : Prisma.sql`AND FALSE`;
 
-    const [birthdayRows, appointmentSoon, appointmentOverdue, replyStateRows] = await Promise.all([
+    const [birthdayRows, apptSoonRows, apptOverdueRows, replyStateRows] = await Promise.all([
       // Sinh nhật 7 ngày tới — so ngày/tháng (bỏ năm, wrap qua năm mới).
+      // 2026-06-11 — đếm Contact DISTINCT CÓ hội thoại khớp tab + nick scope đang xem
+      // (trước đây đếm toàn org, không theo tab). EXISTS join conversations cv.
       prisma.$queryRaw<Array<{ n: bigint }>>`
-        SELECT COUNT(*)::bigint AS n FROM contacts
-        WHERE org_id = ${user.orgId}
-          AND birth_date IS NOT NULL
-          AND to_char(birth_date, 'MM-DD') = ANY (
+        SELECT COUNT(DISTINCT ct.id)::bigint AS n
+        FROM contacts ct
+        JOIN conversations cv ON cv.contact_id = ct.id AND cv.deleted_at IS NULL
+        WHERE ct.org_id = ${user.orgId}
+          AND ct.birth_date IS NOT NULL
+          AND to_char(ct.birth_date, 'MM-DD') = ANY (
             SELECT to_char(generate_series(CURRENT_DATE, CURRENT_DATE + INTERVAL '7 day', INTERVAL '1 day'), 'MM-DD')
           )
+          ${convTabSql}
+          ${nickScopeSql}
       `,
-      // Lịch hẹn scheduled trong 24h tới (distinct Contact).
-      prisma.contact.count({
-        where: {
-          orgId: user.orgId,
-          appointments: { some: { status: 'scheduled', appointmentDate: { gte: now, lte: in24h } } },
-        },
-      }),
-      // Hẹn scheduled đã quá giờ (distinct Contact).
-      prisma.contact.count({
-        where: {
-          orgId: user.orgId,
-          appointments: { some: { status: 'scheduled', appointmentDate: { lt: now } } },
-        },
-      }),
+      // Lịch hẹn scheduled trong 24h tới (distinct Contact, theo tab + nick scope).
+      prisma.$queryRaw<Array<{ n: bigint }>>`
+        SELECT COUNT(DISTINCT ct.id)::bigint AS n
+        FROM contacts ct
+        JOIN conversations cv ON cv.contact_id = ct.id AND cv.deleted_at IS NULL
+        JOIN appointments ap ON ap.contact_id = ct.id
+        WHERE ct.org_id = ${user.orgId}
+          AND ap.status = 'scheduled'
+          AND ap.appointment_date >= ${now} AND ap.appointment_date <= ${in24h}
+          ${convTabSql}
+          ${nickScopeSql}
+      `,
+      // Hẹn scheduled đã quá giờ (distinct Contact, theo tab + nick scope).
+      prisma.$queryRaw<Array<{ n: bigint }>>`
+        SELECT COUNT(DISTINCT ct.id)::bigint AS n
+        FROM contacts ct
+        JOIN conversations cv ON cv.contact_id = ct.id AND cv.deleted_at IS NULL
+        JOIN appointments ap ON ap.contact_id = ct.id
+        WHERE ct.org_id = ${user.orgId}
+          AND ap.status = 'scheduled'
+          AND ap.appointment_date < ${now}
+          ${convTabSql}
+          ${nickScopeSql}
+      `,
       // 2026-06-09 — Badge đếm nhóm "Tin nhắn" (user vs bot). Chỉ 1-1 (threadType='user').
       // Mốc khách nhắn cuối tính PER-CONVERSATION từ messages (KHÔNG dùng Contact.lastInboundAt
       // — aggregate cross-nick gây sai khi 1 KH nhiều nick). Khớp 100% logic filter ở GET list.
       //   unanswered  = không có tin self nào sau mốc khách cuối
       //   sale_replied= có tin sale thật sau mốc khách cuối
       //   bot_no_sale = có tin self sau mốc nhưng không có sale thật → chỉ bot
-      prisma.$queryRaw<Array<{ unanswered: bigint; sale_replied: bigint; bot_no_sale: bigint }>>`
+      // 3 badge "Tin nhắn" chỉ có nghĩa với chat 1-1 → ở tab Nhóm trả 0 (FE cũng ẩn).
+      // Tab Cá nhân/Chính/Ưu tiên: lọc theo convTabSql (đã gồm threadType=user khi cần).
+      isGroupTab
+        ? Promise.resolve([{ unanswered: 0n, sale_replied: 0n, bot_no_sale: 0n }])
+        : prisma.$queryRaw<Array<{ unanswered: bigint; sale_replied: bigint; bot_no_sale: bigint }>>`
         SELECT
           COUNT(*) FILTER (WHERE agg.last_self IS NULL OR agg.last_self < agg.last_inbound)::bigint AS unanswered,
           COUNT(*) FILTER (WHERE agg.last_sale IS NOT NULL AND agg.last_sale >= agg.last_inbound)::bigint AS sale_replied,
@@ -244,15 +280,16 @@ export async function chatRoutes(app: FastifyInstance) {
           AND cv."threadType" = 'user'
           AND cv.deleted_at IS NULL
           AND agg.last_inbound IS NOT NULL
+          ${tab === 'other' ? Prisma.sql`AND cv.tab = 'other'` : Prisma.sql`AND cv.tab = 'main'`}
           ${nickScopeSql}
       `,
     ]);
 
     return {
       birthday: Number(birthdayRows[0]?.n ?? 0),
-      appointmentSoon,
-      appointmentOverdue,
-      // Nhóm "Tin nhắn"
+      appointmentSoon: Number(apptSoonRows[0]?.n ?? 0),
+      appointmentOverdue: Number(apptOverdueRows[0]?.n ?? 0),
+      // Nhóm "Tin nhắn" (0 khi tab Nhóm)
       msgUnanswered: Number(replyStateRows[0]?.unanswered ?? 0),
       msgBotNoSale: Number(replyStateRows[0]?.bot_no_sale ?? 0),
       msgSaleReplied: Number(replyStateRows[0]?.sale_replied ?? 0),

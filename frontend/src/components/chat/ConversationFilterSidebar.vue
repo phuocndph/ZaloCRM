@@ -71,6 +71,7 @@
         </button>
 
         <button
+          v-if="!isGroupTab"
           type="button"
           class="c-icon-btn"
           :class="{ active: messageActiveCount > 0, open: openPopover === 'message' }"
@@ -508,8 +509,9 @@
           </div>
         </section>
 
-        <!-- ✉️ TIN NHẮN (user vs bot) — 2026-06-09 anh chốt, ngay dưới Tag -->
-        <section class="section" :class="{ collapsed: !sectionsOpen.message }">
+        <!-- ✉️ TIN NHẮN (user vs bot) — 2026-06-09 anh chốt, ngay dưới Tag.
+             2026-06-11: ẩn khi tab Nhóm — 3 badge này chỉ có nghĩa với chat 1-1. -->
+        <section v-if="!isGroupTab" class="section" :class="{ collapsed: !sectionsOpen.message }">
           <header class="section-header" :title="TIPS.message" tabindex="0" role="button" :aria-expanded="sectionsOpen.message" @click="toggleSection('message')" @keydown.enter.prevent="toggleSection('message')" @keydown.space.prevent="toggleSection('message')">
             <div class="left"><span class="emoji"><InboxIcon :size="14" :stroke-width="2" /></span>Tin nhắn</div>
             <div class="right">
@@ -1389,6 +1391,10 @@ async function onCreatePreset() {
 }
 
 // ─── Event counts (2026-06-08 — badge đếm thật từ /conversations/event-counts) ──
+// 2026-06-11 — tab Nhóm: ẩn section "Tin nhắn" (3 badge chưa rep/bot/sale chỉ có
+// nghĩa với chat 1-1, nhóm không có "sale đã trả lời").
+const isGroupTab = computed(() => props.filters.state.activeTab === 'group');
+
 // 2026-06-09: thêm 3 count nhóm "Tin nhắn" (msgUnanswered/msgBotNoSale/msgSaleReplied).
 const eventCounts = ref({
   birthday: 0, appointmentSoon: 0, appointmentOverdue: 0,
@@ -1401,6 +1407,13 @@ async function loadEventCounts() {
     const params: Record<string, string> = {};
     if (props.filters.state.folderId) params.folderId = props.filters.state.folderId;
     if (props.currentAccountId) params.accountId = props.currentAccountId;
+    // 2026-06-11 (anh chốt) — số đếm badge cột 1 lọc theo cùng key tab đang chọn.
+    switch (props.filters.state.activeTab) {
+      case 'personal': params.threadType = 'user'; break;
+      case 'group':    params.threadType = 'group'; break;
+      case 'main':     params.tab = 'main'; break;
+      case 'other':    params.tab = 'other'; break;
+    }
     const { data } = await api.get('/conversations/event-counts', { params });
     eventCounts.value = {
       birthday: data.birthday ?? 0,
@@ -1429,7 +1442,7 @@ onMounted(async () => {
 // 2026-06-09 — Reload tag + badge "Tin nhắn" khi đổi Phạm vi xem (folder hoặc nick).
 // Tag Zalo + badge đếm đều đổi theo nick active trong scope.
 watch(
-  () => [props.filters.state.folderId, props.currentAccountId],
+  () => [props.filters.state.folderId, props.currentAccountId, props.filters.state.activeTab],
   () => { loadSidebarTags(); loadEventCounts(); },
 );
 </script>
