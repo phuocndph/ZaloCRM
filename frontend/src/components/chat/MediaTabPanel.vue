@@ -36,58 +36,59 @@
 
     <!-- ════════ ẢNH / VIDEO / TỆP: kho media ════════ -->
     <template v-else>
-      <!-- Search dùng CHUNG cho 3 sub-tab + nút Sắp xếp (xoay vòng) + nút Lọc -->
+      <!-- Hàng 1: Tìm (hẹp) + Sắp xếp (xoay vòng) + Lọc — vừa 1 hàng, không tràn -->
       <div class="mtp-search">
         <span class="mtp-inp">
-          <SearchIcon :size="14" :stroke-width="1.9" />
+          <SearchIcon :size="13" :stroke-width="1.9" />
           <input v-model="search" :placeholder="searchPlaceholder" @input="debouncedReload" />
         </span>
-        <!-- Nút Sắp xếp: bấm xoay vòng Gửi nhiều → Gửi gần nhất → Mới upload (anh chốt 2026-06-12) -->
-        <button class="mtp-fbtn" :title="`Sắp xếp: ${sortLabel} (bấm để đổi)`" @click="cycleSort">
-          <ArrowUpDownIcon :size="13" :stroke-width="1.9" />
-          {{ sortLabel }}
+        <!-- Nút Sắp xếp: bấm xoay vòng Gửi nhiều → Gần nhất → Mới upload (anh chốt 2026-06-12) -->
+        <button class="mtp-sortbtn" :title="`Sắp xếp: ${sortLabel} (bấm để đổi)`" @click="cycleSort">
+          <ArrowUpDownIcon :size="12" :stroke-width="1.9" />{{ sortLabel }}
         </button>
-        <button class="mtp-fbtn" :class="{ on: showFilter }" title="Lọc theo quyền + thời gian + cỡ" @click="showFilter = !showFilter">
+        <button class="mtp-filtbtn" :class="{ on: showFilter }" title="Lọc thời gian + cỡ" @click="showFilter = !showFilter">
           <FilterIcon :size="13" :stroke-width="1.9" />
-          <span class="mtp-vis">{{ visLabel }}</span>
         </button>
       </div>
 
-      <!-- Chip Thư mục — gom ảnh/tệp theo dự án (kho đã có folder) -->
-      <div v-if="folders.length" class="mtp-chips">
-        <button class="mtp-chip" :class="{ on: folderId === '' }" @click="setFolder('')">Tất cả thư mục</button>
-        <button
-          v-for="f in folders"
-          :key="f.id"
-          class="mtp-chip"
-          :class="{ on: folderId === f.id }"
-          @click="setFolder(f.id)"
-        >
-          <FolderIcon :size="11" :stroke-width="1.9" />{{ f.name }}
-        </button>
-      </div>
-
-      <!-- Chip Tag dự án — lọc nhanh (gom từ tag của các mục đang có) -->
-      <div v-if="availableTags.length" class="mtp-chips">
-        <button
-          v-for="tag in availableTags"
-          :key="tag"
-          class="mtp-chip mtp-chip--tag"
-          :class="{ on: tagFilter === tag }"
-          @click="toggleTagFilter(tag)"
-        >#{{ tag }}</button>
-      </div>
-
-      <!-- Bảng lọc (ẩn/hiện): Quyền + thời gian + cỡ (sắp xếp + tag đã ra ngoài) -->
-      <div v-if="showFilter" class="mtp-filter">
-        <div class="mtp-frow">
-          <span class="mtp-flabel">Quyền</span>
-          <div class="mtp-seg">
-            <button :class="{ on: visFilter === '' }" @click="setVis('')">Tất cả</button>
-            <button :class="{ on: visFilter === 'public' }" @click="setVis('public')">Công khai</button>
-            <button :class="{ on: visFilter === 'private' }" @click="setVis('private')">Riêng tư</button>
-          </div>
+      <!-- Hàng 2: Quyền (Tất cả | Công khai | Riêng tư) — 1 dòng riêng -->
+      <div class="mtp-row2">
+        <span class="mtp-rlabel">Quyền</span>
+        <div class="mtp-seg">
+          <button :class="{ on: visFilter === '' }" @click="setVis('')">Tất cả</button>
+          <button :class="{ on: visFilter === 'public' }" @click="setVis('public')">Công khai</button>
+          <button :class="{ on: visFilter === 'private' }" @click="setVis('private')">Riêng tư</button>
         </div>
+      </div>
+
+      <!-- Hàng 3: Dự án (thư mục) | Tag — 1 dòng cuộn ngang -->
+      <div v-if="folders.length || availableTags.length" class="mtp-row3">
+        <template v-if="folders.length">
+          <span class="mtp-rlabel">Dự án</span>
+          <button class="mtp-chip" :class="{ on: folderId === '' }" @click="setFolder('')">Tất cả</button>
+          <button
+            v-for="f in folders"
+            :key="f.id"
+            class="mtp-chip"
+            :class="{ on: folderId === f.id }"
+            @click="setFolder(f.id)"
+          >{{ f.name }}</button>
+        </template>
+        <template v-if="availableTags.length">
+          <span class="mtp-rdiv" aria-hidden="true"></span>
+          <span class="mtp-rlabel">Tag</span>
+          <button
+            v-for="tag in availableTags"
+            :key="tag"
+            class="mtp-chip mtp-chip--tag"
+            :class="{ on: tagFilter === tag }"
+            @click="toggleTagFilter(tag)"
+          >#{{ tag }}</button>
+        </template>
+      </div>
+
+      <!-- Lọc sâu (ẩn/hiện): chỉ Thời gian + Cỡ (Quyền + Dự án/Tag đã ra ngoài) -->
+      <div v-if="showFilter" class="mtp-filter">
         <div class="mtp-frow">
           <select v-model="sinceBy" class="mtp-sel" @change="reload">
             <option value="">Mọi lúc</option>
@@ -193,7 +194,6 @@ import {
   Send as SendIcon,
   Play as PlayIcon,
   ArrowUpDown as ArrowUpDownIcon,
-  Folder as FolderIcon,
 } from 'lucide-vue-next';
 
 const props = defineProps<{
@@ -229,7 +229,7 @@ const visFilter = ref<'' | 'public' | 'private'>('');
 type SortMode = 'most_used' | 'recent' | 'newest';
 const SORT_CYCLE: { mode: SortMode; label: string }[] = [
   { mode: 'most_used', label: 'Gửi nhiều' },
-  { mode: 'recent', label: 'Gửi gần nhất' },
+  { mode: 'recent', label: 'Gần nhất' },
   { mode: 'newest', label: 'Mới upload' },
 ];
 const sortBy = ref<SortMode>('most_used');
@@ -256,7 +256,6 @@ const sendingAlbum = ref(false);
 
 const kindLabel = computed(() => ({ image: 'ảnh', video: 'video', file: 'tệp', block: 'khối' }[subTab.value]));
 const searchPlaceholder = computed(() => ({ image: 'Tìm ảnh…', video: 'Tìm video…', file: 'Tìm tệp…', block: '' }[subTab.value]));
-const visLabel = computed(() => ({ '': 'Tất cả', public: 'Công khai', private: 'Riêng tư' }[visFilter.value]));
 
 // Icon + màu theo định dạng tệp (sale nhận diện nhanh PDF/Excel/Word) — giữ y MediaPickerPopover.
 function fileIcon(name: string): { label: string; bg: string; fg: string } {
@@ -421,50 +420,58 @@ onMounted(async () => {
 }
 .mtp-st.active .mtp-cnt { background: var(--at-action-soft); color: var(--at-action); }
 
-/* search dùng chung + nút Lọc */
-.mtp-search { display: flex; gap: 6px; align-items: center; padding: 9px 12px 8px; flex-shrink: 0; }
+/* Hàng 1: Tìm (hẹp) + Sắp xếp + Lọc — không tràn cột 350px */
+.mtp-search { display: flex; gap: 5px; align-items: center; padding: 9px 12px 7px; flex-shrink: 0; }
 .mtp-inp {
-  flex: 1; display: flex; align-items: center; gap: 6px; border: 1px solid var(--at-hairline);
-  border-radius: 8px; padding: 5px 10px; color: var(--at-hint);
+  flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 5px;
+  border: 1px solid var(--at-hairline); border-radius: 8px; padding: 5px 9px; color: var(--at-hint);
 }
-.mtp-inp input { border: none; outline: none; font: inherit; font-size: 12px; flex: 1; color: var(--at-ink); background: transparent; }
-.mtp-fbtn {
-  border: 1px solid var(--at-hairline); background: #fff; border-radius: 8px; padding: 6px 9px;
-  font-size: 11.5px; cursor: pointer; color: var(--at-body); white-space: nowrap;
-  display: inline-flex; align-items: center; gap: 5px; font-family: inherit;
+.mtp-inp input { border: none; outline: none; font: inherit; font-size: 12px; flex: 1; min-width: 0; color: var(--at-ink); background: transparent; }
+/* Nút Sắp xếp: gọn, không xuống dòng, nhãn ngắn (Gửi nhiều/Gần nhất/Mới upload) */
+.mtp-sortbtn {
+  flex-shrink: 0; border: 1px solid var(--at-hairline); background: #fff; border-radius: 8px;
+  padding: 6px 8px; font-size: 11px; font-weight: 600; cursor: pointer; color: var(--at-body);
+  white-space: nowrap; display: inline-flex; align-items: center; gap: 4px; font-family: inherit;
 }
-.mtp-fbtn.on { background: var(--at-action); border-color: var(--at-action); color: #fff; }
-.mtp-fbtn.on .mtp-vis { color: rgba(255,255,255,.85); }
-.mtp-vis { font-size: 10px; font-weight: 700; color: var(--at-action); }
+.mtp-sortbtn:hover { border-color: var(--at-action); color: var(--at-action); }
+/* Nút Lọc: chỉ icon (vuông), tiết kiệm chỗ */
+.mtp-filtbtn {
+  flex-shrink: 0; width: 30px; height: 29px; border: 1px solid var(--at-hairline); background: #fff;
+  border-radius: 8px; cursor: pointer; color: var(--at-body); display: inline-flex;
+  align-items: center; justify-content: center; font-family: inherit;
+}
+.mtp-filtbtn:hover { border-color: var(--at-action); color: var(--at-action); }
+.mtp-filtbtn.on { background: var(--at-action); border-color: var(--at-action); color: #fff; }
 
-/* bảng lọc */
-.mtp-filter { padding: 0 12px 8px; flex-shrink: 0; display: flex; flex-direction: column; gap: 7px; }
-.mtp-frow { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-.mtp-flabel { font-size: 11px; color: var(--at-hint); font-weight: 600; }
-.mtp-seg { display: inline-flex; border: 1px solid var(--at-hairline); border-radius: 9999px; overflow: hidden; }
+/* Hàng 2 (Quyền) + Hàng 3 (Dự án | Tag) — luôn hiện, mỗi nhóm 1 dòng cuộn ngang */
+.mtp-row2, .mtp-row3 {
+  display: flex; gap: 5px; align-items: center; padding: 0 12px 7px; flex-shrink: 0;
+  overflow-x: auto; scrollbar-width: none;
+}
+.mtp-row2::-webkit-scrollbar, .mtp-row3::-webkit-scrollbar { display: none; }
+.mtp-rlabel { flex-shrink: 0; font-size: 10.5px; color: var(--at-hint); font-weight: 700; }
+.mtp-rdiv { flex-shrink: 0; width: 1px; height: 16px; background: var(--at-hairline); margin: 0 2px; }
+.mtp-seg { flex-shrink: 0; display: inline-flex; border: 1px solid var(--at-hairline); border-radius: 9999px; overflow: hidden; }
 .mtp-seg button {
   border: none; background: #fff; font-family: inherit; font-size: 11px; padding: 4px 11px;
-  cursor: pointer; color: var(--at-body); border-right: 1px solid var(--at-hairline);
+  cursor: pointer; color: var(--at-body); border-right: 1px solid var(--at-hairline); white-space: nowrap;
 }
 .mtp-seg button:last-child { border-right: none; }
 .mtp-seg button.on { background: var(--at-action-soft); color: var(--at-action); font-weight: 700; }
-.mtp-sel { border: 1px solid var(--at-hairline); border-radius: 6px; padding: 4px 8px; font-size: 11.5px; color: var(--at-ink); background: #fff; outline: none; font-family: inherit; }
-
-/* Chip Thư mục + Tag dự án (1 dòng cuộn ngang nếu nhiều) */
-.mtp-chips {
-  display: flex; gap: 5px; padding: 0 12px 8px; flex-shrink: 0;
-  overflow-x: auto; scrollbar-width: none;
-}
-.mtp-chips::-webkit-scrollbar { display: none; }
 .mtp-chip {
   flex-shrink: 0; border: 1px solid var(--at-hairline); background: #fff; border-radius: 9999px;
   padding: 3px 10px; font-size: 11px; font-weight: 600; color: var(--at-body); cursor: pointer;
-  white-space: nowrap; font-family: inherit; display: inline-flex; align-items: center; gap: 4px;
+  white-space: nowrap; font-family: inherit;
 }
 .mtp-chip:hover { border-color: var(--at-action); color: var(--at-action); }
 .mtp-chip.on { background: var(--at-action-soft); border-color: var(--at-action); color: var(--at-action); }
 .mtp-chip--tag { color: var(--at-hint); }
 .mtp-chip--tag.on { color: var(--at-action); }
+
+/* Lọc sâu (Thời gian + Cỡ) */
+.mtp-filter { padding: 0 12px 8px; flex-shrink: 0; display: flex; flex-direction: column; gap: 7px; }
+.mtp-frow { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.mtp-sel { border: 1px solid var(--at-hairline); border-radius: 6px; padding: 4px 8px; font-size: 11.5px; color: var(--at-ink); background: #fff; outline: none; font-family: inherit; }
 
 /* album bar */
 .mtp-album { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--at-ink);

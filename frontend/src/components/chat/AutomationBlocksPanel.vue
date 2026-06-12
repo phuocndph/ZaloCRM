@@ -300,7 +300,7 @@ watch(
   outline: none;
   font-family: inherit;
 }
-.abp-search-input:focus { border-color: #3b82f6; box-shadow: 0 0 0 2px rgba(59,130,246,0.15); }
+.abp-search-input:focus { border-color: #1786be; box-shadow: 0 0 0 2px rgba(23,134,190,0.15); }
 
 /* Tabs */
 .abp-tabs {
@@ -323,10 +323,10 @@ watch(
   font-family: inherit;
 }
 .abp-tab:hover { color: #1f2328; }
-.abp-tab.active { color: #3b82f6; border-bottom-color: #3b82f6; }
+.abp-tab.active { color: #1786be; border-bottom-color: #1786be; }
 .abp-tab-badge {
   font-size: 9.5px;
-  background: rgba(59,130,246,0.15);
+  background: rgba(23,134,190,0.15);
   color: #1d4ed8;
   padding: 0 5px;
   border-radius: 7px;
@@ -356,7 +356,7 @@ watch(
 }
 .abp-tag:hover { background: #f4f5f7; }
 .abp-tag.active {
-  background: rgba(59,130,246,0.12);
+  background: rgba(23,134,190,0.12);
   color: #1d4ed8;
   border-color: #93c5fd;
   font-weight: 600;
@@ -377,7 +377,7 @@ watch(
 .abp-state-text { font-size: 12px; }
 .abp-link {
   font-size: 11.5px;
-  color: #3b82f6;
+  color: #1786be;
   text-decoration: none;
   font-weight: 600;
 }
@@ -394,12 +394,12 @@ watch(
   background: #fff;
   transition: border-color .12s, box-shadow .12s;
 }
-.abp-item:hover { border-color: #3b82f6; box-shadow: 0 1px 6px rgba(59,130,246,0.1); }
+.abp-item:hover { border-color: #1786be; box-shadow: 0 1px 6px rgba(23,134,190,0.1); }
 .abp-item-icon {
   width: 28px;
   height: 28px;
   border-radius: 7px;
-  background: rgba(59,130,246,0.12);
+  background: rgba(23,134,190,0.12);
   color: #1d4ed8;
   display: flex;
   align-items: center;
@@ -431,7 +431,7 @@ watch(
   color: #4b5563; font-weight: 600;
 }
 .abp-tag-mini {
-  background: rgba(59,130,246,0.1);
+  background: rgba(23,134,190,0.1);
   color: #1d4ed8;
   font-size: 9px;
   padding: 0 5px;
@@ -459,8 +459,8 @@ watch(
 }
 .abp-btn:hover { background: #f4f5f7; }
 .abp-btn-primary {
-  background: #3b82f6;
-  border-color: #3b82f6;
+  background: #1786be;
+  border-color: #1786be;
 }
 .abp-btn-primary:hover:not(:disabled) { background: #1d4ed8; }
 .abp-btn:disabled { opacity: 0.55; cursor: wait; }
