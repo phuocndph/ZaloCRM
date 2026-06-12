@@ -106,6 +106,28 @@ function isSessionExpiredError(err: any): boolean {
   return SESSION_EXPIRED_PATTERNS.some(p => msg.includes(p));
 }
 
+/**
+ * Lỗi mạng tạm thời (chập chờn) — Zalo server đóng socket khi upload nhiều ảnh
+ * cùng lúc (album 6-7 tấm), hoặc blip mạng. Retry thường thành công.
+ * Bằng chứng: "sendImage failed: TypeError: fetch failed" + "SocketError: other side closed"
+ * + Symbol(undici UND_ERR_SOCKET) khi gửi album 7 ảnh (zca-js Promise.all upload song song).
+ */
+function isTransientNetworkError(err: any): boolean {
+  // undici socket errors mang Symbol UND_ERR — bắt cả ở err và err.cause.
+  const undiciFlag = (e: any) => e && (e[Symbol.for('undici.error.UND_ERR')] === true
+    || Object.getOwnPropertySymbols(e).some((s) => String(s).includes('UND_ERR')));
+  if (undiciFlag(err) || undiciFlag(err?.cause)) return true;
+  const msg = (String(err?.message || '') + ' ' + String(err?.cause?.message || '')).toLowerCase();
+  return (
+    msg.includes('fetch failed') ||
+    msg.includes('other side closed') ||
+    msg.includes('socket') ||
+    msg.includes('econnreset') ||
+    msg.includes('etimedout') ||
+    msg.includes('und_err')
+  );
+}
+
 function isMalformedJsonResponseError(err: any): boolean {
   // SyntaxError từ V8 JSON.parse có nhiều variant:
   //   "Unexpected token X in JSON at position Y"
@@ -157,9 +179,11 @@ async function exec<T>(opts: ExecOptions, fn: (api: any) => Promise<T>): Promise
     throw new ZaloOpError(limit.reason || 'Rate limited', 'RATE_LIMITED', 429);
   }
 
-  // 3. Execute with retry on session expiry
+  // 3. Execute with retry on session expiry + transient network blip.
+  //    MAX_ATTEMPTS=3 để lỗi socket tạm thời (album nhiều ảnh) có cơ hội thử lại.
+  const MAX_ATTEMPTS = 3;
   let lastError: any;
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     try {
       const result = await fn(instance.api);
 
@@ -206,7 +230,15 @@ async function exec<T>(opts: ExecOptions, fn: (api: any) => Promise<T>): Promise
         }
       }
 
-      // Non-session error or second attempt — throw
+      // Lỗi mạng tạm thời (socket đứt khi upload album nhiều ảnh) → retry với backoff.
+      if (isTransientNetworkError(err) && attempt < MAX_ATTEMPTS - 1) {
+        const delayMs = 400 * (attempt + 1); // 400ms, 800ms
+        logger.warn(`[zalo-ops:${accountId}] ${operation} lỗi mạng tạm thời (attempt ${attempt + 1}/${MAX_ATTEMPTS}), thử lại sau ${delayMs}ms: ${err?.message ?? err}`);
+        await new Promise((r) => setTimeout(r, delayMs));
+        continue;
+      }
+
+      // Non-session, non-transient error or last attempt — throw
       break;
     }
   }

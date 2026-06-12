@@ -3,17 +3,29 @@
     <!-- ════════ Header: search + label chip + tabs ════════ -->
     <div class="cl-header">
       <div class="cl-search-row">
-        <input
-          class="cl-search"
-          name="conv-list-search"
-          ref="searchInputEl"
-          autocomplete="off"
-          :value="search"
-          :class="{ 'cl-search--flash': searchFlash }"
-          placeholder="Tìm theo tên, SĐT, nội dung tin nhắn…"
-          @input="onSearchInput"
-          @animationend="searchFlash = false"
-        />
+        <div class="cl-search-box">
+          <input
+            class="cl-search"
+            name="conv-list-search"
+            ref="searchInputEl"
+            autocomplete="off"
+            :value="search"
+            :class="{ 'cl-search--flash': searchFlash, 'has-text': !!search }"
+            placeholder="Tìm theo tên, SĐT, nội dung tin nhắn…"
+            @input="onSearchInput"
+            @keydown.esc="clearSearch"
+            @animationend="searchFlash = false"
+          />
+          <!-- 2026-06-12 — nút X mờ hiện khi có text → click xóa kết quả tìm + focus lại
+               (anh báo: search dính mãi tới khi xóa thủ công/reload). Esc cũng xóa. -->
+          <button
+            v-if="search"
+            type="button"
+            class="cl-search-clear"
+            title="Xóa tìm kiếm (Esc)"
+            @click="clearSearch"
+          ><XIcon :size="14" :stroke-width="2.5" /></button>
+        </div>
         <button
           class="cl-new-msg"
           ref="newMsgBtnEl"
@@ -433,6 +445,13 @@ const availableTags = ref<string[]>([]);
 // ── Helpers ────────────────────────────────────────────────────────────────
 function onSearchInput(e: Event) {
   emit('update:search', (e.target as HTMLInputElement).value);
+}
+
+// 2026-06-12 — xóa ô tìm kiếm (nút X / phím Esc) + focus lại để gõ tiếp ngay.
+function clearSearch() {
+  if (!props.search) return;
+  emit('update:search', '');
+  nextTick(() => searchInputEl.value?.focus());
 }
 
 // Single-select: click tag → set ONLY tag đó. Click tag đang active → clear.
@@ -1091,6 +1110,36 @@ function onPatternLeave() {
   display: flex; gap: 6px; align-items: center;
   position: relative; /* anchor cho NickPickerPopup */
 }
+/* 2026-06-12 — wrapper input + nút X (anchor cho nút clear absolute bên phải) */
+.cl-search-box {
+  flex: 1; min-width: 0;
+  position: relative;
+  display: flex;
+}
+.cl-search-box .cl-search { flex: 1; }
+/* Nút X xóa tìm kiếm — mờ nhẹ, đậm lên khi hover. Chỉ hiện khi có text (v-if). */
+.cl-search-clear {
+  position: absolute;
+  right: 7px; top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--smax-grey-400, #9CA3AF);
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+.cl-search-clear:hover {
+  opacity: 1;
+  background: var(--smax-grey-200, #E5E7EB);
+  color: var(--smax-grey-700, #374151);
+}
+/* Khi có text, chừa chỗ bên phải cho nút X (đỡ đè chữ) */
+.cl-search.has-text { padding-right: 32px; }
 .cl-search {
   flex: 1; min-width: 0;
   padding: 9px 11px 9px 36px;

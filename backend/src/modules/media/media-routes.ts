@@ -49,6 +49,87 @@ function classify(mime: string): MediaKind | null {
   return null;
 }
 
+/**
+ * Kết quả lưu 1 tin nhắn vào kho (dùng chung cho single + batch/album).
+ * status: 'ok' | 'skipped' (tin không có media) | 'blocked' (nick Riêng tư không phải chủ) | 'error'.
+ */
+interface SaveOneResult {
+  messageId: string;
+  status: 'ok' | 'skipped' | 'blocked' | 'error';
+  asset?: { id: string; name: string };
+  deduped?: boolean;
+  reason?: string;
+}
+
+/**
+ * Lưu 1 tin nhắn (ảnh/file) vào kho — DRY helper cho /save-from-chat (1 tin) và
+ * /save-from-chat-batch (cả album / chọn nhiều). KHÔNG throw: trả status để batch
+ * tổng hợp (1 ảnh lỗi không làm hỏng cả album). Giữ nguyên privacy guard D11 + audit.
+ */
+async function saveOneMessageToMedia(args: {
+  orgId: string;
+  userId: string;
+  messageId: string;
+  visibility?: 'private' | 'public';
+}): Promise<SaveOneResult> {
+  const { orgId, userId, messageId } = args;
+  const message = await prisma.message.findFirst({
+    where: { id: messageId, conversation: { orgId } },
+    include: { conversation: { include: { zaloAccount: true } } },
+  });
+  if (!message) return { messageId, status: 'error', reason: 'Không tìm thấy tin nhắn' };
+
+  const nick = message.conversation.zaloAccount;
+  const isPrivateNick = nick.privacyMode === 'main';
+  const vis = resolveSavedVisibility({
+    nickPrivacyMode: nick.privacyMode,
+    nickOwnerUserId: nick.ownerUserId,
+    viewerUserId: userId,
+    requested: args.visibility,
+  });
+  if (vis.blocked) {
+    return { messageId, status: 'blocked', reason: 'Tin từ nick Riêng tư — chỉ chính chủ nick mới lưu được.' };
+  }
+
+  let parsed: any = {};
+  try { parsed = JSON.parse(message.content || '{}'); } catch { /* not json */ }
+  const url: string | undefined = parsed.href || parsed.hdUrl || parsed.normalUrl || parsed.url || parsed.fileUrl;
+  if (!url) return { messageId, status: 'skipped', reason: 'Tin này không có media để lưu' };
+
+  const ct = message.contentType;
+  const kind: MediaKind = ct === 'image' ? 'image' : ct === 'video' ? 'video' : 'file';
+
+  let tmp: { path: string; cleanup: () => Promise<void> } | null = null;
+  try {
+    tmp = await downloadMediaToTemp({ url, filename: parsed.name }, ct);
+    const { readFile } = await import('node:fs/promises');
+    const buf = await readFile(tmp.path);
+    const mimeType = parsed.mime
+      || (kind === 'image' ? 'image/jpeg' : kind === 'video' ? 'video/mp4' : 'application/octet-stream');
+    const res = await registerAsset({
+      orgId, buffer: buf, mimeType, kind,
+      name: parsed.name || `Lưu từ chat`,
+      originalFilename: parsed.name,
+      ownerUserId: userId, createdById: userId,
+      visibility: vis.visibility,
+      source: 'saved_from_chat',
+      sourceZaloAccountId: isPrivateNick ? nick.id : null,
+    });
+    logger.info(`[media][audit] save_from_chat asset=${res.asset.id} user=${userId} visibility=${vis.visibility} fromPrivateNick=${isPrivateNick} deduped=${res.deduped}`);
+    await logMediaUsage({
+      orgId, mediaAssetId: res.asset.id, eventType: 'saved_from_chat', userId,
+      conversationId: message.conversationId,
+      meta: { visibility: vis.visibility, fromPrivateNick: isPrivateNick, deduped: res.deduped },
+    });
+    return { messageId, status: 'ok', asset: { id: res.asset.id, name: res.asset.name }, deduped: res.deduped };
+  } catch (err: any) {
+    logger.error('[media] save-from-chat error:', err);
+    return { messageId, status: 'error', reason: err?.message ?? 'save failed' };
+  } finally {
+    await tmp?.cleanup().catch(() => {});
+  }
+}
+
 export async function mediaRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authMiddleware);
 
@@ -206,73 +287,41 @@ export async function mediaRoutes(app: FastifyInstance) {
       const body = request.body as { messageId: string; visibility?: 'private' | 'public' };
       if (!body?.messageId) return reply.status(400).send({ error: 'messageId required' });
 
-      const message = await prisma.message.findFirst({
-        where: { id: body.messageId, conversation: { orgId: user.orgId } },
-        include: { conversation: { include: { zaloAccount: true } } },
-      });
-      if (!message) return reply.status(404).send({ error: 'Không tìm thấy tin nhắn' });
+      const r = await saveOneMessageToMedia({ orgId: user.orgId, userId, messageId: body.messageId, visibility: body.visibility });
+      if (r.status === 'blocked') return reply.status(403).send({ error: r.reason, code: 'PRIVACY_LOCKED' });
+      if (r.status === 'error') return reply.status(r.reason === 'Không tìm thấy tin nhắn' ? 404 : 500).send({ error: r.reason });
+      if (r.status === 'skipped') return reply.status(400).send({ error: r.reason });
+      return { asset: r.asset, deduped: r.deduped };
+    },
+  );
 
-      const nick = message.conversation.zaloAccount;
-      // PRIVACY (điều 4 + D11): quyết định qua hàm thuần đã test (resolveSavedVisibility).
-      const isPrivateNick = nick.privacyMode === 'main';
-      const vis = resolveSavedVisibility({
-        nickPrivacyMode: nick.privacyMode,
-        nickOwnerUserId: nick.ownerUserId,
-        viewerUserId: userId,
-        requested: body.visibility,
-      });
-      if (vis.blocked) {
-        return reply.status(403).send({
-          error: 'Tin từ nick Riêng tư — chỉ chính chủ nick mới lưu vào Media được.',
-          code: 'PRIVACY_LOCKED',
-        });
+  // ── POST /api/v1/media/save-from-chat-batch — lưu NHIỀU tin (cả album / chọn 5-10 tấm) ──
+  // Nhận messageIds[] (các tile cùng album, hoặc tập ảnh sale tự tick). Lưu lần lượt qua
+  // dedup (ảnh trùng không tốn thêm). 1 ảnh lỗi/blocked KHÔNG làm hỏng cả batch — trả per-item.
+  app.post(
+    '/api/v1/media/save-from-chat-batch',
+    { preHandler: requireGrant('media', 'create') },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const user = request.user!;
+      const userId = (user as any).userId ?? user.id;
+      const body = request.body as { messageIds: string[]; visibility?: 'private' | 'public' };
+      if (!body?.messageIds?.length) return reply.status(400).send({ error: 'messageIds required' });
+      if (body.messageIds.length > 30) return reply.status(400).send({ error: 'Tối đa 30 ảnh/lần' });
+
+      const results: SaveOneResult[] = [];
+      for (const mid of body.messageIds) {
+        results.push(await saveOneMessageToMedia({ orgId: user.orgId, userId, messageId: mid, visibility: body.visibility }));
       }
-
-      // Lấy URL media từ content. Tin khách gửi đã mirror lên MinIO (URL ổn định).
-      let parsed: any = {};
-      try { parsed = JSON.parse(message.content || '{}'); } catch { /* not json */ }
-      const url: string | undefined = parsed.href || parsed.hdUrl || parsed.normalUrl || parsed.url || parsed.fileUrl;
-      if (!url) return reply.status(400).send({ error: 'Tin này không có media để lưu' });
-
-      const ct = message.contentType;
-      const kind: MediaKind = ct === 'image' ? 'image' : ct === 'video' ? 'video' : 'file';
-
-      // Tải media về buffer rồi đăng ký vào kho (qua dedup — không tốn thêm nếu trùng).
-      let tmp: { path: string; cleanup: () => Promise<void> } | null = null;
-      try {
-        tmp = await downloadMediaToTemp({ url, filename: parsed.name }, ct);
-        const { readFile } = await import('node:fs/promises');
-        const buf = await readFile(tmp.path);
-        const mimeType = parsed.mime
-          || (kind === 'image' ? 'image/jpeg' : kind === 'video' ? 'video/mp4' : 'application/octet-stream');
-        const res = await registerAsset({
-          orgId: user.orgId,
-          buffer: buf,
-          mimeType,
-          kind,
-          name: parsed.name || `Lưu từ chat`,
-          originalFilename: parsed.name,
-          ownerUserId: userId,
-          createdById: userId,
-          // GUARD privacy: nick Riêng tư → ép private + ghi nguồn (resolveSavedVisibility).
-          visibility: vis.visibility,
-          source: 'saved_from_chat',
-          sourceZaloAccountId: isPrivateNick ? nick.id : null,
-        });
-        // AUDIT privacy (S8): ghi log "Lưu từ chat" + nguồn nick (riêng tư hay không).
-        logger.info(`[media][audit] save_from_chat asset=${res.asset.id} user=${userId} visibility=${vis.visibility} fromPrivateNick=${isPrivateNick} deduped=${res.deduped}`);
-        await logMediaUsage({
-          orgId: user.orgId, mediaAssetId: res.asset.id, eventType: 'saved_from_chat', userId,
-          conversationId: message.conversationId,
-          meta: { visibility: vis.visibility, fromPrivateNick: isPrivateNick, deduped: res.deduped },
-        });
-        return { asset: { id: res.asset.id, name: res.asset.name }, deduped: res.deduped };
-      } catch (err: any) {
-        logger.error('[media] save-from-chat error:', err);
-        return reply.status(500).send({ error: err?.message ?? 'save failed' });
-      } finally {
-        await tmp?.cleanup().catch(() => {});
-      }
+      const saved = results.filter((r) => r.status === 'ok');
+      const blocked = results.filter((r) => r.status === 'blocked').length;
+      const skipped = results.filter((r) => r.status === 'skipped').length;
+      const failed = results.filter((r) => r.status === 'error').length;
+      return {
+        savedCount: saved.length,
+        dedupedCount: saved.filter((r) => r.deduped).length,
+        blocked, skipped, failed,
+        assets: saved.map((r) => r.asset),
+      };
     },
   );
 
@@ -743,12 +792,19 @@ export async function mediaRoutes(app: FastifyInstance) {
       if (body.assetIds.length > 12) return reply.status(400).send({ error: 'Tối đa 12 ảnh/lần' });
 
       const canViewAll = await userHasGrant(userId, 'media', 'view_all');
-      const assets = await prisma.mediaAsset.findMany({
+      const found = await prisma.mediaAsset.findMany({
         where: { id: { in: body.assetIds }, orgId: user.orgId, archivedAt: null, kind: 'image',
           ...(canViewAll ? {} : { OR: [{ ownerUserId: userId }, { visibility: 'public' }] }) },
         include: { blobs: { where: { variantType: { in: ['original', 'watermarked'] } } } },
       });
-      if (assets.length === 0) return reply.status(404).send({ error: 'Không có ảnh hợp lệ' });
+      if (found.length === 0) return reply.status(404).send({ error: 'Không có ảnh hợp lệ' });
+
+      // FIX 2026-06-12 (anh báo: album sai thứ tự): Prisma findMany với `in[]` KHÔNG giữ
+      // thứ tự assetIds (Postgres trả theo thứ tự nội bộ DB). Zalo zca-js thì gán idInGroup
+      // theo ĐÚNG thứ tự mảng truyền vào. → Phải sắp lại `assets` theo thứ tự body.assetIds
+      // (= thứ tự sale tick chọn) để album hiển thị đúng ý sale.
+      const byId = new Map(found.map((a) => [a.id, a]));
+      const assets = body.assetIds.map((id) => byId.get(id)).filter((a): a is typeof found[number] => !!a);
 
       // Chọn variant đúng cho từng ảnh: watermark BẬT → bản có logo, ngược lại bản gốc.
       const pickBlob = (a: typeof assets[number]) => {
@@ -774,7 +830,7 @@ export async function mediaRoutes(app: FastifyInstance) {
       const threadId = conversation.externalThreadId || '';
       const threadType = conversation.threadType === 'group' ? 1 : 0;
       const io = (app as any).io as Server;
-      const userFullName = await getUserFullName(user.id);
+      // (Bỏ placeholder album → không cần userFullName/createMediaMessage ở đây nữa.)
 
       // download tất cả ảnh về temp → gửi 1 lần (sendFile nhiều path).
       const tmps: Array<{ path: string; cleanup: () => Promise<void> }> = [];
@@ -791,13 +847,13 @@ export async function mediaRoutes(app: FastifyInstance) {
         const sendResult: any = await zaloOps.sendImage(
           conversation.zaloAccountId, threadId, threadType as 0 | 1, tmps.map((t) => t.path), io, body.caption ?? '',
         );
-        const zaloMsgId = String(sendResult?.msgId || sendResult?.data?.msgId || '');
-        const msg = await createMediaMessage({
-          conversationId: conversation.id, zaloAccount: conversation.zaloAccount, repliedByUserId: user.id,
-          zaloMsgId, contentType: 'image',
-          content: JSON.stringify({ href: assets[0].blobs[0]?.publicUrl, album: true, count: assets.length }),
-          metadata: { sender: { kind: 'user_crm', name: userFullName } }, sentVia: 'user',
-        });
+        // FIX 2026-06-12 (anh chốt — bug album hiển thị 8+1 rời realtime):
+        // KHÔNG tạo placeholder 1-dòng cho album. Placeholder cũ (albumKey=null) hiện RỜI
+        // ngay sau gửi; echo Zalo (~1-2s) gom N-1 ảnh kia → "8 chung + 1 rời", F5 mới đủ.
+        // Bỏ placeholder → echo Zalo về (mỗi ảnh có albumKey chung) tự hiện ĐỦ N ảnh 1 cụm,
+        // KHÔNG bao giờ lệch. Tradeoff: sale chờ ~1-2s thấy album (chấp nhận được).
+        // KHÔNG bumpUsage/log ở đây nữa — chuyển sang khi echo về (tránh đếm khi gửi lỗi).
+        // Vẫn đếm usage NGAY vì gửi đã thành công (sendImage không throw):
         await prisma.conversation.update({ where: { id: conversation.id }, data: { lastMessageAt: new Date(), isReplied: true, unreadCount: 0 } });
         for (const a of assets) {
           await bumpUsage(a.id);
@@ -806,11 +862,19 @@ export async function mediaRoutes(app: FastifyInstance) {
             userId, conversationId: conversation.id, meta: { albumCount: assets.length },
           });
         }
-        await emitChatMessage({ io, orgId: user.orgId, accountId: conversation.zaloAccountId, conversationId: conversation.id, message: msg, privacyMode: conversation.zaloAccount.privacyMode, ownerUserId: conversation.zaloAccount.ownerUserId });
-        return { message: msg, sent: assets.length };
+        const zaloMsgId = String(sendResult?.msgId || sendResult?.data?.msgId || '');
+        return { sent: assets.length, zaloMsgId, viaEcho: true };
       } catch (err: any) {
         logger.error('[media] album send error:', err);
-        return reply.status(500).send({ error: err?.message ?? 'gửi album lỗi' });
+        // Lỗi mạng tạm thời khi upload nhiều ảnh (đã retry 3 lần vẫn fail) → báo rõ cho sale.
+        const raw = String(err?.message ?? '');
+        const isNet = /fetch failed|other side closed|socket|econnreset|und_err/i.test(raw);
+        return reply.status(isNet ? 503 : 500).send({
+          error: isNet
+            ? `Gửi album ${assets.length} ảnh bị gián đoạn mạng (Zalo đóng kết nối khi tải nhiều ảnh). Thử lại, hoặc gửi ít ảnh hơn mỗi lần.`
+            : (raw || 'gửi album lỗi'),
+          code: isNet ? 'ALBUM_NETWORK' : undefined,
+        });
       } finally {
         for (const t of tmps) await t.cleanup().catch(() => {});
       }

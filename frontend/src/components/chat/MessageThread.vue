@@ -370,21 +370,42 @@
                   {{ item.senderName || 'Unknown' }}
                 </div>
                 <div class="album-grid" :class="albumGridClass(item.messages.length)">
-                  <img
+                  <div
                     v-for="m in item.messages"
                     :key="m.id"
-                    :src="getImageUrl(m)!"
-                    alt="Hình ảnh"
-                    class="album-tile"
-                    :data-msg-id="m.id"
-                    :data-zalo-msg-id="m.zaloMsgId || ''"
-                    @click="openImageLightbox(getImageUrl(m)!, item.messages.map(x => getImageUrl(x)!).filter(Boolean))"
-                  />
+                    class="album-tile-wrap"
+                    :class="{ picked: albumSelectKey === item.key && albumPicked.has(m.id) }"
+                  >
+                    <img
+                      :src="getImageUrl(m)!"
+                      alt="Hình ảnh"
+                      class="album-tile"
+                      :data-msg-id="m.id"
+                      :data-zalo-msg-id="m.zaloMsgId || ''"
+                      @click="onAlbumTileClick(item, m, $event)"
+                      @contextmenu.prevent="onAlbumTileContext(item, m, $event)"
+                    />
+                    <!-- Checkbox khi đang ở chế độ chọn nhiều -->
+                    <span
+                      v-if="albumSelectKey === item.key"
+                      class="album-check"
+                      :class="{ on: albumPicked.has(m.id) }"
+                    >{{ albumPicked.has(m.id) ? '✓' : '' }}</span>
+                  </div>
                 </div>
                 <div v-if="item.totalExpected && item.totalExpected > item.messages.length" class="album-progress">
                   {{ item.messages.length }}/{{ item.totalExpected }} ảnh đã nhận
                 </div>
-                <div class="bubble-time">
+                <!-- Thanh thao tác khi chọn nhiều ảnh trong album -->
+                <div v-if="albumSelectKey === item.key" class="album-actionbar">
+                  <span class="ab-count">Đã chọn {{ albumPicked.size }}/{{ item.messages.length }}</span>
+                  <button class="ab-btn" @click="albumPickAll(item)">Chọn hết</button>
+                  <button class="ab-btn primary" :disabled="albumPicked.size === 0 || albumSaving" @click="saveAlbumPicked(item)">
+                    {{ albumSaving ? 'Đang lưu…' : `Lưu ${albumPicked.size} ảnh` }}
+                  </button>
+                  <button class="ab-btn ghost" @click="exitAlbumSelect()">Hủy</button>
+                </div>
+                <div v-else class="bubble-time">
                   {{ formatMessageTime(item.sentAt) }} · 🖼️ {{ item.messages.length }} ảnh
                 </div>
               </div>
@@ -727,6 +748,23 @@
       @copy="() => {}"
     />
 
+    <!-- Menu chuột phải cho ảnh trong ALBUM (3 mức: 1 tấm / cả album / chọn nhiều) -->
+    <Teleport to="body">
+      <div v-if="albumMenu.open" class="ctx-menu-overlay" @click.self="albumMenu.open = false" @contextmenu.prevent="albumMenu.open = false">
+        <div class="ctx-menu album-ctx" :style="{ top: albumMenu.y + 'px', left: albumMenu.x + 'px' }" @click.stop>
+          <button class="ctx-item" @click="saveAlbumOne()">
+            <span class="ctx-ic">🖼️</span><span>Lưu ảnh này vào Media</span>
+          </button>
+          <button class="ctx-item" @click="saveAlbumAll()">
+            <span class="ctx-ic">🗂️</span><span>Lưu cả album ({{ albumMenu.item?.messages.length }} ảnh)</span>
+          </button>
+          <button class="ctx-item" @click="startAlbumSelect()">
+            <span class="ctx-ic">☑️</span><span>Chọn nhiều ảnh để lưu…</span>
+          </button>
+        </div>
+      </div>
+    </Teleport>
+
     <!-- Forward dialog — v-if gate (Phase A perf 2026-05-21): chỉ mount khi user
          bấm forward. Trước fix: dialog mount sẵn → `allConversations` prop từ
          ChatView trigger reactive update mỗi lần tab switch (100 conv objects).
@@ -831,7 +869,7 @@ import { ref, watch, nextTick, computed, onMounted, onBeforeUnmount } from 'vue'
 import type { Conversation, Message } from '@/composables/use-chat';
 import { formatInOrgTz, weekdayInOrgTz, getOrgParts } from '@/composables/use-org-timezone';
 import { api } from '@/api/index';
-import { saveFromChat, suggestMedia, sendMediaToConversation, toggleFavorite, type MediaAssetItem } from '@/api/media';
+import { saveFromChat, saveFromChatBatch, suggestMedia, sendMediaToConversation, toggleFavorite, type MediaAssetItem } from '@/api/media';
 import MediaPickerPopover from '@/components/media/MediaPickerPopover.vue';
 import AISuggestBar from '@/components/chat/AISuggestBar.vue';
 // Mission Fix 2 (2026-05-30) — header picker GHI `Contact.statusId` (FK Status table)
@@ -2248,8 +2286,13 @@ function dayLabel(iso: string): string {
 
 const displayItems = computed<DisplayItem[]>(() => {
   const out: DisplayItem[] = [];
-  let curAlbum: Extract<DisplayItem, { kind: 'album' }> | null = null;
   let lastDayKey = '';
+  // FIX 2026-06-12 (anh báo bug hiển thị album realtime): gom album theo albumKey
+  // BẤT KỂ vị trí kề nhau. Lý do: khi gửi album, placeholder (CRM-sent) có sentAt
+  // muộn hơn các echo → sort tách nó RỜI khỏi cụm → hiển thị "8 chung + 1 rời",
+  // F5 mới gom đủ. Map albumKey→album item: sibling lạc (do sort) vẫn merge vào
+  // đúng album đã tạo, thay vì phải kề nhau. Album xuất hiện ở vị trí member ĐẦU TIÊN.
+  const albumByKey = new Map<string, Extract<DisplayItem, { kind: 'album' }>>();
 
   for (const msg of props.messages) {
     const d = new Date(msg.sentAt);
@@ -2257,26 +2300,30 @@ const displayItems = computed<DisplayItem[]>(() => {
     if (dayKey !== lastDayKey) {
       out.push({ kind: 'divider', key: 'div:' + dayKey, label: dayLabel(msg.sentAt) });
       lastDayKey = dayKey;
-      curAlbum = null;
     }
 
     const canGroup = msg.contentType === 'image' && msg.albumKey && !msg.isDeleted && !!getImageUrl(msg);
-    if (canGroup && curAlbum && curAlbum.key === `album:${msg.albumKey}:${msg.senderType}`) {
-      curAlbum.messages.push(msg);
-      continue;
-    }
-    curAlbum = null;
     if (canGroup) {
-      curAlbum = {
+      const aKey = `album:${msg.albumKey}:${msg.senderType}`;
+      const existing = albumByKey.get(aKey);
+      if (existing) {
+        // Sibling lạc → merge vào album đã có (kể cả không kề nhau). Tránh trùng id.
+        if (!existing.messages.some((m) => m.id === msg.id)) existing.messages.push(msg);
+        // totalExpected lấy max (echo có thể về trước placeholder hoặc ngược lại).
+        if ((msg.albumTotal ?? 0) > (existing.totalExpected ?? 0)) existing.totalExpected = msg.albumTotal ?? null;
+        continue;
+      }
+      const album: Extract<DisplayItem, { kind: 'album' }> = {
         kind: 'album',
-        key: `album:${msg.albumKey}:${msg.senderType}`,
+        key: aKey,
         senderType: msg.senderType,
         senderName: msg.senderName,
         sentAt: msg.sentAt,
         totalExpected: msg.albumTotal ?? null,
         messages: [msg],
       };
-      out.push(curAlbum);
+      albumByKey.set(aKey, album);
+      out.push(album);
     } else {
       out.push({ kind: 'single', key: msg.id, msg });
     }
@@ -2360,6 +2407,96 @@ async function onFavoriteFromChat() {
       toast.warning(e?.response?.data?.error || 'Không thêm được vào Yêu thích');
     }
   }
+}
+
+// ── Lưu ảnh ALBUM vào kho — 3 mức: 1 tấm / cả album / chọn nhiều (anh chốt 2026-06-12) ──
+type AlbumItem = Extract<DisplayItem, { kind: 'album' }>;
+const albumMenu = ref<{ open: boolean; x: number; y: number; item: AlbumItem | null; msgId: string | null }>(
+  { open: false, x: 0, y: 0, item: null, msgId: null },
+);
+const albumSelectKey = ref<string | null>(null); // key album đang ở chế độ chọn nhiều
+const albumPicked = ref<Set<string>>(new Set());  // msgId đã tick
+const albumSaving = ref(false);
+
+// Click tile: ở chế độ chọn → toggle tick; thường → mở lightbox.
+function onAlbumTileClick(item: AlbumItem, m: Message, ev: MouseEvent) {
+  if (albumSelectKey.value === item.key) {
+    ev.stopPropagation();
+    const next = new Set(albumPicked.value);
+    next.has(m.id) ? next.delete(m.id) : next.add(m.id);
+    albumPicked.value = next;
+    return;
+  }
+  const urls = item.messages.map((x) => getImageUrl(x)!).filter(Boolean);
+  openImageLightbox(getImageUrl(m)!, urls);
+}
+
+function onAlbumTileContext(item: AlbumItem, m: Message, ev: MouseEvent) {
+  if (albumSelectKey.value) return; // đang chọn nhiều → bỏ qua menu
+  const vw = window.innerWidth, vh = window.innerHeight;
+  albumMenu.value = {
+    open: true,
+    x: Math.min(ev.clientX, vw - 240),
+    y: Math.min(ev.clientY, vh - 150),
+    item, msgId: m.id,
+  };
+}
+
+async function saveAlbumOne() {
+  const mid = albumMenu.value.msgId;
+  albumMenu.value.open = false;
+  if (!mid) return;
+  try {
+    const res = await saveFromChat(mid, 'private');
+    toast.success(res.deduped ? 'Ảnh đã có trong kho' : `Đã lưu "${res.asset.name}" vào Kho cá nhân`);
+  } catch (e: any) {
+    handleSaveErr(e);
+  }
+}
+
+async function saveAlbumAll() {
+  const item = albumMenu.value.item;
+  albumMenu.value.open = false;
+  if (!item) return;
+  await doSaveAlbumBatch(item.messages.map((m) => m.id), item.messages.length);
+}
+
+function startAlbumSelect() {
+  const item = albumMenu.value.item;
+  albumMenu.value.open = false;
+  if (!item) return;
+  albumSelectKey.value = item.key;
+  albumPicked.value = new Set();
+}
+function exitAlbumSelect() { albumSelectKey.value = null; albumPicked.value = new Set(); }
+function albumPickAll(item: AlbumItem) { albumPicked.value = new Set(item.messages.map((m) => m.id)); }
+
+async function saveAlbumPicked(item: AlbumItem) {
+  if (albumPicked.value.size === 0) return;
+  await doSaveAlbumBatch([...albumPicked.value], item.messages.length);
+  exitAlbumSelect();
+}
+
+async function doSaveAlbumBatch(messageIds: string[], total: number) {
+  if (albumSaving.value) return;
+  albumSaving.value = true;
+  try {
+    const r = await saveFromChatBatch(messageIds, 'private');
+    let msg = `Đã lưu ${r.savedCount}/${total} ảnh vào Kho cá nhân`;
+    if (r.dedupedCount) msg += ` (${r.dedupedCount} đã có sẵn)`;
+    if (r.blocked) msg += ` · ${r.blocked} ảnh nick Riêng tư bị bỏ qua`;
+    toast.success(msg);
+  } catch (e: any) {
+    handleSaveErr(e);
+  } finally {
+    albumSaving.value = false;
+  }
+}
+
+function handleSaveErr(e: any) {
+  const code = e?.response?.data?.code;
+  if (code === 'PRIVACY_LOCKED') toast.warning('Tin từ nick Riêng tư — chỉ chính chủ nick mới lưu được');
+  else toast.warning(e?.response?.data?.error || 'Không lưu được vào kho');
 }
 
 
@@ -3471,12 +3608,51 @@ watch(() => props.editingMessage?.id, async (id) => {
 .album-grid-1 { grid-template-columns: 1fr; }
 .album-grid-2 { grid-template-columns: 1fr 1fr; }
 .album-grid-3 { grid-template-columns: 1fr 1fr 1fr; }
+.album-tile-wrap { position: relative; }
 .album-tile {
   width: 100%; aspect-ratio: 1/1;
   object-fit: cover; cursor: pointer;
   transition: transform 0.2s;
+  display: block;
 }
 .album-tile:hover { transform: scale(1.02); }
+.album-tile-wrap.picked .album-tile { outline: 2.5px solid #181d26; outline-offset: -2.5px; }
+.album-check {
+  /* Chưa chọn: vòng rỗng nhạt (chỉ viền) — không phải chấm đặc gây rối.
+     Đã chọn (.on): chấm đậm + dấu ✓. */
+  position: absolute; top: 5px; right: 5px; width: 20px; height: 20px;
+  border-radius: 9999px; border: 1.5px solid rgba(255,255,255,.85); background: rgba(0,0,0,.12);
+  color: #fff; font-size: 12px; display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 1px 3px rgba(0,0,0,.25); pointer-events: none;
+}
+.album-check.on { background: #181d26; border-color: #fff; }
+.album-actionbar {
+  display: flex; align-items: center; gap: 7px; padding: 7px 9px; flex-wrap: wrap;
+  border-top: 1px solid rgba(0,0,0,.06);
+}
+.album-actionbar .ab-count { font-size: 11.5px; color: var(--smax-grey-700); margin-right: auto; }
+.album-actionbar .ab-btn {
+  border: 1px solid #dddddd; background: #fff; color: #333840; border-radius: 6px;
+  padding: 4px 11px; font-size: 11.5px; cursor: pointer; font-weight: 500;
+}
+.album-actionbar .ab-btn.primary { background: #181d26; color: #fff; border-color: #181d26; }
+.album-actionbar .ab-btn.primary:disabled { opacity: .45; cursor: default; }
+.album-actionbar .ab-btn.ghost { border: none; color: var(--smax-grey-700); }
+.ctx-menu-overlay { position: fixed; inset: 0; z-index: 100; }
+.ctx-menu {
+  position: fixed; z-index: 101; background: #fff; border-radius: 10px;
+  box-shadow: 0 10px 28px rgba(15,23,42,.18), 0 2px 6px rgba(15,23,42,.08);
+  border: 1px solid #e5e7eb; padding: 6px 0; animation: ctx-pop .12s ease-out;
+}
+@keyframes ctx-pop { from { opacity: 0; transform: translateY(-4px) scale(.98); } to { opacity: 1; transform: none; } }
+.album-ctx { min-width: 220px; }
+.album-ctx .ctx-item {
+  display: flex; align-items: center; gap: 10px; width: 100%; padding: 9px 14px;
+  font-size: 13.5px; color: #374151; background: transparent; border: 0; cursor: pointer;
+  text-align: left;
+}
+.album-ctx .ctx-item:hover { background: #f3f4f6; }
+.album-ctx .ctx-ic { width: 18px; text-align: center; }
 .album-progress { font-size: 10px; padding: 5px 9px; opacity: 0.7; }
 .bubble-time {
   font-size: 11px; color: var(--smax-grey-700);

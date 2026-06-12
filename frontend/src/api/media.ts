@@ -63,6 +63,15 @@ export async function saveFromChat(
   return data;
 }
 
+/** Lưu NHIỀU tin nhắn (cả album / chọn nhiều ảnh) vào kho 1 lần. */
+export async function saveFromChatBatch(
+  messageIds: string[],
+  visibility?: 'private' | 'public',
+): Promise<{ savedCount: number; dedupedCount: number; blocked: number; skipped: number; failed: number; assets: Array<{ id: string; name: string }> }> {
+  const { data } = await api.post('/media/save-from-chat-batch', { messageIds, visibility });
+  return data;
+}
+
 /** Chèn 1 asset từ kho vào 1 hội thoại (gửi đi). */
 export async function sendMediaToConversation(
   assetId: string,

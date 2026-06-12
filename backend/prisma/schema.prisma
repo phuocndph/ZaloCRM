@@ -14,6 +14,16 @@ model Organization {
   // Mặc định +07:00 (Việt Nam) để mọi timestamp render trong UI và log đều đồng nhất, dễ decode.
   timezone String @default("+07:00")
 
+  // ── Login branding 2026-06-12 — hiển thị ngoài trang /login (PRE-AUTH) ──────
+  // Trang đăng nhập đọc 4 trường này qua endpoint công khai /api/v1/public/org-branding
+  // thay vì hardcode. logoUrl trỏ ảnh trong kho media (publicUrl) hoặc asset tĩnh
+  // /brand/*. emailDomain dùng gợi ý placeholder "user@<emailDomain>" (vd tenmien.com),
+  // KHÔNG suy ra từ window.location (tránh ra user@localhost khi cài localhost).
+  logoUrl     String? @map("logo_url")
+  slogan      String?
+  copyright   String?
+  emailDomain String? @map("email_domain")
+
   // Phase FB Pull 2026-05-30 — System User token (vĩnh viễn, quyền leads_retrieval) để
   // KÉO lead chủ động từ form quảng cáo (chính chủ, không cần App Review). 1 SU token đọc
   // được mọi Page mà System User được gán → lưu cấp Org. AES-256-GCM blob, decrypt tại fetch.

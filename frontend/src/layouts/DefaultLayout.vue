@@ -3,10 +3,10 @@
     <!-- ════════ TOP NAV — HS Holding teal-navy shell (redesign 2026-06-05, đảo lock Variant A) ════════ -->
     <!-- Gradient teal-navy + monogram HS + wordmark · 7 tab + Báo cáo + Cài đặt · MDI line icon · active HS -->
     <header class="smax-topnav">
-      <!-- Brand — monogram HS + wordmark "HS Holding / CRM" (single-tenant) -->
-      <RouterLink to="/" class="hs-brand" title="HS Holding CRM">
-        <span class="hs-bbox"><img src="/brand/hs-monogram.png" alt="HS Holding" /></span>
-        <span class="hs-bwm"><span class="hs-b1">HS Holding</span><span class="hs-b2">CRM</span></span>
+      <!-- Brand — logo + tên lấy theo hồ sơ tổ chức (đồng bộ /login, /setup-password) -->
+      <RouterLink to="/" class="hs-brand" :title="`${brandName} ZaloCRM`">
+        <span class="hs-bbox"><img :src="brandLogo" :alt="brandName" @error="onLogoError" /></span>
+        <span class="hs-bwm"><span class="hs-b1">{{ brandName }}</span><span class="hs-b2">ZaloCRM</span></span>
       </RouterLink>
 
       <!-- Primary nav tabs -->
@@ -137,6 +137,7 @@ import { useRouter } from 'vue-router';
 import NotificationBell from '@/components/NotificationBell.vue';
 import GlobalSearch from '@/components/GlobalSearch.vue';
 import ToastContainer from '@/components/ui/ToastContainer.vue';
+import { fetchPublicBranding } from '@/api/public-branding';
 // 2026-06-04: gỡ MiniOnboardingIndicator (Anh chốt code lại setup 4 bước sau)
 // LeadFloatingButton moved to ConversationFilterSidebar 2026-06-01
 // 2026-06-08: gỡ import api — banner "BỎ LỠ thông báo" đã tắt (checkInternalContactSetup no-op).
@@ -197,6 +198,14 @@ function dismissInternalContactBanner() {
 
 const isDark = ref((localStorage.getItem('theme') || 'hsLight') === 'legacy-dark');
 
+// Brand lockup trên menu — logo + tên tổ chức (đồng bộ /login, /setup-password).
+const DEFAULT_LOGO = '/brand/hs-monogram.png';
+const brandLogo = ref(DEFAULT_LOGO);
+const brandName = ref('HS Holding');
+function onLogoError() {
+  if (brandLogo.value !== DEFAULT_LOGO) brandLogo.value = DEFAULT_LOGO;
+}
+
 onMounted(() => {
   // HS redesign 2026-06-05: mặc định hsLight. Giá trị cũ 'smax-light' trong
   // localStorage được nâng cấp sang hsLight (chỉ giữ legacy-dark nếu user chọn).
@@ -205,6 +214,14 @@ onMounted(() => {
   theme.global.name.value = saved;
   isDark.value = saved === 'legacy-dark';
   void checkInternalContactSetup();
+
+  fetchPublicBranding()
+    .then((b) => {
+      if (!b) return;
+      brandLogo.value = b.logoUrl || DEFAULT_LOGO;
+      brandName.value = b.name || 'HS Holding';
+    })
+    .catch(() => {});
 });
 
 interface NavTab {

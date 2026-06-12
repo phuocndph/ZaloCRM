@@ -238,7 +238,7 @@ const totalUnreadCount = computed(() =>
 // không chứa conv tab Ưu tiên. Refresh khi mount / sau move / sau delete.
 const priorityUnreadCount = ref(0);
 const priorityHasUnread = computed(() => priorityUnreadCount.value > 0);
-async function refreshPriorityUnread() {
+async function fetchPriorityUnread() {
   try {
     const params: Record<string, string> = {};
     if (accountFilter.value) params.accountId = accountFilter.value;
@@ -248,15 +248,33 @@ async function refreshPriorityUnread() {
     /* non-critical badge */
   }
 }
+// 2026-06-12 (anh báo đơ) — DEBOUNCE: refreshPriorityUnread gọi network /conversations/counts
+// (endpoint nặng với admin: 4 count org-wide). Trước đây fire mỗi lần mở conv (route watch +
+// click) + mỗi socket → triage nhanh 5-10 conv = 5-10 lần gọi /counts thừa. Gộp burst lại,
+// trailing 400ms — badge "Ưu tiên" vẫn cập nhật sau khi ngừng chuyển ~0.4s (chấp nhận được
+// cho 1 badge), giảm tải backend đúng phần GROUP 2 cũng lo.
+let priorityUnreadTimer: ReturnType<typeof setTimeout> | null = null;
+function refreshPriorityUnread() {
+  if (priorityUnreadTimer) clearTimeout(priorityUnreadTimer);
+  priorityUnreadTimer = setTimeout(() => { void fetchPriorityUnread(); }, 400);
+}
 
+// 2026-06-12 (anh báo đơ khi 50 nick gửi tin) — gộp 6 lần .filter() (6 vòng duyệt
+// cả list) thành 1 VÒNG LẶP duy nhất. Computed này re-tính mỗi khi conversations.value
+// đổi (mỗi tin socket đến của bất kỳ nick nào trong 50 nick) → trước đây 6×100 = 600 phép
+// duyệt/lần, giờ còn 100. Badge vẫn cập nhật tức thì trong cùng tick (không debounce →
+// không lag con số "Chưa rep" mà sale dựa vào).
 const conversationCounts = computed(() => {
-  const list = conversations.value;
-  const unread = list.filter((c) => ((c as any).unreadCount || 0) > 0).length;
-  const unanswered = list.filter((c) => (c as any).isReplied === false).length;
-  const stuck = list.filter((c) => (c as any).friendship?.stuckSince != null).length;
-  const ready = list.filter((c) => ((c as any).contact?.leadScore || 0) >= 80).length;
-  const individual = list.filter((c) => c.threadType === 'user').length;
-  const group = list.filter((c) => c.threadType === 'group').length;
+  let unread = 0, unanswered = 0, stuck = 0, ready = 0, individual = 0, group = 0;
+  for (const c of conversations.value) {
+    const cc = c as any;
+    if ((cc.unreadCount || 0) > 0) unread++;
+    if (cc.isReplied === false) unanswered++;
+    if (cc.friendship?.stuckSince != null) stuck++;
+    if ((cc.contact?.leadScore || 0) >= 80) ready++;
+    if (c.threadType === 'user') individual++;
+    else if (c.threadType === 'group') group++;
+  }
   return { unread, unanswered, stuck, ready, individual, group };
 });
 
@@ -274,6 +292,10 @@ watch(
   () => inboxFilters.state.activeTab,
   () => {
     if (filterApplyTimer) clearTimeout(filterApplyTimer);
+    // 2026-06-12 — đổi tab (Cá nhân/Nhóm/Chính/Ưu tiên) thì XÓA ô tìm kiếm (anh báo:
+    // search dính mãi). Clear trước khi fetch để list tab mới không còn lọc theo từ
+    // khóa cũ. Chỉ clear khi đang có search → tránh đổi tab thường bị double-fetch.
+    if (searchQuery.value) searchQuery.value = '';
     const params = inboxFilters.buildQueryParams();
     extraFilters.value = params;
     fetchConversations();
@@ -461,7 +483,9 @@ const showContactPanel = ref(true);
 function onSelectConv(convId: string) {
   if (route.params.convId === convId) {
     // Click lại conv đang mở → vẫn refresh messages
-    selectConversation(convId);
+    // 2026-06-12 — sau khi đọc (mark-read), refresh badge "Ưu tiên" để chấm đỏ/đậm
+    // tắt khi đã đọc hết. selectConversation async (mark-read bên trong) → chờ xong.
+    void selectConversation(convId).then(() => refreshPriorityUnread());
     return;
   }
   router.push({ name: 'Chat', params: { convId } });
@@ -472,7 +496,9 @@ watch(
   () => route.params.convId,
   (id) => {
     if (typeof id === 'string' && id && id !== selectedConvId.value) {
-      selectConversation(id);
+      // 2026-06-12 — chờ select (gồm mark-read) xong rồi refresh badge Ưu tiên: tab
+      // "Ưu tiên" hết chấm đỏ/đậm ngay khi đọc hết, không cần reload/move conv.
+      void selectConversation(id).then(() => refreshPriorityUnread());
     }
   },
   { immediate: false },
@@ -516,7 +542,7 @@ onMounted(async () => {
     restoreScope();
     extraFilters.value = inboxFilters.buildQueryParams();
     fetchConversations();
-    void refreshPriorityUnread(); // badge đậm tab Ưu tiên
+    void fetchPriorityUnread(); // badge đậm tab Ưu tiên — load NGAY lúc mount (không debounce)
     fetchAiConfig();
     initSocket();
     registerSocketListeners(getSocket());

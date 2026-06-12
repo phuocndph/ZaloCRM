@@ -318,8 +318,14 @@ export function useChat() {
     }, 3000);
   }
 
+  // 2026-06-12 (anh báo "conv đang mở dính qua tab khác") — bản sao conv đang chọn.
+  // Mục đích: cho phép GỠ conv khỏi list cột 2 khi nó không thuộc tab/filter hiện tại
+  // (hết "dính tab"), mà cột 3 (MessageThread đọc selectedConv) KHÔNG bị trắng — vì
+  // computed bên dưới fallback về bản sao này khi conv vắng mặt trong list.
+  const selectedConvDetail = ref<Conversation | null>(null);
   const selectedConv = computed(() =>
-    conversations.value.find(c => c.id === selectedConvId.value) || null,
+    conversations.value.find(c => c.id === selectedConvId.value)
+    || (selectedConvDetail.value?.id === selectedConvId.value ? selectedConvDetail.value : null),
   );
 
   function clearAiState() {
@@ -349,14 +355,15 @@ export function useChat() {
     // state đã được socket update → conv "tụt xuống xíu rồi nhảy lên top" flicker.
     // Fix 2026-05-29: preserve conv đang được select (vd stub từ Lead Pool,
     // lastMessageAt=null không vào top 100 → bị wipe → UI blank).
-    // Fix 2026-06-10 (#1): KHI đang lọc theo tag (tags/zaloLabels/autoTagsAny) thì
-    // KHÔNG ép giữ conv đang mở nếu nó không match filter — trước đây conv active
-    // vẫn dính lại trong list dù không thuộc tag đã chọn.
-    const ef = extraFilters.value as Record<string, string>;
-    const tagFilterActive = !!(ef.tags || ef.zaloLabels || ef.autoTagsAny);
-    const preserveIds = selectedConvId.value && !tagFilterActive
-      ? new Set([selectedConvId.value])
-      : undefined;
+    // Fix 2026-06-10 (#1): KHI đang lọc theo tag → KHÔNG ép giữ conv đang mở nếu
+    // không match filter.
+    // Fix 2026-06-12 (anh báo "conv đang mở dính qua tab KHÁC"): KHÔNG preserve conv
+    // active vào list nữa. Trước đây preserveIds giữ conv active kể cả khi nó không
+    // thuộc tab mới → dính sang tab khác. Giờ cột 3 đã được giữ riêng qua
+    // selectedConvDetail (computed selectedConv fallback) nên gỡ conv khỏi list cột 2
+    // KHÔNG còn làm cột 3 trắng. Conv thuộc tab hiện tại vẫn có trong incoming bình
+    // thường; conv không thuộc tab → ẩn khỏi cột 2 (đúng), cột 3 vẫn giữ nội dung.
+    const preserveIds = undefined;
 
     if (cached) {
       logCacheEvent('hit', cacheKey);
@@ -441,6 +448,14 @@ export function useChat() {
     };
   }
 
+  // 2026-06-12 (anh báo "tin nhắn dính lẫn giữa các hội thoại" — P0 lộ dữ liệu).
+  // Predicate dùng chung: conv `id` có còn là conv ĐANG mở/đang load không. Mọi thao
+  // tác ghi vào messages.value / messagesCache PHẢI gate qua đây để response đến muộn
+  // của conv A không ghi đè khi user đã sang conv B (race click nhanh A→B).
+  function isConvCurrent(id: string): boolean {
+    return selectedConvId.value === id && messagesConvId.value === id;
+  }
+
   async function fetchMessages(convId: string) {
     // Switch conv → wholesale reset messages.value để không mix tin từ conv cũ.
     // Nếu cùng conv (refresh) → giữ messages hiện tại cho merge logic phía dưới.
@@ -450,10 +465,14 @@ export function useChat() {
     }
     // Cache-then-refresh: nếu đã từng load conv này, set list ngay từ cache để
     // user thấy giao diện tin nhắn lập tức; rồi fetch fresh in background.
+    // 2026-06-12: guard theo messagesConvId (vừa set ở trên) — nếu trong lúc await ngầm
+    // conv đã đổi (re-entrant fast switch) thì KHÔNG paint cache của conv cũ vào thread.
     const cached = messagesCache.get(convId);
     if (cached) {
-      messages.value = cached;
-      loadingMsgs.value = false;
+      if (messagesConvId.value === convId) {
+        messages.value = cached;
+        loadingMsgs.value = false;
+      }
     } else {
       loadingMsgs.value = true;
     }
@@ -466,7 +485,7 @@ export function useChat() {
       // bay (BE replication lag có thể chưa thấy msg socket vừa nhận). CHỈ merge khi
       // messagesConvId.value === convId — đảm bảo socket items thuộc conv hiện tại,
       // không phải tin từ conv khác bị tích luỹ.
-      if (selectedConvId.value === convId && messagesConvId.value === convId) {
+      if (isConvCurrent(convId)) {
         const beIds = new Set(list.map(m => m.id));
         const socketOnly = messages.value.filter(m => !beIds.has(m.id));
         if (socketOnly.length === 0) {
@@ -477,7 +496,17 @@ export function useChat() {
           messages.value = merged;
         }
       }
-      messagesCache.set(convId, messages.value);
+      // 2026-06-12 (P0 fix bleed-over) — CHỈ ghi cache khi conv VẪN là conv hiện tại.
+      // Trước đây dòng này chạy vô điều kiện: response conv A đến muộn (sau khi user đã
+      // sang B) ghi mảng của B (đang ở messages.value) vào cache key A → mở lại A hiện
+      // tin B. + lưu SHALLOW COPY [...messages.value] thay vì reference sống: tách CẤU
+      // TRÚC mảng (socket insertMessageSorted splice/push trên messages.value KHÔNG còn
+      // đụng mảng đã cache) nhưng GIỮ CHUNG object tin nhắn — nên handler zalo:message-status
+      // (cập nhật deliveredAt/seenAt in-place trên object) vẫn phản ánh đúng vào cache.
+      // KHÔNG deep-clone: sẽ cắt object chung → vỡ dấu "đã nhận/đã xem" + tốn bộ nhớ ×100×50.
+      if (isConvCurrent(convId)) {
+        messagesCache.set(convId, [...messages.value]);
+      }
     } catch (err) {
       console.error('Failed to fetch messages:', err);
     } finally {
@@ -574,40 +603,52 @@ export function useChat() {
     if (!conversations.value.find(c => c.id === convId)) {
       await fetchConversations();
     }
+    // 2026-06-12 (anh báo load chậm 5-10s admin 50 nick) — paint tin nhắn TRƯỚC, rồi
+    // detail (cột 3/4 header) + mark-read chạy SONG SONG (Promise.all) thay vì 2 round-trip
+    // nối tiếp. fetchMessages gate việc paint thread; detail + mark-read KHÔNG cần cho
+    // bong bóng tin nên không nên xếp hàng sau nhau. Tiết kiệm ~1 round-trip mỗi lần mở conv.
     await fetchMessages(convId);
-    try {
-      const convDetail = await api.get(`/conversations/${convId}`);
-      let conv = conversations.value.find(c => c.id === convId);
-      if (!conv) {
-        // 2026-05-28: Conv stub từ Lead Pool có thể không nằm trong 100 conv top
-        // (lastMessageAt=null, sort sau hết). Push detail vào CUỐI list (không gim top —
-        // fix 2026-05-29: trước đây unshift gim top, sau khi gửi tin nhắn đầu BE update
-        // lastMessageAt → conv tự nhảy lên top theo sort tự nhiên).
-        conversations.value = [...conversations.value, convDetail.data];
-        conv = convDetail.data;
-      } else {
-        if (convDetail.data.contact) conv.contact = convDetail.data.contact;
-        // friendship per-pair (counter, leadScore, status RIÊNG cặp nick×KH).
-        // KHÔNG fallback contact aggregate vì các trường này khác semantics.
-        // 2026-06-11 FIX (Bug auto-tag biến mất khi click): endpoint detail trả friendship
-        // là TẬP CON của list (thiếu autoTags, statusName/Color, leadScore, stuckSince,
-        // lastInbound/OutboundAt). Ghi đè cả cụm → XOÁ các field list-only → auto-tag +
-        // status pill biến mất ở cột 2. → MERGE: detail thắng field nó có, giữ field list-only.
-        if (convDetail.data.friendship !== undefined) {
-          const det = convDetail.data.friendship;
-          conv.friendship = det && conv.friendship ? { ...conv.friendship, ...det } : det;
+    const detailTask = (async () => {
+      try {
+        const convDetail = await api.get(`/conversations/${convId}`);
+        let conv = conversations.value.find(c => c.id === convId);
+        if (!conv) {
+          // 2026-05-28: Conv stub từ Lead Pool có thể không nằm trong 100 conv top
+          // (lastMessageAt=null, sort sau hết). Push detail vào CUỐI list (không gim top —
+          // fix 2026-05-29: trước đây unshift gim top, sau khi gửi tin nhắn đầu BE update
+          // lastMessageAt → conv tự nhảy lên top theo sort tự nhiên).
+          conversations.value = [...conversations.value, convDetail.data];
+          conv = convDetail.data;
+        } else {
+          if (convDetail.data.contact) conv.contact = convDetail.data.contact;
+          // friendship per-pair (counter, leadScore, status RIÊNG cặp nick×KH).
+          // KHÔNG fallback contact aggregate vì các trường này khác semantics.
+          // 2026-06-11 FIX (Bug auto-tag biến mất khi click): endpoint detail trả friendship
+          // là TẬP CON của list (thiếu autoTags, statusName/Color, leadScore, stuckSince,
+          // lastInbound/OutboundAt). Ghi đè cả cụm → XOÁ các field list-only → auto-tag +
+          // status pill biến mất ở cột 2. → MERGE: detail thắng field nó có, giữ field list-only.
+          if (convDetail.data.friendship !== undefined) {
+            const det = convDetail.data.friendship;
+            conv.friendship = det && conv.friendship ? { ...conv.friendship, ...det } : det;
+          }
         }
+        // 2026-06-12 — lưu bản sao conv đang chọn để cột 3 không trắng khi conv bị gỡ
+        // khỏi list lúc đổi tab. Ưu tiên object trong list (đã merge detail), fallback raw.
+        selectedConvDetail.value = conv ?? convDetail.data ?? null;
+      } catch {
+        // Non-critical
       }
-    } catch {
-      // Non-critical
-    }
-    try {
-      await api.post(`/conversations/${convId}/mark-read`);
-      const conv = conversations.value.find(c => c.id === convId);
-      if (conv) conv.unreadCount = 0;
-    } catch {
-      // Ignore mark-read errors
-    }
+    })();
+    const markReadTask = (async () => {
+      try {
+        await api.post(`/conversations/${convId}/mark-read`);
+        const conv = conversations.value.find(c => c.id === convId);
+        if (conv) conv.unreadCount = 0;
+      } catch {
+        // Ignore mark-read errors
+      }
+    })();
+    await Promise.all([detailTask, markReadTask]);
     // Note: Auto-sync Zalo profile được xử lý ở MessageThread.touchConversationProfile
     // (gọi POST /conversations/:id/touch-profile, cooldown 5min server-side). KHÔNG
     // duplicate ở đây để tránh spam SDK + 404 lên endpoint /contacts/:id/sync-zalo-profile

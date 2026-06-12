@@ -275,41 +275,64 @@ export async function handleIncomingMessage(
       // For text: match by content. For attachments (image/video/file): match by contentType only —
       // CRM persists with our MinIO URL while Zalo echo carries Zalo CDN URL, so content strings differ.
       const isAttachment = msg.contentType && ['image', 'video', 'file'].includes(msg.contentType);
-      const dupeWhere: any = {
-        conversationId: conversation.id,
-        senderType: 'self',
-        sentAt: { gte: new Date(Date.now() - 30_000) },
-      };
+      const dupNum = /^\d+$/.test(msg.msgId) ? BigInt(msg.msgId) : null;
+
       if (isAttachment) {
-        dupeWhere.contentType = msg.contentType;
-        dupeWhere.zaloMsgId = null;
+        // FIX 2026-06-12 (album drop): echo ảnh album về N tin riêng (mỗi sibling 1 zaloMsgId).
+        // CRM gửi album chỉ tạo 1 placeholder (zaloMsgId=null). Bộ lọc cũ findFirst→update
+        // KHÔNG nguyên tử: nhiều echo cùng khớp 1 placeholder null (race) → bỏ nhầm sibling.
+        // Sửa: CLAIM placeholder NGUYÊN TỬ bằng updateMany (compare-and-swap trên zaloMsgId=null).
+        //   • Đúng 1 echo claim được (count=1) → suppress (đó là tin đã hiện sẵn cho sale).
+        //   • Các sibling còn lại claim trượt (count=0) → CHO QUA, insert như tin album bình thường.
+        const claimed = await prisma.message.updateMany({
+          where: {
+            conversationId: conversation.id,
+            senderType: 'self',
+            contentType: msg.contentType,
+            zaloMsgId: null,
+            sentAt: { gte: new Date(Date.now() - 30_000) },
+          },
+          data: {
+            zaloMsgId: msg.msgId,
+            zaloMsgIdNum: dupNum,
+            ...(msg.cliMsgId ? { zaloCliMsgId: msg.cliMsgId } : {}),
+            // Backfill album metadata vào placeholder (lần claim đầu) để row tổng có albumKey thật.
+            ...(msg.albumKey ? { albumKey: msg.albumKey, albumIndex: msg.albumIndex ?? 0, albumTotal: msg.albumTotal ?? null } : {}),
+          },
+        });
+        if (claimed.count > 0) {
+          logger.debug(`[message-handler] Skipping self echo: claimed placeholder (album=${msg.albumKey ?? 'none'} idx=${msg.albumIndex})`);
+          return null;
+        }
+        // Không claim được placeholder nào → đây là sibling album (hoặc tin thật) → để insert tiếp.
       } else {
-        dupeWhere.content = msg.content || '';
-      }
-      const recentDupe = await prisma.message.findFirst({
-        where: dupeWhere,
-        orderBy: { sentAt: 'desc' },
-        select: { id: true, zaloMsgId: true },
-      });
-      if (recentDupe) {
-        if (!recentDupe.zaloMsgId && msg.msgId) {
-          // Update cả zaloMsgIdNum để row CRM-sent giờ có numeric Snowflake → sort đúng
-          const dupNum = /^\d+$/.test(msg.msgId) ? BigInt(msg.msgId) : null;
-          await prisma.message.update({
-            where: { id: recentDupe.id },
-            data: { zaloMsgId: msg.msgId, zaloMsgIdNum: dupNum },
-          }).catch(() => {});
+        // Text: match theo content (giữ logic cũ — text không có album).
+        const recentDupe = await prisma.message.findFirst({
+          where: {
+            conversationId: conversation.id,
+            senderType: 'self',
+            content: msg.content || '',
+            sentAt: { gte: new Date(Date.now() - 30_000) },
+          },
+          orderBy: { sentAt: 'desc' },
+          select: { id: true, zaloMsgId: true },
+        });
+        if (recentDupe) {
+          if (!recentDupe.zaloMsgId && msg.msgId) {
+            await prisma.message.update({
+              where: { id: recentDupe.id },
+              data: { zaloMsgId: msg.msgId, zaloMsgIdNum: dupNum },
+            }).catch(() => {});
+          }
+          if (msg.cliMsgId) {
+            await prisma.message.update({
+              where: { id: recentDupe.id },
+              data: { zaloCliMsgId: msg.cliMsgId },
+            }).catch(() => {});
+          }
+          logger.debug('[message-handler] Skipping self echo: content match within 30s');
+          return null;
         }
-        // FIX 2026-05-21: row CRM-sent insert TRƯỚC khi nhận echo nên thiếu cliMsgId.
-        // Echo về có cliMsgId → backfill vào row dupe để undo hoạt động.
-        if (msg.cliMsgId) {
-          await prisma.message.update({
-            where: { id: recentDupe.id },
-            data: { zaloCliMsgId: msg.cliMsgId },
-          }).catch(() => {});
-        }
-        logger.debug(`[message-handler] Skipping self echo: ${isAttachment ? 'attachment' : 'content'} match within 30s`);
-        return null;
       }
     }
 
