@@ -588,12 +588,17 @@ onMounted(async () => {
       selectConversation(initId);
     }
     window.addEventListener('zalo-labels-synced', onLabelsSynced);
+    // 2026-06-12 — tin mới đến (use-chat bắn 'chat:inbound-message') → refresh badge tab
+    // "Ưu tiên". Cần vì conv tab Ưu tiên không nằm trong list tab đang xem nên socket
+    // không cập nhật được badge tại chỗ. refreshPriorityUnread đã debounce 400ms.
+    window.addEventListener('chat:inbound-message', refreshPriorityUnread);
   }
 });
 onUnmounted(() => {
   if (!isMobile.value) {
     destroySocket();
     window.removeEventListener('zalo-labels-synced', onLabelsSynced);
+    window.removeEventListener('chat:inbound-message', refreshPriorityUnread);
   }
 });
 

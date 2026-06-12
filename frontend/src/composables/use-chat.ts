@@ -801,6 +801,15 @@ export function useChat() {
       // Debounce sync from server: chỉ fetch sau 3s im lặng → reconcile state
       // (tránh chạy mỗi tin → lag list khi nhận burst).
       scheduleConvSync();
+      // 2026-06-12 (anh báo: tab "Ưu tiên" có tin mới mà badge KHÔNG tăng tới khi reload).
+      // Gốc: conv thuộc tab Ưu tiên KHÔNG nằm trong conversations.value (list tab hiện tại)
+      // → idx=-1 → optimistic update bỏ qua, VÀ badge priorityUnreadCount chỉ refresh lúc
+      // mount/move/delete/mark-read, KHÔNG refresh khi có tin mới. Bắn event để ChatView
+      // refresh badge (debounce 400ms — burst nhiều tin chỉ 1 lần gọi /counts). Chỉ tin
+      // ĐẾN (không phải tin mình gửi) mới làm tăng unread tab Ưu tiên.
+      if (data.message.senderType !== 'self' && typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('chat:inbound-message'));
+      }
     });
 
     socket.on('chat:deleted', (data: { messageId?: string; zaloMsgId?: string; conversationId?: string }) => {
