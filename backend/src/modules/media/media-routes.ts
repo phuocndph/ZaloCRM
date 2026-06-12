@@ -792,12 +792,19 @@ export async function mediaRoutes(app: FastifyInstance) {
       if (body.assetIds.length > 12) return reply.status(400).send({ error: 'Tối đa 12 ảnh/lần' });
 
       const canViewAll = await userHasGrant(userId, 'media', 'view_all');
-      const assets = await prisma.mediaAsset.findMany({
+      const found = await prisma.mediaAsset.findMany({
         where: { id: { in: body.assetIds }, orgId: user.orgId, archivedAt: null, kind: 'image',
           ...(canViewAll ? {} : { OR: [{ ownerUserId: userId }, { visibility: 'public' }] }) },
         include: { blobs: { where: { variantType: { in: ['original', 'watermarked'] } } } },
       });
-      if (assets.length === 0) return reply.status(404).send({ error: 'Không có ảnh hợp lệ' });
+      if (found.length === 0) return reply.status(404).send({ error: 'Không có ảnh hợp lệ' });
+
+      // FIX 2026-06-12 (anh báo: album sai thứ tự): Prisma findMany với `in[]` KHÔNG giữ
+      // thứ tự assetIds (Postgres trả theo thứ tự nội bộ DB). Zalo zca-js thì gán idInGroup
+      // theo ĐÚNG thứ tự mảng truyền vào. → Phải sắp lại `assets` theo thứ tự body.assetIds
+      // (= thứ tự sale tick chọn) để album hiển thị đúng ý sale.
+      const byId = new Map(found.map((a) => [a.id, a]));
+      const assets = body.assetIds.map((id) => byId.get(id)).filter((a): a is typeof found[number] => !!a);
 
       // Chọn variant đúng cho từng ảnh: watermark BẬT → bản có logo, ngược lại bản gốc.
       const pickBlob = (a: typeof assets[number]) => {
