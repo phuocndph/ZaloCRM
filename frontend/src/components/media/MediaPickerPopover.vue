@@ -63,6 +63,27 @@
       <div v-else-if="items.length === 0" class="mp-empty">
         Không có {{ kindLabel }} nào khớp. Tải lên ở trang <b>Kho ảnh</b> hoặc chuột phải tin nhắn → Lưu vào Media.
       </div>
+
+      <!-- TỆP: list theo dòng (sale phân biệt được tệp nào — anh chốt) -->
+      <div v-else-if="kindFilter === 'file'" class="mp-list">
+        <button
+          v-for="a in items"
+          :key="a.id"
+          class="mp-fitem"
+          :disabled="sending === a.id"
+          @click="send(a)"
+        >
+          <span class="mp-ficon" :style="{ background: fileIcon(a.name).bg, color: fileIcon(a.name).fg }">{{ fileIcon(a.name).label }}</span>
+          <span class="mp-finfo">
+            <span class="mp-fname" :title="a.name">{{ a.name }}</span>
+            <span class="mp-fmeta">{{ fmtSize(a.sizeBytes) }}</span>
+          </span>
+          <span v-if="sending === a.id" class="mp-fsending">Đang gửi…</span>
+          <span v-else class="mp-fsend">Gửi ›</span>
+        </button>
+      </div>
+
+      <!-- ẢNH/VIDEO: grid thumbnail (video có overlay ▶ + thời lượng + size) -->
       <div v-else class="mp-grid">
         <button
           v-for="a in items"
@@ -73,9 +94,14 @@
           @click="onCellClick(a)"
         >
           <img v-if="a.thumbnailUrl" :src="a.thumbnailUrl" loading="lazy" alt="" />
-          <span v-else class="ph">{{ a.kind === 'video' ? '🎬' : a.kind === 'file' ? '📄' : '🖼' }}</span>
-          <span v-if="a.kind === 'video'" class="mp-play">▶</span>
-          <span class="mp-name">{{ a.name }}</span>
+          <span v-else class="ph">{{ a.kind === 'video' ? '🎬' : '🖼' }}</span>
+          <template v-if="a.kind === 'video'">
+            <span class="mp-play">▶</span>
+            <span v-if="a.durationSec" class="mp-dur">{{ fmtDuration(a.durationSec) }}</span>
+          </template>
+          <span class="mp-name">
+            {{ a.name }}<template v-if="a.kind === 'video' && a.sizeBytes"> · {{ fmtSize(a.sizeBytes) }}</template>
+          </span>
           <span v-if="multiMode && picked.has(a.id)" class="mp-check on">{{ pickIndex(a.id) }}</span>
           <span v-if="sending === a.id" class="mp-sending">Đang gửi…</span>
         </button>
@@ -114,6 +140,28 @@ const picked = ref<Set<string>>(new Set());
 const sendingAlbum = ref(false);
 
 const kindLabel = computed(() => ({ image: 'ảnh', video: 'video', file: 'tệp' }[kindFilter.value]));
+
+// Icon + màu theo định dạng tệp (sale nhận diện nhanh PDF/Excel/Word).
+function fileIcon(name: string): { label: string; bg: string; fg: string } {
+  const ext = (name.split('.').pop() || '').toLowerCase();
+  if (ext === 'pdf') return { label: 'PDF', bg: '#fdecec', fg: '#c0392b' };
+  if (['xls', 'xlsx', 'csv'].includes(ext)) return { label: 'XLS', bg: '#e7f4ec', fg: '#1e7e45' };
+  if (['doc', 'docx'].includes(ext)) return { label: 'DOC', bg: '#e8effb', fg: '#1a5cc0' };
+  if (['ppt', 'pptx'].includes(ext)) return { label: 'PPT', bg: '#fdeee4', fg: '#c75b1e' };
+  if (['zip', 'rar', '7z'].includes(ext)) return { label: 'ZIP', bg: '#f0eef9', fg: '#6b4fb0' };
+  return { label: (ext || 'FILE').slice(0, 4).toUpperCase(), bg: '#eef0f2', fg: '#41454d' };
+}
+
+function fmtSize(bytes: number | null | undefined): string {
+  if (!bytes) return '';
+  const MB = 1024 * 1024;
+  return bytes >= MB ? `${(bytes / MB).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+function fmtDuration(sec: number): string {
+  const m = Math.floor(sec / 60);
+  return `${m}:${String(sec % 60).padStart(2, '0')}`;
+}
 
 let timer: ReturnType<typeof setTimeout> | null = null;
 function debouncedReload() { if (timer) clearTimeout(timer); timer = setTimeout(reload, 300); }
@@ -250,7 +298,21 @@ onMounted(reload);
 .mp-cell img { width:100%; height:56px; object-fit:cover; display:block; }
 .mp-cell .ph { display:flex; align-items:center; justify-content:center; height:56px; font-size:22px; background:#e0e2e6; color:var(--muted); }
 .mp-play { position:absolute; top:50%; left:50%; transform:translate(-50%,-58%); width:24px; height:24px; border-radius:9999px; background:rgba(0,0,0,.5); color:#fff; font-size:11px; display:flex; align-items:center; justify-content:center; pointer-events:none; }
+.mp-dur { position:absolute; bottom:22px; right:3px; background:rgba(0,0,0,.72); color:#fff; border-radius:3px; padding:0 4px; font-size:9.5px; font-variant-numeric:tabular-nums; pointer-events:none; }
 .mp-name { display:block; font-size:10px; padding:3px 4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:var(--ink); }
+
+/* TỆP — list theo dòng (anh chốt: grid card không phân biệt được tệp nào). */
+.mp-list { overflow:auto; display:flex; flex-direction:column; }
+.mp-fitem { display:flex; align-items:center; gap:10px; width:100%; padding:8px 8px; border:none; background:none; border-bottom:1px solid var(--hairline); cursor:pointer; text-align:left; }
+.mp-fitem:last-child { border-bottom:none; }
+.mp-fitem:hover { background:var(--canvas); }
+.mp-fitem:disabled { opacity:.55; }
+.mp-ficon { width:38px; height:38px; flex-shrink:0; border-radius:7px; display:flex; align-items:center; justify-content:center; font-size:10.5px; font-weight:700; letter-spacing:.02em; }
+.mp-finfo { flex:1; min-width:0; display:flex; flex-direction:column; gap:1px; }
+.mp-fname { font-size:12.5px; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.mp-fmeta { font-size:11px; color:var(--muted); }
+.mp-fsend { font-size:11.5px; color:var(--ink); font-weight:500; flex-shrink:0; }
+.mp-fsending { font-size:11px; color:var(--muted); flex-shrink:0; }
 .mp-check { position:absolute; top:4px; right:4px; width:19px; height:19px; border-radius:9999px; border:1.5px solid #fff; background:rgba(24,29,38,.35); color:#fff; font-size:11.5px; font-weight:700; display:flex; align-items:center; justify-content:center; box-shadow:0 1px 3px rgba(0,0,0,.25); }
 .mp-check.on { background:var(--ink); }
 .mp-sending { position:absolute; inset:0; background:rgba(255,255,255,.8); display:flex; align-items:center; justify-content:center; font-size:11px; color:var(--ink); }

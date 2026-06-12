@@ -92,6 +92,20 @@
           <div class="empty-hint">💡 Hoặc chuột phải ảnh trong chat → <b>Lưu vào Media</b></div>
         </div>
 
+        <!-- TỆP: list detail theo dòng (sale phân biệt được tệp nào — anh chốt 2026-06-12) -->
+        <div v-else-if="activeKind === 'file'" class="m-flist">
+          <div v-for="a in items" :key="a.id" class="frow" :class="{ sel: selected?.id === a.id }" @click="select(a)">
+            <span class="ficon" :style="{ background: fileIcon(a.name).bg, color: fileIcon(a.name).fg }">{{ fileIcon(a.name).label }}</span>
+            <div class="finfo">
+              <div class="fname" :title="a.name">{{ a.name }}</div>
+              <div class="fmeta">
+                {{ fmtSize(a.sizeBytes) }} · {{ a.visibility === 'public' ? '🌐 Công khai' : '🔒 Riêng tư' }} · đã dùng {{ a.usageCount }}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ẢNH/VIDEO: grid thẻ thumbnail -->
         <div v-else class="m-grid">
           <div v-for="a in items" :key="a.id" class="card" :class="{ sel: selected?.id === a.id }" @click="select(a)">
             <div class="thumb">
@@ -218,6 +232,22 @@ function fmtDuration(sec: number): string {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+// Icon + màu theo định dạng tệp (sale nhận diện nhanh PDF/Excel/Word).
+function fileIcon(name: string): { label: string; bg: string; fg: string } {
+  const ext = (name.split('.').pop() || '').toLowerCase();
+  if (ext === 'pdf') return { label: 'PDF', bg: '#fdecec', fg: '#c0392b' };
+  if (['xls', 'xlsx', 'csv'].includes(ext)) return { label: 'XLS', bg: '#e7f4ec', fg: '#1e7e45' };
+  if (['doc', 'docx'].includes(ext)) return { label: 'DOC', bg: '#e8effb', fg: '#1a5cc0' };
+  if (['ppt', 'pptx'].includes(ext)) return { label: 'PPT', bg: '#fdeee4', fg: '#c75b1e' };
+  if (['zip', 'rar', '7z'].includes(ext)) return { label: 'ZIP', bg: '#f0eef9', fg: '#6b4fb0' };
+  return { label: (ext || 'FILE').slice(0, 4).toUpperCase(), bg: '#eef0f2', fg: '#41454d' };
+}
+function fmtSize(bytes: number | null | undefined): string {
+  if (!bytes) return '—';
+  const MB = 1024 * 1024;
+  return bytes >= MB ? `${(bytes / MB).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
 function triggerUpload() { fileInput.value?.click(); }
 async function onFilesPicked(e: Event) {
   const input = e.target as HTMLInputElement;
@@ -307,6 +337,16 @@ onMounted(() => { reload(); loadFolders(); loadStats(); });
 .f .lk { margin-left:auto; font-size:11px; }
 .m-grid-wrap { flex:1; padding:16px 24px; overflow:auto; min-width:0; }
 .m-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(170px, 1fr)); gap:14px; }
+/* TỆP — list detail theo dòng (anh chốt: grid card không phân biệt được tệp nào). */
+.m-flist { display:flex; flex-direction:column; border:1px solid var(--hairline); border-radius:var(--r-md); overflow:hidden; background:var(--canvas); }
+.frow { display:flex; align-items:center; gap:13px; padding:11px 14px; border-bottom:1px solid var(--hairline); cursor:pointer; }
+.frow:last-child { border-bottom:none; }
+.frow:hover { background:var(--soft); }
+.frow.sel { background:#eef2fb; }
+.ficon { width:46px; height:46px; flex-shrink:0; border-radius:9px; display:flex; align-items:center; justify-content:center; font-size:12px; font-weight:700; letter-spacing:.02em; }
+.finfo { flex:1; min-width:0; }
+.fname { font-size:14px; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-bottom:2px; }
+.fmeta { font-size:12px; color:var(--muted); }
 .card { border:1px solid var(--hairline); border-radius:var(--r-md); overflow:hidden; cursor:pointer; background:var(--canvas); }
 .card.sel { border-color:var(--ink); box-shadow:0 0 0 2px var(--ink); }
 .thumb { height:108px; background:var(--strong); position:relative; display:flex; align-items:center; justify-content:center; }

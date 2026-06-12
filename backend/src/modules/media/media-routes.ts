@@ -102,11 +102,20 @@ async function saveOneMessageToMedia(args: {
   const ct = message.contentType;
   const kind: MediaKind = ct === 'image' ? 'image' : ct === 'video' ? 'video' : 'file';
 
+  // FIX 2026-06-12 (anh báo: tệp toàn "Lưu từ chat" → sale không phân biệt được).
+  // Zalo lưu TÊN FILE THẬT (kèm đuôi) ở content.title, KHÔNG phải content.name. Đọc theo thứ
+  // tự title → fileName → name → fileUrl-basename. Ảnh thì không có title → giữ "Lưu từ chat".
+  const urlBase = (() => { try { return decodeURIComponent(String(url).split('/').pop() || ''); } catch { return ''; } })();
+  const realName: string | undefined =
+    parsed.title || parsed.fileName || parsed.name
+    || (kind !== 'image' && urlBase && /\.\w{2,5}$/.test(urlBase) ? urlBase : undefined);
+  const mediaName = realName || (kind === 'image' ? 'Lưu từ chat' : 'Tệp lưu từ chat');
+
   // Validation file (audit 2026-06-12): save-from-chat KHÔNG qua classify() như /upload.
   // Chặn đuôi nguy hiểm (thực thi) để file độc không vào kho rồi gửi lại khách. KHÔNG dùng
   // whitelist cứng vì file Zalo nhiều khi mime=octet-stream hợp lệ (pdf/excel) sẽ bị chặn nhầm.
   if (kind === 'file') {
-    const fname = String(parsed.name || url || '').toLowerCase();
+    const fname = String(mediaName || url || '').toLowerCase();
     const DANGEROUS = ['.exe', '.bat', '.cmd', '.scr', '.com', '.pif', '.msi', '.js', '.jar', '.vbs', '.ps1', '.sh'];
     if (DANGEROUS.some((ext) => fname.endsWith(ext))) {
       logger.warn(`[media][audit] chặn lưu file nguy hiểm user=${userId} name=${fname}`);
@@ -116,14 +125,14 @@ async function saveOneMessageToMedia(args: {
 
   let tmp: { path: string; cleanup: () => Promise<void> } | null = null;
   try {
-    tmp = await downloadMediaToTemp({ url, filename: parsed.name }, ct);
+    tmp = await downloadMediaToTemp({ url, filename: realName }, ct);
     const buf = await readFile(tmp.path);
     const mimeType = parsed.mime
       || (kind === 'image' ? 'image/jpeg' : kind === 'video' ? 'video/mp4' : 'application/octet-stream');
     const res = await registerAsset({
       orgId, buffer: buf, mimeType, kind,
-      name: parsed.name || `Lưu từ chat`,
-      originalFilename: parsed.name,
+      name: mediaName,
+      originalFilename: realName,
       ownerUserId: userId, createdById: userId,
       visibility: vis.visibility,
       source: 'saved_from_chat',
