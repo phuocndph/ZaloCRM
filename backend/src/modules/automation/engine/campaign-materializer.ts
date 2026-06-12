@@ -19,11 +19,12 @@ import { logger } from '../../../shared/utils/logger.js';
 import { DEFAULT_RUNTIME_RULES, type SequenceStep } from '../sequences/types.js';
 import type { AutomationEvent } from './types.js';
 import { resolveSegmentToContactIds } from './segment-resolver.js';
-import { automationTaskStub as _automationTaskStub } from './_automation-task-stub.js';
 import {
   buildSequenceStepJobId,
   getSequenceStepQueue,
 } from '../queues/queue-registry.js';
+import { enqueueSequenceStart } from '../queues/sequence-step-worker.js';
+import { pickSequenceNickForContact } from './nick-selector.js';
 
 export interface MaterializeResult {
   campaignsCreated: number;
@@ -103,101 +104,20 @@ export async function materializeFromEvent(
       continue;
     }
 
-    // ── Block-bound: single-task campaign that runs the block directly ────
-    // FIX (overnight test bug): block-bound triggers were silently skipped
-    // before — only sequences materialized. Now we create a single-block
-    // campaign + 1 Task per resolved contact.
+    // ── Block-bound: Mục tiêu gắn THẲNG 1 Khối gửi 1 lần (không phải Luồng) ──
+    // 2026-06-12: bản cũ ghi AutomationTask (đã drop) → 0 việc; VÀ không có worker
+    // BullMQ nào consume executionKind='single_block' → tính năng CHẾT ở tầng runtime.
+    // Anh không dùng kiểu này (xác nhận 2026-06-12). KHÔNG nối vội BullMQ (cần queue
+    // + worker mới = phình scope cho thứ không xài). Thay vì NUỐT IM như trước:
+    // skip có cảnh báo rõ để nếu lỡ có ai tạo thì lộ ra, không tưởng-nhầm-đang-chạy.
+    // Nối thật = TODO riêng khi anh cần "gửi 1 phát đơn giản".
     if (trigger.bindingKind === 'block') {
-      if (!trigger.blockId) {
-        result.skipped++;
-        result.reasons.push(`trigger ${trigger.id}: block bindingKind but no blockId`);
-        continue;
-      }
-      const block = await prisma.block.findFirst({
-        where: { id: trigger.blockId, orgId: event.orgId },
-        select: { id: true, content: true, archivedAt: true },
-      });
-      if (!block || block.archivedAt) {
-        result.skipped++;
-        result.reasons.push(`trigger ${trigger.id}: block missing or archived`);
-        continue;
-      }
-
-      const contactIds = await resolveSegmentContactIds(
-        event.orgId,
-        trigger.segmentSpec ?? event.segmentHint,
-        event.contactId ?? null,
+      result.skipped++;
+      result.reasons.push(`trigger ${trigger.id}: block-bound chưa có worker (tính năng tạm ngưng — dùng Luồng kịch bản thay thế)`);
+      logger.warn(
+        `[materializer] block-bound trigger ${trigger.id} SKIPPED — single_block execution chưa wire BullMQ. ` +
+          `Nếu cần gửi-1-khối, tạo Sequence 1 bước hoặc báo để wire riêng.`,
       );
-      if (contactIds.length === 0) {
-        result.skipped++;
-        result.reasons.push(`trigger ${trigger.id}: no contacts resolved (block-bound)`);
-        continue;
-      }
-
-      const rulesSnapshot = {
-        ...DEFAULT_RUNTIME_RULES,
-        ...((trigger.ruleOverrides as object) ?? {}),
-      };
-
-      // 1 campaign per trigger + 1 task per contact
-      let blockCampaign = await prisma.automationCampaign.findFirst({
-        where: {
-          orgId: event.orgId,
-          triggerId: trigger.id,
-          blockId: trigger.blockId,
-          state: 'active',
-        },
-        select: { id: true },
-      });
-      if (!blockCampaign) {
-        blockCampaign = await prisma.automationCampaign.create({
-          data: {
-            id: randomUUID(),
-            orgId: event.orgId,
-            triggerId: trigger.id,
-            executionKind: 'single_block',
-            blockId: trigger.blockId,
-            segmentSnapshot: { contactIds } as object,
-            rulesSnapshot: rulesSnapshot as object,
-            state: 'active',
-          },
-          select: { id: true },
-        });
-        result.campaignsCreated++;
-      }
-
-      // Apply jitter window for scheduling
-      const jitterMin = (rulesSnapshot.randomDelayPerSend?.min ?? 0) * 60 * 1000;
-      const jitterMax = (rulesSnapshot.randomDelayPerSend?.max ?? 0) * 60 * 1000;
-      const baseNow = Date.now();
-
-      for (const contactId of contactIds) {
-        const existing = await ((prisma as any).automationTask ?? _automationTaskStub).findFirst({
-          where: { campaignId: blockCampaign.id, contactId },
-          select: { id: true },
-        });
-        if (existing) {
-          result.skipped++;
-          result.reasons.push(`contact ${contactId}: already in block campaign ${blockCampaign.id}`);
-          continue;
-        }
-        const jitter = jitterMin + Math.random() * Math.max(0, jitterMax - jitterMin);
-        const scheduledAt = new Date(baseNow + jitter);
-        await ((prisma as any).automationTask ?? _automationTaskStub).create({
-          data: {
-            id: randomUUID(),
-            orgId: event.orgId,
-            campaignId: blockCampaign.id,
-            contactId,
-            // No sequence — block-bound tasks have currentStepIdx=null
-            currentBlockId: block.id,
-            blockSnapshot: block.content as object,
-            scheduledAt,
-            state: 'queued',
-          },
-        });
-        result.tasksEnqueued++;
-      }
       continue; // done with this trigger
     }
 
@@ -269,11 +189,12 @@ export async function materializeFromEvent(
       result.campaignsCreated++;
     }
 
-    // 6. Load the first step's block to snapshot content
+    // 6. Early-check block đầu (skip sớm nếu hỏng — worker re-load fresh ở STEP 4,
+    //    không cần snapshot content ở đây nữa vì BullMQ path load steps fresh).
     const firstStep = steps[0];
     const firstBlock = await prisma.block.findFirst({
       where: { id: firstStep.blockId, orgId: event.orgId },
-      select: { id: true, content: true, archivedAt: true },
+      select: { id: true, archivedAt: true },
     });
     if (!firstBlock || firstBlock.archivedAt) {
       result.skipped++;
@@ -281,58 +202,46 @@ export async function materializeFromEvent(
       continue;
     }
 
-    // 7. For each contact: idempotent enrollment — skip if already has task for this campaign
-    const now = Date.now();
+    // 7. Per-contact enrollment → BullMQ (2026-06-12 rewrite, AutomationTask đã drop).
+    //
+    // ĐỔI SO VỚI BẢN CŨ (ghi AutomationTask stub → 0 việc thật → KH không bám đuổi):
+    //   - Chọn nick: pickSequenceNickForContact (ngẫu nhiên trong list segmentSpec.nickIds,
+    //     connected + dưới cap + có Friend row). Nick này đi HẾT luồng cho KH.
+    //   - Enqueue: enqueueSequenceStart (BullMQ jobId `${trigger}-${contact}-0`).
+    //   - Idempotent: BullMQ jobId dedup (cùng KH cùng Mục tiêu → 1 job step-0). Bỏ
+    //     check-task-DB cũ.
+    //   - BỎ HẲN sequence mutex cũ (chặn KH vào nhiều Luồng): anh chốt 2026-06-12 KH
+    //     ĐƯỢC gắn nhiều Luồng KHÁC NHAU song song (7-ngày + 30-ngày...). Chỉ cấm trùng
+    //     CÙNG 1 Luồng — jobId dedup ở trên đã lo (1 campaign = 1 cặp trigger×sequence).
+    //
+    // Delay START: firstStep.delayMinutes (offset bước 1) làm sequenceStartDelayMinutes.
+    const allowedNickIds = Array.isArray((trigger.segmentSpec as { nickIds?: unknown } | null)?.nickIds)
+      ? ((trigger.segmentSpec as { nickIds: string[] }).nickIds)
+      : null;
+
     for (const contactId of contactIds) {
-      const existing = await ((prisma as any).automationTask ?? _automationTaskStub).findFirst({
-        where: { campaignId: campaign.id, contactId },
-        select: { id: true },
+      // Chọn nick gắn KH (đợt này: chỉ nick ĐÃ có Friend row gửi-được-ngay).
+      // KH lạ (chưa quan hệ nick nào) → skip, chờ TODO SEQ-C1 (findUser qua phone).
+      const pick = await pickSequenceNickForContact({
+        orgId: event.orgId,
+        contactId,
+        allowedNickIds,
       });
-      if (existing) {
+      if (pick.nickId === null) {
         result.skipped++;
-        result.reasons.push(`contact ${contactId}: already enrolled in campaign ${campaign.id}`);
+        result.reasons.push(`contact ${contactId}: no_sendable_nick (${pick.reason})`);
         continue;
       }
 
-      // Wave 1 #3.2 — Sequence mutex: skip enroll nếu KH đang trong Luồng khác active.
-      // "Active" = task state in (queued, running) trong sequence-bound campaign khác (≠ campaign hiện tại)
-      // cùng org. Đảm bảo 1 KH không bị fire song song nhiều Luồng cùng lúc.
-      // Default: skip. Sau này có thể đổi sang queue nếu anh muốn override per-Sequence.
-      const activeInOther = await ((prisma as any).automationTask ?? _automationTaskStub).findFirst({
-        where: {
-          orgId: event.orgId,
-          contactId,
-          campaignId: { not: campaign.id },
-          state: { in: ['queued', 'running'] },
-          sequenceId: { not: null }, // chỉ check Luồng kịch bản, block-bound 1-off không tính
-        },
-        select: { id: true, campaignId: true },
-      });
-      if (activeInOther) {
-        result.skipped++;
-        result.reasons.push(`contact ${contactId}: sequence_mutex — đang trong campaign ${activeInOther.campaignId}`);
-        continue;
-      }
-
-      // Schedule first step. delayMinutes from step + jitter from runtime rule.
-      const jitterMin = (rulesSnapshot.randomDelayPerSend?.min ?? 0) * 60 * 1000;
-      const jitterMax = (rulesSnapshot.randomDelayPerSend?.max ?? 0) * 60 * 1000;
-      const jitter = jitterMin + Math.random() * Math.max(0, jitterMax - jitterMin);
-      const scheduledAt = new Date(now + firstStep.delayMinutes * 60 * 1000 + jitter);
-
-      await ((prisma as any).automationTask ?? _automationTaskStub).create({
-        data: {
-          id: randomUUID(),
-          orgId: event.orgId,
-          campaignId: campaign.id,
-          contactId,
-          sequenceId: trigger.sequenceId,
-          currentStepIdx: 0,
-          currentBlockId: firstBlock.id,
-          blockSnapshot: firstBlock.content as object, // SNAPSHOT — frozen content
-          scheduledAt,
-          state: 'queued',
-        },
+      // Enqueue step 0 vào BullMQ. jobId dedup tự lo idempotent (double-fire an toàn).
+      // nick đã chọn được mang theo mọi step (sequence-step-worker không bốc lại).
+      await enqueueSequenceStart({
+        triggerId: trigger.id,
+        contactId,
+        sequenceId: trigger.sequenceId,
+        nickId: pick.nickId,
+        orgId: event.orgId,
+        startDelayMinutes: firstStep.delayMinutes,
       });
       result.tasksEnqueued++;
     }

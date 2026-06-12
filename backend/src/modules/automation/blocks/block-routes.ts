@@ -15,7 +15,6 @@ import { authMiddleware } from '../../auth/auth-middleware.js';
 import { requireGrant } from '../../rbac/rbac-middleware.js';
 import { logger } from '../../../shared/utils/logger.js';
 import { getOwnerScope } from '../../rbac/owner-scope.js';
-import { automationTaskStub as _automationTaskStub } from '../engine/_automation-task-stub.js';
 import { resolveBlockContent } from './resolve-block-content.js';
 import {
   isSupportedActionType,
@@ -296,16 +295,19 @@ export async function blockRoutes(app: FastifyInstance): Promise<void> {
       if (!existing) return reply.status(404).send({ error: 'block not found' });
 
       // Check references (sequences via JSON steps, broadcasts via FK, triggers via FK)
-      const [broadcastRef, triggerRef, taskRef] = await Promise.all([
+      // 2026-06-12: bỏ count AutomationTask (bảng đã drop — đếm qua stub luôn 0, vô
+      // nghĩa). Broadcast + Trigger FK vẫn chặn xóa đúng. Task đang chạy = BullMQ jobs,
+      // không query kiểu này; engine snapshot block content lúc enqueue nên xóa block
+      // KHÔNG ảnh hưởng job đang chạy → an toàn không cần chặn theo task.
+      const [broadcastRef, triggerRef] = await Promise.all([
         prisma.automationBroadcast.count({ where: { blockId: id, orgId: user.orgId } }),
         prisma.automationTrigger.count({ where: { blockId: id, orgId: user.orgId } }),
-        ((prisma as any).automationTask ?? _automationTaskStub).count({ where: { currentBlockId: id, orgId: user.orgId } }),
       ]);
 
-      if (broadcastRef + triggerRef + taskRef > 0) {
+      if (broadcastRef + triggerRef > 0) {
         return reply.status(409).send({
           error: 'block in use',
-          detail: `Referenced by ${broadcastRef} broadcast(s), ${triggerRef} trigger(s), ${taskRef} task(s). Archive instead.`,
+          detail: `Referenced by ${broadcastRef} broadcast(s), ${triggerRef} trigger(s). Archive instead.`,
         });
       }
 

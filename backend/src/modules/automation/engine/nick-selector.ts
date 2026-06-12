@@ -1,136 +1,105 @@
-// Phase 7 Engine — nick pool selector.
+// Sequence nick selector — Luồng Mục Tiêu (viết lại 2026-06-12).
 //
-// When AutomationTask has no pre-assigned nick, the worker calls pickNickForTask
-// to choose one from the org's connected ZaloAccounts based on actionType:
+// ════════════════════════════════════════════════════════════════════════
+// LỊCH SỬ: file cũ có pickNickForTask() phục vụ task-worker.ts (DB-polling,
+// đã XÓA cùng AutomationTask). Nhánh request_friend cũ đếm cap qua
+// AutomationTask stub (luôn 0) — dead code, gỡ luôn. File giờ chỉ còn 1 hàm
+// chọn nick cho đường event → sequence (materializeFromEvent).
+// ════════════════════════════════════════════════════════════════════════
 //
-//   send_message    → MUST pick a nick that's already a friend with this contact
-//                     (Friend.friendshipStatus='accepted'). Falls back to any nick
-//                     in 'pending_sent' if no accepted exists (Zalo allows sending
-//                     to pending pairs in many cases).
-//
-//   request_friend  → Pick any connected nick under daily cap. Avoid nicks that
-//                     already sent a friend req to this contact (FriendshipAttempt
-//                     dedup). Round-robin by lastFriendReqSentAt to spread load.
-//
-//   update_status   → No nick needed (DB-only action). Worker skips this selector.
+// CHỌN NICK (anh chốt 2026-06-12 — xem [[feedback_zalocrm_multi_sequence_rule]]):
+//   1. List nick được phép = trigger.segmentSpec.nickIds (sale cấu hình lúc tạo
+//      Mục tiêu — ĐÂY là tầng phân quyền Zalo scope; runtime không lọc owner thêm).
+//      Nếu list rỗng → mọi nick connected trong org đều ứng viên.
+//   2. Lọc: nick connected + còn quota gửi tin hôm nay.
+//   3. ĐỢT NÀY (chờ TODO SEQ-C1 findUser-qua-phone): chỉ chọn nick ĐÃ có Friend
+//      row gửi-được-ngay với KH (accepted, hoặc pending_sent + hasConversation).
+//      KH chưa quan hệ nick nào → trả null, materializer skip ghi lý do rõ.
+//   4. Bốc NGẪU NHIÊN 1 nick trong số ứng viên (rải tải, tránh dồn 1 nick → Zalo
+//      nghi spam). Nick này sẽ đi HẾT luồng cho KH đó (sequence-step-worker mang
+//      nickId theo mọi step — không bốc lại giữa chừng).
 
 import { prisma } from '../../../shared/database/prisma-client.js';
-import type { BlockActionType } from '../blocks/types.js';
-import { automationTaskStub as _automationTaskStub } from './_automation-task-stub.js';
+import { peekQuota } from '../queues/quota-lua.js';
 
-export interface NickSelection {
+export interface SequenceNickSelection {
   nickId: string;
-  reason: 'existing_friend' | 'round_robin' | 'cap_aware';
+  /** UID của KH trong nick này (zaloUidInNick) — gửi tin cần cái này */
+  zaloUidInNick: string;
+  reason: 'existing_friend';
 }
 
-export async function pickNickForTask(args: {
+/**
+ * Chọn 1 nick để gắn KH vào sequence bám đuổi.
+ *
+ * @param allowedNickIds  trigger.segmentSpec.nickIds — null/empty = không giới hạn
+ * @returns nick đã chọn + UID KH trong nick đó, hoặc null nếu không có nick gửi-được.
+ *
+ * Lý do trả null (materializer dùng để ghi skip reason):
+ *   - 'no_allowed_nick_connected'   : list nick không có cái nào connected
+ *   - 'no_friend_row'               : KH chưa quan hệ nick nào (chờ SEQ-C1 findUser)
+ *   - 'all_nicks_capped'            : nick có Friend row nhưng đều đầy cap ngày
+ */
+export async function pickSequenceNickForContact(args: {
   orgId: string;
   contactId: string;
-  actionType: BlockActionType;
-  /**
-   * SECONDARY FIX 2026-05-29 — whitelist of nick ids allowed for this trigger.
-   * Sourced from trigger.segmentSpec.nickIds (friend_invite_to_list only).
-   * When provided + non-empty, selector filters pool by these ids; if no
-   * candidate survives, returns null (worker marks task skipped with
-   * 'nick_not_in_whitelist'). When undefined/empty array, no filter applied.
-   */
   allowedNickIds?: string[] | null;
-}): Promise<NickSelection | null> {
-  const { orgId, contactId, actionType } = args;
-  const allowedNickIds =
+}): Promise<SequenceNickSelection | { nickId: null; reason: string }> {
+  const { orgId, contactId } = args;
+  const allowed =
     args.allowedNickIds && args.allowedNickIds.length > 0
       ? new Set(args.allowedNickIds)
       : null;
 
-  // ── send_message: prefer accepted friend; fallback to pending_sent ONLY if conversation exists ─
-  // FIX A5: previously returned pending_sent/pending_received nicks blindly,
-  // which Zalo policy may reject. Now strict: accepted only, or pending_sent
-  // WITH hasConversation=true (KH replied first, Zalo allows continued chat).
-  if (actionType === 'send_message') {
-    const friends = await prisma.friend.findMany({
-      where: {
-        orgId,
-        contactId,
-        OR: [
-          { friendshipStatus: 'accepted' },
-          { friendshipStatus: 'pending_sent', hasConversation: true },
-        ],
-        zaloAccount: { status: 'connected' },
-      },
-      select: { zaloAccountId: true, friendshipStatus: true, lastInboundAt: true },
-      orderBy: [{ lastInboundAt: 'desc' }],
-    });
-    const filteredFriends = allowedNickIds
-      ? friends.filter((f) => allowedNickIds.has(f.zaloAccountId))
-      : friends;
-    if (filteredFriends.length === 0) return null;
-    const accepted = filteredFriends.find((f) => f.friendshipStatus === 'accepted');
-    if (accepted) return { nickId: accepted.zaloAccountId, reason: 'existing_friend' };
-    return { nickId: filteredFriends[0].zaloAccountId, reason: 'existing_friend' };
-  }
-
-  // ── request_friend: pick any connected nick not already attempted ──────
-  if (actionType === 'request_friend') {
-    // Find nicks that have NOT already attempted this contact
-    const priorAttempts = await prisma.friendshipAttempt.findMany({
-      where: { orgId, contactId },
-      select: { zaloAccountId: true },
-    });
-    const excludedNickIds = new Set(priorAttempts.map((a) => a.zaloAccountId));
-
-    // Get connected nicks ordered by last activity (round-robin: oldest first
-    // so load spreads across nicks instead of hammering one).
-    // SECONDARY FIX 2026-05-29 — enforce trigger.segmentSpec.nickIds whitelist
-    // here so trigger-config "chỉ dùng nick X,Y" is honored at selection time.
-    const nickWhere: Record<string, unknown> = {
+  // 1. Friend rows gửi-được-ngay (accepted | pending_sent+hasConversation),
+  //    nick đang connected. JOIN nick để lấy cap + status 1 query.
+  const friends = await prisma.friend.findMany({
+    where: {
       orgId,
-      status: 'connected',
-      id: { notIn: Array.from(excludedNickIds) },
-    };
-    if (allowedNickIds) {
-      nickWhere.id = {
-        notIn: Array.from(excludedNickIds),
-        in: Array.from(allowedNickIds),
-      };
-    }
-    const nicks = await prisma.zaloAccount.findMany({
-      where: nickWhere as {
-        orgId: string;
-        status: string;
-        id: { notIn: string[]; in?: string[] };
-      },
-      select: {
-        id: true,
-        lastFriendReqSentAt: true,
-        dailyFriendAddCap: true,
-      },
-      orderBy: [{ lastFriendReqSentAt: 'asc' }],
-    });
-    if (nicks.length === 0) return null;
+      contactId,
+      OR: [
+        { friendshipStatus: 'accepted' },
+        { friendshipStatus: 'pending_sent', hasConversation: true },
+      ],
+      zaloAccount: { status: 'connected' },
+    },
+    select: {
+      zaloAccountId: true,
+      zaloUidInNick: true,
+      zaloAccount: { select: { dailyMessageCap: true } },
+    },
+  });
 
-    // Filter out nicks that hit their daily cap
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
+  // 2. Áp list nick được phép (phân quyền Zalo scope từ Mục tiêu).
+  const scoped = allowed
+    ? friends.filter((f) => allowed.has(f.zaloAccountId))
+    : friends;
 
-    for (const nick of nicks) {
-      if (nick.dailyFriendAddCap <= 0) {
-        return { nickId: nick.id, reason: 'cap_aware' };
-      }
-      const todayCount = await ((prisma as any).automationTask ?? _automationTaskStub).count({
-        where: {
-          assignedNickId: nick.id,
-          state: 'done',
-          executedAt: { gte: startOfDay },
-          block: { actionType: 'request_friend' },
-        },
-      });
-      if (todayCount < nick.dailyFriendAddCap) {
-        return { nickId: nick.id, reason: 'round_robin' };
-      }
-    }
-    return null; // all nicks capped out
+  if (scoped.length === 0) {
+    // Phân biệt "không có nick connected trong list" vs "KH chưa là bạn nick nào".
+    // Nếu KH có Friend row nhưng đều ngoài list/không connected → coi như no nick.
+    return { nickId: null, reason: friends.length > 0 ? 'no_allowed_nick_connected' : 'no_friend_row' };
   }
 
-  // ── update_status + other: no nick needed ───────────────────────────────
-  return null;
+  // 3. Lọc nick còn quota gửi tin hôm nay (cap=0 nghĩa là disable → luôn cho qua).
+  const underCap: SequenceNickSelection[] = [];
+  for (const f of scoped) {
+    const cap = f.zaloAccount?.dailyMessageCap ?? 0;
+    if (cap <= 0) {
+      underCap.push({ nickId: f.zaloAccountId, zaloUidInNick: f.zaloUidInNick, reason: 'existing_friend' });
+      continue;
+    }
+    const { capped } = await peekQuota(f.zaloAccountId, 'message', cap);
+    if (!capped) {
+      underCap.push({ nickId: f.zaloAccountId, zaloUidInNick: f.zaloUidInNick, reason: 'existing_friend' });
+    }
+  }
+
+  if (underCap.length === 0) {
+    return { nickId: null, reason: 'all_nicks_capped' };
+  }
+
+  // 4. Bốc NGẪU NHIÊN 1 nick (rải tải cross-nick).
+  const picked = underCap[Math.floor(Math.random() * underCap.length)];
+  return picked;
 }

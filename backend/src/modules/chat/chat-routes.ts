@@ -20,8 +20,6 @@ import { normalizePhone } from '../../shared/utils/phone.js';
 import { triggerVirtualChatAiReply } from '../ai/ai-virtual-chat-service.js';
 // M55 2026-05-30 — Auto-attach collaborator khi sale gửi tin virtual conv
 import { attachContactCollaboratorByUser } from '../contacts/contact-scope.js';
-// FIX A 2026-06-02 — AutomationTask model dropped post-M0 BullMQ rebuild; stub fallback
-import { automationTaskStub as _automationTaskStub } from '../automation/engine/_automation-task-stub.js';
 // Fix 2026-06-03 — M11 optimistic badge cache (Anh báo "Sale CRM · Staff")
 import { getUserFullName } from './chat-helpers.js';
 // 2026-06-07 — Gửi Khối Marketing thẳng vào hội thoại (cột 4 tab Automation).
@@ -1132,12 +1130,14 @@ export async function chatRoutes(app: FastifyInstance) {
               // giữ narrowing trong async closure bên dưới.
               const stubContactId = conv.contactId;
               logger.info(`[touch-profile] Conflict → merging stub ${stubContactId} INTO canonical ${canonical.id} via globalId=${sdkGlobalId}`);
-              // Re-point Conversation + Friend + Outbox + Task + Appointment to canonical
+              // Re-point Conversation + Friend + Outbox + Appointment to canonical.
+              // 2026-06-12: bỏ updateMany AutomationTask (bảng đã drop — không có hàng
+              // để re-point; Message.automationTaskId là string jobId BullMQ, không FK
+              // tới contact nên không cần đụng khi merge).
               await tenantTransaction(async (tx) => {
                 await tx.conversation.updateMany({ where: { contactId: stubContactId }, data: { contactId: canonical.id } });
                 await tx.friend.updateMany({ where: { contactId: stubContactId }, data: { contactId: canonical.id } });
                 await tx.friendRequestOutbox.updateMany({ where: { contactId: stubContactId }, data: { contactId: canonical.id } });
-                await ((tx as any).automationTask ?? _automationTaskStub).updateMany({ where: { contactId: stubContactId }, data: { contactId: canonical.id } });
                 await tx.customerListEntry.updateMany({ where: { contactId: stubContactId }, data: { contactId: canonical.id } });
                 await tx.contact.update({ where: { id: stubContactId }, data: { mergedInto: canonical.id, phoneNormalized: null, phone: null, updatedAt: new Date() } });
               });

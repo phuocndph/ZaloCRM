@@ -189,35 +189,8 @@ export const prisma = globalForPrisma.prisma || createPrismaClient();
 
 if (process.env.NODE_ENV !== 'production') globalForPrisma.prisma = prisma;
 
-// ════════════════════════════════════════════════════════════════════════
-// AutomationTask STUB — Luồng Mục Tiêu M0 (2026-06-01)
-// ════════════════════════════════════════════════════════════════════════
-// Model AutomationTask đã DROP. Stub object để 8 file BE legacy build pass.
-// Rewrite M2-M4 với BullMQ queue. Sau M4 remove block này.
-// ════════════════════════════════════════════════════════════════════════
-const automationTaskStub = {
-  findMany: async () => [],
-  findFirst: async () => null,
-  findUnique: async () => null,
-  count: async () => 0,
-  groupBy: async () => [],
-  aggregate: async () => ({ _count: 0, _sum: {} }),
-  create: async () => ({ id: '00000000-0000-0000-0000-000000000000' }),
-  createMany: async () => ({ count: 0 }),
-  createManyAndReturn: async () => [],
-  update: async () => ({ id: '00000000-0000-0000-0000-000000000000' }),
-  updateMany: async () => ({ count: 0 }),
-  upsert: async () => ({ id: '00000000-0000-0000-0000-000000000000' }),
-  delete: async () => ({ id: '00000000-0000-0000-0000-000000000000' }),
-  deleteMany: async () => ({ count: 0 }),
-};
-
-// Inject stub vào prisma client để code legacy không break
-if (!(prisma as any).automationTask) {
-  Object.defineProperty(prisma, 'automationTask', {
-    value: automationTaskStub,
-    writable: false,
-    configurable: false,
-    enumerable: false,
-  });
-}
+// (XÓA 2026-06-12) AutomationTask monkey-patch stub — model đã DROP (migration
+// 20260601182155_marketing_bullmq_rebuild), runtime giờ là BullMQ. Mọi caller
+// `prisma.automationTask.*` đã được dọn sạch (grep-gate = 0). Giữ patch nữa chỉ
+// che lỗi: nếu code mới lỡ gọi prisma.automationTask, giờ nó sẽ undefined → crash
+// rõ ràng lúc dev thay vì nuốt im (đúng ý: để lỗi tự lộ).

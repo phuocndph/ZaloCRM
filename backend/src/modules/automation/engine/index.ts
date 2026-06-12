@@ -10,7 +10,6 @@
 import { logger } from '../../../shared/utils/logger.js';
 import { automationEventBus } from './event-bus.js';
 import { materializeFromEvent } from './campaign-materializer.js';
-import { startTaskWorker } from './task-worker.js';
 import { registerActionHandler } from './action-dispatcher.js';
 import {
   requestFriendHandler,
@@ -41,8 +40,9 @@ export function startAutomationEngine(): void {
   registerActionHandler('request_friend', requestFriendHandler);
   registerActionHandler('send_message', sendMessageHandler);
 
-  // 3. Start polling worker
-  startTaskWorker();
+  // 3. (XÓA 2026-06-12) startTaskWorker() — task-worker.ts là DB-polling worker dựa
+  //    trên AutomationTask (đã drop), đọc stub→[] → no-op vĩnh viễn. Runtime giờ là
+  //    BullMQ (sequence-step-worker + friend-invite-worker, start ở app.ts).
 
   // 4. Start cron event scheduler (birthday + scheduled_cron triggers)
   void (async () => {
@@ -64,9 +64,8 @@ export function startAutomationEngine(): void {
     }
   })();
 
-  logger.info('[automation.engine] started — event bus + 3 action handlers + worker + cron + engagement-sweeper');
+  logger.info('[automation.engine] started — event bus + 3 action handlers + cron + engagement-sweeper (runtime via BullMQ workers)');
 }
 
 export { automationEventBus } from './event-bus.js';
 export { materializeFromEvent } from './campaign-materializer.js';
-export { tick as runWorkerTick } from './task-worker.js';
