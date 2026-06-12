@@ -2286,8 +2286,13 @@ function dayLabel(iso: string): string {
 
 const displayItems = computed<DisplayItem[]>(() => {
   const out: DisplayItem[] = [];
-  let curAlbum: Extract<DisplayItem, { kind: 'album' }> | null = null;
   let lastDayKey = '';
+  // FIX 2026-06-12 (anh báo bug hiển thị album realtime): gom album theo albumKey
+  // BẤT KỂ vị trí kề nhau. Lý do: khi gửi album, placeholder (CRM-sent) có sentAt
+  // muộn hơn các echo → sort tách nó RỜI khỏi cụm → hiển thị "8 chung + 1 rời",
+  // F5 mới gom đủ. Map albumKey→album item: sibling lạc (do sort) vẫn merge vào
+  // đúng album đã tạo, thay vì phải kề nhau. Album xuất hiện ở vị trí member ĐẦU TIÊN.
+  const albumByKey = new Map<string, Extract<DisplayItem, { kind: 'album' }>>();
 
   for (const msg of props.messages) {
     const d = new Date(msg.sentAt);
@@ -2295,26 +2300,30 @@ const displayItems = computed<DisplayItem[]>(() => {
     if (dayKey !== lastDayKey) {
       out.push({ kind: 'divider', key: 'div:' + dayKey, label: dayLabel(msg.sentAt) });
       lastDayKey = dayKey;
-      curAlbum = null;
     }
 
     const canGroup = msg.contentType === 'image' && msg.albumKey && !msg.isDeleted && !!getImageUrl(msg);
-    if (canGroup && curAlbum && curAlbum.key === `album:${msg.albumKey}:${msg.senderType}`) {
-      curAlbum.messages.push(msg);
-      continue;
-    }
-    curAlbum = null;
     if (canGroup) {
-      curAlbum = {
+      const aKey = `album:${msg.albumKey}:${msg.senderType}`;
+      const existing = albumByKey.get(aKey);
+      if (existing) {
+        // Sibling lạc → merge vào album đã có (kể cả không kề nhau). Tránh trùng id.
+        if (!existing.messages.some((m) => m.id === msg.id)) existing.messages.push(msg);
+        // totalExpected lấy max (echo có thể về trước placeholder hoặc ngược lại).
+        if ((msg.albumTotal ?? 0) > (existing.totalExpected ?? 0)) existing.totalExpected = msg.albumTotal ?? null;
+        continue;
+      }
+      const album: Extract<DisplayItem, { kind: 'album' }> = {
         kind: 'album',
-        key: `album:${msg.albumKey}:${msg.senderType}`,
+        key: aKey,
         senderType: msg.senderType,
         senderName: msg.senderName,
         sentAt: msg.sentAt,
         totalExpected: msg.albumTotal ?? null,
         messages: [msg],
       };
-      out.push(curAlbum);
+      albumByKey.set(aKey, album);
+      out.push(album);
     } else {
       out.push({ kind: 'single', key: msg.id, msg });
     }

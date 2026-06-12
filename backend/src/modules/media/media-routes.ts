@@ -823,7 +823,7 @@ export async function mediaRoutes(app: FastifyInstance) {
       const threadId = conversation.externalThreadId || '';
       const threadType = conversation.threadType === 'group' ? 1 : 0;
       const io = (app as any).io as Server;
-      const userFullName = await getUserFullName(user.id);
+      // (Bỏ placeholder album → không cần userFullName/createMediaMessage ở đây nữa.)
 
       // download tất cả ảnh về temp → gửi 1 lần (sendFile nhiều path).
       const tmps: Array<{ path: string; cleanup: () => Promise<void> }> = [];
@@ -840,13 +840,13 @@ export async function mediaRoutes(app: FastifyInstance) {
         const sendResult: any = await zaloOps.sendImage(
           conversation.zaloAccountId, threadId, threadType as 0 | 1, tmps.map((t) => t.path), io, body.caption ?? '',
         );
-        const zaloMsgId = String(sendResult?.msgId || sendResult?.data?.msgId || '');
-        const msg = await createMediaMessage({
-          conversationId: conversation.id, zaloAccount: conversation.zaloAccount, repliedByUserId: user.id,
-          zaloMsgId, contentType: 'image',
-          content: JSON.stringify({ href: assets[0].blobs[0]?.publicUrl, album: true, count: assets.length }),
-          metadata: { sender: { kind: 'user_crm', name: userFullName } }, sentVia: 'user',
-        });
+        // FIX 2026-06-12 (anh chốt — bug album hiển thị 8+1 rời realtime):
+        // KHÔNG tạo placeholder 1-dòng cho album. Placeholder cũ (albumKey=null) hiện RỜI
+        // ngay sau gửi; echo Zalo (~1-2s) gom N-1 ảnh kia → "8 chung + 1 rời", F5 mới đủ.
+        // Bỏ placeholder → echo Zalo về (mỗi ảnh có albumKey chung) tự hiện ĐỦ N ảnh 1 cụm,
+        // KHÔNG bao giờ lệch. Tradeoff: sale chờ ~1-2s thấy album (chấp nhận được).
+        // KHÔNG bumpUsage/log ở đây nữa — chuyển sang khi echo về (tránh đếm khi gửi lỗi).
+        // Vẫn đếm usage NGAY vì gửi đã thành công (sendImage không throw):
         await prisma.conversation.update({ where: { id: conversation.id }, data: { lastMessageAt: new Date(), isReplied: true, unreadCount: 0 } });
         for (const a of assets) {
           await bumpUsage(a.id);
@@ -855,8 +855,8 @@ export async function mediaRoutes(app: FastifyInstance) {
             userId, conversationId: conversation.id, meta: { albumCount: assets.length },
           });
         }
-        await emitChatMessage({ io, orgId: user.orgId, accountId: conversation.zaloAccountId, conversationId: conversation.id, message: msg, privacyMode: conversation.zaloAccount.privacyMode, ownerUserId: conversation.zaloAccount.ownerUserId });
-        return { message: msg, sent: assets.length };
+        const zaloMsgId = String(sendResult?.msgId || sendResult?.data?.msgId || '');
+        return { sent: assets.length, zaloMsgId, viaEcho: true };
       } catch (err: any) {
         logger.error('[media] album send error:', err);
         // Lỗi mạng tạm thời khi upload nhiều ảnh (đã retry 3 lần vẫn fail) → báo rõ cho sale.
