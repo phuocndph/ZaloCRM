@@ -265,6 +265,26 @@ class ZaloAccountPool {
 
   // Reconnect using previously saved session credentials
   async reconnect(accountId: string, credentials: ZaloCredentials, proxyUrl?: string | null): Promise<void> {
+    // FIX 2 nick-ghost (Anh chốt 2026-06-13): GUARD eligibility GOM 1 CHỖ. Mọi đường
+    // reconnect (boot app.ts, health-check cron, route /reconnect tay, autoReconnect
+    // timer) đều đi qua đây → đặt điều kiện "thẻ ma KHÔNG reconnect" tại nguồn duy nhất.
+    //   • zaloUid=null  → chưa từng connect thật = thẻ ma (qr_pending/disconnected rỗng).
+    //   • archivedAt!=null → nick đã xoá mềm/ẩn.
+    // Mở WS cho thẻ ma bằng session cũ → 2 WS cùng tài khoản Zalo → KICKOUT_BY_WORKER
+    // loop → "login treo". Chặn TỪ GỐC ở đây thay vì vá từng đường (DRY, không sót).
+    const eligibility = await runSystemQuery(() =>
+      prisma.zaloAccount.findUnique({
+        where: { id: accountId },
+        select: { zaloUid: true, archivedAt: true },
+      }),
+    );
+    if (!eligibility || eligibility.zaloUid === null || eligibility.archivedAt !== null) {
+      logger.info(
+        `[zalo:${accountId}] reconnect() skip — thẻ ma/đã ẩn (zaloUid=${eligibility?.zaloUid ?? 'missing'}, archived=${eligibility?.archivedAt ? 'yes' : 'no'})`,
+      );
+      return;
+    }
+
     // Fix flap 2026-06-06: in-flight guard — chặn 2 luồng cùng reconnect 1 nick
     // (autoReconnect 30s timer + health-check cron) tạo WS chồng nhau.
     if (this.reconnecting.has(accountId)) {
@@ -454,12 +474,19 @@ class ZaloAccountPool {
       // picker, labels, sticker, system-notify...). Hai nguyên nhân:
       //  (a) zaloUid UNIQUE collision (P2002): nick re-QR cùng người → nick CŨ (đã archived)
       //      vẫn giữ zaloUid → set lại trên nick mới ném P2002 → status KHÔNG ghi được.
-      //      → giải phóng uid khỏi nick khác TRƯỚC (nick đang connect là chủ hợp lệ hiện tại).
+      //      → giải phóng uid khỏi nick ĐÃ ARCHIVED trước (nick đó đã bị xoá/ẩn, nhả uid OK).
       //  (b) pool chạy NỀN (boot reconnect/cron) không có tenant ctx → bọc runSystemQuery.
+      //
+      // FIX 0 nick-ghost (Anh chốt 2026-06-13): CHỈ nhả uid khỏi nick ĐÃ ARCHIVED.
+      // Trước: updateMany xoá uid khỏi MỌI nick khác (kể cả nick đang SỐNG) → quét QR
+      // trúng nick đã login ở record khác sẽ CƯỚP uid của nó (nick cũ mất uid → thành
+      // thẻ ma) thay vì báo trùng. Giờ: nếu nick KHÁC đang sống (archivedAt=null) giữ uid
+      // → KHÔNG đụng → prisma.update set uid sẽ ném P2002 → loginQR bắt DUPLICATE_ZALO_UID
+      // → emit zalo:duplicate (khôi phục báo trùng). Đây là chống một nguồn đẻ thẻ ma.
       const updated = await runSystemQuery(async () => {
         if (zaloUid !== null) {
           await prisma.zaloAccount.updateMany({
-            where: { zaloUid, id: { not: accountId } },
+            where: { zaloUid, id: { not: accountId }, archivedAt: { not: null } },
             data: { zaloUid: null },
           });
         }
@@ -928,6 +955,56 @@ class ZaloAccountPool {
       logger.info(`[sticky-hold] ${accountId} ${milestone}: ${summary}`);
     } catch (err) {
       logger.error(`[sticky-hold] sendStickyHoldNotification ${accountId} ${milestone}:`, err);
+    }
+  }
+
+  /**
+   * FIX 3 nick-ghost (Anh chốt 2026-06-13): bộ dọn thẻ ma ĐỊNH KỲ.
+   *
+   * Vì sao cần: lớp dọn tầng-2 (updateAccountDB) chỉ ngắt ghost KHI nick thật connect.
+   * Nếu nick thật KHÔNG BAO GIỜ connect ổn định (đúng tình huống login treo), thẻ ma
+   * qr_pending nằm lại vĩnh viễn → vẫn hiện ở /contacts, vẫn đẻ Friend. Cron này dọn
+   * chủ động, không phụ thuộc nick thật.
+   *
+   * An toàn:
+   *   • CHỈ thẻ ma: zaloUid=null (chưa từng connect thật) + qr_pending/disconnected.
+   *   • Quá hạn: createdAt < now()-15min (ngưỡng để KHÔNG đụng thẻ sale đang quét QR).
+   *   • lastConnectedAt=null: chưa từng online → loại nick thật cũ (qua purge nhả uid
+   *     nhưng có lastConnectedAt) khỏi tầm xoá. Đây là chốt phân biệt thẻ-ma vs nick-thật-cũ.
+   *   • ẨN bằng archivedAt (xoá mềm), KHÔNG hard-delete → giữ lịch sử, admin gộp sau.
+   *
+   * @returns số thẻ ma đã ẩn (để test + log).
+   */
+  async cleanupStaleGhosts(staleMinutes = 15): Promise<number> {
+    const cutoff = new Date(Date.now() - staleMinutes * 60_000);
+    try {
+      return await runSystemQuery(async () => {
+        const ghosts = await prisma.zaloAccount.findMany({
+          where: {
+            zaloUid: null,
+            archivedAt: null,
+            lastConnectedAt: null,
+            status: { in: ['qr_pending', 'disconnected'] },
+            createdAt: { lt: cutoff },
+          },
+          select: { id: true },
+        });
+        if (ghosts.length === 0) return 0;
+        const ids = ghosts.map((g) => g.id);
+        // Ngắt khỏi pool nếu đang chạy listener (best-effort, trước khi ẩn).
+        for (const id of ids) {
+          try { this.disconnect(id); } catch { /* best-effort */ }
+        }
+        await prisma.zaloAccount.updateMany({
+          where: { id: { in: ids } },
+          data: { archivedAt: new Date(), status: 'disconnected', sessionData: Prisma.JsonNull },
+        });
+        logger.info(`[zalo:cleanup] ẩn ${ids.length} thẻ ma qr_pending quá ${staleMinutes} phút (chống tái phát nick trùng)`);
+        return ids.length;
+      });
+    } catch (err) {
+      logger.warn(`[zalo:cleanup] cleanupStaleGhosts lỗi (bỏ qua): ${String(err)}`);
+      return 0;
     }
   }
 }

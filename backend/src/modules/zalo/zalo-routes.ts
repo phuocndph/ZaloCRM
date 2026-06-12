@@ -69,88 +69,104 @@ export async function zaloRoutes(app: FastifyInstance): Promise<void> {
         return reply.status(400).send({ error: 'Invalid proxy URL format. Use: http://[user:pass@]host:port' });
       }
 
-      // Check trùng phía SERVER (Anh chốt 2026-06-11) — phòng FE bỏ qua bước check-phone
-      // hoặc 2 sale quét cùng lúc. Chặn đẻ record qr_pending rác + chặn gán sai chủ.
-      // Chỉ chạy khi có phone hợp lệ (FE gửi kèm sau bước nhập SĐT). Không phone → giữ
-      // hành vi cũ (tạo record, fix ② sẽ dọn rác nếu quét trúng uid trùng).
       const rawPhone = (request.body?.phone ?? '').trim();
       const phone = rawPhone ? rawPhone.replace(/[\s.\-()]/g, '') : '';
-      if (phone) {
-        const dup = await prisma.zaloAccount.findFirst({
-          where: { orgId: user.orgId, phone, archivedAt: null },
-          select: { id: true, displayName: true, status: true, ownerUserId: true, owner: { select: { fullName: true } } },
-        });
-        if (dup) {
-          if (dup.ownerUserId === userId) {
-            // Nick của chính mình → KHÔNG đẻ record mới, trả lại record cũ để FE reconnect/login.
-            return reply.status(200).send({ ...dup, reused: true });
+
+      // FIX 1 nick-ghost (Anh chốt 2026-06-13): GỘP check-trùng + reuse-ghost + create vào
+      // 1 TRANSACTION (trước là 3 query RỜI → 2 POST song song cùng owner/phone đều thấy
+      // "không trùng" → đẻ 2 record). Dùng isolationLevel='Serializable' để 2 tx ghi xung
+      // đột thì 1 bị abort (P2034) → retry 1 lần → record thứ 2 thấy ghost của record thứ 1.
+      // Đóng cả khe phone=null (transaction thường không serialize được nhánh này).
+      // Transaction trả discriminated result; reply xử lý SAU tx (không nhét reply giữa tx).
+      //
+      // Giữ NGUYÊN 3 hành vi cũ (Anh dặn tránh trùng chức năng):
+      //   • phone trùng nick mình  → 200 reused
+      //   • phone trùng nick khác  → 409 account_owned_by_other (fix ③)
+      //   • reuse ghost qr_pending → 200 reusedGhost (fix CORE 2026-06-12)
+      type CreateResult =
+        | { kind: 'dup_self'; rec: any }
+        | { kind: 'dup_other'; ownerName: string | null }
+        | { kind: 'reused_ghost'; rec: any }
+        | { kind: 'created'; rec: any };
+
+      const runCreate = (): Promise<CreateResult> =>
+        tenantTransaction(async (tx): Promise<CreateResult> => {
+          // (1) Check trùng phone (chỉ khi có phone hợp lệ).
+          if (phone) {
+            const dup = await tx.zaloAccount.findFirst({
+              where: { orgId: user.orgId, phone, archivedAt: null },
+              select: { id: true, displayName: true, status: true, ownerUserId: true, owner: { select: { fullName: true } } },
+            });
+            if (dup) {
+              if (dup.ownerUserId === userId) return { kind: 'dup_self', rec: dup };
+              return { kind: 'dup_other', ownerName: dup.owner?.fullName ?? null };
+            }
           }
-          // Nick người khác → chặn, hướng chủ tổ chức chuyển giao (fix ③).
-          return reply.status(409).send({
-            error: 'account_owned_by_other',
-            code: 'account_owned_by_other',
-            message: `Nick này đang do ${dup.owner?.fullName ?? 'nhân viên khác'} quản lý. Liên hệ chủ tổ chức để chuyển giao.`,
-            owner: dup.owner?.fullName ?? null,
+
+          // (2) Reuse ghost qr_pending chưa connect của chính owner (zaloUid=null).
+          const ghost = await tx.zaloAccount.findFirst({
+            where: { orgId: user.orgId, ownerUserId: userId, zaloUid: null, status: 'qr_pending', archivedAt: null },
+            orderBy: { createdAt: 'asc' },
+            select: { id: true },
           });
+          if (ghost) {
+            const reused = await tx.zaloAccount.update({
+              where: { id: ghost.id },
+              data: {
+                ...(phone ? { phone } : {}),
+                ...(displayName ? { displayName } : {}),
+                ...(proxyUrl !== undefined ? { proxyUrl: proxyUrl ?? null } : {}),
+              },
+              select: { id: true, displayName: true, status: true, ownerUserId: true, phone: true },
+            });
+            return { kind: 'reused_ghost', rec: reused };
+          }
+
+          // (3) Tạo nick mới + auto-insert ZaloAccountAccess (owner permission='admin').
+          const acc = await tx.zaloAccount.create({
+            data: {
+              orgId: user.orgId,
+              ownerUserId: user.id,
+              displayName: displayName ?? null,
+              proxyUrl: proxyUrl ?? null,
+              phone: phone || null,
+              status: 'qr_pending',
+            },
+          });
+          await tx.zaloAccountAccess.create({
+            data: { zaloAccountId: acc.id, userId: user.id, permission: 'admin' },
+          });
+          return { kind: 'created', rec: acc };
+        }, { isolationLevel: 'Serializable' });
+
+      let result: CreateResult;
+      try {
+        result = await runCreate();
+      } catch (err) {
+        // P2034 = serialization conflict (2 POST race). Retry 1 lần — lần 2 thấy record
+        // của lần 1 → đi nhánh reuse/dup thay vì tạo trùng.
+        if ((err as { code?: string })?.code === 'P2034') {
+          result = await runCreate();
+        } else {
+          throw err;
         }
       }
 
-      // FIX CORE nick trùng (Anh chốt 2026-06-12) — chặn TỪ GỐC việc đẻ 2 record cùng
-      // 1 tài khoản Zalo → tranh chấp session (KICKOUT_BY_WORKER) → loop QR vô tận.
-      // ROOT: check theo phone phía trên BỎ SÓT ghost cũ KHÔNG có phone (tạo trước khi có
-      // logic lưu phone, hoặc sale bỏ qua bước nhập SĐT). Owner connect lại → đẻ record MỚI
-      // có UID, record GHOST cũ (qr_pending, chưa UID) vẫn nằm đó → pool giữ cả 2 → đá nhau.
-      // FIX: TÁI DÙNG ghost qr_pending CHƯA CONNECT của chính owner (zaloUid=null = chưa
-      // phải nick thật) thay vì tạo mới. Nick chưa có UID thì login vào record cũ là đúng;
-      // gộp luôn phone mới nhập vào ghost để lần sau check-by-phone bắt được.
-      const ghost = await prisma.zaloAccount.findFirst({
-        where: {
-          orgId: user.orgId,
-          ownerUserId: userId,
-          zaloUid: null,            // chưa từng connect thành công → chưa phải nick thật
-          status: 'qr_pending',
-          archivedAt: null,
-        },
-        orderBy: { createdAt: 'asc' },  // tái dùng ghost CŨ NHẤT (dọn rác tồn lâu nhất)
-        select: { id: true, displayName: true, status: true, ownerUserId: true },
-      });
-      if (ghost) {
-        // Cập nhật phone/displayName mới nhập (nếu có) vào ghost rồi trả về để FE login.
-        const reused = await prisma.zaloAccount.update({
-          where: { id: ghost.id },
-          data: {
-            ...(phone ? { phone } : {}),
-            ...(displayName ? { displayName } : {}),
-            ...(proxyUrl !== undefined ? { proxyUrl: proxyUrl ?? null } : {}),
-          },
-          select: { id: true, displayName: true, status: true, ownerUserId: true, phone: true },
-        });
-        return reply.status(200).send({ ...reused, reused: true, reusedGhost: true });
+      switch (result.kind) {
+        case 'dup_self':
+          return reply.status(200).send({ ...result.rec, reused: true });
+        case 'dup_other':
+          return reply.status(409).send({
+            error: 'account_owned_by_other',
+            code: 'account_owned_by_other',
+            message: `Nick này đang do ${result.ownerName ?? 'nhân viên khác'} quản lý. Liên hệ chủ tổ chức để chuyển giao.`,
+            owner: result.ownerName,
+          });
+        case 'reused_ghost':
+          return reply.status(200).send({ ...result.rec, reused: true, reusedGhost: true });
+        case 'created':
+          return reply.status(201).send(result.rec);
       }
-
-      // FIX 2026-05-22 Bug A: tạo nick + auto-insert ZaloAccountAccess cho owner.
-      // Trước: owner KHÔNG hiện trong crew list (frontend đọc crew từ access table).
-      // Giờ: atomic create cả 2 trong tx, owner mặc định permission='admin'.
-      const account = await tenantTransaction(async (tx) => {
-        const acc = await tx.zaloAccount.create({
-          data: {
-            orgId: user.orgId,
-            ownerUserId: user.id,
-            displayName: displayName ?? null,
-            proxyUrl: proxyUrl ?? null,
-            // Lưu phone đã nhập ở bước check (Anh chốt 2026-06-11) — để check trùng
-            // ổn định + đối chiếu sau khi quét QR (fix ②). Null nếu sale bỏ qua check.
-            phone: phone || null,
-            status: 'qr_pending',
-          },
-        });
-        await tx.zaloAccountAccess.create({
-          data: { zaloAccountId: acc.id, userId: user.id, permission: 'admin' },
-        });
-        return acc;
-      });
-
-      return reply.status(201).send(account);
     },
   );
 

@@ -173,6 +173,17 @@ export function computeViewerPreview(
 export const AGGREGATE_INCLUDE = {
   statusRef: { select: STATUS_LITE_SELECT },
   friends: {
+    // FIX 4 nick-ghost (Anh chốt 2026-06-13): LỌC Friend thuộc thẻ ma. Trước: include
+    // không có where → /contacts hiện cả Friend trỏ thẻ ma (3 "Evo Sport") + childrenCount
+    // (=friends.length) thổi phồng badge "Cùng chăm". Lọc:
+    //   • zaloAccount.archivedAt=null → ẩn Friend của nick đã xoá mềm / thẻ ma đã dọn.
+    //   • relationshipKind != 'ghost' → ẩn dòng quan hệ ma (KH từng nhắn rồi huỷ kết bạn).
+    // Tác dụng phụ tốt: childrenCount tự đúng lại. Lưu ý (Codex #6): khi friends=[] thì
+    // displayHasZalo fallback về Contact.hasZalo (KHÔNG tự false) — hành vi đúng, giữ nguyên.
+    where: {
+      zaloAccount: { archivedAt: null },
+      relationshipKind: { not: 'ghost' },
+    },
     include: FRIEND_INCLUDE,
     orderBy: { lastInboundAt: { sort: 'desc', nulls: 'last' } },
   },

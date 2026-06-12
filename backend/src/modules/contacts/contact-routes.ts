@@ -76,7 +76,9 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
       if (hasZalo === 'true' || hasZalo === 'false' || hasZalo === 'unknown') {
         // hasIdentity = các nguồn suy ra "có Zalo" NGOÀI hasZalo (friend/uid/globalId/username)
         const hasIdentityShape = [
-          { friends: { some: {} } },
+          // FIX 4 nick-ghost (2026-06-13): "có Friend" = có Friend THẬT (không tính thẻ ma) →
+          // KH chỉ có Friend ma không bị xếp nhầm vào "Có Zalo".
+          { friends: { some: { zaloAccount: { archivedAt: null }, relationshipKind: { not: 'ghost' } } } },
           { zaloUid: { not: null } },
           { zaloGlobalId: { not: null } },
           { zaloUsername: { not: null } },
@@ -248,6 +250,10 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
       const sevenDaysAgo = new Date(now.getTime() - 7 * 86_400_000);
       const sevenDaysAhead = new Date(now.getTime() + 7 * 86_400_000);
 
+      // FIX 4 nick-ghost (2026-06-13, Codex #7): filter "Friend THẬT" (loại thẻ ma/đã ẩn +
+      // dòng ghost) dùng chung cho stat counter — để "có nick chăm" + "multi-claim ≥3 nick"
+      // không tính thẻ ma. Đồng bộ với AGGREGATE_INCLUDE.friends.where.
+      const REAL_FRIEND_SOME = { some: { zaloAccount: { archivedAt: null }, relationshipKind: { not: 'ghost' } } };
       const [
         total,
         withNick,
@@ -260,17 +266,17 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
         highScore,
       ] = await Promise.all([
         prisma.contact.count({ where: base }),
-        // Có nick chăm = có ≥1 Friend row
-        prisma.contact.count({ where: { ...base, friends: { some: {} } } }),
-        // Multi-claim ≥3 nick (Friend per-account distinct → count distinct zaloAccountId).
-        // Proxy: ≥3 Friend rows (đủ chính xác vì Friend unique theo (account, uid)).
-        prisma.contact.count({ where: { ...base, friends: { some: {} } } }).then(async () => {
-          const rows = await prisma.contact.findMany({
-            where: { ...base, friends: { some: {} } },
-            select: { id: true, _count: { select: { friends: true } } },
-          });
-          return rows.filter(r => r._count.friends >= 3).length;
-        }),
+        // Có nick chăm = có ≥1 Friend row THẬT (không tính thẻ ma)
+        prisma.contact.count({ where: { ...base, friends: REAL_FRIEND_SOME } }),
+        // Multi-claim ≥3 nick THẬT (Friend per-account distinct → count distinct zaloAccountId).
+        // Proxy: ≥3 Friend rows thật (đủ chính xác vì Friend unique theo (account, uid)).
+        prisma.contact.findMany({
+          where: { ...base, friends: REAL_FRIEND_SOME },
+          select: {
+            id: true,
+            _count: { select: { friends: { where: { zaloAccount: { archivedAt: null }, relationshipKind: { not: 'ghost' } } } } },
+          },
+        }).then((rows) => rows.filter((r) => r._count.friends >= 3).length),
         prisma.contact.count({ where: { ...base, consentStatus: 'revoked' } }),
         prisma.contact.count({ where: { ...base, hasZalo: false } }),
         prisma.contact.count({ where: { ...base, createdAt: { gte: startOfToday } } }),
@@ -1466,7 +1472,14 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
       if (!contact) return reply.status(404).send({ error: 'Contact not found' });
 
       const friendships = await prisma.friend.findMany({
-        where: { contactId: id, orgId: user.orgId },
+        // FIX 4 nick-ghost (2026-06-13): lọc Friend thẻ ma/đã ẩn + dòng quan hệ ghost
+        // (đồng bộ với AGGREGATE_INCLUDE) → panel "Cùng chăm" của 1 KH không hiện 3 thẻ ma.
+        where: {
+          contactId: id,
+          orgId: user.orgId,
+          relationshipKind: { not: 'ghost' },
+          zaloAccount: { archivedAt: null },
+        },
         include: {
           zaloAccount: {
             select: {

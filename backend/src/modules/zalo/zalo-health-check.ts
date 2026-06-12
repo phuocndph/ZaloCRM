@@ -15,9 +15,12 @@ export function startZaloHealthCheck(): void {
   cron.schedule('*/5 * * * *', async () => {
     try {
       // Cross-org admin sweep (account theo sessionData, không gắn 1 org) → runSystemQuery.
+      // FIX 2 nick-ghost (2026-06-13): lọc SỚM thẻ ma (zaloUid=null) khỏi sweep — guard
+      // chính nằm trong zaloPool.reconnect, đây là lớp 2 giảm tải (khỏi gọi reconnect rồi
+      // mới bị từ chối). Chỉ reconnect nick THẬT (đã có zaloUid) chưa ẩn.
       const accounts = await runSystemQuery(() =>
         prisma.zaloAccount.findMany({
-          where: { sessionData: { not: Prisma.JsonNull }, archivedAt: null },
+          where: { sessionData: { not: Prisma.JsonNull }, archivedAt: null, zaloUid: { not: null } },
           select: { id: true, displayName: true, sessionData: true },
         }),
       );
@@ -44,9 +47,10 @@ export function startZaloHealthCheck(): void {
     logger.info('[health-check] Daily session refresh starting...');
     try {
       // Cross-org admin sweep (account theo sessionData, không gắn 1 org) → runSystemQuery.
+      // FIX 2 nick-ghost (2026-06-13): chỉ refresh nick THẬT (zaloUid != null) chưa ẩn.
       const accounts = await runSystemQuery(() =>
         prisma.zaloAccount.findMany({
-          where: { sessionData: { not: Prisma.JsonNull }, archivedAt: null },
+          where: { sessionData: { not: Prisma.JsonNull }, archivedAt: null, zaloUid: { not: null } },
           select: { id: true, sessionData: true },
         }),
       );
@@ -69,5 +73,17 @@ export function startZaloHealthCheck(): void {
     }
   });
 
-  logger.info('[health-check] Zalo health check started (every 5 min + daily refresh at 04:00 UTC)');
+  // FIX 3 nick-ghost (Anh chốt 2026-06-13): mỗi giờ dọn thẻ ma qr_pending cũ (>15 phút,
+  // chưa từng online) bằng cách ẩn (archivedAt). Chống tái phát nick trùng khi nick thật
+  // không bao giờ connect ổn định. Logic + điều kiện an toàn nằm trong zaloPool.cleanupStaleGhosts.
+  cron.schedule('0 * * * *', async () => {
+    try {
+      const n = await zaloPool.cleanupStaleGhosts(15);
+      if (n > 0) logger.info(`[health-check] dọn ${n} thẻ ma qr_pending cũ`);
+    } catch (err) {
+      logger.error('[health-check] Error during stale-ghost cleanup:', err);
+    }
+  });
+
+  logger.info('[health-check] Zalo health check started (every 5 min + daily refresh 04:00 UTC + ghost cleanup hourly)');
 }
