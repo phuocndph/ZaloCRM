@@ -38,11 +38,13 @@
               <!-- eslint-disable-next-line vue/no-v-html — render Zalo rich-text (đậm/nghiêng), text từ Khối nội bộ -->
               <div v-if="c.kind === 'text'" class="bpd-bubble out" v-html="textHtml(c)"></div>
               <div v-else-if="c.kind === 'image'" class="bpd-image-card">
-                <div class="bpd-image-thumb"></div>
+                <!-- 2026-06-13: load ẢNH THẬT (như preview Khối ở Cài đặt) thay placeholder rỗng. -->
+                <img v-if="c.url" :src="c.url" class="bpd-image-real" loading="lazy" alt="" />
+                <div v-else class="bpd-image-thumb"></div>
                 <div v-if="c.caption" class="bpd-image-caption">{{ c.caption }}</div>
               </div>
               <div v-else-if="c.kind === 'album'" class="bpd-album">
-                <div v-for="(_item, i) in c.items.slice(0, 4)" :key="i" class="bpd-album-item"></div>
+                <img v-for="(item, i) in c.items.slice(0, 4)" :key="i" :src="item.url" class="bpd-album-img" loading="lazy" alt="" />
                 <div v-if="c.items.length > 4" class="bpd-album-more">+{{ c.items.length - 4 }}</div>
               </div>
               <div v-else-if="c.kind === 'file'" class="bpd-file">
@@ -53,7 +55,9 @@
                 </div>
               </div>
               <div v-else-if="c.kind === 'video'" class="bpd-video">
-                🎬 Video
+                <!-- 2026-06-13: video PLAY được (như Cài đặt) thay chữ "🎬 Video". -->
+                <video v-if="c.url" :src="c.url" controls preload="metadata" class="bpd-video-real"></video>
+                <span v-else>🎬 Video</span>
               </div>
               <div class="bpd-time">
                 {{ currentHHmm }} ·
@@ -389,6 +393,10 @@ function onConfirmSend() {
   height: 180px;
   background: linear-gradient(135deg, #a7f3d0, #10b981);
 }
+/* 2026-06-13: ảnh/video THẬT trong preview (như Cài đặt khối). */
+.bpd-image-real { width: 280px; max-height: 240px; object-fit: cover; display: block; }
+.bpd-album-img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; }
+.bpd-video-real { width: 280px; max-height: 240px; border-radius: 12px; background: #000; display: block; }
 .bpd-image-caption {
   padding: 7px 11px;
   background: #fff;

@@ -7,15 +7,16 @@
 -->
 <template>
   <div class="abp">
-    <!-- Search -->
+    <!-- Search — 2026-06-13: đồng nhất style với sub-tab Tệp (Atlas + Lucide). -->
     <div class="abp-search">
-      <span class="abp-search-icon">🔍</span>
-      <input
-        v-model="searchQuery"
-        type="text"
-        class="abp-search-input"
-        placeholder="Tìm Khối theo tên, nội dung..."
-      />
+      <span class="abp-search-box">
+        <SearchIcon :size="14" :stroke-width="1.9" />
+        <input
+          v-model="searchQuery"
+          type="text"
+          placeholder="Tìm Khối theo tên, nội dung…"
+        />
+      </span>
     </div>
 
     <!-- Tabs Gần đây / Tất cả -->
@@ -107,6 +108,7 @@ import type { Block } from '@/api/automation/types';
 import type { Contact } from '@/composables/use-contacts';
 import { useToast } from '@/composables/use-toast';
 import BlockPreviewDialog from '@/components/chat/BlockPreviewDialog.vue';
+import { Search as SearchIcon } from 'lucide-vue-next';
 
 const props = defineProps<{
   conversationId: string | null;
@@ -280,30 +282,17 @@ watch(
 }
 
 /* Search */
-.abp-search {
-  position: relative;
-  padding: 8px 10px;
-  border-bottom: 1px solid #eceef1;
-  flex-shrink: 0;
+/* 2026-06-13: ĐỒNG NHẤT với sub-tab Tệp (MediaTabPanel .mtp-search/.mtp-inp) — Atlas + Lucide. */
+.abp-search { padding: 9px 12px 8px; flex-shrink: 0; }
+.abp-search-box {
+  display: flex; align-items: center; gap: 6px; border: 1px solid #e7eaf0;
+  border-radius: 8px; padding: 5px 10px; color: #8b93a7;
 }
-.abp-search-icon {
-  position: absolute;
-  left: 18px;
-  top: 50%;
-  transform: translateY(-50%);
-  font-size: 11px;
-  color: #9ca3af;
+.abp-search-box:focus-within { border-color: #1786be; }
+.abp-search-box input {
+  flex: 1; min-width: 0; border: none; outline: none; background: transparent;
+  font: inherit; font-size: 12px; color: #141a24;
 }
-.abp-search-input {
-  width: 100%;
-  padding: 6px 9px 6px 26px;
-  border: 1px solid #d4d7dc;
-  border-radius: 6px;
-  font-size: 12px;
-  outline: none;
-  font-family: inherit;
-}
-.abp-search-input:focus { border-color: #1786be; box-shadow: 0 0 0 2px rgba(23,134,190,0.15); }
 
 /* Tabs */
 .abp-tabs {
