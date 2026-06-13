@@ -974,7 +974,7 @@ function openMediaPicker(compIdx: number, album = false) {
   const allowMulti = album || c?.kind === 'image' || c?.kind === 'album';
   mediaPickerFor.value = { compIdx, album: allowMulti, kind };
 }
-function onMediaPicked(assets: Array<{ id: string; url: string | null; name: string }>) {
+function onMediaPicked(assets: Array<{ id: string; url: string | null; name: string; sizeBytes?: number | null }>) {
   const target = mediaPickerFor.value;
   if (!target) return;
   const c = components.value[target.compIdx] as any;
@@ -992,6 +992,13 @@ function onMediaPicked(assets: Array<{ id: string; url: string | null; name: str
       kind: 'album',
       items: valid.slice(0, 10).map((a) => ({ url: a.url as string, mediaAssetId: a.id })),
     } as any;
+  } else if (c.kind === 'file' && valid[0]?.url) {
+    // FILE: lấy thêm TÊN + dung lượng từ kho (anh báo CRM hiện file trống tên/0KB do thiếu).
+    const a = valid[0];
+    c.url = a.url;
+    c.mediaAssetId = a.id;
+    c.filename = a.name || c.filename || 'tệp';
+    if (a.sizeBytes != null) c.sizeBytes = a.sizeBytes;
   } else if (valid[0]?.url) {
     // single (image 1 / video / file): set url + mediaAssetId (engine resolve url; id để đếm dùng).
     c.url = valid[0].url;

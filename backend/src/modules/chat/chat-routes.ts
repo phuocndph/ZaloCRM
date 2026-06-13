@@ -1800,11 +1800,15 @@ export async function chatRoutes(app: FastifyInstance) {
           }
           const albumCaption = await renderCaption(allItems[0]?.caption);
           const sdkResult = await zaloOps.sendImage(zaloAccountId, threadId, threadType, paths, io, albumCaption);
-          // Persist 1 message kiểu album (nhiều attachments) — khớp cách automation persist + chat render.
-          toPersist.push({
-            sdkResult,
-            content: JSON.stringify({ text: '', attachments: allItems.map((it) => ({ kind: 'image', url: it.url, caption: it.caption ?? '' })) }),
-            contentType: 'image',
+          // Khách nhận 1 cụm album (gửi gộp). NHƯNG CRM UI render mỗi ảnh = 1 Message {href,thumb,size}
+          // (KHÔNG hiểu shape {attachments[]} ở contentType=image) → persist TỪNG ảnh 1 Message để
+          // hiển thị đúng. sdkResult gắn vào ảnh đầu (lấy zaloMsgId), ảnh sau để trống id.
+          allItems.forEach((it, k) => {
+            toPersist.push({
+              sdkResult: k === 0 ? sdkResult : {},
+              content: JSON.stringify({ href: it.url, thumb: it.url, size: 0 }),
+              contentType: 'image',
+            });
           });
         } else if (m.messageType === 'video') {
           const caption = await renderCaption(m.payload.caption);
@@ -1836,7 +1840,8 @@ export async function chatRoutes(app: FastifyInstance) {
           const sdkResult = await zaloOps.sendFile(zaloAccountId, threadId, threadType, [dl.path], io, caption);
           toPersist.push({
             sdkResult,
-            content: JSON.stringify({ href: m.payload.url, name: m.payload.filename ?? 'file', size: m.payload.sizeBytes ?? 0, mime: m.payload.mimeType ?? '' }),
+            // name dùng sendName (đã suy đuôi) khi filename trống → CRM UI không hiện file trống tên.
+            content: JSON.stringify({ href: m.payload.url, name: m.payload.filename || sendName, size: m.payload.sizeBytes ?? 0, mime: m.payload.mimeType ?? '' }),
             contentType: 'file',
           });
         } else {
