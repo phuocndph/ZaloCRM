@@ -142,10 +142,13 @@ export async function blockFromComposer(input: FromComposerInput): Promise<Block
 // live ở cột 3 qua socket 'chat:message' (không cần refetch).
 export interface SendBlockResult {
   ok: boolean;
-  sentCount: number;
+  // 2026-06-13: BE gửi NỀN → trả {accepted:true, totalMessages} NGAY (tránh timeout); tin hiện
+  // dần qua socket. sentCount/partial/errors chỉ có ở nhánh đồng bộ cũ (STUB) → optional.
+  accepted?: boolean;
+  sentCount?: number;
   totalMessages: number;
-  partial: boolean;
-  errors: Array<{ index: number; type: string; message: string }>;
+  partial?: boolean;
+  errors?: Array<{ index: number; type: string; message: string }>;
   stub?: boolean;
 }
 export async function sendBlockToConversation(

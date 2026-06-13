@@ -1754,6 +1754,11 @@ export async function chatRoutes(app: FastifyInstance) {
     const renderCaption = (cap?: string) =>
       cap && contactId ? renderTemplate(cap, contactId, zaloAccountId) : Promise.resolve(cap ?? '');
 
+    // 2026-06-13 (anh báo timeout): gửi Khối media mất >30s (nhiều tin + delay chống spam + tải
+    // media + video retry) → FE axios timeout 30s báo lỗi DÙ đã gửi xong. Anh chốt: GỬI NỀN — trả về
+    // NGAY {accepted}, vòng gửi chạy detached. Tin vẫn hiện live qua socket (emitChatMessage mỗi tin).
+    // Lỗi từng tin chỉ log (không có HTTP response để trả). Gate validation phía trên VẪN đồng bộ.
+    void (async () => {
     let sentCount = 0;
     const errors: Array<{ index: number; type: string; message: string }> = [];
     let lastMessageRow: { id: string; content: string | null; contentType: string; sentAt: Date } | null = null;
@@ -1916,22 +1921,18 @@ export async function chatRoutes(app: FastifyInstance) {
         const code = err?.code as string | undefined;
         const msg = err?.message ?? String(err);
         errors.push({ index: i, type: m.messageType, message: msg });
-        if (sentCount > 0) {
-          // Đã gửi ≥1 tin → KH nhận rồi, KHÔNG retry (tránh double-send cả Khối) → dừng.
-          logger.warn(`[send-block] tin ${i + 1}/${resolved.length} (${m.messageType}) lỗi sau khi đã gửi ${sentCount} tin: ${msg} — dừng`);
-          break;
-        }
-        // Lỗi ngay tin đầu → fail sạch, sale retry được.
-        if (code === 'RATE_LIMITED') return reply.status(429).send({ error: msg });
-        if (code === 'NOT_CONNECTED') return reply.status(400).send({ error: msg });
-        return reply.status(500).send({ error: 'SEND_BLOCK_FAILED', detail: msg });
+        // GỬI NỀN: không còn HTTP response để trả lỗi → chỉ LOG + dừng (tin đã stream live qua socket;
+        // FE đã nhận {accepted} từ trước). Lỗi tin đầu = không gửi được gì, sale gửi lại được.
+        logger.warn(`[send-block] tin ${i + 1}/${resolved.length} (${m.messageType}) lỗi [${code ?? '?'}]: ${msg} — dừng (đã gửi ${sentCount} tin)`);
+        break;
       } finally {
         for (const c of cleanups) await c().catch(() => {});
       }
     }
 
     if (sentCount === 0) {
-      return reply.status(500).send({ error: 'SEND_BLOCK_FAILED', detail: 'không gửi được tin nào', errors });
+      logger.warn(`[send-block] KHÔNG gửi được tin nào (conv=${id} block="${block.name}") errors=${JSON.stringify(errors)}`);
+      return; // thoát IIFE nền — FE đã nhận {accepted}, lỗi này chỉ log.
     }
 
     // Cập nhật aggregate (theo tin cuối) + bump usage Khối.
@@ -1970,13 +1971,11 @@ export async function chatRoutes(app: FastifyInstance) {
     }).catch((err) => logger.warn(`[send-block] bump usage failed: ${err}`));
 
     logger.info(`[send-block] sent ${sentCount}/${resolved.length} tin từ nick=${zaloAccountId} → conv=${id} block="${block.name}"`);
-    return {
-      ok: true,
-      sentCount,
-      totalMessages: resolved.length,
-      partial: sentCount < resolved.length,
-      errors,
-    };
+    })().catch((err) => logger.error(`[send-block] vòng gửi nền lỗi: ${err?.message ?? err}`));
+
+    // GỬI NỀN: trả về NGAY (không chờ vòng gửi) → FE báo "đang gửi", tin hiện live qua socket,
+    // KHÔNG bao giờ timeout. totalMessages để FE hiển thị tiến độ mong đợi.
+    return { ok: true, accepted: true, totalMessages: resolved.length };
   });
 
   // ── Upload image(s) and send qua Zalo (paste image / nút Gửi ảnh) ────────

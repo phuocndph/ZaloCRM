@@ -2656,8 +2656,12 @@ async function dispatchBlockComponents(blockId: string) {
   try {
     const { sendBlockToConversation } = await import('@/api/automation/blocks');
     const res = await sendBlockToConversation(conversationId, blockId);
-    if (res.partial) {
-      toast.warning(`Đã gửi ${res.sentCount}/${res.totalMessages} tin — ${res.errors.length} thành phần lỗi`);
+    // 2026-06-13: BE gửi NỀN, trả {accepted} ngay → báo "đang gửi", tin hiện dần qua socket
+    // (KHÔNG chờ → hết timeout). Giữ nhánh cũ {partial/sentCount} phòng STUB/đường khác trả đủ.
+    if ((res as any).accepted) {
+      toast.success(`Đang gửi Khối (${(res as any).totalMessages ?? ''} tin) cho KH — tin hiện dần…`);
+    } else if (res.partial) {
+      toast.warning(`Đã gửi ${res.sentCount}/${res.totalMessages} tin — ${res.errors?.length ?? 0} thành phần lỗi`);
     } else {
       toast.success(`Đã gửi Khối (${res.sentCount} tin) cho KH`);
     }

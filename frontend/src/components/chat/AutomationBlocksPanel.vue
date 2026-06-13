@@ -234,8 +234,11 @@ async function dispatchSend(blockId: string) {
   sendingId.value = blockId;
   try {
     const res = await sendBlockToConversation(props.conversationId, blockId);
-    if (res.partial) {
-      toast.warning(`Đã gửi ${res.sentCount}/${res.totalMessages} tin — ${res.errors.length} thành phần lỗi`);
+    // 2026-06-13: BE gửi NỀN, trả {accepted} ngay (tránh timeout) → báo "đang gửi", tin hiện dần socket.
+    if ((res as any).accepted) {
+      toast.success(`Đang gửi Khối (${res.totalMessages ?? ''} tin) cho KH — tin hiện dần…`);
+    } else if (res.partial) {
+      toast.warning(`Đã gửi ${res.sentCount}/${res.totalMessages} tin — ${res.errors?.length ?? 0} thành phần lỗi`);
     } else {
       toast.success(`Đã gửi Khối (${res.sentCount} tin) cho KH`);
     }
