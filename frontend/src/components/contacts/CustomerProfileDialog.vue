@@ -169,10 +169,16 @@
                     <span class="k">Nguồn khách</span>
                     <span class="v"><input v-model="form.source" class="cpd-in" placeholder="vd Facebook, Tổng đài…" /></span>
                   </div>
-                  <div class="kv">
-                    <span class="k">Tag CRM</span>
+                  <div class="kv kv-tag">
+                    <span class="k">Tag CRM <span v-if="!isCreate" class="agg">theo nick</span></span>
                     <span class="v">
-                      <div class="tag-edit">
+                      <!-- XEM: tag per-nick (TagV2) của nick đang chăm — tái dùng TagCrmBar (DRY). -->
+                      <div v-if="!isCreate" class="tag-pernick">
+                        <TagCrmBar v-if="activeFriendId" :friend-id="activeFriendId" :contact-id="c?.id" />
+                        <span v-else class="tag-empty-hint">Chưa có nick chăm — chưa gắn được tag riêng.</span>
+                      </div>
+                      <!-- TẠO MỚI: chưa có nick → nhãn CRM tự do (legacy, lưu khi tạo). -->
+                      <div v-else class="tag-edit">
                         <span v-if="!form.tags.length" class="tag-empty-hint">Chưa gắn nhãn —</span>
                         <span v-for="(t, i) in form.tags" :key="i" class="crmtag editable">
                           {{ t }}<span class="rm" @click="form.tags.splice(i, 1)">✕</span>
@@ -207,7 +213,7 @@
                 <div class="deck-head">{{ friends.length }} NICK ĐANG CHĂM KHÁCH NÀY</div>
                 <div
                   v-for="f in sortedFriends" :key="f.id"
-                  class="strip" :class="kbStripClass(f.relationshipKind)"
+                  class="strip" :class="[kbStripClass(f.relationshipKind), { 'strip-active': f.id === activeFriendId && props.friendId }]"
                 >
                   <div class="s-r">
                     <span class="s-av" :style="{ background: friendBg(f) }">{{ friendInitials(f) }}</span>
@@ -302,6 +308,7 @@ import { api } from '@/api/index';
 import { useToast } from '@/composables/use-toast';
 import { formatRecentDateTime, cleanPreview } from '@/composables/use-contacts';
 import PrivateBlur from '@/components/privacy/PrivateBlur.vue';
+import TagCrmBar from '@/components/chat/TagCrmBar.vue';
 import type { Contact } from '@/composables/use-contacts';
 
 const props = withDefaults(defineProps<{
@@ -311,6 +318,10 @@ const props = withDefaults(defineProps<{
   contact?: Contact | null;
   /** 'view' = xem/sửa hồ sơ KH có sẵn. 'create' = form thêm KH mới (cùng style Smax). */
   mode?: 'view' | 'create';
+  /** Nick (friendId) đang xem — mở từ /friends. Lái tag per-nick (Tổng quan) + highlight Nick chăm. */
+  friendId?: string | null;
+  /** Tab mở mặc định (vd 'nicks' khi mở từ panel Bạn bè). */
+  initialTab?: TabKey;
 }>(), { mode: 'view' });
 const emit = defineEmits<{
   'update:modelValue': [v: boolean];
@@ -381,7 +392,8 @@ function emptyForm() {
 
 // ── Fetch chi tiết khi mở ──
 async function loadDetail() {
-  activeTab.value = 'overview';
+  // Mở từ /friends có thể chỉ định tab mặc định (vd 'nicks'). Create luôn ở Tổng quan.
+  activeTab.value = (!isCreate.value && props.initialTab) ? props.initialTab : 'overview';
   friends.value = [];
   timeline.value = [];
   notes.value = [];
@@ -419,6 +431,15 @@ function sortFriends(arr: any[]): any[] {
   return sorted;
 }
 const sortedFriends = computed(() => friends.value);
+
+// Nick "active" cho ô Tag CRM (tab Tổng quan) = per-nick tag (anh chốt: dùng getFriendTags).
+// Ưu tiên nick được truyền vào (mở từ /friends) → nick chính (winner) → nick đầu tiên.
+const activeFriendId = computed<string | null>(() => {
+  if (!friends.value.length) return null;
+  if (props.friendId && friends.value.some((f) => f.id === props.friendId)) return props.friendId;
+  const winner = friends.value.find((f) => f.isWinner);
+  return winner?.id || friends.value[0]?.id || null;
+});
 
 async function loadUsers() {
   if (allUsers.value.length) return;
@@ -564,8 +585,8 @@ async function save() {
   saving.value = true;
   try {
     await api.put(`/contacts/${id}`, payload);
-    // Tag riêng endpoint
-    await api.put(`/contacts/${id}/tags`, { tags: form.value.tags });
+    // Tag per-nick (TagV2) đã tự lưu ngay qua TagCrmBar (POST/DELETE /friends/:id/tags) —
+    // không ghi đè field tags legacy ở đây nữa (anh chốt: Tổng quan dùng getFriendTags).
     toast.success('Đã lưu hồ sơ khách hàng');
     emit('saved');
     close();
@@ -769,6 +790,13 @@ function formatVnPhone(phone: string | null | undefined): string {
 .tag-edit { display: flex; gap: 4px; flex-wrap: wrap; justify-content: flex-end; align-items: center; }
 .crmtag.editable .rm { cursor: pointer; color: var(--smax-grey-400); margin-left: 4px; }
 .tag-empty-hint { font-size: 11px; color: var(--smax-grey-400); font-style: italic; }
+/* Ô Tag CRM theo nick (TagCrmBar) — cho phép xuống dòng, căn trái trong cột value */
+.kv-tag { align-items: flex-start; }
+.kv-tag .v { justify-content: flex-start; }
+.tag-pernick { width: 100%; display: flex; justify-content: flex-end; }
+.tag-pernick :deep(.tag-crm-bar) { padding: 0; justify-content: flex-end; }
+/* Nick đang xem (mở từ /friends) — viền nổi bật */
+.strip.strip-active { box-shadow: 0 0 0 2px var(--smax-primary); }
 .tag-add-in { border: 1px dashed var(--smax-grey-300); border-radius: 9px; padding: 1px 8px; font-size: 11px; width: 80px; font-family: inherit; }
 .tag-add-in:focus { outline: none; border-color: var(--smax-primary); }
 .cpd-aggnote { margin-top: 14px; font-size: 11.5px; color: var(--smax-grey-700); background: #f7f9fc; border: 1px solid var(--smax-grey-200); border-radius: 7px; padding: 9px 13px; }
