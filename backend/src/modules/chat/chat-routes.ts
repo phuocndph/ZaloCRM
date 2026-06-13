@@ -35,19 +35,31 @@ import { getOwnerScope, applyOwnerScope } from '../rbac/owner-scope.js';
 
 type QueryParams = Record<string, string>;
 
-// 2026-06-13: tên file gửi từ Block thường TRỐNG (component chỉ có url+mediaAssetId). Truy ngược
-// tên thật từ Kho qua mediaAssetId (original_filename||name) → Zalo + CRM hiện đúng tên, không
-// rơi về URL-hash. Trả '' nếu không có id / không tìm thấy (caller fallback buildSendFileName từ url).
-async function resolveMediaFilename(mediaAssetId: string | undefined, fallback: string | undefined): Promise<string> {
-  if (fallback && fallback.trim()) return fallback.trim();
-  if (!mediaAssetId) return '';
-  try {
-    const a = await prisma.mediaAsset.findUnique({
-      where: { id: mediaAssetId },
-      select: { originalFilename: true, name: true },
-    });
-    return (a?.originalFilename || a?.name || '').trim();
-  } catch { return ''; }
+// 2026-06-13: media gửi từ Block thường chỉ có url+mediaAssetId, THIẾU tên/mime/size. Truy Kho
+// qua mediaAssetId lấy đủ → Zalo + CRM hiện đúng. Trả {} nếu không có id/không tìm thấy.
+// (CRM message-bubble.vue getFileInfo CẦN đủ name+href+size(number)+mime!=rỗng+!image → mới
+//  hiện file-card; thiếu mime rỗng → rơi về text '🔗 url'. Vậy mime/size phải có thật.)
+async function resolveMediaMeta(
+  mediaAssetId: string | undefined,
+  fallback: { filename?: string; mimeType?: string; sizeBytes?: number },
+): Promise<{ name: string; mime: string; size: number }> {
+  let name = (fallback.filename ?? '').trim();
+  let mime = (fallback.mimeType ?? '').trim();
+  let size = fallback.sizeBytes ?? 0;
+  if ((!name || !mime || !size) && mediaAssetId) {
+    try {
+      const a = await prisma.mediaAsset.findUnique({
+        where: { id: mediaAssetId },
+        select: { originalFilename: true, name: true, blobs: { where: { variantType: 'original' }, take: 1, select: { mimeType: true, sizeBytes: true } } },
+      });
+      if (a) {
+        if (!name) name = (a.originalFilename || a.name || '').trim();
+        if (!mime) mime = (a.blobs[0]?.mimeType || '').trim();
+        if (!size) size = a.blobs[0]?.sizeBytes ?? 0;
+      }
+    } catch { /* giữ fallback */ }
+  }
+  return { name, mime, size };
 }
 
 function mapReplyMsgType(contentType: string): string {
@@ -1772,7 +1784,8 @@ export async function chatRoutes(app: FastifyInstance) {
       // 1 zaloMsgId riêng → tránh đụng @@unique([conversationId, zaloMsgId])).
       // content lưu THEO shape chat UI native render: image {href,thumb,size},
       // file {href,name,size,mime}, video {href,thumb,...} (khớp chat-attachment-routes).
-      const toPersist: Array<{ sdkResult: unknown; content: string; contentType: string }> = [];
+      // album*: gom N ảnh album thành 1 cụm trong CRM (message-bubble gom theo albumKey).
+      const toPersist: Array<{ sdkResult: unknown; content: string; contentType: string; albumKey?: string; albumIndex?: number; albumTotal?: number }> = [];
       try {
         if (m.messageType === 'text') {
           // D6 (2026-06-13): GIỮ format khi có biến — dịch offset style theo giá trị thật (an toàn).
@@ -1820,14 +1833,16 @@ export async function chatRoutes(app: FastifyInstance) {
           }
           const albumCaption = await renderCaption(allItems[0]?.caption);
           const sdkResult = await zaloOps.sendImage(zaloAccountId, threadId, threadType, paths, io, albumCaption);
-          // Khách nhận 1 cụm album (gửi gộp). NHƯNG CRM UI render mỗi ảnh = 1 Message {href,thumb,size}
-          // (KHÔNG hiểu shape {attachments[]} ở contentType=image) → persist TỪNG ảnh 1 Message để
-          // hiển thị đúng. sdkResult gắn vào ảnh đầu (lấy zaloMsgId), ảnh sau để trống id.
+          // Khách nhận 1 cụm album (gửi gộp). CRM render mỗi ảnh = 1 Message {href,thumb} NHƯNG gắn
+          // albumKey/albumIndex/albumTotal để message-bubble GOM lại thành 1 album (MessageThread:2302).
+          // sdkResult gắn ảnh đầu (lấy zaloMsgId), ảnh sau để trống id.
+          const albumKey = randomUUID();
           allItems.forEach((it, k) => {
             toPersist.push({
               sdkResult: k === 0 ? sdkResult : {},
               content: JSON.stringify({ href: it.url, thumb: it.url, size: 0 }),
               contentType: 'image',
+              albumKey, albumIndex: k, albumTotal: allItems.length,
             });
           });
         } else if (m.messageType === 'video') {
@@ -1849,22 +1864,21 @@ export async function chatRoutes(app: FastifyInstance) {
           });
         } else if (m.messageType === 'file') {
           const caption = await renderCaption(m.payload.caption);
-          // 2026-06-13 (anh báo Zalo mất tên file): block file thường có mediaAssetId nhưng filename
-          // TRỐNG → buildSendFileName rơi về tên-hash từ URL. Truy NGƯỢC tên thật từ Kho qua
-          // mediaAssetId (original_filename||name) — sửa được cả block CŨ, không cần edit lại.
-          const realName = await resolveMediaFilename(m.payload.mediaAssetId, m.payload.filename);
-          // D4: suy tên+đuôi đúng (dùng chung buildSendFileName) — tránh khách nhận file .bin.
+          // 2026-06-13: block file thường chỉ có url+mediaAssetId → truy Kho lấy đủ tên+mime+size.
+          const meta = await resolveMediaMeta(m.payload.mediaAssetId, { filename: m.payload.filename, mimeType: m.payload.mimeType, sizeBytes: m.payload.sizeBytes });
+          // D4: suy tên+đuôi đúng (buildSendFileName) — tránh khách nhận file .bin.
           const sendName = buildSendFileName(
-            { name: realName, originalFilename: realName || null },
-            { mimeType: m.payload.mimeType ?? '', publicUrl: m.payload.url },
+            { name: meta.name, originalFilename: meta.name || null },
+            { mimeType: meta.mime, publicUrl: m.payload.url },
           );
           const dl = await downloadMediaToTemp({ url: m.payload.url, filename: sendName }, 'file');
           cleanups.push(dl.cleanup);
           const sdkResult = await zaloOps.sendFile(zaloAccountId, threadId, threadType, [dl.path], io, caption);
           toPersist.push({
             sdkResult,
-            // name = sendName (tên thật từ Kho + đuôi) → CRM UI + Zalo đều hiện đúng tên, không phải URL hash.
-            content: JSON.stringify({ href: m.payload.url, name: sendName, size: m.payload.sizeBytes ?? 0, mime: m.payload.mimeType ?? '' }),
+            // name+mime+size đủ → CRM message-bubble getFileInfo hiện file-card (không rơi về '🔗 url').
+            // mime trống → ép octet-stream (vẫn !=rỗng + !image → getFileInfo nhận).
+            content: JSON.stringify({ href: m.payload.url, name: sendName, size: meta.size || 0, mime: meta.mime || 'application/octet-stream' }),
             contentType: 'file',
           });
         } else {
@@ -1888,8 +1902,10 @@ export async function chatRoutes(app: FastifyInstance) {
               repliedByUserId: user.id,
               sentVia: 'user',
               metadata: senderMeta,
+              // album: gom N ảnh thành 1 cụm trong CRM (message-bubble gom theo albumKey).
+              ...(p.albumKey ? { albumKey: p.albumKey, albumIndex: p.albumIndex, albumTotal: p.albumTotal } : {}),
             },
-            select: { id: true, content: true, contentType: true, sentAt: true, zaloMsgId: true, zaloMsgIdNum: true, senderType: true, senderUid: true, senderName: true, conversationId: true, repliedByUserId: true, sentVia: true, metadata: true },
+            select: { id: true, content: true, contentType: true, sentAt: true, zaloMsgId: true, zaloMsgIdNum: true, senderType: true, senderUid: true, senderName: true, conversationId: true, repliedByUserId: true, sentVia: true, metadata: true, albumKey: true, albumIndex: true, albumTotal: true },
           });
           lastMessageRow = { id: created.id, content: created.content, contentType: created.contentType, sentAt: created.sentAt };
           sentCount++;
