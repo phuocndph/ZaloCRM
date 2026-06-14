@@ -67,7 +67,12 @@ async function scanPendingForContact(
         jobs.push({
           jobId: job.id,
           stepIdx: typeof d.stepIdx === 'number' ? d.stepIdx : 0,
-          nextRunAt: new Date((job.timestamp ?? now) + (job.opts?.delay ?? 0)),
+          // FIX (anh test 2026-06-14): nextRunAt phải dùng giờ chạy THẬT. Khi job bị
+          // moveToDelayed (nick offline → hoãn 30 phút, hoặc pause), BullMQ set
+          // job.delay = delay MỚI tính từ processedOn (lúc xử lý cuối), KHÔNG phải
+          // timestamp gốc. Dùng (processedOn ?? timestamp) + delay. Trước đây dùng
+          // timestamp + opts.delay → card hiện sai giờ (12:30 thay vì 12:59 thật).
+          nextRunAt: new Date((job.processedOn ?? job.timestamp ?? now) + (job.delay ?? 0)),
           sequenceId: d.sequenceId ?? '',
         });
       }

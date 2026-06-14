@@ -138,7 +138,9 @@ async function scanPendingSequenceJobs(
       const d = job.data as { contactId?: string; sequenceId?: string; stepIdx?: number };
       if (!d?.contactId || !wanted.has(d.contactId)) continue;
       const stepIdx = typeof d.stepIdx === 'number' ? d.stepIdx : 0;
-      const nextRunAt = new Date((job.timestamp ?? now) + (job.opts?.delay ?? 0));
+      // FIX (anh test 2026-06-14): job bị moveToDelayed (nick offline/pause) → giờ chạy
+      // thật = (processedOn ?? timestamp) + delay-mới, KHÔNG phải timestamp + opts.delay.
+      const nextRunAt = new Date((job.processedOn ?? job.timestamp ?? now) + ((job as { delay?: number }).delay ?? job.opts?.delay ?? 0));
       const cur = out.get(d.contactId);
       if (!cur || nextRunAt < cur.nextRunAt) {
         out.set(d.contactId, { stepIdx, nextRunAt, sequenceId: d.sequenceId ?? '' });
