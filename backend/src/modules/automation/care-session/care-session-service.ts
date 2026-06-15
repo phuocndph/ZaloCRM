@@ -92,7 +92,14 @@ export async function checkReEnrollCooldown(args: {
   daysLeft?: number;
   cooldownDays?: number;
 }> {
-  const days = args.cooldownDays > 0 ? args.cooldownDays : DEFAULT_REENROLL_COOLDOWN_DAYS;
+  // FIX (anh test 2026-06-15): cooldownDays === 0 nghĩa là TẮT chống spam (cố ý), KHÔNG
+  // fallback default 30. Trước đây `> 0 ? : DEFAULT` khiến 0 bị hiểu thành "chưa set" → vẫn
+  // chặn 30 ngày. Chỉ undefined/null/NaN/âm mới dùng default.
+  if (args.cooldownDays === 0) return { blocked: false }; // tắt → cho gắn lại ngay
+  const days =
+    typeof args.cooldownDays === 'number' && args.cooldownDays > 0
+      ? args.cooldownDays
+      : DEFAULT_REENROLL_COOLDOWN_DAYS;
   const dayMs = 24 * 60 * 60 * 1000;
   const cutoff = new Date(Date.now() - days * dayMs);
   const recent = await prisma.careSession.findFirst({
@@ -355,7 +362,9 @@ export async function enrollFromTrigger(input: {
     });
     rulesSnapshot = (seq?.runtimeRules as Record<string, unknown>) ?? null;
     const cd = rulesSnapshot?.reEnrollCooldownDays;
-    if (typeof cd === 'number' && cd > 0) cooldownDays = cd;
+    // FIX (anh test 2026-06-15): cd === 0 = TẮT cooldown (cố ý) → truyền 0 xuống (hàm
+    // check hiểu 0 = không chặn). Trước đây `cd > 0` bỏ qua 0 → giữ default 30.
+    if (typeof cd === 'number' && cd >= 0) cooldownDays = cd;
 
     // Luật 3 — chặn enroll lại cùng luồng trong cooldown (anh chốt D2: mốc openedAt).
     const cool = await checkReEnrollCooldown({
