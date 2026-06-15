@@ -966,17 +966,24 @@ export async function registerManualControlRoutes(app: FastifyInstance): Promise
             // contact này + pausedUntil → map theo sequenceId. 1 query cho 1 contact (rẻ).
             const pausedSessions = await prisma.careSession.findMany({
               where: { orgId, contactId: cid, state: 'active', pausedAtStepIdx: { not: null } },
-              select: { sourceSequenceId: true, pausedUntil: true },
+              select: { sourceSequenceId: true, pausedUntil: true, enrollEpoch: true },
             });
+            // Map theo sequenceId → pausedUntil. Lọc card nào áp hold đã có runOpen (chỉ run
+            // ĐANG CHẠY, không phải lần đã xong 10/10) — xem isHoldByReply bên dưới.
             const pausedBySeq = new Map<string, Date | null>();
             for (const ps of pausedSessions) {
               if (ps.sourceSequenceId) pausedBySeq.set(ps.sourceSequenceId, ps.pausedUntil);
             }
+            void pausedSessions;
             manualRuns = myRuns
               .map((r) => {
                 const seqId = r.sequenceName ? (seqIdByName.get(r.sequenceName) ?? null) : null;
-                // Đang hold do KH reply? (phiên active của luồng này còn pausedAtStepIdx)
-                const isHoldByReply = seqId != null && pausedBySeq.has(seqId);
+                // FIX 2026-06-15 (anh báo: card 10/10 đã XONG bị kéo lên "Tạm dừng"): CHỈ run
+                // ĐANG CHẠY (chưa completed/stopped) mới được đánh hold. pausedBySeq key theo
+                // sequenceId (không epoch) → nếu không lọc state, MỌI lần gắn cùng luồng (kể cả
+                // lần đã xong 10/10) đều bị hold oan. Run đã xong giữ nguyên 'completed'.
+                const runOpen = r.state !== 'completed' && r.state !== 'stopped';
+                const isHoldByReply = runOpen && seqId != null && pausedBySeq.has(seqId);
                 const holdUntil = isHoldByReply ? (pausedBySeq.get(seqId!) ?? null) : null;
                 return {
                 // Khóa duy nhất per-run cho FE :key (1 trigger đẻ nhiều run).
