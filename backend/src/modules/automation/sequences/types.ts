@@ -17,8 +17,32 @@ export interface SequenceStep {
   exitCondition?: string;    // optional gate name, future use
 }
 
+// Đơn vị giãn cách (luật 2) — lưu nguyên đơn vị, KHÔNG làm tròn về phút (anh chốt
+// Open Q#1: UI cho chọn "giây" nên không quy về phút). Worker quy ra ms lúc enqueue.
+export type SendGapUnit = 'second' | 'minute' | 'hour' | 'day';
+// 2026-06-15 (anh chốt): giãn cách RANDOM trong khoảng [min, max] cùng 1 đơn vị. Mặc
+// định 15-30 phút. Engine pick ngẫu nhiên mỗi lần enqueue bước kế (mỗi step 1 giá trị
+// riêng — "pick ngay khi gửi xong step, lưu trong job cho step kế"). value (cũ, cố định)
+// giữ để tương thích data cũ: thiếu min/max → coi min=max=value.
+export interface SendGap {
+  min?: number;
+  max?: number;
+  value?: number; // legacy — cố định (data cũ trước 2026-06-15)
+  unit: SendGapUnit;
+}
+
 export interface SequenceRuntimeRules {
+  // ── 4 luật mới (Sequence recode Đợt 1, 2026-06-13) ──
+  // Luật 1 — giờ hoạt động. Worker gate giờ qua đây (BỎ trigger.sendHourStart/End ở
+  // đường sequence-manual; trước đây allowedHourRange là dead config).
   allowedHourRange?: [number, number];
+  // Luật 2 — giãn cách giữa các lần gửi (giây→ngày). Worker tính delay bước kế từ đây
+  // (thay step.delayMinutes nếu set). Trước đây randomDelayPerSend là dead config.
+  sendGap?: SendGap;
+  // Luật 3 — chống spam: không enroll lại CÙNG luồng cho 1 KH trong X ngày (default 30).
+  reEnrollCooldownDays?: number;
+
+  // ── Luật cũ — đọc-nếu-có, UI 4-luật KHÔNG phơi (giữ để không vỡ data cũ, D1.5) ──
   randomDelayPerSend?: { min: number; max: number };
   perNickThrottle?: boolean;
   crossNickRecencyDays?: number;
@@ -99,6 +123,32 @@ export function validateRuntimeRules(
     const d = r.randomDelayPerSend as Record<string, unknown>;
     if (typeof d.min !== 'number' || typeof d.max !== 'number' || d.min < 0 || d.max < d.min) {
       return { ok: false, error: 'randomDelayPerSend.min/max phải là số, min ≤ max' };
+    }
+  }
+
+  // Luật 2 — sendGap { min, max, unit } (random) HOẶC { value, unit } (legacy cố định).
+  if (r.sendGap !== undefined) {
+    if (typeof r.sendGap !== 'object' || r.sendGap === null) {
+      return { ok: false, error: 'sendGap phải là { min, max, unit }' };
+    }
+    const g = r.sendGap as Record<string, unknown>;
+    const hasRange = typeof g.min === 'number' || typeof g.max === 'number';
+    if (hasRange) {
+      if (typeof g.min !== 'number' || typeof g.max !== 'number' || g.min < 0 || g.max < g.min) {
+        return { ok: false, error: 'sendGap.min/max phải là số ≥ 0, min ≤ max' };
+      }
+    } else if (typeof g.value !== 'number' || g.value < 0) {
+      return { ok: false, error: 'sendGap cần { min, max } hoặc { value } là số ≥ 0' };
+    }
+    if (!['second', 'minute', 'hour', 'day'].includes(g.unit as string)) {
+      return { ok: false, error: "sendGap.unit phải là 'second'|'minute'|'hour'|'day'" };
+    }
+  }
+
+  // Luật 3 — reEnrollCooldownDays.
+  if (r.reEnrollCooldownDays !== undefined) {
+    if (typeof r.reEnrollCooldownDays !== 'number' || r.reEnrollCooldownDays < 0) {
+      return { ok: false, error: 'reEnrollCooldownDays phải là số ≥ 0' };
     }
   }
 

@@ -211,8 +211,10 @@ async function onSubmit(): Promise<void> {
       sequenceName: seq?.name ?? '',
     });
   } catch (err: unknown) {
-    const msg = (err as { response?: { data?: { error?: string } } }).response?.data?.error;
-    error.value = msg || 'Lỗi enroll KH vào Sequence. Vui lòng thử lại.';
+    // Ưu tiên `detail` (thông báo đầy đủ tiếng Việt, vd cooldown có tên luồng + đếm
+    // ngược); fallback `error` (mã lỗi) nếu route không trả detail.
+    const data = (err as { response?: { data?: { error?: string; detail?: string } } }).response?.data;
+    error.value = data?.detail || data?.error || 'Lỗi gắn khách vào luồng. Vui lòng thử lại.';
     console.error('[add-flow-modal] enroll failed', err);
   } finally {
     submitting.value = false;

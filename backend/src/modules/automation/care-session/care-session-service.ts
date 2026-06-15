@@ -52,6 +52,11 @@ export interface CreateCareSessionInput {
   silenceDays?: number;
   /** Snapshot điều kiện đóng từ trigger.closeConditions (mỗi phiên luật riêng). */
   closeConditions?: unknown;
+  /** Codex #10: snapshot runtimeRules (giờ/sendGap/cooldown) lúc enroll → đổi config
+   *  KHÔNG ảnh hưởng KH đang chạy. null = worker fallback đọc rules live của sequence. */
+  rulesSnapshot?: unknown;
+  /** 2026-06-15: số lần gắn (epoch) — lưu để resume/cancel dùng đúng jobId epoch. */
+  enrollEpoch?: number;
   /**
    * Per-nick UID khách (góc nhìn nick sale → nick khách) = Conversation.externalThreadId.
    * Anh chốt 2026-06-08: neo phiên theo (nick, thread). Nếu caller không truyền, hàm tự
@@ -62,10 +67,65 @@ export interface CreateCareSessionInput {
 }
 
 const DEFAULT_SILENCE_DAYS = 7;
+const DEFAULT_REENROLL_COOLDOWN_DAYS = 30;
 
 function computeWindowUntil(silenceDays: number): Date {
   const days = Number.isFinite(silenceDays) && silenceDays > 0 ? silenceDays : DEFAULT_SILENCE_DAYS;
   return new Date(Date.now() + days * 24 * 60 * 60 * 1000);
+}
+
+/**
+ * Luật 3 (chống spam, anh chốt D2+D3 + race guard Codex #6): KH đã được gắn CÙNG luồng
+ * này trong X ngày qua → CHẶN enroll lại. Mốc = CareSession.openedAt (lần gắn gần nhất).
+ *
+ * @returns blocked + chi tiết để báo sale rõ: ngày gắn (lastOpenedAt), ngày đóng phiên
+ *          (lastClosedAt — null nếu đang chạy), ngày được gắn lại (unlockAt), còn N ngày.
+ */
+export async function checkReEnrollCooldown(args: {
+  orgId: string;
+  contactId: string;
+  sequenceId: string;
+  cooldownDays: number;
+}): Promise<{
+  blocked: boolean;
+  lastOpenedAt?: Date;
+  lastClosedAt?: Date | null;
+  unlockAt?: Date;
+  daysLeft?: number;
+  cooldownDays?: number;
+}> {
+  // FIX (anh test 2026-06-15): cooldownDays === 0 nghĩa là TẮT chống spam (cố ý), KHÔNG
+  // fallback default 30. Trước đây `> 0 ? : DEFAULT` khiến 0 bị hiểu thành "chưa set" → vẫn
+  // chặn 30 ngày. Chỉ undefined/null/NaN/âm mới dùng default.
+  if (args.cooldownDays === 0) return { blocked: false }; // tắt → cho gắn lại ngay
+  const days =
+    typeof args.cooldownDays === 'number' && args.cooldownDays > 0
+      ? args.cooldownDays
+      : DEFAULT_REENROLL_COOLDOWN_DAYS;
+  const dayMs = 24 * 60 * 60 * 1000;
+  const cutoff = new Date(Date.now() - days * dayMs);
+  const recent = await prisma.careSession.findFirst({
+    where: {
+      orgId: args.orgId,
+      contactId: args.contactId,
+      sourceSequenceId: args.sequenceId,
+      openedAt: { gte: cutoff },
+    },
+    orderBy: { openedAt: 'desc' },
+    select: { openedAt: true, closedAt: true },
+  });
+  if (!recent) return { blocked: false };
+  // Được gắn lại = openedAt + cooldown. Còn lại = unlockAt - now (làm tròn LÊN ngày).
+  const unlockAt = new Date(recent.openedAt.getTime() + days * dayMs);
+  const daysLeft = Math.max(0, Math.ceil((unlockAt.getTime() - Date.now()) / dayMs));
+  return {
+    blocked: true,
+    lastOpenedAt: recent.openedAt,
+    lastClosedAt: recent.closedAt,
+    unlockAt,
+    daysLeft,
+    cooldownDays: days,
+  };
 }
 
 /**
@@ -109,17 +169,22 @@ export async function createCareSession(input: CreateCareSessionInput): Promise<
     enrolledByUserId = null,
     silenceDays = DEFAULT_SILENCE_DAYS,
     closeConditions = null,
+    rulesSnapshot = null,
+    enrollEpoch,
   } = input;
 
   // Per-nick UID (góc nhìn nick→khách). Caller truyền sẵn (route /listen, message-handler);
   // nếu thiếu → tự resolve từ Friend(nickId, contactId).zaloUidInNick. null = chưa có.
   const externalThreadId = input.externalThreadId ?? (await resolveThreadId(nickId, contactId));
 
-  // Dup-guard: phiên mở cùng (contact, nick, nguồn-trigger) → tái dùng.
+  // Dup-guard: phiên mở cùng (contact, nick, nguồn-trigger, SEQUENCE) → tái dùng.
   // sourceTriggerId null (gắn tay thuần) → dedup theo (contact, nick, sequence).
   // 2026-06-08: thêm thread. Tái dùng nếu phiên active có CÙNG thread HOẶC thread NULL
   // (phiên legacy/no-Zalo chưa gắn thread → tái dùng + backfill thread). Thread khác hẳn →
   // tạo phiên mới (2 hội thoại khác nhau của cùng contact+nick = 2 phiên riêng).
+  // LỖI B (2026-06-15): nhánh sourceTriggerId PHẢI gồm sourceSequenceId. Manual-enroll dùng
+  // CHUNG 1 systemTrigger cho mọi luồng → nếu chỉ match (contact,nick,trigger) thì gắn luồng B
+  // sẽ reuse phiên luồng A → luồng B chết. Anh chốt 1 KH chạy nhiều luồng song song được.
   const existing = await prisma.careSession.findFirst({
     where: {
       orgId,
@@ -127,7 +192,7 @@ export async function createCareSession(input: CreateCareSessionInput): Promise<
       nickId,
       state: 'active',
       ...(sourceTriggerId
-        ? { sourceTriggerId }
+        ? { sourceTriggerId, sourceSequenceId } // gồm cả sequence → 2 luồng khác nhau KHÔNG đụng nhau
         : { sourceSequenceId, sourceType: 'sequence_manual' }),
       ...(externalThreadId
         ? { OR: [{ externalThreadId }, { externalThreadId: null }] }
@@ -165,6 +230,8 @@ export async function createCareSession(input: CreateCareSessionInput): Promise<
         sourceSequenceId,
         state: 'active',
         closeConditions: closeConditions === null ? undefined : (closeConditions as object),
+        rulesSnapshot: rulesSnapshot === null ? undefined : (rulesSnapshot as object),
+        enrollEpoch: enrollEpoch ?? undefined,
         interestWindowUntil: computeWindowUntil(silenceDays),
       },
       select: { id: true },
@@ -172,10 +239,12 @@ export async function createCareSession(input: CreateCareSessionInput): Promise<
   } catch (err) {
     // RACE: 2 path (enroll I31 + self-heal I32) chạy đồng thời cùng giây → cả 2 vượt
     // dup-guard findFirst trước khi commit. Partial unique index (contact,nick,trigger,
-    // state=active) chặn ở DB → P2002. Tái dùng phiên path kia vừa tạo.
+    // SEQUENCE,state=active) chặn ở DB → P2002. Tái dùng phiên path kia vừa tạo.
+    // LỖI B (2026-06-15): winner lookup PHẢI gồm sourceSequenceId — khớp index mới, không
+    // reuse nhầm phiên luồng khác của cùng (contact,nick,trigger).
     if (sourceTriggerId && (err as { code?: string }).code === 'P2002') {
       const winner = await prisma.careSession.findFirst({
-        where: { orgId, contactId, nickId, sourceTriggerId, state: 'active' },
+        where: { orgId, contactId, nickId, sourceTriggerId, sourceSequenceId, state: 'active' },
         select: { id: true },
       });
       if (winner) {
@@ -193,6 +262,59 @@ export async function createCareSession(input: CreateCareSessionInput): Promise<
   );
 
   return session.id;
+}
+
+// ════════════════════════════════════════════════════════════════════════
+// LUẬT 4 (pause/resume) — Sequence recode Đợt 1 (2026-06-13)
+// ════════════════════════════════════════════════════════════════════════
+//
+// Anh chốt: khách reply → TẠM DỪNG bám đuổi (ARCH#1=B: dừng CẢ luồng của khách); hết
+// phiên (im lặng → janitor đóng / sale xử lý) → CHẠY TIẾP từ bước dở. KHÔNG remove job
+// (review bắt: cơ chế cũ job.remove() xóa tiến độ → không resume được).
+//
+// Thiết kế:
+//   PAUSE  : reply → ghi pausedAtStepIdx (bước dở) + pauseEpoch++ vào MỌI phiên active
+//            của khách. Job delayed GIỮ NGUYÊN; worker GUARD check pause flag trước send.
+//   GUARD  : worker check Redis pause flag ngay TRƯỚC Zalo send (Codex #3 active-send race).
+//            Pause → moveToDelayed lại (không gửi). Tiến độ đã ghi ở pausedAtStepIdx.
+//   RESUME : cron quét phiên CLOSED còn pausedAtStepIdx (pauseEpoch khớp — Codex #2) →
+//            re-enqueue đúng (trigger,sequence,contact,step) → clear marker.
+
+/**
+ * PAUSE (luật 4): khách reply → ghi bước dở + tăng epoch cho mọi phiên active của khách.
+ * stepIdxBySequence: map sourceSequenceId → stepIdx hiện tại (caller scan BullMQ 1 lần).
+ *
+ * @returns số phiên đã pause-mark
+ */
+export async function pauseSessionsOnReply(args: {
+  orgId: string;
+  contactId: string;
+  stepIdxBySequence: Map<string, number>;
+}): Promise<{ paused: number }> {
+  const sessions = await prisma.careSession.findMany({
+    where: { orgId: args.orgId, contactId: args.contactId, state: 'active', sourceSequenceId: { not: null } },
+    select: { id: true, sourceSequenceId: true, pauseEpoch: true },
+  });
+  let paused = 0;
+  for (const s of sessions) {
+    const stepIdx = s.sourceSequenceId ? args.stepIdxBySequence.get(s.sourceSequenceId) : undefined;
+    // stepIdx undefined = không có job pending (đã gửi xong / chưa bắt đầu) → vẫn tăng
+    // epoch để chống resume cũ, nhưng pausedAtStepIdx null (resume không re-enqueue).
+    await prisma.careSession
+      .update({
+        where: { id: s.id },
+        data: {
+          pausedAtStepIdx: stepIdx ?? null,
+          pauseEpoch: (s.pauseEpoch ?? 0) + 1,
+        },
+      })
+      .catch((e) => logger.warn(`[care-session] pauseSessionsOnReply update failed session=${s.id}: ${(e as Error).message}`));
+    paused++;
+  }
+  if (paused > 0) {
+    logger.info(`[care-session] LUẬT 4 pause-mark ${paused} phiên contact=${args.contactId} (reply)`);
+  }
+  return { paused };
 }
 
 /**
@@ -216,6 +338,32 @@ export async function markSequenceStartEnqueued(sessionId: string): Promise<void
  *
  * @returns sessionId (null nếu thiếu dữ liệu để tạo)
  */
+
+/**
+ * resolveNextEnrollEpoch — số lần gắn KẾ TIẾP cho (contact, sequence).
+ *
+ * Dùng CHUNG cho cả gắn tay (manual-enroll) lẫn tự động (materializer event-driven).
+ * = MAX(enrollEpoch các phiên cũ) + 1. KHÔNG dùng count+1 vì count không monotonic
+ * (1 lần tạo phiên fail → count thiếu → epoch tái dùng → jobId đụng job cũ còn sống → dedup
+ * nuốt = đúng bug gốc). Phiên cũ enrollEpoch NULL (data trước cột) = ngầm hiểu 1.
+ *
+ * LẦN ĐẦU (chưa phiên nào) → trả 1 → jobId `...-e1-0` (giữ idempotency probe friend-invite
+ * vốn dựa trên epoch=1). Chỉ re-enroll (đã có phiên cũ) mới > 1 → jobId mới không đụng job cũ.
+ */
+export async function resolveNextEnrollEpoch(
+  orgId: string,
+  contactId: string,
+  sequenceId: string,
+): Promise<number> {
+  const agg = await prisma.careSession.aggregate({
+    where: { orgId, contactId, sourceSequenceId: sequenceId },
+    _max: { enrollEpoch: true },
+    _count: { _all: true },
+  });
+  const maxEpoch = agg._max.enrollEpoch ?? (agg._count._all > 0 ? 1 : 0);
+  return maxEpoch + 1;
+}
+
 export async function enrollFromTrigger(input: {
   orgId: string;
   triggerId: string;
@@ -229,6 +377,8 @@ export async function enrollFromTrigger(input: {
   skipEnqueue?: boolean;
   // Bám đuổi THỦ CÔNG: sale tự gắn KH vào → ghi ai gắn (manual). null = tự động.
   enrolledByUserId?: string | null;
+  // 2026-06-15: số lần gắn (epoch) — gắn lại tăng → lưu vào phiên để resume/cancel đúng epoch.
+  enrollEpoch?: number;
 }): Promise<string | null> {
   // CareSession 2026-06-07 (anh chốt): điều kiện đóng là CHUNG cấp ORG, KHÔNG
   // per-trigger. Đọc org.careCloseConditions, snapshot vào phiên.
@@ -238,6 +388,36 @@ export async function enrollFromTrigger(input: {
   });
   const closeConditions = orgCfg?.careCloseConditions ?? null;
   const silenceDays = extractSilenceDays(closeConditions);
+
+  // Luật 3 + Codex #10 (snapshot): đọc runtimeRules của sequence → cooldown + snapshot.
+  let rulesSnapshot: Record<string, unknown> | null = null;
+  let cooldownDays = DEFAULT_REENROLL_COOLDOWN_DAYS;
+  if (input.sequenceId) {
+    const seq = await prisma.automationSequence.findUnique({
+      where: { id: input.sequenceId },
+      select: { runtimeRules: true },
+    });
+    rulesSnapshot = (seq?.runtimeRules as Record<string, unknown>) ?? null;
+    const cd = rulesSnapshot?.reEnrollCooldownDays;
+    // FIX (anh test 2026-06-15): cd === 0 = TẮT cooldown (cố ý) → truyền 0 xuống (hàm
+    // check hiểu 0 = không chặn). Trước đây `cd > 0` bỏ qua 0 → giữ default 30.
+    if (typeof cd === 'number' && cd >= 0) cooldownDays = cd;
+
+    // Luật 3 — chặn enroll lại cùng luồng trong cooldown (anh chốt D2: mốc openedAt).
+    const cool = await checkReEnrollCooldown({
+      orgId: input.orgId,
+      contactId: input.contactId,
+      sequenceId: input.sequenceId,
+      cooldownDays,
+    });
+    if (cool.blocked) {
+      logger.info(
+        `[care-session] CHẶN enroll lại — luật 3 cooldown ${cooldownDays}d contact=${input.contactId} ` +
+          `sequence=${input.sequenceId} (lần trước ${cool.lastOpenedAt?.toISOString()})`,
+      );
+      return null; // caller (manual-enroll) báo sale "khách vừa trong luồng này N ngày trước".
+    }
+  }
 
   const sessionId = await createCareSession({
     orgId: input.orgId,
@@ -250,6 +430,8 @@ export async function enrollFromTrigger(input: {
     enrolledByUserId: input.enrolledByUserId ?? null,
     silenceDays,
     closeConditions,
+    rulesSnapshot, // Codex #10: snapshot rules lúc enroll
+    enrollEpoch: input.enrollEpoch, // 2026-06-15: số lần gắn
   });
 
   // D2 bước 2: enqueue SAU khi phiên đã commit. Fail không làm hỏng phiên.
@@ -262,6 +444,7 @@ export async function enrollFromTrigger(input: {
         nickId: input.nickId,
         orgId: input.orgId,
         startDelayMinutes: input.sequenceStartDelayMinutes,
+        enrollEpoch: input.enrollEpoch, // LỖI 5: job step 0 phải cùng epoch với phiên, không thì gắn lại trigger đụng jobId cũ
       });
       await markSequenceStartEnqueued(sessionId);
     } catch (err) {
@@ -350,6 +533,103 @@ function extractSilenceDays(closeConditions: unknown): number {
 }
 
 /**
+ * RESUME (luật 4, cron): phiên đã CLOSED (khách im đủ lâu → janitor đóng / sale xử lý)
+ * mà còn pausedAtStepIdx → re-enqueue ĐÚNG bước dở của ĐÚNG luồng → chạy tiếp.
+ *
+ * Codex #2 (chống "close cũ hồi sinh send sau reply mới"): chỉ resume nếu KHÔNG có
+ * customer activity SAU khi pause. Phiên closedReason='janitor_silence' nghĩa là khách
+ * đã im suốt cửa sổ → an toàn chạy tiếp. closedReason khác (sale_resolved, deal_won,
+ * stranger_blocked, customer_blocked) = KHÔNG resume (sale chủ ý đóng / KH chặn).
+ *
+ * jobId mới có sequenceId → re-enqueue đúng luồng. clear pausedAtStepIdx sau khi enqueue.
+ *
+ * @returns số luồng đã resume
+ */
+export async function resumePausedSequences(): Promise<{ resumed: number }> {
+  const { getSequenceStepQueue, buildSequenceStepJobId } = await import('../queues/queue-registry.js');
+  const stuck = await prisma.careSession.findMany({
+    where: {
+      state: 'closed',
+      closedReason: 'janitor_silence', // chỉ im-lặng-tự-đóng mới chạy tiếp
+      pausedAtStepIdx: { not: null },
+      sourceSequenceId: { not: null },
+      sourceTriggerId: { not: null },
+    },
+    select: {
+      id: true,
+      orgId: true,
+      contactId: true,
+      nickId: true,
+      sourceTriggerId: true,
+      sourceSequenceId: true,
+      pausedAtStepIdx: true,
+      lastCustomerActivityAt: true,
+      closedAt: true,
+      enrollEpoch: true,
+    },
+    take: 200,
+  });
+
+  if (stuck.length === 0) return { resumed: 0 };
+  const queue = getSequenceStepQueue();
+  let resumed = 0;
+
+  for (const s of stuck) {
+    if (!s.sourceTriggerId || !s.sourceSequenceId || s.pausedAtStepIdx == null) continue;
+    // Codex #2 (chống "close cũ hồi sinh send sau reply mới"): nếu khách có activity SAU
+    // khi phiên đóng → KHÔNG resume (khách lại đang chat, đừng gửi đè). Chỉ clear marker.
+    if (s.lastCustomerActivityAt && s.closedAt && s.lastCustomerActivityAt > s.closedAt) {
+      await prisma.careSession.update({ where: { id: s.id }, data: { pausedAtStepIdx: null } }).catch(() => null);
+      logger.info(`[care-session] resume SKIP session=${s.id} — khách có activity sau khi đóng (clear marker)`);
+      continue;
+    }
+    try {
+      const seq = await prisma.automationSequence.findUnique({
+        where: { id: s.sourceSequenceId },
+        select: { steps: true, runtimeRules: true },
+      });
+      const steps = Array.isArray(seq?.steps) ? (seq!.steps as unknown[]) : [];
+      if (s.pausedAtStepIdx >= steps.length) {
+        // Bước dở vượt quá số step (data lệch) → chỉ clear marker.
+        await prisma.careSession.update({ where: { id: s.id }, data: { pausedAtStepIdx: null } }).catch(() => null);
+        continue;
+      }
+      const epoch = s.enrollEpoch ?? 1;
+      const jobId = buildSequenceStepJobId(s.sourceTriggerId, s.sourceSequenceId, s.contactId, s.pausedAtStepIdx, epoch);
+      // jobId dedup: nếu job còn trong queue (chưa bị remove) thì không double.
+      const existing = await queue.getJob(jobId);
+      if (!existing) {
+        await queue.add(
+          'sequence-step',
+          {
+            triggerId: s.sourceTriggerId,
+            contactId: s.contactId,
+            sequenceId: s.sourceSequenceId,
+            nickId: s.nickId,
+            orgId: s.orgId,
+            stepIdx: s.pausedAtStepIdx,
+            totalSteps: steps.length,
+            // re-review MED #2: chuyền runtimeRules → bước sau khi resume vẫn đúng luật 1+2.
+            runtimeRules: (seq?.runtimeRules as Record<string, unknown>) ?? undefined,
+            enrollEpoch: epoch,
+          },
+          { jobId, delay: 0 }, // hết phiên → gửi tiếp ngay (giờ hoạt động do worker guard lo)
+        );
+      }
+      await prisma.careSession.update({ where: { id: s.id }, data: { pausedAtStepIdx: null } });
+      resumed++;
+    } catch (err) {
+      logger.warn(`[care-session] resume failed session=${s.id}: ${(err as Error).message}`);
+    }
+  }
+
+  if (resumed > 0) {
+    logger.info(`[care-session] LUẬT 4 resumed ${resumed} luồng (hết phiên → chạy tiếp bước dở)`);
+  }
+  return { resumed };
+}
+
+/**
  * Reconcile (cron, D2 bước 3): tìm phiên active đã quá hạn enqueue mà chưa có
  * sequenceStartEnqueuedAt → enqueue lại. jobId dedup nên enqueue trùng an toàn.
  *
@@ -378,6 +658,7 @@ export async function reconcileMissingSequenceStart(): Promise<{ recovered: numb
       nickId: true,
       sourceTriggerId: true,
       sourceSequenceId: true,
+      enrollEpoch: true, // FIX review-epoch #1 (LỖI 1): reconcile phải dùng đúng epoch của phiên
     },
     take: 200, // batch nhỏ, cron chạy lại lượt sau nếu còn
   });
@@ -393,6 +674,7 @@ export async function reconcileMissingSequenceStart(): Promise<{ recovered: numb
         nickId: s.nickId,
         orgId: s.orgId,
         startDelayMinutes: 0, // đã trễ rồi, gửi sớm
+        enrollEpoch: s.enrollEpoch ?? 1, // FIX#1: jobId đúng epoch (không tạo job e1 cho phiên e2)
       });
       await markSequenceStartEnqueued(s.id);
       recovered++;

@@ -271,7 +271,7 @@ function handleClick(): void {
 <style scoped>
 .source-badge {
   display: inline-flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 3px;
   font-size: 10px;
   font-weight: 600;
@@ -281,19 +281,23 @@ function handleClick(): void {
   border: 1px solid transparent;
   line-height: 1.4;
   user-select: none;
-  white-space: nowrap;
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  /* 2026-06-15 (anh báo): badge tên luồng bị CẮT NGẮN "...". Bỏ nowrap+ellipsis →
+     cho XUỐNG DÒNG hiện ĐỦ tên luồng. max-width theo bong bóng (100%), không cắt. */
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .source-badge-icon {
   font-size: 11px;
-  line-height: 1;
+  line-height: 1.4;
+  flex-shrink: 0;
 }
 
 .source-badge-label {
   font-weight: 600;
+  min-width: 0;
 }
 
 /* Icon sync trailing — Sale gõ trên Zalo Real (Anh chốt 2026-06-02) */

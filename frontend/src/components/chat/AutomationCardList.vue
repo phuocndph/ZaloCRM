@@ -77,42 +77,55 @@
         <div class="acl-cards">
           <FollowUpCard
             v-for="card in runningCards"
-            :key="card.triggerId"
+            :key="card.enrollmentId ?? card.triggerId"
             :card="card"
             @action="(k) => onAction(card, k)"
           />
         </div>
       </section>
 
-      <!-- ── Section: Đã hoàn thành ── -->
+      <!-- ── Section: Đã hoàn thành (THU GỌN mặc định — anh chốt 2026-06-15) ──
+           Bấm tiêu đề mới xổ ra danh sách dòng nhỏ. Đang chạy luôn hiện đầy đủ ở trên. -->
       <section v-if="completedCards.length" class="acl-sec">
-        <div class="acl-sec__title">
+        <button class="acl-sec__title acl-sec__title--toggle" @click="showCompleted = !showCompleted">
           <span class="acl-dot done" />Đã hoàn thành
           <span class="acl-cnt">{{ completedCards.length }}</span>
-        </div>
-        <div class="acl-cards">
-          <FollowUpCard
+          <svg class="acl-chev" :class="{ open: showCompleted }" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9" /></svg>
+        </button>
+        <div v-if="showCompleted" class="acl-done-list">
+          <button
             v-for="card in completedCards"
-            :key="card.triggerId"
-            :card="card"
-            @action="(k) => onAction(card, k)"
-          />
+            :key="card.enrollmentId ?? card.triggerId"
+            class="acl-done-row"
+            :title="`${card.sequenceName || 'Luồng bám đuổi'} — Lần ${card.enrollSeq ?? 1}`"
+            @click="onAction(card, 'history')"
+          >
+            <span class="acl-done-name">{{ card.sequenceName || 'Luồng bám đuổi' }}</span>
+            <span v-if="card.enrollSeq" class="acl-done-seq">Lần {{ card.enrollSeq }}</span>
+            <span class="acl-done-when">{{ doneWhen(card) }}</span>
+          </button>
         </div>
       </section>
 
-      <!-- ── Section: Lịch sử bám đuổi (stopped) ── -->
+      <!-- ── Section: Lịch sử bám đuổi (stopped) — cũng thu gọn dòng nhỏ ── -->
       <section v-if="historyCards.length" class="acl-sec">
-        <div class="acl-sec__title">
+        <button class="acl-sec__title acl-sec__title--toggle" @click="showHistory = !showHistory">
           <span class="acl-dot hist" />Lịch sử bám đuổi
           <span class="acl-cnt">{{ historyCards.length }}</span>
-        </div>
-        <div class="acl-cards">
-          <FollowUpCard
+          <svg class="acl-chev" :class="{ open: showHistory }" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9" /></svg>
+        </button>
+        <div v-if="showHistory" class="acl-done-list">
+          <button
             v-for="card in historyCards"
-            :key="card.triggerId"
-            :card="card"
-            @action="(k) => onAction(card, k)"
-          />
+            :key="card.enrollmentId ?? card.triggerId"
+            class="acl-done-row"
+            :title="`${card.sequenceName || 'Luồng bám đuổi'} — Lần ${card.enrollSeq ?? 1}`"
+            @click="onAction(card, 'history')"
+          >
+            <span class="acl-done-name">{{ card.sequenceName || 'Luồng bám đuổi' }}</span>
+            <span v-if="card.enrollSeq" class="acl-done-seq">Lần {{ card.enrollSeq }}</span>
+            <span class="acl-done-when">{{ doneWhen(card) }}</span>
+          </button>
         </div>
       </section>
 
@@ -122,6 +135,21 @@
         Gắn thêm luồng bám đuổi
       </button>
     </template>
+
+    <!-- Modal xác nhận pause/stop (thay window.confirm/prompt — anh chốt 2026-06-15) -->
+    <ConfirmActionModal
+      v-model:open="confirmOpen"
+      :title="confirmConfig.title"
+      :message="confirmConfig.message"
+      :tone="confirmConfig.tone"
+      :confirm-text="confirmConfig.confirmText"
+      :require-reason="confirmConfig.requireReason"
+      :reason-label="confirmConfig.reasonLabel"
+      :reason-placeholder="confirmConfig.reasonPlaceholder"
+      :busy="confirmBusy"
+      @confirm="runConfirmedAction"
+      @cancel="confirmOpen = false"
+    />
   </div>
 </template>
 
@@ -129,6 +157,16 @@
 import { computed, ref, watch, onMounted, onUnmounted } from 'vue';
 import { api } from '@/api/index';
 import FollowUpCard, { type FollowUpCardData } from './FollowUpCard.vue';
+import ConfirmActionModal from './ConfirmActionModal.vue';
+import { useToast } from '@/composables/use-toast';
+
+const toastSvc = useToast();
+// Helper gọn: toast(msg)=thường(xanh); 'warning'=vàng (không phải lỗi); 'error'=đỏ.
+function toast(message: string, type: 'success' | 'error' | 'warning' = 'success'): void {
+  if (type === 'error') toastSvc.error(message);
+  else if (type === 'warning') toastSvc.warning(message);
+  else toastSvc.success(message);
+}
 
 // ── Props ──
 const props = defineProps<{
@@ -149,6 +187,16 @@ interface AutomationStatusCard extends FollowUpCardData {
   latestEvent: string;
   pausedUntil?: string | null;
   stopped?: boolean;
+  // 2026-06-15 — per-lần-gắn (manual followup): mỗi lần gắn 1 card riêng.
+  enrollmentId?: string;
+  enrollSeq?: number;
+  derivedState?: CardState; // BE truyền sẵn state per-run (không tự derive)
+  enrolledAt?: string;
+  lastSentAt?: string | null;
+  // YC3 timing (Đợt 2): BE trả 4 mốc per luồng.
+  etaCompleteAt?: string | null; // bao lâu nữa xong (ISO)
+  holdReason?: 'running' | 'waiting_reply' | 'out_of_hours' | 'nick_offline' | 'completed' | 'stopped' | null;
+  allowedHourRange?: [number, number] | null;
 }
 
 // ── State ──
@@ -206,6 +254,19 @@ const runningCards = computed(() => cards.value.filter((c) => c.state === 'activ
 const completedCards = computed(() => cards.value.filter((c) => c.state === 'completed'));
 const historyCards = computed(() => cards.value.filter((c) => c.state === 'stopped'));
 
+// 2026-06-15: 2 nhóm xong THU GỌN mặc định (anh chốt — bấm mới mở). Đang chạy luôn hiện.
+const showCompleted = ref(false);
+const showHistory = ref(false);
+
+// Ngày "xong" hiển thị ở dòng thu gọn — ưu tiên lần gửi cuối, fallback ngày gắn.
+function doneWhen(card: AutomationStatusCard): string {
+  const iso = card.lastSentAt || card.enrolledAt || card.latestAt;
+  if (!iso) return '';
+  const d = new Date(iso as string);
+  return d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', timeZone: 'Asia/Ho_Chi_Minh' })
+    + ' ' + d.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Ho_Chi_Minh' });
+}
+
 // ── Derive UI state (đồng bộ logic server deriveFollowupState 2026-06-07) ──
 // THỨ TỰ ƯU TIÊN — KHỚP backend manual-control-routes.ts:
 //   1. stopped (sale dừng / KH chặn)
@@ -215,6 +276,9 @@ const historyCards = computed(() => cards.value.filter((c) => c.state === 'stopp
 //   3. paused (pausedUntilMs>0, không còn job)
 //   4. completed (hết job + đã đi hết bước)
 function deriveState(card: AutomationStatusCard): CardState {
+  // 2026-06-15: run manual followup BE đã biết state chính xác per-lần-gắn → tôn trọng,
+  // KHÔNG tự derive (run cũ progressUnknown totalSteps=null sẽ bị nhầm 'active').
+  if (card.derivedState) return card.derivedState;
   if (card.stopped) return 'stopped';
   if (card.nextRunAt) return 'active';
   if ((card.pausedUntilMs ?? 0) > 0) return 'paused';
@@ -233,8 +297,11 @@ const STATE_RANK: Record<CardState, number> = { active: 3, paused: 2, completed:
 function groupBySequence(raw: AutomationStatusCard[]): AutomationStatusCard[] {
   const groups = new Map<string, AutomationStatusCard[]>();
   for (const c of raw) {
-    // Key: sequenceId nếu có, else triggerId (giữ riêng).
-    const key = c.sequenceId ? `seq:${c.sequenceId}` : `trg:${c.triggerId}`;
+    // 2026-06-15: run manual followup (có enrollmentId) = mỗi LẦN GẮN riêng → KHÔNG gom
+    // (dù cùng sequenceId — gắn lại nhiều lần là nhiều card). Card tự động gom theo sequence.
+    const key = c.enrollmentId
+      ? `enr:${c.enrollmentId}`
+      : (c.sequenceId ? `seq:${c.sequenceId}` : `trg:${c.triggerId}`);
     const arr = groups.get(key);
     if (arr) arr.push(c); else groups.set(key, [c]);
   }
@@ -271,10 +338,16 @@ async function fetchStatus(): Promise<void> {
       ...c,
       state: deriveState(c),
       busy: false,
-      // BE chưa expose → giữ undefined: UI tự ẩn ETA + disable nút "Gửi bước tiếp ngay".
-      advanceEnabled: false,
+      // Đợt 2: BE đã expose timing. Cho advance khi: có job kế (nextRunAt) + CÓ sequenceId
+      // (BE advance bắt buộc sequenceId — review #1, không fan-out đa-luồng) + không
+      // chờ-khách-reply + chưa dừng.
+      advanceEnabled: !!c.nextRunAt && !!c.sequenceId && c.holdReason !== 'waiting_reply' && !c.stopped,
     }));
-    cards.value = groupBySequence(mapped);
+    // 2026-06-15: CHỈ gom các card ĐANG CHẠY cùng sequence (gọn 1 card đang chạy). Card đã
+    // xong/lịch sử = mỗi LẦN GẮN 1 dòng riêng (KHÔNG gom — nếu không lại ẩn mất luồng cũ).
+    const running = mapped.filter((c) => c.state === 'active' || c.state === 'paused');
+    const rest = mapped.filter((c) => c.state !== 'active' && c.state !== 'paused');
+    cards.value = [...groupBySequence(running), ...rest];
   } catch (err) {
     console.error('[automation-status] fetch failed', err);
     cards.value = [];
@@ -290,49 +363,56 @@ async function onAction(
 ): Promise<void> {
   if (card.busy) return;
 
-  // "Gửi bước tiếp ngay" + "Xem lịch sử": chờ endpoint BE (anh nối BullMQ sau).
+  // "Gửi bước tiếp ngay": promote job + CHỜ BE xác nhận gửi thật (actuallySent) rồi mới
+  // báo. Fix bug anh báo 2026-06-15: trước đây luôn báo "Đã gửi" dù tin chưa qua.
   if (kind === 'advance') {
-    window.alert('Tính năng "Gửi bước tiếp ngay" đang phát triển — sẽ có sớm.');
+    if (card.advanceEnabled === false) return;
+    card.busy = true;
+    try {
+      const res = await api.post<{ ok: boolean; promoted: number; actuallySent?: boolean; deferred?: boolean; deferReason?: string | null }>(
+        `/automation/triggers/${card.triggerId}/contacts/${props.contactId}/advance`,
+        { sequenceId: card.sequenceId ?? undefined },
+      );
+      await fetchStatus();
+      const d = res.data;
+      if (d.actuallySent) {
+        toast('Đã gửi bước tiếp cho khách');
+      } else if (d.deferred) {
+        // Job đã đẩy nhưng worker hoãn — KHÔNG phải lỗi (hệ thống tự gửi khi đủ điều kiện).
+        // Báo màu VÀNG + đúng 1 lý do cụ thể (BE trả deferReason) cho dễ hiểu.
+        const reasonMsg: Record<string, string> = {
+          nick_gap: 'Vừa gửi tin xong — chờ chút cho tự nhiên rồi hệ thống tự gửi tiếp',
+          outside_hour_window: 'Đang ngoài giờ gửi tin — hệ thống sẽ tự gửi khi tới giờ làm việc',
+          quota_capped: 'Nick này đã gửi đủ số tin trong ngày — sẽ tự gửi vào ngày mai',
+          nick_offline: 'Nick đang ngắt kết nối — sẽ tự gửi ngay khi nick online lại',
+          awaiting_reply: 'Khách vừa nhắn lại — tạm dừng gửi tự động để bạn trả lời trước',
+        };
+        toast(reasonMsg[d.deferReason ?? ''] ?? 'Đã ghi nhận — hệ thống đang chờ đủ điều kiện rồi tự gửi', 'warning');
+      } else {
+        toast('Đang gửi bước tiếp — hệ thống đang xử lý, tin sẽ hiện trong giây lát');
+      }
+    } catch (err: unknown) {
+      const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error;
+      toast(msg ?? 'Không gửi được bước tiếp ngay.', 'error');
+    } finally {
+      card.busy = false;
+    }
     return;
   }
   if (kind === 'history') {
-    window.alert('Lịch sử chi tiết các bước đã gửi đang phát triển — sẽ có sớm.');
+    toast('Lịch sử chi tiết các bước đã gửi đang phát triển — sẽ có sớm.');
     return;
   }
 
-  if (kind === 'pause') {
-    const ok = window.confirm(`Pause chuỗi "${card.triggerName}" trong 24h cho KH này?`);
-    if (!ok) return;
-    card.busy = true;
-    try {
-      await api.post(
-        `/automation/triggers/${card.triggerId}/contacts/${props.contactId}/pause`,
-        { hours: 24 },
-      );
-      await fetchStatus();
-    } catch (err) {
-      console.error('[pause] failed', err);
-      window.alert('Lỗi pause — thử lại sau');
-    } finally {
-      card.busy = false;
-    }
-  } else if (kind === 'stop') {
-    const reason = window.prompt(`Dừng chuỗi "${card.triggerName}" cho KH này. Lý do (bắt buộc):`);
-    if (!reason || !reason.trim()) return;
-    card.busy = true;
-    try {
-      await api.post(
-        `/automation/triggers/${card.triggerId}/contacts/${props.contactId}/stop`,
-        { reason: reason.trim() },
-      );
-      await fetchStatus();
-    } catch (err) {
-      console.error('[stop] failed', err);
-      window.alert('Lỗi dừng — thử lại sau');
-    } finally {
-      card.busy = false;
-    }
-  } else if (kind === 'resume') {
+  // pause / stop → MỞ MODAL xác nhận đẹp (thay window.confirm/prompt — anh chốt 2026-06-15).
+  // Modal confirm mới gọi API (runConfirmedAction). resume KHÔNG cần xác nhận → chạy ngay.
+  if (kind === 'pause' || kind === 'stop') {
+    confirmCard.value = card;
+    confirmKind.value = kind;
+    confirmOpen.value = true;
+    return;
+  }
+  if (kind === 'resume') {
     card.busy = true;
     try {
       await api.post(
@@ -341,10 +421,70 @@ async function onAction(
       await fetchStatus();
     } catch (err) {
       console.error('[resume] failed', err);
-      window.alert('Lỗi tiếp tục — thử lại sau');
+      toast('Lỗi tiếp tục — thử lại sau', 'error');
     } finally {
       card.busy = false;
     }
+  }
+}
+
+// ── Modal xác nhận pause/stop (thay window.confirm/prompt) ──
+const confirmOpen = ref(false);
+const confirmKind = ref<'pause' | 'stop'>('pause');
+const confirmCard = ref<AutomationStatusCard | null>(null);
+const confirmBusy = ref(false);
+
+const confirmConfig = computed(() => {
+  const name = confirmCard.value?.sequenceName || confirmCard.value?.triggerName || 'luồng bám đuổi';
+  if (confirmKind.value === 'stop') {
+    return {
+      title: 'Dừng hẳn luồng bám đuổi?',
+      message: `Dừng hẳn "${name}" cho khách này. Luồng sẽ không gửi tin nữa.`,
+      tone: 'danger' as const,
+      confirmText: 'Dừng hẳn',
+      requireReason: true,
+      reasonLabel: 'Lý do dừng',
+      reasonPlaceholder: 'VD: khách đã chốt / không quan tâm / sai đối tượng...',
+    };
+  }
+  return {
+    title: 'Tạm dừng 24 giờ?',
+    message: `Tạm dừng "${name}" trong 24h cho khách này. Hết 24h luồng tự chạy lại.`,
+    tone: 'primary' as const,
+    confirmText: 'Tạm dừng 24h',
+    requireReason: false,
+    reasonLabel: '',
+    reasonPlaceholder: '',
+  };
+});
+
+async function runConfirmedAction(reason: string): Promise<void> {
+  const card = confirmCard.value;
+  if (!card) return;
+  confirmBusy.value = true;
+  card.busy = true;
+  try {
+    if (confirmKind.value === 'pause') {
+      await api.post(
+        `/automation/triggers/${card.triggerId}/contacts/${props.contactId}/pause`,
+        { hours: 24 },
+      );
+      toast('Đã tạm dừng 24h');
+    } else {
+      await api.post(
+        `/automation/triggers/${card.triggerId}/contacts/${props.contactId}/stop`,
+        { reason },
+      );
+      toast('Đã dừng hẳn luồng');
+    }
+    confirmOpen.value = false;
+    await fetchStatus();
+  } catch (err) {
+    console.error(`[${confirmKind.value}] failed`, err);
+    toast(confirmKind.value === 'pause' ? 'Lỗi tạm dừng — thử lại sau' : 'Lỗi dừng — thử lại sau', 'error');
+  } finally {
+    confirmBusy.value = false;
+    card.busy = false;
   }
 }
 
@@ -549,6 +689,48 @@ defineExpose({ refetch: fetchStatus });
   text-align: center;
 }
 .acl-cards { display: flex; flex-direction: column; gap: 10px; margin-top: 9px; }
+
+/* ── Nhóm "đã xong / lịch sử" thu gọn (2026-06-15) ── */
+.acl-sec__title--toggle {
+  width: 100%;
+  background: none;
+  border: 0;
+  font-family: inherit;
+  cursor: pointer;
+  padding: 4px 0;
+}
+.acl-sec__title--toggle:hover { color: var(--ink-2); }
+.acl-chev { margin-left: 6px; color: var(--ink-4); transition: transform 0.15s; flex-shrink: 0; }
+.acl-chev.open { transform: rotate(180deg); }
+.acl-done-list { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; }
+.acl-done-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface);
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--ink-2);
+  cursor: pointer;
+  text-align: left;
+  transition: 0.12s;
+}
+.acl-done-row:hover { background: var(--surface-3); }
+.acl-done-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.acl-done-seq {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--ink-3);
+  background: var(--surface-3);
+  border-radius: var(--r-pill);
+  padding: 1px 7px;
+}
+.acl-done-when { flex-shrink: 0; font-size: 11px; color: var(--ink-4); }
 
 /* ── Add CTA ── */
 .acl-cta {

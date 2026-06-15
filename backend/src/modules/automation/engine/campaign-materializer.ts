@@ -233,6 +233,14 @@ export async function materializeFromEvent(
         continue;
       }
 
+      // LỖI A (review-epoch 2026-06-15): auto-path cũng phải bump epoch khi RE-ENROLL.
+      // Trước đây luôn epoch=1 → trigger re-fire cho KH vừa chạy xong cùng luồng <24h →
+      // jobId `...-e1-0` trùng job cũ còn trong removeOnComplete window → BullMQ dedup nuốt
+      // = đúng bug gốc nhưng cho luồng tự động. resolveNextEnrollEpoch: lần đầu→1 (giữ
+      // idempotency probe), re-enroll→>1 (jobId mới). enqueueSequenceStart vẫn dedup lần-đầu.
+      const { resolveNextEnrollEpoch } = await import('../care-session/care-session-service.js');
+      const autoEpoch = await resolveNextEnrollEpoch(event.orgId, contactId, trigger.sequenceId);
+
       // Enqueue step 0 vào BullMQ. jobId dedup tự lo idempotent (double-fire an toàn).
       // nick đã chọn được mang theo mọi step (sequence-step-worker không bốc lại).
       await enqueueSequenceStart({
@@ -242,6 +250,7 @@ export async function materializeFromEvent(
         nickId: pick.nickId,
         orgId: event.orgId,
         startDelayMinutes: firstStep.delayMinutes,
+        enrollEpoch: autoEpoch,
       });
       result.tasksEnqueued++;
     }
@@ -359,7 +368,11 @@ export async function materializeSequenceForContact(
   // 6. Idempotency: probe BullMQ for step-0 job — replaces the dead AutomationTask
   //    stub lookup. Any state (waiting/delayed/active/completed/failed) counts as
   //    "already enrolled" — avoids re-enqueue spam from outbox-drainer retries.
-  const stepZeroJobId = buildSequenceStepJobId(input.triggerId, input.contactId, 0);
+  //    LỖI A note (2026-06-15): friend-invite GIỮ epoch=1 (KHÔNG resolveNextEnrollEpoch).
+  //    Đây là enroll LẦN ĐẦU khi mời kết bạn KH lạ (chưa từng chạy luồng) — không phải
+  //    re-enroll. Probe epoch=1 này là idempotency chống drainer retry-spam, đổi epoch sẽ
+  //    phá. Re-approach KH cũ đi qua event-driven path (đã bump epoch) hoặc manual.
+  const stepZeroJobId = buildSequenceStepJobId(input.triggerId, input.sequenceId, input.contactId, 0);
   const queue = getSequenceStepQueue();
   try {
     const existingJob = await queue.getJob(stepZeroJobId);

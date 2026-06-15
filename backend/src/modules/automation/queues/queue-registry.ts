@@ -94,13 +94,38 @@ export function buildBroadcastTickJobId(broadcastId: string, tickIdx: number): s
  * Build deterministic jobId — verify POC spike 2026-06-01:
  * BullMQ v5 CẤM `:` trong custom jobId ("Custom Id cannot contain :").
  * Dùng DASH `-` thay thế.
+ *
+ * 2026-06-13 (Sequence recode Đợt 1, eng-review D1=A): THÊM sequenceId vào jobId.
+ * Trước đây `${triggerId}-${contactId}-${stepIdx}` KHÔNG có sequenceId → 2 luồng khác
+ * sequence cho cùng (trigger, contact) — gắn tay dùng CHUNG 1 system trigger — sinh
+ * jobId TRÙNG ở mỗi stepIdx → BullMQ dedup nuốt luồng thứ 2. Thêm sequenceId tách đôi.
+ * Mọi nơi đếm pending theo prefix phải đổi sang `${triggerId}-${sequenceId}-`.
+ *
+ * 2026-06-15 (anh chốt A): THÊM enrollEpoch (số lần gắn) vào jobId — gắn LẠI cùng luồng
+ * cho KH đã chạy xong tạo jobId MỚI (không đụng job cũ đã completed → BullMQ dedup không
+ * nuốt). epoch mặc định 1: mọi đường cũ (trigger/sweeper/resume) giữ nguyên hành vi; chỉ
+ * manual-enroll tăng epoch khi gắn lại. Vị trí: ...-contact-EPOCH-step (prefix
+ * `${triggerId}-${sequenceId}-` vẫn khớp để đếm pending — không vỡ tryCompleteCampaign).
  */
 export function buildSequenceStepJobId(
   triggerId: string,
+  sequenceId: string,
   contactId: string,
   stepIdx: number,
+  enrollEpoch = 1,
 ): string {
-  return `${triggerId}-${contactId}-${stepIdx}`;
+  return `${triggerId}-${sequenceId}-${contactId}-e${enrollEpoch}-${stepIdx}`;
+}
+
+/** Prefix để đếm/quét job pending của 1 (trigger × sequence). Khớp jobId ở trên. */
+export function sequenceStepJobPrefix(triggerId: string, sequenceId: string): string {
+  return `${triggerId}-${sequenceId}-`;
+}
+
+/** Prefix theo (trigger, sequence, contact) — quét/xóa mọi job của 1 KH trong 1 luồng
+ *  (mọi epoch + mọi step). Dùng khi gắn lại để dọn job cũ, hoặc cancel. */
+export function sequenceStepContactPrefix(triggerId: string, sequenceId: string, contactId: string): string {
+  return `${triggerId}-${sequenceId}-${contactId}-`;
 }
 
 export function buildFriendInviteJobId(

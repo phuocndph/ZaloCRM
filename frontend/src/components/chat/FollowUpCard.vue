@@ -84,13 +84,16 @@
       Dự kiến xong luồng: <b>{{ formatTime(card.etaCompleteAt) }}</b>
     </div>
 
+    <!-- YC3 Đợt 2: lý do đang hold (ngoài giờ / nick offline / chờ khách) -->
+    <div v-if="holdLabel" class="fc-hold">{{ holdLabel }}</div>
+
     <!-- actions -->
     <div class="fc-act" :class="{ 'no-border': card.state === 'completed' || card.state === 'stopped' }">
       <template v-if="card.state === 'active'">
         <button
           class="btn primary"
           :disabled="card.busy || !card.advanceEnabled"
-          :title="card.advanceEnabled ? 'Gửi ngay bước kế tiếp, không chờ delay' : 'Tính năng gửi-ngay đang phát triển'"
+          :title="card.advanceEnabled ? 'Gửi ngay bước kế tiếp, không chờ delay' : 'Chưa có bước nào đang chờ (đã xong / chờ khách trả lời / đã dừng)'"
           @click="emit('action', 'advance')"
         >
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="13 17 18 12 13 7" /><polyline points="6 17 11 12 6 7" /></svg>
@@ -148,9 +151,9 @@ export interface FollowUpCardData {
   isManual?: boolean;
   enrolledByName?: string | null;  // tên sale đã gắn
   enrollReason?: string | null;    // lý do (hover xem)
-  // BE chưa trả — UI ẩn nếu thiếu. Anh nối BullMQ sau.
-  etaCompleteAt?: string | null;   // dự kiến hoàn thành cả luồng
+  etaCompleteAt?: string | null;   // dự kiến hoàn thành cả luồng (YC3 Đợt 2 — BE đã trả)
   advanceEnabled?: boolean;        // bật nút "Gửi bước tiếp ngay" khi BE có endpoint
+  holdReason?: 'running' | 'waiting_reply' | 'out_of_hours' | 'nick_offline' | 'completed' | 'stopped' | null;
 }
 
 const props = defineProps<{ card: FollowUpCardData }>();
@@ -160,6 +163,17 @@ const BADGE: Record<string, string> = {
   active: 'Đang chạy', paused: 'Tạm dừng', completed: 'Xong', stopped: 'Đã dừng',
 };
 const badgeLabel = computed(() => BADGE[props.card.state] ?? '');
+
+// YC3 Đợt 2: nhãn lý do đang hold (chỉ hiện khi đang chờ vì lý do cụ thể).
+const HOLD_LABEL: Record<string, string> = {
+  out_of_hours: '🌙 Ngoài giờ hoạt động — chờ tới giờ gửi',
+  nick_offline: '📴 Nick đang offline — chờ nick kết nối lại',
+  waiting_reply: '💬 Khách vừa trả lời — tạm dừng chờ hết phiên',
+};
+const holdLabel = computed(() => {
+  const r = props.card.holdReason;
+  return r && HOLD_LABEL[r] ? HOLD_LABEL[r] : '';
+});
 
 // Tiêu đề = tên LUỒNG kịch bản (ưu tiên). Fallback tên mục tiêu nếu trigger gắn
 // block/broadcast (không có sequence).
@@ -303,6 +317,13 @@ function formatRemaining(ms: number): string {
 }
 .fc-eta .mi { color: var(--brand); display: inline-flex; flex-shrink: 0; }
 .fc-eta b { font-weight: 600; color: var(--ink); }
+
+/* YC3 Đợt 2: nhãn lý do hold (ngoài giờ / nick offline / chờ khách) */
+.fc-hold {
+  margin-top: 6px; font-size: 11px; font-weight: 500;
+  color: #92610c; background: #fdf4e3; border: 1px solid #f6e2bd;
+  border-radius: var(--r-xs); padding: 4px 8px;
+}
 
 .fc-act { display: flex; gap: 6px; margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--line-2); }
 .fc-act.no-border { border-top: 0; padding-top: 2px; }

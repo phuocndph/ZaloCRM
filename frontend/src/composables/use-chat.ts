@@ -6,6 +6,8 @@ import type { Contact } from '@/composables/use-contacts';
 import { useAuthStore } from '@/stores/auth';
 import { applyPendingTags, registerPendingTags } from '@/composables/use-pending-mutations';
 import { usePrivacyStore } from '@/stores/privacy';
+import { useWorkScope } from '@/composables/use-work-scope';
+import { classifyIncoming } from '@/composables/work-scope-logic';
 
 interface ZaloAccount {
   id: string;
@@ -292,7 +294,16 @@ export function useChat() {
   const typingConvIds = ref<Map<string, number>>(new Map());
   const typingTimers = new Map<string, number>();
   const searchQuery = ref('');
-  const accountFilter = ref<string | null>(null);
+  // STRANGLER FACADE (work-scope migration 2026-06-15): accountFilter giờ là LỚP VỎ
+  // bắc qua workScope (nguồn chân lý mới). Mọi reader/writer cũ (.value get/set) chạy
+  // nguyên KHÔNG đổi hành vi. Migrate dần readers sang useWorkScope trực tiếp; khi grep
+  // sạch 'accountFilter' mới xóa computed này. v1 single-nick: scope [X] ↔ accountFilter 'X',
+  // scope [] (TẤT CẢ nick có quyền) ↔ accountFilter null.
+  const workScope = useWorkScope();
+  const accountFilter = computed<string | null>({
+    get: () => workScope.scopeAccountId() ?? null,
+    set: (v) => workScope.lockToNick(v),
+  });
   const aiSuggestion = ref('');
   const aiSuggestionLoading = ref(false);
   const aiSuggestionError = ref('');
@@ -304,6 +315,10 @@ export function useChat() {
   const aiConfig = ref<AiConfig>({ provider: 'anthropic', model: 'claude-sonnet-4-6', maxDaily: 500, enabled: true });
   let socket: Socket | null = null;
   let convSyncTimer: ReturnType<typeof setTimeout> | null = null;
+  // work-scope 2026-06-15 — badge "N tin nick khác": đếm tin OUT-OF-SCOPE per nick.
+  // CHỈ đếm nick CÓ QUYỀN (server đã lọc nên accountId tới đây luôn trong quyền). Reset
+  // khi đổi scope sang nick đó (T7). Bounded bởi số nick (≤50).
+  const outOfScopeCounts = ref<Map<string, number>>(new Map());
   // FIX socket-chết v2 — trạng thái realtime cho badge "mất kết nối" ở header chat.
   const socketConnected = ref(true);
 
@@ -741,7 +756,7 @@ export function useChat() {
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('online', onOnline);
 
-    socket.on('chat:message', (data: { message: Message; conversationId: string; _privacyMeta?: { privacyMode?: string; ownerUserId?: string | null } }) => {
+    socket.on('chat:message', (data: { message: Message; conversationId: string; accountId?: string; _privacyMeta?: { privacyMode?: string; ownerUserId?: string | null } }) => {
       // PRIVACY 2026-06-11 — Server GIỜ redact server-side trước khi emit (emit-chat.ts):
       // non-owner nhận bản đã blur, chính chủ đã unlock nhận bản thật ở room riêng.
       // Đoạn dưới chỉ còn là LỚP 2 (safety belt) đánh dấu redacted để UI blur — KHÔNG
@@ -760,17 +775,42 @@ export function useChat() {
         }
       }
 
-      if (data.conversationId === selectedConvId.value) {
+      // ── work-scope guard (2026-06-15) ──────────────────────────────────────
+      // Quyết định tin này làm gì dựa trên workScope. classifyIncoming (logic thuần,
+      // đã unit-test). Đọc data.accountId Ở CẤP NGOÀI payload (emit-chat.ts:52), KHÔNG
+      // data.message.zaloAccountId (field không tồn tại — bug v1).
+      const cls = classifyIncoming({
+        accountId: data.accountId,
+        conversationId: data.conversationId,
+        selectedConvId: selectedConvId.value,
+        scope: workScope.accountIds.value,
+      });
+
+      // (a) THREAD ĐANG MỞ: LUÔN nhận tin (kể cả nick ngoài scope — vd vừa nav sang chưa
+      // reload). KHÔNG bị guard chặn → không mất tin (fix bug v1.2).
+      if (cls.insertThread) {
         if (!messages.value.find(m => m.id === data.message.id)) {
           // INSERT theo sortedBy sentAt thay vì push cuối array. Lý do: socket có
           // thể giao messages KHÔNG theo chronological order (vd old_messages backfill
           // delivers reverse, hoặc 2 msg cùng giây tới khác thứ tự server vs client).
-          // Nếu push cuối thì msg cũ tới muộn → hiển thị sai vị trí (user báo
-          // case "Đúng rồi bác" sent at 15:14:14 nhưng hiển thị SAU "ố toẹt vời"
-          // sent at 15:14:23 vì old_messages giao ngược).
           insertMessageSorted(normalizeMessage(data.message as RawMessage));
         }
       }
+
+      // (b) OUT-OF-SCOPE (và không phải thread đang mở) → CHỈ đếm badge "N tin nick khác",
+      // KHÔNG cho vào cột 2. Đây là chỗ "không load tin nick khác vào UI".
+      if (cls.bumpBadge && data.accountId) {
+        const m = new Map(outOfScopeCounts.value);
+        m.set(data.accountId, (m.get(data.accountId) ?? 0) + 1);
+        outOfScopeCounts.value = m;
+        return; // KHÔNG optimistic cột-2, KHÔNG scheduleConvSync, KHÔNG dispatch
+      }
+      // Tin in-scope nhưng không updateColumn2 (vd thread đang mở out-of-scope): cũng dừng
+      // optimistic cột-2 để không kéo conv ngoài scope lên list.
+      if (!cls.updateColumn2) {
+        return;
+      }
+
       // Optimistic update conversation list — tránh fetch full HTTP mỗi message
       // (cũ: fetchConversations() per event → 143 rows re-render → lag rõ).
       const idx = conversations.value.findIndex(c => c.id === data.conversationId);
@@ -1042,5 +1082,14 @@ export function useChat() {
     getSocket: () => socket,
     typingConvIds,
     socketConnected,
+    // work-scope 2026-06-15
+    outOfScopeCounts,
+    clearOutOfScopeBadge: (accountId: string) => {
+      if (!outOfScopeCounts.value.has(accountId)) return;
+      const m = new Map(outOfScopeCounts.value);
+      m.delete(accountId);
+      outOfScopeCounts.value = m;
+    },
+    workScope,
   };
 }

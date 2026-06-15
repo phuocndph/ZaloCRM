@@ -2,18 +2,84 @@
 // 2026-06-07 — tách từ engine/action-handlers/send-message.ts để CẢ engine handler
 // LẪN endpoint chat "gửi Khối vào hội thoại" dùng CHUNG một logic render, không lệch.
 //
-// Chuẩn anh chốt 2026-05-28:
-//   {gender} — "Anh"/"Chị"/"Anh Chị" lấy từ Contact.gender (fallback "Anh Chị")
-//   {name}   — last word của Contact.fullName (VN convention)
-//   {sale}   — last word của user.fullName (chủ nick được assigned)
+// 8 BIẾN (anh chốt 2026-06-15 — mở rộng từ 3 biến cũ {gender}{name}{sale}):
+//   {gender}    — "Anh"/"Chị"/"Anh Chị" lấy từ Contact.gender (fallback "Anh Chị")
+//   {name}      — last word của Contact.fullName (VN convention)  [GIỮ TƯƠNG THÍCH]
+//   {name_full} — full Contact.fullName
+//   {crm_full}  — tên gợi nhớ PER-NICK = Friend.aliasInNick (2-way sync Zalo) → fallback fullName
+//   {crm_first} — first word của aliasInNick → fallback first word fullName
+//   {crm_last}  — last word của aliasInNick → fallback last word fullName
+//   {sale}      — last word của user.fullName (chủ nick được assigned)  [GIỮ TƯƠNG THÍCH]
+//   {sale_full} — full user.fullName
+//
+// LƯU Ý per-nick: {crm_*} lấy từ Friend (cặp KH × nick) → KHÁC nhau theo nick đang chat.
+// EVO Sport đặt "Thành Phạm Chí", sale B đặt "Phạm Chí Thành" → mỗi nick 1 giá trị riêng.
 
 import { prisma } from '../../../shared/database/prisma-client.js';
 
+export interface TemplateVarValues {
+  gender: string;
+  name: string;
+  name_full: string;
+  crm_full: string;
+  crm_first: string;
+  crm_last: string;
+  sale: string;
+  sale_full: string;
+}
+
+const TOKEN_ORDER: Array<keyof TemplateVarValues> = [
+  'gender', 'name', 'name_full', 'crm_full', 'crm_first', 'crm_last', 'sale', 'sale_full',
+];
+
+const firstWord = (s: string) => s.trim().split(/\s+/)[0] ?? '';
+const lastWord = (s: string) => { const w = s.trim().split(/\s+/); return w[w.length - 1] ?? ''; };
+
 /**
- * Render template variables {gender}/{name}/{sale}.
- * @param raw            chuỗi gốc (có thể chứa {gender}/{name}/{sale})
- * @param contactId      Contact để lấy fullName + gender
- * @param assignedNickId ZaloAccount.id — chủ nick → {sale}
+ * Query DB + tính 8 giá trị biến. DÙNG CHUNG cho renderTemplate + renderTemplateDetailed (DRY).
+ * @param contactId      Contact → fullName/gender + tên gợi nhớ fallback
+ * @param assignedNickId ZaloAccount.id — chủ nick → {sale}; + xác định Friend row per-nick → {crm_*}
+ */
+async function resolveVars(contactId: string, assignedNickId: string): Promise<TemplateVarValues> {
+  const [contact, ownerUser, friend] = await Promise.all([
+    prisma.contact.findUnique({ where: { id: contactId }, select: { fullName: true, gender: true } }),
+    prisma.user.findFirst({ where: { zaloAccounts: { some: { id: assignedNickId } } }, select: { fullName: true } }),
+    // Tên gợi nhớ PER-NICK: Friend row của cặp (contactId × nick đang chat).
+    prisma.friend.findFirst({
+      where: { contactId, zaloAccountId: assignedNickId },
+      select: { aliasInNick: true },
+    }),
+  ]);
+
+  const fullName = (contact?.fullName ?? '').trim();
+  const saleFull = (ownerUser?.fullName ?? 'em').trim();
+  // Tên gợi nhớ: ưu tiên aliasInNick per-nick; trống → fallback tên thật KH (anh chốt).
+  const crmFull = ((friend?.aliasInNick ?? '').trim()) || fullName;
+
+  return {
+    gender: contact?.gender === 'female' ? 'Chị' : contact?.gender === 'male' ? 'Anh' : 'Anh Chị',
+    name: lastWord(fullName) || 'Anh Chị',
+    name_full: fullName || 'Anh Chị',
+    crm_full: crmFull || 'Anh Chị',
+    crm_first: firstWord(crmFull) || 'Anh Chị',
+    crm_last: lastWord(crmFull) || 'Anh Chị',
+    sale: lastWord(saleFull) || 'em',
+    sale_full: saleFull || 'em',
+  };
+}
+
+/** Thay 8 token {key} bằng giá trị. Thứ tự cố định (TOKEN_ORDER) cho shiftStylesForRender khớp. */
+function applyVars(raw: string, v: TemplateVarValues): string {
+  let out = raw;
+  for (const k of TOKEN_ORDER) out = out.replaceAll(`{${k}}`, v[k]);
+  return out;
+}
+
+/**
+ * Render 8 biến template trong chuỗi.
+ * @param raw            chuỗi gốc (có thể chứa các token {gender}/{name}/{crm_full}/...)
+ * @param contactId      Contact để lấy fullName + gender + tên gợi nhớ fallback
+ * @param assignedNickId ZaloAccount.id — chủ nick → {sale*}; xác định Friend per-nick → {crm_*}
  */
 export async function renderTemplate(
   raw: string,
@@ -21,27 +87,8 @@ export async function renderTemplate(
   assignedNickId: string,
 ): Promise<string> {
   if (!raw.includes('{')) return raw;
-
-  const [contact, ownerUser] = await Promise.all([
-    prisma.contact.findUnique({
-      where: { id: contactId },
-      select: { fullName: true, gender: true },
-    }),
-    prisma.user.findFirst({
-      where: { zaloAccounts: { some: { id: assignedNickId } } },
-      select: { fullName: true },
-    }),
-  ]);
-
-  const genderStr =
-    contact?.gender === 'female' ? 'Chị' : contact?.gender === 'male' ? 'Anh' : 'Anh Chị';
-  const name = (contact?.fullName ?? '').trim().split(/\s+/).pop() ?? 'Anh Chị';
-  const sale = (ownerUser?.fullName ?? 'em').trim().split(/\s+/).pop() ?? 'em';
-
-  return raw
-    .replaceAll('{gender}', genderStr)
-    .replaceAll('{name}', name)
-    .replaceAll('{sale}', sale);
+  const v = await resolveVars(contactId, assignedNickId);
+  return applyVars(raw, v);
 }
 
 /**
@@ -52,19 +99,13 @@ export async function renderTemplateDetailed(
   raw: string,
   contactId: string,
   assignedNickId: string,
-): Promise<{ rendered: string; values: { gender: string; name: string; sale: string } }> {
-  if (!raw.includes('{')) {
-    return { rendered: raw, values: { gender: '', name: '', sale: '' } };
-  }
-  const [contact, ownerUser] = await Promise.all([
-    prisma.contact.findUnique({ where: { id: contactId }, select: { fullName: true, gender: true } }),
-    prisma.user.findFirst({ where: { zaloAccounts: { some: { id: assignedNickId } } }, select: { fullName: true } }),
-  ]);
-  const gender = contact?.gender === 'female' ? 'Chị' : contact?.gender === 'male' ? 'Anh' : 'Anh Chị';
-  const name = (contact?.fullName ?? '').trim().split(/\s+/).pop() ?? 'Anh Chị';
-  const sale = (ownerUser?.fullName ?? 'em').trim().split(/\s+/).pop() ?? 'em';
-  const rendered = raw.replaceAll('{gender}', gender).replaceAll('{name}', name).replaceAll('{sale}', sale);
-  return { rendered, values: { gender, name, sale } };
+): Promise<{ rendered: string; values: TemplateVarValues }> {
+  const empty: TemplateVarValues = {
+    gender: '', name: '', name_full: '', crm_full: '', crm_first: '', crm_last: '', sale: '', sale_full: '',
+  };
+  if (!raw.includes('{')) return { rendered: raw, values: empty };
+  const v = await resolveVars(contactId, assignedNickId);
+  return { rendered: applyVars(raw, v), values: v };
 }
 
 type Style = { st: string; start: number; len: number };
@@ -91,16 +132,19 @@ type Style = { st: string; start: number; len: number };
 export function shiftStylesForRender(
   rawText: string,
   styles: Style[],
-  values: { gender: string; name: string; sale: string },
+  values: TemplateVarValues,
 ): Style[] | null {
   if (!styles.length) return styles;
   if (!rawText.includes('{')) return styles; // không có biến → offset giữ nguyên
 
-  const tokenRe = /\{(gender|name|sale)\}/g;
+  // 8 token (anh chốt 2026-06-15). Token DÀI để trước token NGẮN trong alternation để regex
+  // không match nhầm phần đầu (vd {name_full} không bị {name} ăn mất) — JS regex alternation
+  // ưu tiên nhánh đầu khớp, nên liệt kê *_full/*_first/*_last trước {name}/{sale} trần.
+  const tokenRe = /\{(gender|name_full|name|crm_full|crm_first|crm_last|sale_full|sale)\}/g;
   const tokens: Array<{ start: number; end: number; delta: number }> = [];
   let m: RegExpExecArray | null;
   while ((m = tokenRe.exec(rawText)) !== null) {
-    const key = m[1] as 'gender' | 'name' | 'sale';
+    const key = m[1] as keyof TemplateVarValues;
     const valueLen = [...values[key]].length;
     const tokenLen = m[0].length;
     tokens.push({ start: m.index, end: m.index + tokenLen, delta: valueLen - tokenLen });

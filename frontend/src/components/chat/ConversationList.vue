@@ -138,6 +138,14 @@
               <span v-if="conv.threadType === 'group'" class="group-icon">👥</span>
               <span v-if="conv.isVirtual" class="virtual-chip" title="Chat nội bộ — KH chưa có Zalo, tin nhắn KHÔNG gửi đi">🔒</span>
               {{ displayName(conv) }}
+              <!-- Theo dõi (anh chốt 2026-06-15): khách đang trong "theo dõi" → chuông ngay sau tên.
+                   Icon hệ thống mdi (đồng bộ), không emoji. -->
+              <v-icon
+                v-if="isFollowingConv(conv)"
+                size="13"
+                class="ci-follow-bell"
+                title="Đang theo dõi khách hàng này"
+              >mdi-bell-ring-outline</v-icon>
             </div>
             <div class="ci-meta-right">
               <div class="ci-time"><ConvTime :at="conv.lastMessageAt" /></div>
@@ -334,6 +342,9 @@ const props = defineProps<{
   /** Phase 2026-05-30 — SĐT từ lead Facebook (/chat?compose=SĐT). Khi có giá trị →
    *  tự mở "Tin nhắn mới" + điền sẵn SĐT để dialog lookup Zalo + tạo hội thoại. */
   autoComposePhone?: string;
+  /** Theo dõi (anh chốt 2026-06-15) — Set các cặp "contactId|nickId" ĐANG theo dõi.
+   *  Row khớp → hiện chuông sau tên. ChatView fetch /care-sessions/listening-pairs. */
+  followingPairs?: Set<string>;
 }>();
 
 const emit = defineEmits<{
@@ -345,6 +356,8 @@ const emit = defineEmits<{
   'conversation-moved': [id: string, tab: string];
   'conversation-deleted': [id: string];
   'compose-opened': [conversationId: string];
+  /** Theo dõi (anh chốt 2026-06-15) — toggle follow từ menu → cập nhật chuông cột 2 ngay. */
+  'follow-changed': [contactId: string, nickId: string, following: boolean];
 }>();
 
 // ── Compose new message ─────────────────────────────────────────────────────
@@ -590,6 +603,17 @@ function cungChamTooltip(conv: Conversation): string {
   return `${list.length} sale đang/đã chăm KH này:\n${names.join('\n')}`;
 }
 
+// Theo dõi (anh chốt 2026-06-15) — khách đang trong "theo dõi" → hiện chuông sau tên.
+// Khớp cặp (contactId, nickId) với Set followingPairs từ /care-sessions/listening-pairs.
+function isFollowingConv(conv: Conversation): boolean {
+  const pairs = props.followingPairs;
+  if (!pairs || pairs.size === 0) return false;
+  const contactId = conv.contact?.id;
+  const nickId = conv.zaloAccount?.id;
+  if (!contactId || !nickId) return false;
+  return pairs.has(`${contactId}|${nickId}`);
+}
+
 function displayName(conv: Conversation): string {
   if (conv.threadType === 'group') {
     const groupName = (conv as Conversation & { groupName?: string }).groupName;
@@ -683,11 +707,14 @@ async function toggleFollowFromMenu() {
         data: { contactId: contextMenu.contactId, nickId: contextMenu.nickId },
       });
       contextMenu.isFollowing = false;
+      // Cập nhật chuông cột 2 NGAY (không đợi refetch) — anh chốt 2026-06-15.
+      emit('follow-changed', contextMenu.contactId, contextMenu.nickId, false);
     } else {
       await api.post('/automation/care-sessions/listen', {
         contactId: contextMenu.contactId, nickId: contextMenu.nickId,
       });
       contextMenu.isFollowing = true;
+      emit('follow-changed', contextMenu.contactId, contextMenu.nickId, true);
     }
   } catch (err) {
     console.error('[care-listen] toggle failed', err);
@@ -1482,6 +1509,8 @@ function onPatternLeave() {
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .group-icon { font-size: 11px; }
+/* Theo dõi (anh chốt 2026-06-15) — chuông sau tên cho khách đang theo dõi */
+.ci-follow-bell { color: #f59e0b; flex-shrink: 0; }
 /* Meta-right float ra góc phải, không nằm trong flex flow → badge không phá height */
 .ci-meta-right {
   position: absolute; top: 0; right: 0;

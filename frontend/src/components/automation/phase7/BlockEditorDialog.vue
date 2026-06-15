@@ -550,6 +550,7 @@
 import { ref, computed, watch, nextTick } from 'vue';
 import { blocksApi } from '@/api/automation';
 import { type Block, type BlockFolder, type BlockActionType } from '@/api/automation/types';
+import { TEMPLATE_VARIABLES } from '@/constants/template-variables';
 import RichTextEditor from '@/components/chat/rich-text-editor.vue';
 import MediaPickerDialog from '@/components/media/MediaPickerDialog.vue';
 import { useAuthStore } from '@/stores/auth';
@@ -623,14 +624,9 @@ type RichEditorExposed = {
   focus: (position?: 'start' | 'end' | number) => void;
 };
 
-// Biến cá nhân hoá — KHỚP backend render-template.ts (anh chốt 2026-05-28):
-// {gender} Anh/Chị, {name} tên KH, {sale} tên sale. KHÔNG dùng {tên_khách}/{tên_sale}
-// (cũ, sai — engine không thay) per [[greeting-template-variables]].
-const PERSONALIZE_VARS = [
-  { code: '{gender}', label: 'Anh/Chị', icon: 'mdi-human-male-female' },
-  { code: '{name}', label: 'Tên khách', icon: 'mdi-account-outline' },
-  { code: '{sale}', label: 'Tên em (sale)', icon: 'mdi-account-tie-outline' },
-] as const;
+// Biến cá nhân hoá — DÙNG CHUNG danh sách 8 biến (anh chốt 2026-06-15), KHỚP backend
+// render-template.ts. Trước đây định nghĩa 3 biến cứng tại đây → gom về template-variables.ts.
+const PERSONALIZE_VARS = TEMPLATE_VARIABLES;
 
 const props = defineProps<{
   modelValue: boolean;

@@ -9,15 +9,13 @@
 //   4. markFriendRequestSent(nickId, uid, contactId) — creates Friend row
 //      with pending_sent + FriendshipAttempt row in 'sent' state
 //
-// Set AUTOMATION_STUB_MODE=true to revert to stub for safe testing.
+// 2026-06-13 (Sequence recode Đợt 1): bỏ AUTOMATION_STUB_MODE — code chết test.
 
 import { prisma } from '../../../../shared/database/prisma-client.js';
 import { logger } from '../../../../shared/utils/logger.js';
 import { zaloOps } from '../../../../shared/zalo-operations.js';
 import { markFriendRequestSent } from '../../../zalo/friend-event-handler.js';
 import type { ActionContext, ActionResult } from '../types.js';
-
-const STUB_MODE = process.env.AUTOMATION_STUB_MODE === 'true';
 
 export async function requestFriendHandler(ctx: ActionContext): Promise<ActionResult> {
   // 2026-06-06 — greetingVariants có thể là string[] (chuẩn) HOẶC {text}[] (block cũ
@@ -45,15 +43,6 @@ export async function requestFriendHandler(ctx: ActionContext): Promise<ActionRe
   }
 
   const greeting = greetings[Math.floor(Math.random() * greetings.length)];
-
-  // STUB mode for testing without hitting Zalo
-  if (STUB_MODE) {
-    logger.info(`[request-friend STUB] would send "${greeting.slice(0, 40)}..." from nick ${ctx.assignedNickId} to contact ${ctx.contactId}`);
-    return {
-      outcome: 'success',
-      data: { stub: true, greetingUsed: greeting },
-    };
-  }
 
   // ── Real impl ────────────────────────────────────────────────────────────
   // Step 1: get contact's phone

@@ -21,12 +21,34 @@
 
 import { prisma } from '../../../shared/database/prisma-client.js';
 import { peekQuota } from '../queues/quota-lua.js';
+import { ensureUidForPair } from './ensure-uid.js';
 
 export interface SequenceNickSelection {
   nickId: string;
   /** UID của KH trong nick này (zaloUidInNick) — gửi tin cần cái này */
   zaloUidInNick: string;
-  reason: 'existing_friend';
+  reason: 'existing_friend' | 'resolved_uid';
+}
+
+/**
+ * MANUAL (anh chốt D4 + 5 trụ cột #1): gắn tay khi đang chat → dùng CHÍNH nick đó.
+ * ensureUidForPair resolve UID (có sẵn / tìm qua SĐT → tạo Friend row). KHÔNG random.
+ *
+ * @returns selection nếu gửi-được, hoặc { nickId:null, reason } với lý do rõ để
+ *          manual-enroll báo sale NGAY (NO_PHONE/NO_ZALO/LOOKUP_CAPPED/NOT_CONNECTED).
+ */
+export async function resolveManualNickForContact(args: {
+  orgId: string;
+  nickId: string;
+  contactId: string;
+}): Promise<SequenceNickSelection | { nickId: null; reason: string }> {
+  const r = await ensureUidForPair(args);
+  if (!r.ok) return { nickId: null, reason: r.code };
+  return {
+    nickId: args.nickId,
+    zaloUidInNick: r.uid,
+    reason: r.source === 'existing_friend' ? 'existing_friend' : 'resolved_uid',
+  };
 }
 
 /**
@@ -51,16 +73,18 @@ export async function pickSequenceNickForContact(args: {
       ? new Set(args.allowedNickIds)
       : null;
 
-  // 1. Friend rows gửi-được-ngay (accepted | pending_sent+hasConversation),
-  //    nick đang connected. JOIN nick để lấy cap + status 1 query.
+  // 1. Friend rows gửi-được-ngay — 2026-06-13 (gửi bất chấp): KHÔNG còn ép
+  //    accepted/pending. MỌI Friend row đều ứng viên (KH lạ gửi vào hộp người lạ).
+  //    KH chưa có Friend row với nick nào trong list → thử ensureUidForPair (SEQ-C1)
+  //    để KHÔNG skip âm thầm khách lạ (lỗi cũ).
   const friends = await prisma.friend.findMany({
     where: {
       orgId,
       contactId,
-      OR: [
-        { friendshipStatus: 'accepted' },
-        { friendshipStatus: 'pending_sent', hasConversation: true },
-      ],
+      strangerBlocked: { not: true }, // bỏ cặp KH đã bật chặn tin lạ
+      // FIX code-review #4: loại KH đã CHẶN/XÓA/TỪ CHỐI nick (filter cũ OR[accepted|
+      // pending+chat] ngầm loại các status này — filter mới phải loại lại tường minh).
+      friendshipStatus: { notIn: ['blocked', 'removed', 'rejected'] },
       zaloAccount: { status: 'connected' },
     },
     select: {
@@ -71,14 +95,27 @@ export async function pickSequenceNickForContact(args: {
   });
 
   // 2. Áp list nick được phép (phân quyền Zalo scope từ Mục tiêu).
-  const scoped = allowed
+  let scoped = allowed
     ? friends.filter((f) => allowed.has(f.zaloAccountId))
     : friends;
 
+  // 3. KH chưa có Friend row gửi-được trong list → THỬ resolve UID qua SĐT cho từng
+  //    nick được phép (SEQ-C1). Nick đầu tiên resolve được → dùng. KHÔNG skip âm thầm.
   if (scoped.length === 0) {
-    // Phân biệt "không có nick connected trong list" vs "KH chưa là bạn nick nào".
-    // Nếu KH có Friend row nhưng đều ngoài list/không connected → coi như no nick.
-    return { nickId: null, reason: friends.length > 0 ? 'no_allowed_nick_connected' : 'no_friend_row' };
+    const candidateNickIds = await resolveCandidateNickIds(orgId, allowed);
+    for (const nid of candidateNickIds) {
+      const r = await ensureUidForPair({ orgId, nickId: nid, contactId });
+      if (r.ok) {
+        const nick = await prisma.zaloAccount.findUnique({ where: { id: nid }, select: { dailyMessageCap: true } });
+        scoped = [{ zaloAccountId: nid, zaloUidInNick: r.uid, zaloAccount: { dailyMessageCap: nick?.dailyMessageCap ?? 0 } }];
+        break;
+      }
+    }
+  }
+
+  if (scoped.length === 0) {
+    // Resolve thất bại mọi nick → ghi lý do rõ (no_zalo/no_phone), KHÔNG skip im.
+    return { nickId: null, reason: 'no_sendable_nick_after_lookup' };
   }
 
   // 3. Lọc nick còn quota gửi tin hôm nay (cap=0 nghĩa là disable → luôn cho qua).
@@ -102,4 +139,22 @@ export async function pickSequenceNickForContact(args: {
   // 4. Bốc NGẪU NHIÊN 1 nick (rải tải cross-nick).
   const picked = underCap[Math.floor(Math.random() * underCap.length)];
   return picked;
+}
+
+/**
+ * Danh sách nickId ứng viên để thử resolve UID (KH chưa có Friend row nào trong list).
+ * = các nick trong allowedNickIds đang connected; nếu list rỗng → mọi nick connected
+ * trong org. Giới hạn 10 để không đốt cap friend_lookup khi list lớn.
+ */
+async function resolveCandidateNickIds(orgId: string, allowed: Set<string> | null): Promise<string[]> {
+  const nicks = await prisma.zaloAccount.findMany({
+    where: {
+      orgId,
+      status: 'connected',
+      ...(allowed ? { id: { in: [...allowed] } } : {}),
+    },
+    select: { id: true },
+    take: 10,
+  });
+  return nicks.map((n) => n.id);
 }

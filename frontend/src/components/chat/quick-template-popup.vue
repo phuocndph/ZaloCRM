@@ -66,7 +66,9 @@ interface Template {
   tagIds?: string[];
   isPersonal: boolean;
 }
-interface ContactCtx { fullName?: string | null; gender?: string | null }
+// crmAlias = tên gợi nhớ PER-NICK (Friend.aliasInNick của cặp KH × nick đang chat).
+// Dùng cho {crm_*}. Trống → fallback fullName (khớp BE render-template.ts).
+interface ContactCtx { fullName?: string | null; gender?: string | null; crmAlias?: string | null }
 
 const PROJECT_TAGS = ['Emerald Garden View', 'Emerald Boulevard', 'Emerald River Park', 'Monrei Sài Gòn'];
 
@@ -186,21 +188,34 @@ function renderRich(tpl: Template): RichPayload {
     ? { text: tpl.contentRich.text, styles: tpl.contentRich.styles ?? [] }
     : { text: tpl.content ?? '', styles: [] };
 
+  // 8 biến (anh chốt 2026-06-15) — KHỚP backend render-template.ts. crm_* = tên gợi nhớ
+  // per-nick (crmAlias) → fallback fullName.
   const gender = props.contact?.gender;
   const genderStr = gender === 'female' ? 'Chị' : gender === 'male' ? 'Anh' : 'Anh/Chị';
   const nameRaw = (props.contact?.fullName ?? '').trim();
-  const name = nameRaw ? (nameRaw.split(/\s+/).pop() ?? '') : '';
+  const nameLast = nameRaw ? (nameRaw.split(/\s+/).pop() ?? '') : '';
   const saleRaw = (props.saleFullName ?? '').trim();
-  const sale = saleRaw ? (saleRaw.split(/\s+/).pop() ?? 'em') : 'em';
+  const saleLast = saleRaw ? (saleRaw.split(/\s+/).pop() ?? 'em') : 'em';
+  const crmFull = ((props.contact?.crmAlias ?? '').trim()) || nameRaw; // trống → fallback fullName
+  const crmWords = crmFull ? crmFull.split(/\s+/) : [];
 
-  // map token → value (thiếu tên → '' bỏ trống khéo; thiếu giới tính → 'Anh/Chị')
-  const repl: Record<string, string> = { '{gender}': genderStr, '{name}': name, '{sale}': sale };
+  const repl: Record<string, string> = {
+    '{gender}': genderStr,
+    '{name}': nameLast,
+    '{name_full}': nameRaw,
+    '{crm_full}': crmFull,
+    '{crm_first}': crmWords[0] ?? '',
+    '{crm_last}': crmWords[crmWords.length - 1] ?? '',
+    '{sale}': saleLast,
+    '{sale_full}': saleRaw || 'em',
+  };
 
   const styles = (src.styles ?? []).map((s) => ({ ...s }));
   let text = src.text;
 
   // Tìm tất cả vị trí token, xử lý từ TRÁI sang PHẢI, mỗi lần thay 1 token + dịch styles sau nó.
-  const tokenRe = /\{(gender|name|sale)\}/;
+  // token DÀI trước token NGẮN ({name_full} trước {name}) để regex không khớp nhầm phần đầu.
+  const tokenRe = /\{(gender|name_full|name|crm_full|crm_first|crm_last|sale_full|sale)\}/;
   let guard = 0;
   while (guard++ < 200) {
     const m = tokenRe.exec(text);

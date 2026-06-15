@@ -17,6 +17,7 @@ import { logger } from '../../../shared/utils/logger.js';
 import { authMiddleware } from '../../auth/auth-middleware.js';
 import { closeCareSessionById, createCareSession } from './care-session-service.js';
 import { getOwnerScope } from '../../rbac/owner-scope.js';
+import { getZaloScope } from '../../zalo/zalo-scope.js';
 
 interface ListQuery {
   state?: string; // 'active' | 'closed' | 'all'
@@ -447,6 +448,40 @@ export async function careSessionRoutes(app: FastifyInstance): Promise<void> {
         openedAt: session?.openedAt ?? null,
         lastReplyAt: session?.lastReplyAt ?? null,
       });
+    },
+  );
+
+  // ── GET danh sách cặp (contactId, nickId) ĐANG THEO DÕI — cho cột 2 hiện chuông ──
+  // 2026-06-15 (anh chốt): khách đang trong "theo dõi" (care-session gắn TAY) → FE hiện
+  // icon chuông sau tên ở cột 2. FE fetch 1 lần → Set "contactId|nickId" → map vào row.
+  // "Theo dõi" = phiên gắn tay (sourceType='sequence_manual', sourceTriggerId=null) state active.
+  // BẢO MẬT: chỉ trả nick TRONG QUYỀN của user (getZaloScope) — không lộ nick ngoài quyền.
+  app.get(
+    '/api/v1/automation/care-sessions/listening-pairs',
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const user = request.user!;
+      const scope = await getZaloScope(user.id, user.orgId, user.role);
+      const sessions = await prisma.careSession.findMany({
+        where: {
+          orgId: user.orgId,
+          state: 'active',
+          sourceType: 'sequence_manual',
+          sourceTriggerId: null,
+          // chỉ nick user có quyền (admin/owner = tất cả → accessibleIds bao trùm).
+          ...(scope.isOrgAdmin ? {} : { nickId: { in: scope.accessibleIds } }),
+        },
+        select: { contactId: true, nickId: true },
+      });
+      // dedup (1 cặp có thể nhiều phiên) → mảng phẳng.
+      const seen = new Set<string>();
+      const pairs: Array<{ contactId: string; nickId: string }> = [];
+      for (const s of sessions) {
+        const key = `${s.contactId}|${s.nickId}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        pairs.push({ contactId: s.contactId, nickId: s.nickId });
+      }
+      return reply.send({ pairs });
     },
   );
 

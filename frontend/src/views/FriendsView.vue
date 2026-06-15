@@ -150,6 +150,14 @@
       @open-contact="onOpenContact"
     />
 
+    <!-- Hồ sơ KH tổng (tái dùng) — mở từ nút 👤 Hồ sơ, vào thẳng tab Nick chăm đúng nick. -->
+    <CustomerProfileDialog
+      v-model="showProfileDialog"
+      :contact-id="profileContactId"
+      :friend-id="profileFriendId"
+      initial-tab="nicks"
+    />
+
     <!-- Persistent restore toast -->
     <div v-if="state.restoredFromStorage.value" class="toast" @click.self="state.dismissRestoreToast()">
       ✓ Đã khôi phục nick
@@ -174,9 +182,12 @@ import FriendsSmartHints from '@/components/friends/FriendsSmartHints.vue';
 import FriendsTable from '@/components/friends/FriendsTable.vue';
 import FriendsBulkBar from '@/components/friends/FriendsBulkBar.vue';
 import FriendDetailPanel from '@/components/friends/FriendDetailPanel.vue';
+import CustomerProfileDialog from '@/components/contacts/CustomerProfileDialog.vue';
+import { useToast } from '@/composables/use-toast';
 import type { SmartHint } from '@/components/friends/FriendsSmartHints.vue';
 
 const router = useRouter();
+const toast = useToast();
 const { accounts, fetchAccounts } = useZaloAccounts();
 const {
   friendsDb,
@@ -416,8 +427,19 @@ async function onOpenChat(f: DbFriend) {
   if (f.contact?.id) router.push({ path: '/chat', query: { contactId: f.contact.id } });
 }
 
+// Hồ sơ KH tổng — mở POPUP CustomerProfileDialog ngay trên /friends (không rời màn).
+// Mở thẳng tab "Nick chăm" + highlight đúng nick đang xem (anh chốt 2026-06-13).
+const showProfileDialog = ref(false);
+const profileContactId = ref<string | null>(null);
+const profileFriendId = ref<string | null>(null);
 function onOpenContact(f: DbFriend) {
-  if (f.contact?.id) router.push(`/contacts/${f.contact.id}`);
+  if (!f.contact?.id) {
+    toast.warning('Bạn này chưa gắn khách CRM — không mở được hồ sơ.');
+    return;
+  }
+  profileContactId.value = f.contact.id;
+  profileFriendId.value = f.id;
+  showProfileDialog.value = true;
 }
 
 function onCall(f: DbFriend) {

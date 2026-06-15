@@ -604,7 +604,7 @@
               :visible="showTemplatePopup"
               :query="templateQuery"
               :templates="templates"
-              :contact="conversation.contact"
+              :contact="conversation.contact ? { ...conversation.contact, crmAlias: conversation.friendship?.aliasInNick ?? null } : null"
               :sale-full-name="_authStore.user?.fullName ?? null"
               :anchor-el="editorWrapRef"
               @select="onTemplateSelect"
@@ -2569,7 +2569,17 @@ function onTypingEvent() {
       showTemplatePopup.value = false;
       slashTriggerPos.value = -1;
     } else {
-      templateQuery.value = value.slice(pos + 1);
+      const q = value.slice(pos + 1);
+      // FIX 2 (anh chốt 2026-06-15) — TỰ ẨN popup khi:
+      //   (a) gõ "//" → q bắt đầu bằng "/" (Anh muốn gõ dấu / thật, không phải lệnh mẫu).
+      //   (b) gõ "/tukhoa nội dung" → q chứa KHOẢNG TRẮNG (Anh đã gõ qua chữ khác, không
+      //       chọn mẫu) → ẩn để không che nội dung đang soạn.
+      if (q.startsWith('/') || /\s/.test(q)) {
+        showTemplatePopup.value = false;
+        slashTriggerPos.value = -1;
+      } else {
+        templateQuery.value = q;
+      }
     }
   }
 }

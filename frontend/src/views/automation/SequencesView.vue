@@ -194,180 +194,89 @@
 
           <!-- 3 rule cards: Khi nào / Bảo vệ KH / Dừng bám đuổi -->
           <div class="panel-section">
-            <div class="panel-section-title">Luật chạy an toàn</div>
+            <div class="panel-section-title">Quy tắc gửi của luồng</div>
 
-            <!-- Card 1: Khi nào chạy -->
+            <!-- ════ 4 LUẬT MỚI (recode 2026-06-14) ════ -->
+            <!-- Luật 1: Giờ hoạt động -->
             <div class="rule-card">
               <div class="rule-card__header">
                 <v-icon size="18" color="primary">mdi-clock-outline</v-icon>
-                <strong>Khi nào chạy</strong>
+                <strong>Luật 1 · Giờ hoạt động</strong>
               </div>
               <div class="rule-card__body">
                 <div class="rule-row">
-                  <div class="rule-row__head">
-                    <label>Giờ làm việc</label>
-                    <span class="rule-pill">{{ timeStart }} – {{ timeEnd }}</span>
-                  </div>
                   <div class="rule-input-pair">
                     <input class="rule-time" :value="timeStart" type="time" @input="setTimeStart(($event.target as HTMLInputElement).value)" />
                     <v-icon size="15" class="rule-arrow">mdi-arrow-right</v-icon>
                     <input class="rule-time" :value="timeEnd" type="time" @input="setTimeEnd(($event.target as HTMLInputElement).value)" />
+                    <span class="rule-mini-label">(giờ Việt Nam)</span>
                   </div>
-                  <p class="rule-hint">
-                    Chỉ gửi từ {{ timeStart }} đến {{ timeEnd }} (giờ Việt Nam). Ngoài khung này sẽ hoãn sang khung kế tiếp.
-                  </p>
-                </div>
-                <div class="rule-row">
-                  <div class="rule-row__head">
-                    <label>Giãn cách giữa các lần gửi</label>
-                  </div>
-                  <div class="rule-input-pair rule-input-pair--gap">
-                    <span class="rule-mini-label">Từ</span>
-                    <TimeAmountInput
-                      :model-value="delayMin"
-                      base-unit="minute"
-                      :units="['second','minute','hour','day']"
-                      @update:model-value="(v: number) => setDelayMin(v)"
-                    />
-                    <span class="rule-mini-label">đến</span>
-                    <TimeAmountInput
-                      :model-value="delayMax"
-                      base-unit="minute"
-                      :units="['second','minute','hour','day']"
-                      @update:model-value="(v: number) => setDelayMax(v)"
-                    />
-                  </div>
-                  <p class="rule-hint">
-                    Mỗi nick chờ ngẫu nhiên {{ delayMin === delayMax ? delayMin : `${delayMin}–${delayMax}` }} phút trước khi gửi tin tiếp theo. Giả lập tự nhiên, tránh Zalo phát hiện bot.
-                  </p>
+                  <p class="rule-hint">Chỉ gửi từ {{ timeStart }} đến {{ timeEnd }}. Ngoài khung này sẽ hoãn sang đầu khung kế tiếp.</p>
                 </div>
               </div>
             </div>
 
-            <!-- Card 2: Bảo vệ KH không spam -->
+            <!-- Luật 2: Giãn cách giữa các lần gửi (sendGap, giây→ngày) -->
+            <div class="rule-card">
+              <div class="rule-card__header">
+                <v-icon size="18" color="primary">mdi-timer-sand</v-icon>
+                <strong>Luật 2 · Giãn cách giữa các lần gửi</strong>
+              </div>
+              <div class="rule-card__body">
+                <div class="rule-row">
+                  <div class="rule-input-pair rule-input-pair--gap">
+                    <span class="rule-mini-label">Từ</span>
+                    <input class="rule-num" :value="sendGapMin" type="number" min="0" @input="setSendGapMin(($event.target as HTMLInputElement).value)" />
+                    <span class="rule-mini-label">đến</span>
+                    <input class="rule-num" :value="sendGapMax" type="number" min="0" @input="setSendGapMax(($event.target as HTMLInputElement).value)" />
+                    <select class="rule-select" :value="sendGapUnit" @change="setSendGapUnit(($event.target as HTMLSelectElement).value)">
+                      <option value="second">giây</option>
+                      <option value="minute">phút</option>
+                      <option value="hour">giờ</option>
+                      <option value="day">ngày</option>
+                    </select>
+                  </div>
+                  <p class="rule-hint">Mỗi bước nghỉ NGẪU NHIÊN trong khoảng {{ sendGapMin }}–{{ sendGapMax }} (giả lập tự nhiên, tránh Zalo nghi bot). Thời gian được chọn ngay khi gửi xong bước trước.</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Luật 3: Chống làm phiền khách (cooldown X ngày) -->
             <div class="rule-card">
               <div class="rule-card__header">
                 <v-icon size="18" color="warning">mdi-shield-account-outline</v-icon>
-                <strong>Bảo vệ KH không spam</strong>
+                <strong>Luật 3 · Chống làm phiền khách</strong>
               </div>
               <div class="rule-card__body">
                 <div class="rule-row">
-                  <label>Tránh gửi trùng KH</label>
                   <div class="rule-input-pair">
-                    <input class="rule-num" :value="recencyDays" type="number" min="0" @input="setRecencyDays(($event.target as HTMLInputElement).value)" />
+                    <span class="rule-mini-label">Cách nhau ít nhất</span>
+                    <input class="rule-num" :value="cooldownDays" type="number" min="0" @input="setCooldownDays(($event.target as HTMLInputElement).value)" />
                     <span class="suffix">ngày</span>
                   </div>
-                  <p class="rule-hint" v-if="recencyDays > 0">
-                    Nếu KH đã chạm với nick CRM khác trong <strong>{{ recencyDays }} ngày</strong> qua → bỏ qua, không bám đuổi (tránh nhiều sale spam 1 KH).
-                  </p>
-                  <p class="rule-hint" v-else>
-                    <strong>Đã tắt</strong> — gửi cho mọi KH, kể cả nick khác vừa chăm hôm qua. Phù hợp test, KHÔNG khuyến nghị production.
-                  </p>
-                </div>
-                <div class="rule-row rule-row--switch">
-                  <button
-                    class="toggle"
-                    :class="{ on: editing.runtimeRules.perNickThrottle ?? true }"
-                    @click="editing.runtimeRules.perNickThrottle = !(editing.runtimeRules.perNickThrottle ?? true)"
-                  ></button>
-                  <div>
-                    <label>Giãn đều số tin giữa các nick</label>
-                    <p class="rule-hint">
-                      Nick nào gửi gần đây phải chờ; nick chưa gửi sẽ ưu tiên. Phân bổ tải đều, tránh 1 nick gửi dồn quá nhiều.
-                    </p>
-                  </div>
+                  <p class="rule-hint">Không gắn lại CÙNG luồng này cho 1 khách trong khoảng thời gian trên (tránh spam).</p>
                 </div>
               </div>
             </div>
 
-            <!-- Card 3: Khi nào dừng bám đuổi -->
+            <!-- Luật 4: Phối hợp Phiên chăm sóc (toggle) -->
             <div class="rule-card">
               <div class="rule-card__header">
-                <v-icon size="18" color="error">mdi-stop-circle-outline</v-icon>
-                <strong>Khi nào dừng bám đuổi</strong>
+                <v-icon size="18" color="success">mdi-chat-processing-outline</v-icon>
+                <strong>Luật 4 · Phối hợp Phiên chăm sóc</strong>
               </div>
               <div class="rule-card__body">
-                <!-- 3.1 Dừng khi 1 nick đã kết bạn -->
                 <div class="rule-row rule-row--switch">
-                  <button
-                    class="toggle"
-                    :class="{ on: editing.runtimeRules.stopOnAccept ?? true }"
-                    @click="editing.runtimeRules.stopOnAccept = !(editing.runtimeRules.stopOnAccept ?? true)"
-                  ></button>
+                  <button class="toggle" :class="{ on: coordinateCareSession }" @click="setCoordinateCareSession(!coordinateCareSession)"></button>
                   <div>
-                    <label>Dừng nick khác khi 1 nick đã kết bạn</label>
-                    <p class="rule-hint">
-                      Nếu 1 nick được KH đồng ý kết bạn → các nick còn lại tự dừng gửi tin nhắn (tránh nhiều nick cùng chăm 1 KH).
-                    </p>
-                  </div>
-                </div>
-
-                <div class="rule-divider"></div>
-
-                <!-- 3.2 Tạm dừng khi KH tương tác (pause hours) -->
-                <div class="rule-row">
-                  <div class="rule-row__head">
-                    <label>Tạm dừng khi KH trả lời / thả cảm xúc</label>
-                    <span class="rule-pill">KH reply tiếp → reset</span>
-                  </div>
-                  <div class="rule-input-pair rule-input-pair--gap">
-                    <TimeAmountInput
-                      :model-value="pauseHoursOnReply"
-                      base-unit="hour"
-                      :units="['hour','day']"
-                      @update:model-value="(v: number) => setPauseHoursOnReply(v)"
-                    />
-                    <span class="rule-mini-label">(0 = không tạm dừng)</span>
-                  </div>
-                  <p class="rule-hint">
-                    KH nhắn lại hoặc thả cảm xúc giữa chuỗi → hoãn các bước còn lại
-                    <strong v-if="pauseHoursOnReply > 0">{{ pauseHoursOnReply }} giờ</strong>
-                    <strong v-else>(đang tắt)</strong>, đồng thời báo gấp cho sale vào trả lời.
-                  </p>
-                </div>
-
-                <div class="rule-divider"></div>
-
-                <!-- 3.3 Dừng sau số lần gửi tối đa -->
-                <div class="rule-row">
-                  <div class="rule-row__head">
-                    <label>Dừng sau số tin tối đa mỗi KH</label>
-                  </div>
-                  <div class="rule-input-pair rule-input-pair--gap">
-                    <input class="rule-num" :value="maxAttempts" type="number" min="0" @input="setMaxAttempts(($event.target as HTMLInputElement).value)" />
-                    <span class="suffix">tin</span>
-                    <span class="rule-mini-label">(0 = không giới hạn)</span>
-                  </div>
-                  <p class="rule-hint">
-                    <template v-if="maxAttempts > 0">Mỗi KH chỉ nhận tối đa <strong>{{ maxAttempts }} tin</strong> của luồng này rồi dừng — chống bám đuổi quá đà.</template>
-                    <template v-else>KH sẽ nhận đủ tất cả các bước trong luồng (không giới hạn số tin).</template>
-                  </p>
-                </div>
-
-                <div class="rule-divider"></div>
-
-                <!-- 3.4 Phản ứng nâng cao (cố định — như Mục tiêu) -->
-                <div class="rule-row">
-                  <div class="rule-row__head">
-                    <label>Phản ứng nâng cao</label>
-                    <span class="rule-pill rule-pill--muted">cố định</span>
-                  </div>
-                  <div class="rule-fixed-list">
-                    <div class="rule-fixed-item">
-                      <v-icon size="15" color="success">mdi-heart-outline</v-icon>
-                      <span class="rfi-key">Cảm xúc tích cực (tim, like)</span>
-                      <span class="rfi-val">Không dừng chuỗi · +5 điểm CRM</span>
-                    </div>
-                    <div class="rule-fixed-item">
-                      <v-icon size="15" color="error">mdi-emoticon-sad-outline</v-icon>
-                      <span class="rfi-key">Cảm xúc tiêu cực (giận, tim vỡ)</span>
-                      <span class="rfi-val">Tạm dừng 48h · −5 điểm · báo sale</span>
-                    </div>
+                    <label>Khách trả lời → tạm dừng → hết phiên tự chạy tiếp</label>
+                    <p class="rule-hint">Khi khách trả lời, tạm dừng bám đuổi để sale chăm tay. Hết phiên (khách im) tự chạy tiếp từ bước đang dở. (Khuyến nghị bật.)</p>
                   </div>
                 </div>
               </div>
             </div>
           </div>
+
 
           <!-- vertical step diagram -->
           <div class="panel-section">
@@ -430,7 +339,6 @@ import {
   type BlockActionType,
 } from '@/api/automation/types';
 import SequenceStepEditor from '@/components/automation/phase7/SequenceStepEditor.vue';
-import TimeAmountInput from '@/components/automation/TimeAmountInput.vue';
 
 const router = useRouter();
 const sequences = ref<AutomationSequence[]>([]);
@@ -584,10 +492,6 @@ const timeEnd = computed(() =>
   editing.value?.runtimeRules.allowedTimeRange?.[1]
   ?? hourToHHmm(editing.value?.runtimeRules.allowedHourRange?.[1] ?? 22),
 );
-const delayMin  = computed(() => editing.value?.runtimeRules.randomDelayPerSend?.min ?? 15);
-const delayMax  = computed(() => editing.value?.runtimeRules.randomDelayPerSend?.max ?? 45);
-const recencyDays = computed(() => editing.value?.runtimeRules.crossNickRecencyDays ?? 30);
-
 // "HH:mm" → giờ tròn (làm tròn XUỐNG) để giữ tương thích engine cũ.
 function hhmmToHour(s: string): number {
   const h = parseInt((s || '').split(':')[0] || '0', 10);
@@ -602,29 +506,40 @@ function applyTimeRange(start: string, end: string) {
 function setTimeStart(v: string) { applyTimeRange(v || '00:00', timeEnd.value); }
 function setTimeEnd(v: string)   { applyTimeRange(timeStart.value, v || '23:59'); }
 
-function setDelayMin(v: string | number) {
+// ── 4 LUẬT MỚI (recode 2026-06-14) — ghi đúng field BE engine đọc ──────────
+// Luật 2: sendGap RANDOM { min, max, unit } (default 15-30 phút). Engine pick ngẫu
+// nhiên trong [min,max] mỗi bước. Đọc legacy value (cố định) → coi min=max=value.
+type GapUnit = 'second' | 'minute' | 'hour' | 'day';
+const sendGapMin = computed(() => {
+  const g = editing.value?.runtimeRules.sendGap;
+  return g?.min ?? g?.value ?? 15;
+});
+const sendGapMax = computed(() => {
+  const g = editing.value?.runtimeRules.sendGap;
+  return g?.max ?? g?.value ?? 30;
+});
+const sendGapUnit = computed<GapUnit>(() => editing.value?.runtimeRules.sendGap?.unit ?? 'minute');
+function writeSendGap(min: number, max: number, unit: GapUnit) {
   if (!editing.value) return;
-  editing.value.runtimeRules.randomDelayPerSend = { min: Number(v) || 0, max: delayMax.value };
+  // min ≤ max (tự sửa nếu nhập ngược).
+  const lo = Math.max(0, min);
+  const hi = Math.max(lo, max);
+  editing.value.runtimeRules.sendGap = { min: lo, max: hi, unit };
 }
-function setDelayMax(v: string | number) {
+function setSendGapMin(v: string | number) { writeSendGap(Number(v) || 0, sendGapMax.value, sendGapUnit.value); }
+function setSendGapMax(v: string | number) { writeSendGap(sendGapMin.value, Number(v) || 0, sendGapUnit.value); }
+function setSendGapUnit(u: string) { writeSendGap(sendGapMin.value, sendGapMax.value, u as GapUnit); }
+// Luật 3: reEnrollCooldownDays (default 30). BE: checkReEnrollCooldown.
+const cooldownDays = computed(() => editing.value?.runtimeRules.reEnrollCooldownDays ?? 30);
+function setCooldownDays(v: string | number) {
   if (!editing.value) return;
-  editing.value.runtimeRules.randomDelayPerSend = { min: delayMin.value, max: Number(v) || 0 };
+  editing.value.runtimeRules.reEnrollCooldownDays = Math.max(0, Number(v) || 0);
 }
-function setRecencyDays(v: string | number) {
+// Luật 4: phối hợp Phiên chăm sóc (reply→dừng→hết phiên chạy tiếp). Mặc định bật.
+const coordinateCareSession = computed(() => editing.value?.runtimeRules.coordinateCareSession ?? true);
+function setCoordinateCareSession(on: boolean) {
   if (!editing.value) return;
-  editing.value.runtimeRules.crossNickRecencyDays = Number(v) || 0;
-}
-
-// ── Dừng bám đuổi (giao diện — logic anh code BullMQ sau) ──────────────────
-const pauseHoursOnReply = computed(() => editing.value?.runtimeRules.pauseHoursOnReply ?? 24);
-const maxAttempts = computed(() => editing.value?.runtimeRules.maxAttemptsPerContact ?? 0);
-function setPauseHoursOnReply(v: number) {
-  if (!editing.value) return;
-  editing.value.runtimeRules.pauseHoursOnReply = Math.max(0, Number(v) || 0);
-}
-function setMaxAttempts(v: string | number) {
-  if (!editing.value) return;
-  editing.value.runtimeRules.maxAttemptsPerContact = Math.max(0, Number(v) || 0);
+  editing.value.runtimeRules.coordinateCareSession = on;
 }
 
 async function loadAll() {
@@ -671,8 +586,13 @@ function openCreateDrawer() {
     enabled: false,
     steps: [],
     runtimeRules: {
+      // 4 luật mới (recode) — engine đọc các field này.
       allowedHourRange: [6, 22],
       allowedTimeRange: ['06:00', '22:00'],
+      sendGap: { min: 15, max: 30, unit: 'minute' as const }, // luật 2: random 15-30 phút
+      reEnrollCooldownDays: 30,        // luật 3
+      coordinateCareSession: true,     // luật 4
+      // legacy — giữ để không vỡ data cũ.
       randomDelayPerSend: { min: 15, max: 45 },
       perNickThrottle: true,
       crossNickRecencyDays: 30,
@@ -1011,6 +931,18 @@ function onDocClick() {
   background: var(--surface);
 }
 .rule-time:focus { outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-soft); }
+.rule-select {
+  height: 34px;
+  padding: 0 28px 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  font-family: inherit;
+  font-size: 13.5px;
+  color: var(--ink);
+  background: var(--surface);
+  cursor: pointer;
+}
+.rule-select:focus { outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-soft); }
 .rule-input-pair .suffix { font-size: 12.5px; color: var(--ink-3); }
 .rule-mini-label { font-size: 12px; color: var(--ink-3); }
 .rule-arrow { color: var(--ink-4); margin: 0 2px; }

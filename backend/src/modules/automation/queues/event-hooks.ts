@@ -34,6 +34,7 @@ import { enqueueSequenceStart } from './sequence-step-worker.js';
 import {
   enrollFromTrigger,
   closeCareSessionsForContact,
+  resolveNextEnrollEpoch,
 } from '../care-session/care-session-service.js';
 
 // ════════════════════════════════════════════════════════════════════════
@@ -113,6 +114,13 @@ export async function getContactPauseRemaining(
 // ⚠️ Codex (eng-review): getJob chỉ xóa waiting/delayed, KHÔNG hủy job đang ACTIVE
 // (đang chạy). → worker phải re-check pause flag trước send (đã có ở sequence-step-worker
 // pause check) nên job active vẫn bị chặn gửi → ghost vô hại.
+// 2026-06-13 (Sequence recode Đợt 1): jobId giờ có sequenceId → hàm này KHÔNG còn
+// suy được jobId chỉ từ (trigger, contact). Khách có thể chạy NHIỀU luồng dưới 1
+// trigger (gắn tay dùng chung system trigger, anh chốt đa-luồng). Nguồn chân lý
+// "khách đang chạy luồng nào" = CareSession active (sourceSequenceId). Quét per-sequence.
+//
+// Dùng cho STOP THẬT (manual stop / customer block) — remove job hẳn. Reply-pause
+// (luật 4) KHÔNG gọi hàm này nữa (chuyển sang ghi pausedAtStepIdx, không remove).
 export async function cancelPendingStepsForContact(
   triggerId: string,
   contactId: string,
@@ -120,30 +128,46 @@ export async function cancelPendingStepsForContact(
 ): Promise<{ removed: number }> {
   const queue = getSequenceStepQueue();
 
-  // Upper bound số step để dò jobId. Caller biết totalSteps thì truyền (rẻ nhất).
-  // Không biết → query sequence steps của trigger (1 query, ≤vài chục step).
-  let upper = maxSteps;
-  if (upper == null) {
-    upper = await resolveTriggerSequenceStepCount(triggerId);
+  // Các sequence khách đang chạy dưới trigger này (CareSession active). Fallback:
+  // nếu không có phiên (data cũ), dùng trigger.sequenceId.
+  const sessions = await prisma.careSession.findMany({
+    where: { contactId, sourceTriggerId: triggerId, state: 'active', sourceSequenceId: { not: null } },
+    select: { sourceSequenceId: true },
+  });
+  let sequenceIds = [...new Set(sessions.map((s) => s.sourceSequenceId).filter((x): x is string => !!x))];
+  if (sequenceIds.length === 0) {
+    const trig = await prisma.automationTrigger.findUnique({
+      where: { id: triggerId },
+      select: { sequenceId: true },
+    });
+    if (trig?.sequenceId) sequenceIds = [trig.sequenceId];
   }
 
+  // 2026-06-15 (epoch): jobId giờ có enrollEpoch không biết trước → KHÔNG dò từng jobId
+  // theo stepIdx được. Quét delayed/waiting/active theo prefix `${trigger}-${seq}-${contact}-`
+  // (mọi epoch + mọi step) → xóa tất. Đúng ý "stop = dừng MỌI job pending của KH trong luồng".
+  void maxSteps; // không còn dùng (giữ signature tương thích caller cũ).
   let removed = 0;
-  for (let stepIdx = 0; stepIdx < upper; stepIdx++) {
-    const jobId = buildSequenceStepJobId(triggerId, contactId, stepIdx);
+  const seqSet = new Set(sequenceIds);
+  const pending = await queue.getJobs(['delayed', 'waiting', 'active'], 0, 5000);
+  for (const job of pending) {
+    if (!job.id) continue;
+    const d = job.data as { contactId?: string; sequenceId?: string };
+    if (d?.contactId !== contactId || !d?.sequenceId || !seqSet.has(d.sequenceId)) continue;
+    // Khớp trigger nữa (prefix) để không xóa nhầm trigger khác cùng contact+sequence.
+    if (!job.id.startsWith(`${triggerId}-`)) continue;
     try {
-      const job = await queue.getJob(jobId);
-      if (job) {
-        await job.remove();
-        removed++;
-      }
+      await job.remove();
+      removed++;
     } catch (err) {
-      logger.warn(`[event-hooks] failed to remove job ${jobId}: ${(err as Error).message}`);
+      logger.warn(`[event-hooks] failed to remove job ${job.id}: ${(err as Error).message}`);
     }
   }
 
   if (removed > 0) {
     logger.info(
-      `[event-hooks] cancelled ${removed} pending step(s) for contact ${contactId} trigger ${triggerId} (jobId-direct)`,
+      `[event-hooks] cancelled ${removed} pending step(s) for contact ${contactId} trigger ${triggerId} ` +
+        `across ${sequenceIds.length} sequence(s) (scan-by-data)`,
     );
   }
   return { removed };
@@ -161,8 +185,48 @@ async function resolveTriggerSequenceStepCount(triggerId: string): Promise<numbe
     });
     const seqId = trigger?.successorSequenceId ?? trigger?.sequenceId;
     if (!seqId) return 30;
+    return await resolveSequenceStepCount(seqId);
+  } catch {
+    return 30;
+  }
+}
+
+/**
+ * LUẬT 4: bước dở hiện tại của TỪNG luồng khách đang chạy (map sourceSequenceId →
+ * stepIdx). Đọc CareSession active để biết các sequenceId, rồi dò job pending của mỗi
+ * (trigger, sequence, contact). Dùng cho pause-mark khi khách reply.
+ */
+export async function getPendingStepIdxBySequence(
+  triggerId: string,
+  contactId: string,
+): Promise<Map<string, number>> {
+  const out = new Map<string, number>();
+  const sessions = await prisma.careSession.findMany({
+    where: { contactId, sourceTriggerId: triggerId, state: 'active', sourceSequenceId: { not: null } },
+    select: { sourceSequenceId: true },
+  });
+  const sequenceIds = [...new Set(sessions.map((s) => s.sourceSequenceId).filter((x): x is string => !!x))];
+  if (sequenceIds.length === 0) return out;
+
+  // 2026-06-15 (epoch): jobId có epoch không biết trước → scan job pending theo job.data
+  // thay vì dò jobId. Lazy-chain: mỗi (trigger,sequence,contact) ≤1 job pending → lấy stepIdx.
+  const queue = getSequenceStepQueue();
+  const seqSet = new Set(sequenceIds);
+  const pending = await queue.getJobs(['delayed', 'waiting', 'active'], 0, 5000);
+  for (const job of pending) {
+    if (!job.id || !job.id.startsWith(`${triggerId}-`)) continue;
+    const d = job.data as { contactId?: string; sequenceId?: string; stepIdx?: number };
+    if (d?.contactId !== contactId || !d?.sequenceId || !seqSet.has(d.sequenceId)) continue;
+    if (!out.has(d.sequenceId)) out.set(d.sequenceId, typeof d.stepIdx === 'number' ? d.stepIdx : 0);
+  }
+  return out;
+}
+
+/** Đếm số step của 1 sequence cụ thể (jobId mới cần dò theo sequenceId). Default 30. */
+async function resolveSequenceStepCount(sequenceId: string): Promise<number> {
+  try {
     const seq = await prisma.automationSequence.findUnique({
-      where: { id: seqId },
+      where: { id: sequenceId },
       select: { steps: true },
     });
     const steps = seq?.steps;
@@ -320,6 +384,12 @@ export async function onFriendAccepted(input: {
   // (jobId dedup: luồng stranger drainer đã enroll thì no-op) → mark enqueued.
   // Phiên tạo NGAY cả khi không có sequence (vẫn cần lắng nghe event khách).
   const sequenceId = trigger.successorSequenceId ?? trigger.sequenceId;
+  // LỖI A (review-epoch 2026-06-15): re-accept (unfriend→kết bạn lại) cho KH đã chạy xong
+  // cùng luồng <24h → bump epoch để jobId không đụng job cũ còn trong removeOnComplete window.
+  // Lần đầu (chưa phiên) → 1. Path này KHÔNG có probe-dedup epoch=1 nên bump an toàn.
+  const acceptEpoch = sequenceId
+    ? await resolveNextEnrollEpoch(orgId, contactId, sequenceId)
+    : undefined;
   if (nick?.ownerUserId) {
     await enrollFromTrigger({
       orgId,
@@ -329,6 +399,7 @@ export async function onFriendAccepted(input: {
       ownerUserId: nick.ownerUserId,
       sequenceId: sequenceId ?? null,
       sequenceStartDelayMinutes: trigger.sequenceStartDelayMinutes,
+      enrollEpoch: acceptEpoch,
       // closeConditions đọc từ ORG (cấu hình lắng nghe chung) — không truyền per-trigger.
     });
   } else if (sequenceId) {
@@ -339,6 +410,7 @@ export async function onFriendAccepted(input: {
       sequenceId,
       nickId,
       orgId,
+      enrollEpoch: acceptEpoch,
       startDelayMinutes: trigger.sequenceStartDelayMinutes,
     });
   }
@@ -716,6 +788,13 @@ export async function onManualStop(input: {
 }): Promise<void> {
   await setContactPauseFlag(input.triggerId, input.contactId, 24 * 365); // forever
   await cancelPendingStepsForContact(input.triggerId, input.contactId);
+  // FIX code-review #6: ĐÓNG phiên (reason='sale_resolved') + CLEAR pausedAtStepIdx. Nếu
+  // để phiên active → janitor sau này đóng nó là 'janitor_silence' → resume worker hồi
+  // sinh luồng sale đã chủ ý dừng. closedReason != janitor_silence → resume KHÔNG quét.
+  await prisma.careSession.updateMany({
+    where: { orgId: input.orgId, contactId: input.contactId, sourceTriggerId: input.triggerId, state: 'active' },
+    data: { state: 'closed', closedReason: 'sale_resolved', closedAt: new Date(), pausedAtStepIdx: null },
+  }).catch((e) => logger.warn(`[event-hooks] onManualStop close session failed: ${(e as Error).message}`));
   await prisma.automationEventLog.create({
     data: {
       orgId: input.orgId,

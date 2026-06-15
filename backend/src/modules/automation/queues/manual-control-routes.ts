@@ -23,7 +23,7 @@ import {
   getContactPauseRemaining,
 } from './event-hooks.js';
 import { enqueueSequenceStart } from './sequence-step-worker.js';
-import { getSequenceStepQueue } from './queue-registry.js';
+import { getSequenceStepQueue, sequenceStepContactPrefix } from './queue-registry.js';
 
 /**
  * Get-or-create system trigger "Bám đuổi khách hàng thủ công" cho 1 org.
@@ -113,29 +113,37 @@ function deriveFollowupState(input: {
 }
 
 /**
- * Scan BullMQ sequence-step queue 1 lần, trả map jobId-prefix → {stepIdx, nextRunAt}.
- * prefixKeys = các chuỗi `${triggerId}-${contactId}-` cần khớp.
- * Trả Map key = prefix (không có stepIdx), value = job sớm nhất.
+ * Scan BullMQ sequence-step queue 1 lần, trả map key → {stepIdx, nextRunAt, sequenceId}.
+ *
+ * 2026-06-13: jobId đổi sang `${triggerId}-${sequenceId}-${contactId}-${stepIdx}` (đa-luồng).
+ * Hàm nhận (triggerId, contactIds) → match jobId theo regex, gom theo contactId. 1 KH có
+ * thể nhiều luồng → giữ job SỚM NHẤT (bước kế gần nhất) cho cột hiển thị tổng. (ETA
+ * per-luồng đầy đủ là Đợt 2 — xem TODO-CON-SOT.) Key = contactId.
  */
 async function scanPendingSequenceJobs(
-  prefixKeys: string[],
-): Promise<Map<string, { stepIdx: number; nextRunAt: Date }>> {
-  const out = new Map<string, { stepIdx: number; nextRunAt: Date }>();
-  if (prefixKeys.length === 0) return out;
+  triggerId: string,
+  contactIds: string[],
+): Promise<Map<string, { stepIdx: number; nextRunAt: Date; sequenceId: string }>> {
+  const out = new Map<string, { stepIdx: number; nextRunAt: Date; sequenceId: string }>();
+  if (contactIds.length === 0) return out;
   const now = Date.now();
+  const wanted = new Set(contactIds);
   try {
     const queue = getSequenceStepQueue();
     const jobs = await queue.getJobs(['delayed', 'waiting', 'active'], 0, 5000);
     for (const job of jobs) {
-      if (!job.id) continue;
-      for (const prefix of prefixKeys) {
-        if (!job.id.startsWith(prefix)) continue;
-        const stepIdx = parseInt(job.id.slice(prefix.length), 10);
-        if (!Number.isFinite(stepIdx)) break;
-        const nextRunAt = new Date((job.timestamp ?? now) + (job.opts?.delay ?? 0));
-        const cur = out.get(prefix);
-        if (!cur || nextRunAt < cur.nextRunAt) out.set(prefix, { stepIdx, nextRunAt });
-        break;
+      if (!job.id || !job.id.startsWith(`${triggerId}-`)) continue;
+      // jobId = trigger-sequence-contact-step. trigger/sequence/contact là uuid (có dấu '-')
+      // → KHÔNG split mù. Dùng job.data (đáng tin) thay vì parse jobId.
+      const d = job.data as { contactId?: string; sequenceId?: string; stepIdx?: number };
+      if (!d?.contactId || !wanted.has(d.contactId)) continue;
+      const stepIdx = typeof d.stepIdx === 'number' ? d.stepIdx : 0;
+      // FIX (anh test 2026-06-14): job bị moveToDelayed (nick offline/pause) → giờ chạy
+      // thật = (processedOn ?? timestamp) + delay-mới, KHÔNG phải timestamp + opts.delay.
+      const nextRunAt = new Date((job.processedOn ?? job.timestamp ?? now) + ((job as { delay?: number }).delay ?? job.opts?.delay ?? 0));
+      const cur = out.get(d.contactId);
+      if (!cur || nextRunAt < cur.nextRunAt) {
+        out.set(d.contactId, { stepIdx, nextRunAt, sequenceId: d.sequenceId ?? '' });
       }
     }
   } catch (err) {
@@ -145,6 +153,9 @@ async function scanPendingSequenceJobs(
 }
 
 interface ManualFollowupContact {
+  // 2026-06-15 (anh chốt): mỗi LẦN GẮN = 1 dòng (không gom-đè theo contact nữa).
+  enrollmentId: string;        // khóa duy nhất 1 dòng = contactId + thời điểm gắn (ổn định cho FE :key)
+  enrollSeq: number;           // lần gắn thứ mấy của contact+luồng này (1,2,3…) → "Lần N"
   contactId: string;
   contactName: string;
   contactPhone: string | null;
@@ -156,8 +167,23 @@ interface ManualFollowupContact {
   currentStep: number | null;
   totalSteps: number | null;
   enrolledAt: string;
-  lastSentAt: string | null;   // lần gửi bước gần nhất
-  nextRunAt: string | null;    // lần gửi tiếp (nếu đang chạy)
+  lastSentAt: string | null;   // lần gửi bước gần nhất CỦA LẦN GẮN NÀY
+  nextRunAt: string | null;    // lần gửi tiếp (chỉ lần gắn mới nhất còn job sống)
+  progressUnknown: boolean;    // đợt cũ thiếu dữ liệu (không đếm được bước) → FE "không rõ tiến độ"
+}
+
+interface EnrollmentRun {
+  contactId: string;
+  enrolledAt: Date;
+  enrolledById: string | null;
+  enrollReason: string | null;
+  sequenceName: string | null;
+  nickId: string | null;
+  currentStep: number | null;
+  totalSteps: number | null;
+  lastSentAt: Date | null;
+  isStopped: boolean;            // có manual_stop/customer_block sau lần gắn này
+  isLatestForContact: boolean;   // lần gắn mới nhất của contact → mới gán job pending + pause
 }
 
 /**
@@ -173,73 +199,65 @@ async function buildManualFollowupContacts(
   const since = new Date(Date.now() - 90 * 86400_000); // 90 ngày
   const events = await prisma.automationEventLog.findMany({
     where: { orgId, triggerId, contactId: { not: null }, createdAt: { gte: since } },
-    orderBy: { createdAt: 'desc' },
-    take: 2000,
+    orderBy: { createdAt: 'asc' }, // CŨ→MỚI: dựng từng lần gắn theo dòng thời gian
+    take: 4000,
     select: { contactId: true, nickId: true, eventType: true, detail: true, createdAt: true },
   });
 
-  // Gom theo contact.
-  const byContact = new Map<string, {
-    contactId: string;
-    latestEvent: string;
-    enrolledAt: Date;
-    currentStep: number | null;
-    totalSteps: number | null;
-    enrolledById: string | null;
-    enrollReason: string | null;
-    sequenceName: string | null;
-    nickId: string | null;
-    lastSentAt: Date | null;
-  }>();
+  // ── B1: MỖI manual_enroll = 1 LẦN GẮN (run) = 1 dòng. KHÔNG gom-đè theo contact. ──
+  // Sự kiện step/dừng ghép vào run gần nhất TRƯỚC nó (asc) → đúng lần gắn đang chạy lúc đó.
+  // Đợt cũ không có step trong khoảng → totalSteps=null → FE "không rõ tiến độ" (anh chốt).
+  const runsByContact = new Map<string, EnrollmentRun[]>();
   for (const e of events) {
     if (!e.contactId) continue;
-    let ref = byContact.get(e.contactId);
-    if (!ref) {
-      ref = {
-        contactId: e.contactId,
-        latestEvent: e.eventType,
-        enrolledAt: e.createdAt,
-        currentStep: null, totalSteps: null,
-        enrolledById: null, enrollReason: null, sequenceName: null,
-        nickId: null, lastSentAt: null,
-      };
-      byContact.set(e.contactId, ref);
-    }
     if (e.eventType === 'manual_enroll') {
-      // enrolledAt = thời điểm gắn tay (event manual_enroll), nickId chăm.
-      ref.enrolledAt = e.createdAt;
-      if (e.nickId && !ref.nickId) ref.nickId = e.nickId;
-      if (ref.enrolledById === null) {
-        const m = e.detail?.match(/^by (\S+) sequence=(.*) reason=(.*)$/s);
-        if (m) {
-          ref.enrolledById = m[1];
-          ref.sequenceName = m[2]?.trim() || null;
-          ref.enrollReason = m[3]?.trim() || null;
-        }
-      }
+      const m = e.detail?.match(/^by (\S+) sequence=(.*) reason=(.*)$/s);
+      const run: EnrollmentRun = {
+        contactId: e.contactId,
+        enrolledAt: e.createdAt,
+        enrolledById: m?.[1] ?? null,
+        sequenceName: m?.[2]?.trim() || null,
+        enrollReason: m?.[3]?.trim() || null,
+        nickId: e.nickId ?? null,
+        currentStep: null, totalSteps: null, lastSentAt: null,
+        isStopped: false, isLatestForContact: false,
+      };
+      const arr = runsByContact.get(e.contactId);
+      if (arr) arr.push(run);
+      else runsByContact.set(e.contactId, [run]);
+      continue;
     }
-    if (e.eventType === 'sequence_step_sent' && ref.lastSentAt === null) {
-      ref.lastSentAt = e.createdAt; // events desc → lần gửi mới nhất
-      if (e.nickId && !ref.nickId) ref.nickId = e.nickId;
-    }
-    const stepMatch = e.detail?.match(/step (\d+)\/(\d+)/);
-    if (stepMatch && ref.currentStep === null) {
-      ref.currentStep = parseInt(stepMatch[1], 10);
-      ref.totalSteps = parseInt(stepMatch[2], 10);
+    const arr = runsByContact.get(e.contactId);
+    if (!arr || arr.length === 0) continue; // sự kiện trước lần gắn đầu → bỏ
+    const run = arr[arr.length - 1];
+    if (e.eventType === 'sequence_step_sent') {
+      run.lastSentAt = e.createdAt; // asc → cái sau mới nhất
+      if (e.nickId && !run.nickId) run.nickId = e.nickId;
+      const sm = e.detail?.match(/step (\d+)\/(\d+)/);
+      if (sm) { run.currentStep = parseInt(sm[1], 10) + 1; run.totalSteps = parseInt(sm[2], 10); }
+    } else if (e.eventType === 'manual_stop' || e.eventType === 'customer_block') {
+      run.isStopped = true;
     }
   }
 
-  const contactIds = [...byContact.keys()];
-  if (contactIds.length === 0) return [];
+  // Đánh dấu run mới nhất của mỗi contact (chỉ nó còn job sống + pause flag).
+  const allRuns: EnrollmentRun[] = [];
+  for (const arr of runsByContact.values()) {
+    if (arr.length) arr[arr.length - 1].isLatestForContact = true;
+    for (const r of arr) allRuns.push(r);
+  }
+  if (allRuns.length === 0) return [];
 
-  // Batch: KH (tên + phone) + sale + nick.
-  const nickIds = [...new Set([...byContact.values()].map((c) => c.nickId).filter((x): x is string => !!x))];
+  const contactIds = [...runsByContact.keys()];
+
+  // ── B2: batch tên KH + sale + nick. ──
+  const nickIds = [...new Set(allRuns.map((r) => r.nickId).filter((x): x is string => !!x))];
+  const enrollerIds = [...new Set(allRuns.map((r) => r.enrolledById).filter((x): x is string => !!x))];
   const [contacts, enrollers, nicks] = await Promise.all([
     prisma.contact.findMany({ where: { id: { in: contactIds }, orgId }, select: { id: true, fullName: true, phone: true } }),
-    prisma.user.findMany({
-      where: { id: { in: [...new Set([...byContact.values()].map((c) => c.enrolledById).filter((x): x is string => !!x))] } },
-      select: { id: true, fullName: true },
-    }),
+    enrollerIds.length
+      ? prisma.user.findMany({ where: { id: { in: enrollerIds } }, select: { id: true, fullName: true } })
+      : Promise.resolve([] as { id: string; fullName: string }[]),
     nickIds.length
       ? prisma.zaloAccount.findMany({ where: { id: { in: nickIds }, orgId }, select: { id: true, displayName: true } })
       : Promise.resolve([] as { id: string; displayName: string | null }[]),
@@ -248,36 +266,56 @@ async function buildManualFollowupContacts(
   const enrollerName = new Map(enrollers.map((u) => [u.id, u.fullName]));
   const nickName = new Map(nicks.map((n) => [n.id, n.displayName]));
 
-  // Scan BullMQ 1 lần cho tất cả contact.
-  const pendingByPrefix = await scanPendingSequenceJobs(contactIds.map((cid) => `${triggerId}-${cid}-`));
+  // Scan BullMQ 1 lần (job pending chỉ thuộc run mới nhất của contact).
+  const pendingByContact = await scanPendingSequenceJobs(triggerId, contactIds);
+  // Pause flag 1 lần / contact.
+  const pauseByContact = new Map<string, number>();
+  await Promise.all(contactIds.map(async (cid) => {
+    pauseByContact.set(cid, await getContactPauseRemaining(triggerId, cid));
+  }));
 
-  const result = await Promise.all(
-    [...byContact.values()].map(async (c): Promise<ManualFollowupContact> => {
-      const pending = pendingByPrefix.get(`${triggerId}-${c.contactId}-`);
-      const pauseMs = await getContactPauseRemaining(triggerId, c.contactId);
-      const isStopped = c.latestEvent === 'manual_stop' || c.latestEvent === 'customer_block';
-      const state = deriveFollowupState({ hasPendingJob: !!pending, pauseMs, isStopped, totalSteps: c.totalSteps });
-      let currentStep = c.currentStep;
-      if (pending) currentStep = pending.stepIdx + 1;
-      else if (state === 'completed' && c.totalSteps) currentStep = c.totalSteps;
-      const ct = contactMap.get(c.contactId);
-      return {
-        contactId: c.contactId,
-        contactName: ct?.fullName ?? '(KH đã xoá)',
-        contactPhone: ct?.phone ?? null,
-        sequenceName: c.sequenceName,
-        enrolledByName: c.enrolledById ? (enrollerName.get(c.enrolledById) ?? null) : null,
-        enrollReason: c.enrollReason,
-        nickName: c.nickId ? (nickName.get(c.nickId) ?? null) : null,
-        state,
-        currentStep,
-        totalSteps: c.totalSteps,
-        enrolledAt: c.enrolledAt.toISOString(),
-        lastSentAt: c.lastSentAt ? c.lastSentAt.toISOString() : null,
-        nextRunAt: pending ? pending.nextRunAt.toISOString() : null,
-      };
-    }),
-  );
+  // ── B3: dựng dòng + đánh số "Lần N" theo (contact, luồng). ──
+  const seqCounter = new Map<string, number>(); // key: contactId|sequenceName → đếm lần gắn
+  const result: ManualFollowupContact[] = [];
+  for (const r of allRuns) {
+    const seqKey = `${r.contactId}|${r.sequenceName ?? '∅'}`;
+    const enrollSeq = (seqCounter.get(seqKey) ?? 0) + 1;
+    seqCounter.set(seqKey, enrollSeq);
+
+    const pending = r.isLatestForContact ? pendingByContact.get(r.contactId) : undefined;
+    const pauseMs = r.isLatestForContact ? (pauseByContact.get(r.contactId) ?? 0) : 0;
+    // Đợt cũ thiếu dữ liệu (totalSteps=null, không phải run mới nhất, không có job) → coi là
+    // 'completed' (đã qua), KHÔNG để deriveFollowupState fallback ra 'active' gây hiểu nhầm.
+    const progressUnknown = r.totalSteps === null && !pending;
+    let state: FollowupState;
+    if (r.isStopped) state = 'stopped';
+    else if (progressUnknown && !r.isLatestForContact) state = 'completed'; // lần gắn cũ đã bị thay
+    else state = deriveFollowupState({ hasPendingJob: !!pending, pauseMs, isStopped: false, totalSteps: r.totalSteps });
+
+    let currentStep = r.currentStep;
+    if (pending) currentStep = pending.stepIdx + 1;
+    else if (state === 'completed' && r.totalSteps) currentStep = r.totalSteps;
+
+    const ct = contactMap.get(r.contactId);
+    result.push({
+      enrollmentId: `${r.contactId}-${r.enrolledAt.getTime()}`,
+      enrollSeq,
+      contactId: r.contactId,
+      contactName: ct?.fullName ?? '(KH đã xoá)',
+      contactPhone: ct?.phone ?? null,
+      sequenceName: r.sequenceName,
+      enrolledByName: r.enrolledById ? (enrollerName.get(r.enrolledById) ?? null) : null,
+      enrollReason: r.enrollReason,
+      nickName: r.nickId ? (nickName.get(r.nickId) ?? null) : null,
+      state,
+      currentStep,
+      totalSteps: r.totalSteps,
+      enrolledAt: r.enrolledAt.toISOString(),
+      lastSentAt: r.lastSentAt ? r.lastSentAt.toISOString() : null,
+      nextRunAt: pending ? pending.nextRunAt.toISOString() : null,
+      progressUnknown,
+    });
+  }
   // Mới nhất lên trước.
   result.sort((a, b) => new Date(b.enrolledAt).getTime() - new Date(a.enrolledAt).getTime());
   return result;
@@ -396,6 +434,115 @@ export async function registerManualControlRoutes(app: FastifyInstance): Promise
     },
   );
 
+  // ── POST advance — "Gửi bước tiếp ngay" (YC3 Đợt 2): đẩy job bước kế về delay 0 ──
+  app.post<{
+    Params: { tid: string; cid: string };
+    Body: { sequenceId?: string };
+  }>(
+    '/api/v1/automation/triggers/:tid/contacts/:cid/advance',
+    { preHandler: authMiddleware },
+    async (request, reply) => {
+      const { tid, cid } = request.params;
+      const orgId = request.user!.orgId;
+      const sequenceId = request.body?.sequenceId;
+
+      // FIX review #1 (HIGH): BẮT BUỘC sequenceId. 1 KH chạy nhiều luồng song song dưới
+      // CÙNG system trigger → thiếu sequenceId sẽ promote MỌI luồng = spam. Mỗi card 1 luồng.
+      if (!sequenceId) {
+        reply.code(400);
+        return { error: 'Thiếu sequenceId — không xác định được luồng nào cần gửi ngay.' };
+      }
+
+      const trigger = await prisma.automationTrigger.findFirst({
+        where: { id: tid, orgId },
+        select: { id: true },
+      });
+      if (!trigger) {
+        reply.code(404);
+        return { error: 'Mục tiêu không tồn tại' };
+      }
+
+      // FIX review #2 (MED): chặn advance khi đang chờ-khách-reply (luật 4) — không gửi đè.
+      // Đồng thời LẤY enrollEpoch của phiên active để promote ĐÚNG lần gắn (bỏ job mồ côi).
+      const activeSession = await prisma.careSession.findFirst({
+        where: { orgId, contactId: cid, sourceSequenceId: sequenceId, state: 'active' },
+        orderBy: { openedAt: 'desc' },
+        select: { id: true, pausedAtStepIdx: true, enrollEpoch: true },
+      });
+      if (activeSession?.pausedAtStepIdx != null) {
+        reply.code(409);
+        return { error: 'Khách vừa trả lời — luồng đang tạm dừng chờ hết phiên. Không gửi bước tiếp lúc này.' };
+      }
+      if (!activeSession) {
+        reply.code(409);
+        return { error: 'Luồng này không còn chạy cho khách (đã xong hoặc đã dừng).' };
+      }
+      const activeEpoch = activeSession.enrollEpoch ?? 1;
+
+      // FIX bug anh báo 2026-06-15: promote CHỈ job ĐÚNG EPOCH của phiên active.
+      // Trước đây prefix = `{tid}-{seq}-` KHÔNG có epoch → promote CẢ job mồ côi epoch cũ
+      // (e2/e3/e4...) → worker chạy chúng nhưng guard stale_epoch chặn (không gửi) → UI vẫn
+      // báo "đã gửi" SAI. Giờ prefix gồm epoch → chỉ đúng 1 job đang chờ của lần gắn này.
+      const queue = getSequenceStepQueue();
+      const PAGE = 5000;
+      const jobs = await queue.getJobs(['delayed'], 0, PAGE);
+      if (jobs.length >= PAGE) {
+        logger.warn(`[advance] delayed queue ≥${PAGE} jobs — job mục tiêu có thể ngoài trang (xem TODO scale).`);
+      }
+      const epochPrefix = `${sequenceStepContactPrefix(tid, sequenceId, cid)}e${activeEpoch}-`; // `{tid}-{seq}-{cid}-e{epoch}-`
+      const promotedJobRefs: Array<Awaited<ReturnType<typeof queue.getJob>>> = [];
+      let promoted = 0;
+      for (const job of jobs) {
+        if (!job.id || !job.id.startsWith(epochPrefix)) continue;
+        try {
+          await job.promote(); // BullMQ v5: delayed → waiting (chạy ngay)
+          promoted++;
+          promotedJobRefs.push(job);
+        } catch (err) {
+          logger.warn(`[advance] promote job ${job.id} failed: ${(err as Error).message}`);
+        }
+      }
+
+      if (promoted === 0) {
+        reply.code(409);
+        return { error: 'Không có bước nào đang chờ để gửi ngay (luồng đã xong hoặc đã dừng).' };
+      }
+
+      // FIX bug anh báo: CHỜ job thực sự CHẠY XONG (tối đa 8s) để báo ĐÚNG "đã gửi" vs "đang
+      // xử lý". Trước đây trả ngay sau promote → UI báo "đã gửi" nhưng tin chưa qua (worker
+      // chạy bất đồng bộ + còn guard giờ/nick). Giờ poll trạng thái job: completed=gửi thật,
+      // delayed lại=bị hoãn (ngoài giờ/nick offline), còn waiting/active=đang xử lý.
+      let actuallySent = false;
+      let deferred = false;
+      let deferReason: string | null = null; // lý do hoãn (worker ghi job.data) → FE báo câu dễ hiểu
+      const deadline = Date.now() + 8000;
+      const jobRef = promotedJobRefs[0];
+      if (jobRef?.id) {
+        while (Date.now() < deadline) {
+          const fresh = await queue.getJob(jobRef.id).catch(() => null);
+          if (!fresh) { actuallySent = true; break; } // job xong + removeOnComplete đã dọn
+          const st = await fresh.getState().catch(() => 'unknown');
+          if (st === 'completed') { actuallySent = true; break; }
+          if (st === 'failed') { break; }
+          if (st === 'delayed') {
+            deferred = true;
+            deferReason = ((fresh.data as { deferReason?: string })?.deferReason) ?? null;
+            break;
+          } // worker hoãn lại — đọc lý do cụ thể từ job.data
+          await new Promise((r) => setTimeout(r, 400));
+        }
+      }
+
+      return {
+        ok: true,
+        promoted,
+        actuallySent, // true = tin đã thực sự gửi; false = mới đẩy vào hàng đợi
+        deferred,     // true = job bị hoãn lại
+        deferReason,  // 'nick_gap'|'outside_hour_window'|'quota_capped'|'nick_offline'|'awaiting_reply'|null
+      };
+    },
+  );
+
   // ── POST manual-enroll (sale chat / chat enroll vào system trigger) ──
   app.post<{
     Params: { cid: string };
@@ -427,7 +574,7 @@ export async function registerManualControlRoutes(app: FastifyInstance): Promise
       const [sequence, nick, contact] = await Promise.all([
         prisma.automationSequence.findFirst({
           where: { id: sequenceId, orgId, enabled: true },
-          select: { id: true, name: true, steps: true },
+          select: { id: true, name: true, steps: true, runtimeRules: true },
         }),
         prisma.zaloAccount.findFirst({
           where: { id: nickId, orgId, status: 'connected' },
@@ -447,19 +594,158 @@ export async function registerManualControlRoutes(app: FastifyInstance): Promise
         reply.code(404);
         return { error: 'Nick Zalo không tồn tại hoặc chưa kết nối' };
       }
+      // FIX review-epoch (CLAIM 1): nick KHÔNG có chủ (ownerUserId null) → KHÔNG cho gắn.
+      // Trước đây phiên chăm sóc chỉ tạo trong `if (nick.ownerUserId)`, nhưng job step 0
+      // vẫn enqueue vô điều kiện → bám đuổi gửi mà KHÔNG có phiên (vô chủ: không pause khi
+      // KH reply, không cooldown, không hiện ở /care-sessions). Chặn sớm, báo sale chọn nick khác.
+      if (!nick.ownerUserId) {
+        reply.code(422);
+        return {
+          error: 'nick_no_owner',
+          detail: 'Nick Zalo này chưa được gán cho sale nào — không thể bám đuổi. Vào Quản lý nick để gán phụ trách, hoặc chọn nick khác.',
+        };
+      }
       if (!contact) {
         reply.code(404);
         return { error: 'Khách hàng không tồn tại' };
       }
 
-      // Find/create CustomerListEntry với manual enroll meta
-      // (M9 system trigger không có listId — tạo entry pseudo qua existing customer list
-      //  hoặc default org list. Đơn giản nhất: tạo entry với customerListId=null
-      //  thông qua direct contact reference)
-      //
-      // Đơn giản M9: KHÔNG dùng CustomerListEntry queue path. Trực tiếp enqueue
-      // sequence-step start với nick override.
+      // 2026-06-13 (D4 + SEQ-C1): resolve UID NGAY lúc gắn. KH đang chat với nick này →
+      // UID có sẵn; KH lạ (nick khác) → tìm qua SĐT + tạo Friend row. Fail → báo sale NGAY
+      // (NO_PHONE/NO_ZALO/LOOKUP_CAPPED) thay vì enqueue mù.
+      const { resolveManualNickForContact } = await import('../engine/nick-selector.js');
+      const pick = await resolveManualNickForContact({ orgId, nickId: nick.id, contactId: cid });
+      if (pick.nickId === null) {
+        const msg: Record<string, string> = {
+          NO_PHONE: 'Khách chưa có số điện thoại — không tìm được Zalo để bám đuổi bằng nick này.',
+          NO_ZALO: 'Số điện thoại này không có Zalo / không tìm được. Chọn nick khác hoặc bỏ qua.',
+          LOOKUP_CAPPED: 'Nick đã hết lượt tìm Zalo hôm nay. Thử nick khác hoặc mai.',
+          NOT_CONNECTED: 'Nick Zalo chưa kết nối. Vào Quản lý nick để kết nối lại.',
+        };
+        reply.code(422);
+        return { error: pick.reason, detail: msg[pick.reason] ?? 'Không gửi được tới khách bằng nick này.' };
+      }
 
+      // Luật 3 (chống spam): chặn gắn lại CÙNG luồng trong cooldown. Check TRƯỚC enqueue
+      // (nếu enqueue trước thì cooldown vô nghĩa — job đã vào queue).
+      const { checkReEnrollCooldown } = await import('../care-session/care-session-service.js');
+      const seqRules = (sequence as { runtimeRules?: { reEnrollCooldownDays?: number } }).runtimeRules;
+      const cooldownDays = typeof seqRules?.reEnrollCooldownDays === 'number' ? seqRules.reEnrollCooldownDays : 30;
+      const cool = await checkReEnrollCooldown({ orgId, contactId: cid, sequenceId: sequence.id, cooldownDays });
+      if (cool.blocked) {
+        // Thông báo rõ (anh chốt 2026-06-15): tên luồng + ngày gắn + ngày hoàn thành
+        // (hoặc "đang chạy" nếu phiên chưa đóng) + đếm ngược số ngày còn lại.
+        const fmt = (d?: Date | null) => (d ? d.toLocaleDateString('vi-VN') : null);
+        const startStr = fmt(cool.lastOpenedAt) ?? '—';
+        const doneStr = cool.lastClosedAt ? fmt(cool.lastClosedAt) : 'đang chạy (chưa đóng phiên)';
+        reply.code(409);
+        return {
+          error: 'reenroll_cooldown',
+          detail:
+            `Khách hàng này đã được bám đuổi luồng "${sequence.name}" vào ngày ${startStr}, ` +
+            `hoàn thành ${doneStr}. ` +
+            `Nếu muốn gắn lại luồng này cho khách, còn ${cool.daysLeft} ngày ` +
+            `(được gắn lại từ ${fmt(cool.unlockAt) ?? '—'}).`,
+          // Dữ liệu thô để FE tự render badge/đếm ngược nếu muốn.
+          meta: {
+            sequenceName: sequence.name,
+            startedAt: cool.lastOpenedAt?.toISOString() ?? null,
+            completedAt: cool.lastClosedAt?.toISOString() ?? null,
+            unlockAt: cool.unlockAt?.toISOString() ?? null,
+            daysLeft: cool.daysLeft ?? 0,
+            cooldownDays: cool.cooldownDays ?? cooldownDays,
+          },
+        };
+      }
+
+      // 2026-06-15 (anh chốt A): GẮN LẠI cùng luồng cho KH đã chạy → epoch MỚI để jobId
+      // không đụng job cũ đã completed (BullMQ dedup không nuốt). epoch = (số phiên cũ của
+      // contact+sequence) + 1. Đồng thời ĐÓNG phiên cũ active (nếu có) → tạo phiên mới sạch,
+      // tránh "reuse existing session" giữ epoch cũ.
+      // FIX review-epoch (CLAIM 2): epoch = MAX(enrollEpoch cũ) + 1 (helper dùng chung với
+      // auto-path materializer). KHÔNG dùng count+1 vì count không monotonic — xem
+      // resolveNextEnrollEpoch. Phiên fail giữa chừng vẫn không tái dùng epoch cũ.
+      const { resolveNextEnrollEpoch } = await import('../care-session/care-session-service.js');
+      const enrollEpoch = await resolveNextEnrollEpoch(orgId, cid, sequence.id);
+      if (enrollEpoch > 1) {
+        // Đóng phiên cũ active + (FIX review-epoch #2 — LỖI 2) CLEAR pausedAtStepIdx của MỌI
+        // phiên cũ (kể cả đã closed janitor_silence) → resume cron KHÔNG hồi sinh chain epoch cũ.
+        await prisma.careSession.updateMany({
+          where: { orgId, contactId: cid, sourceSequenceId: sequence.id, state: 'active' },
+          data: { state: 'closed', closedReason: 'reenrolled', closedAt: new Date(), pausedAtStepIdx: null },
+        }).catch((e) => logger.warn(`[manual-enroll] đóng phiên cũ lỗi: ${(e as Error).message}`));
+        await prisma.careSession.updateMany({
+          where: { orgId, contactId: cid, sourceSequenceId: sequence.id, pausedAtStepIdx: { not: null } },
+          data: { pausedAtStepIdx: null }, // clear marker phiên cũ đã đóng → resume bỏ qua
+        }).catch((e) => logger.warn(`[manual-enroll] clear pausedAtStepIdx cũ lỗi: ${(e as Error).message}`));
+        // FIX review #2 (HIGH): DỌN job epoch cũ còn trong queue. Không dọn → job mồ côi tới
+        // hạn vẫn gửi (worker không check phiên đã đóng) → tin ma song song chain mới.
+        try {
+          const { sequenceStepContactPrefix } = await import('./queue-registry.js');
+          const newPrefix = `${sequenceStepContactPrefix(systemTrigger.id, sequence.id, cid)}e${enrollEpoch}-`;
+          const oldPrefix = sequenceStepContactPrefix(systemTrigger.id, sequence.id, cid); // mọi epoch
+          const queue = getSequenceStepQueue();
+          const pend = await queue.getJobs(['delayed', 'waiting', 'active'], 0, 5000);
+          for (const job of pend) {
+            if (!job.id || !job.id.startsWith(oldPrefix) || job.id.startsWith(newPrefix)) continue;
+            await job.remove().catch(() => null); // chỉ xóa job epoch CŨ, giữ epoch mới
+          }
+        } catch (e) {
+          logger.warn(`[manual-enroll] dọn job epoch cũ lỗi: ${(e as Error).message}`);
+        }
+      }
+
+      // FIX live 2026-06-15 (anh test Thành Phạm): gắn tay PHẢI xoá Redis pause flag
+      // (contact:paused:{systemTrigger}:{contact}) — LUÔN, mọi epoch. KH reply trước đó →
+      // luật 4 đặt flag TTL tới 7 ngày. Trước đây chỉ clear pausedAtStepIdx ở DB, KHÔNG xoá
+      // flag Redis → job step 0 lần gắn mới vừa enqueue bị worker defer tới ~22h (paused).
+      // Sale CHỦ ĐỘNG gắn = tín hiệu "gửi ngay" → xoá flag để luồng chạy liền. Đặt NGOÀI khối
+      // epoch>1 để cả lần gắn đầu (epoch=1) sau khi KH reply cũng không bị flag cũ chặn.
+      try {
+        const { clearContactPauseFlag } = await import('./event-hooks.js');
+        await clearContactPauseFlag(systemTrigger.id, cid);
+      } catch (e) {
+        logger.warn(`[manual-enroll] clear pause flag Redis lỗi: ${(e as Error).message}`);
+      }
+
+      // FIX review-epoch #6 (LỖI 6 — thứ tự): TẠO PHIÊN TRƯỚC, ENQUEUE SAU.
+      // Job step 0 dưới đây có startDelayMinutes:0 → worker nhặt + chạy NGAY. Nếu enqueue
+      // trước khi phiên epoch mới tồn tại, worker chạy lúc phiên active vẫn là phiên cũ
+      // chưa đóng kịp / chưa có phiên mới → các guard dựa trên CareSession (epoch, pause,
+      // cooldown) đọc sai trạng thái. Đảo thứ tự: phiên epoch mới commit xong mới enqueue.
+      // (enrollFromTrigger TỰ snapshot rulesSnapshot + double-check cooldown — Codex #10.)
+      // nick.ownerUserId đã chắc chắn không null (chặn ở trên — CLAIM 1).
+      let sessionCreated = false;
+      try {
+        const { enrollFromTrigger } = await import('../care-session/care-session-service.js');
+        const sessionId = await enrollFromTrigger({
+          orgId,
+          triggerId: systemTrigger.id,
+          contactId: cid,
+          nickId: nick.id,
+          ownerUserId: nick.ownerUserId,
+          sequenceId: sequence.id,
+          skipEnqueue: true, // step 0 enqueue NGAY dưới đây (sau khi phiên đã commit)
+          enrolledByUserId: userId, // sale gắn tay
+          enrollEpoch,
+        });
+        sessionCreated = !!sessionId; // null = cooldown chặn (double-check) → KHÔNG enqueue mù
+      } catch (err) {
+        logger.warn(`[manual-enroll] care-session enroll failed contact=${cid}: ${(err as Error).message}`);
+      }
+
+      // FIX review-epoch (CLAIM 1+2): CHỈ enqueue khi phiên epoch mới đã commit. enrollFromTrigger
+      // trả null = cooldown double-check chặn → nếu vẫn enqueue thì job gửi mà cooldown bị bỏ qua
+      // + không có phiên theo dõi. Phiên fail/null → báo sale, KHÔNG gửi.
+      if (!sessionCreated) {
+        reply.code(409);
+        return {
+          error: 'enroll_failed',
+          detail: 'Không tạo được phiên bám đuổi (có thể vừa qua kiểm tra chống làm phiền). Thử lại sau giây lát.',
+        };
+      }
+
+      // Qua cooldown + phiên epoch mới đã commit → enqueue step 0 (epoch mới). Manual = gửi ngay.
       await enqueueSequenceStart({
         triggerId: systemTrigger.id,
         contactId: cid,
@@ -467,29 +753,8 @@ export async function registerManualControlRoutes(app: FastifyInstance): Promise
         nickId: nick.id,
         orgId,
         startDelayMinutes: 0, // Manual = gửi ngay
+        enrollEpoch,
       });
-
-      // CareSession 2026-06-07 (anh chốt): bám đuổi THỦ CÔNG cũng sinh phiên → hiện ở
-      // /marketing/care-sessions, reply của KH tự vào phiên + báo sale. skipEnqueue=true
-      // vì đã enqueue STEP 0 ở trên. Phiên lắng nghe tiếp sau khi gửi hết, tự đóng khi
-      // KH im lặng N ngày (giống mọi phiên). enrolledByUserId = sale gắn tay.
-      if (nick.ownerUserId) {
-        try {
-          const { enrollFromTrigger } = await import('../care-session/care-session-service.js');
-          await enrollFromTrigger({
-            orgId,
-            triggerId: systemTrigger.id,
-            contactId: cid,
-            nickId: nick.id,
-            ownerUserId: nick.ownerUserId,
-            sequenceId: sequence.id,
-            skipEnqueue: true,
-            enrolledByUserId: userId, // sale gắn tay
-          });
-        } catch (err) {
-          logger.warn(`[manual-enroll] care-session enroll failed (non-fatal) contact=${cid}: ${(err as Error).message}`);
-        }
-      }
 
       // Log enrollment event
       await prisma.automationEventLog.create({
@@ -609,8 +874,14 @@ export async function registerManualControlRoutes(app: FastifyInstance): Promise
         for (const u of users) enrollerNames.set(u.id, u.fullName);
       }
 
-      // ── 3) Trạng thái THẬT từ BullMQ (helper dùng chung): còn job pending = đang chạy. ──
-      const pendingByPrefix = await scanPendingSequenceJobs(triggerIds.map((tid) => `${tid}-${cid}-`));
+      // ── 3) Trạng thái THẬT từ BullMQ: còn job pending = đang chạy. jobId mới có
+      //       sequenceId → scan per-trigger (1 contact), gom vào map theo triggerId. ──
+      const pendingByTrigger = new Map<string, { stepIdx: number; nextRunAt: Date; sequenceId: string }>();
+      for (const tid of triggerIds) {
+        const m = await scanPendingSequenceJobs(tid, [cid]);
+        const hit = m.get(cid);
+        if (hit) pendingByTrigger.set(tid, hit);
+      }
 
       // ── 4) Derive state per trigger + build cards (chỉ trigger còn sống) ──
       const result = await Promise.all(
@@ -618,7 +889,7 @@ export async function registerManualControlRoutes(app: FastifyInstance): Promise
           .filter((s) => triggerMeta.has(s.triggerId))
           .map(async (s) => {
             const meta = triggerMeta.get(s.triggerId)!;
-            const pending = pendingByPrefix.get(`${s.triggerId}-${cid}-`);
+            const pending = pendingByTrigger.get(s.triggerId);
             const pauseMs = await getContactPauseRemaining(s.triggerId, cid);
             const isStopped = s.latestEvent === 'manual_stop' || s.latestEvent === 'customer_block';
 
@@ -631,6 +902,12 @@ export async function registerManualControlRoutes(app: FastifyInstance): Promise
             } else if (!isStopped && pauseMs <= 0 && totalSteps) {
               currentStep = totalSteps; // hết job + không dừng/pause → đi hết chuỗi
             }
+
+            // YC3 (Đợt 2): timing 4 mốc per luồng (giờ/nextRunAt/lý do hold/etaCompleteAt).
+            const { getSequenceTimingForContact } = await import('../engine/sequence-eta-service.js');
+            const timing = await getSequenceTimingForContact({ orgId, triggerId: s.triggerId, contactId: cid })
+              .catch(() => [] as Awaited<ReturnType<typeof getSequenceTimingForContact>>);
+            const t0 = timing[0]; // 1 trigger ở đây thường 1 luồng; đa-luồng FE đọc mảng `timing`
 
             return {
               triggerId: s.triggerId,
@@ -648,6 +925,11 @@ export async function registerManualControlRoutes(app: FastifyInstance): Promise
               pausedUntilMs: pending ? 0 : pauseMs, // có job thì coi như đang chạy, bỏ pause
               pausedUntil: !pending && pauseMs > 0 ? new Date(now + pauseMs).toISOString() : null,
               stopped: isStopped,
+              // YC3 timing — bao lâu nữa xong + lý do hold + khung giờ (per luồng đầu tiên).
+              etaCompleteAt: t0?.etaCompleteAt ?? null,
+              holdReason: t0?.holdReason ?? null,
+              allowedHourRange: t0?.allowedHourRange ?? null,
+              timing, // mảng đầy đủ per-luồng (đa-luồng) cho FE render nhiều badge
               // Cờ "Sale gắn tay" — KH vào luồng bằng enroll thủ công từ chat.
               isManual: meta.systemKind === 'manual_chat_followup' || !!s.enrolledById,
               enrolledByName: s.enrolledById ? (enrollerNames.get(s.enrolledById) ?? null) : null,
@@ -655,6 +937,72 @@ export async function registerManualControlRoutes(app: FastifyInstance): Promise
             };
           }),
       );
+
+      // ── 5) "NỞ" card manual followup: 1 card/trigger (gom-đè epoch mới nhất) → mỗi LẦN
+      //       GẮN 1 card riêng (anh chốt 2026-06-15: panel chat ẩn mất luồng đã chạy xong).
+      //       Dùng buildManualFollowupContacts (per-enrollment, đã test trang Theo dõi) lọc
+      //       theo contact này. Card tự động (sequence/block thường) GIỮ NGUYÊN.
+      const hasManualCard = result.some((c) => c.systemKind === 'manual_chat_followup');
+      if (hasManualCard) {
+        const manualTrigger = liveTriggers.find((t) => t.systemKind === 'manual_chat_followup');
+        const nonManual = result.filter((c) => c.systemKind !== 'manual_chat_followup');
+        let manualRuns: typeof result = [];
+        if (manualTrigger) {
+          try {
+            const allRuns = await buildManualFollowupContacts(orgId, manualTrigger.id);
+            const myRuns = allRuns.filter((r) => r.contactId === cid);
+            // Run chỉ có sequenceNAME (parse từ event detail) → tra sequenceId cho nút advance.
+            const runNames = [...new Set(myRuns.map((r) => r.sequenceName).filter((x): x is string => !!x))];
+            const seqIdByName = new Map<string, string>();
+            if (runNames.length) {
+              const seqs = await prisma.automationSequence.findMany({
+                where: { orgId, name: { in: runNames } },
+                select: { id: true, name: true },
+              });
+              for (const sq of seqs) seqIdByName.set(sq.name, sq.id);
+            }
+            manualRuns = myRuns
+              .map((r) => ({
+                // Khóa duy nhất per-run cho FE :key (1 trigger đẻ nhiều run).
+                enrollmentId: r.enrollmentId,
+                enrollSeq: r.enrollSeq,
+                triggerId: manualTrigger.id,
+                triggerName: r.sequenceName ?? manualTrigger.name ?? 'Bám đuổi thủ công',
+                isSystemTrigger: true,
+                systemKind: 'manual_chat_followup' as string | null,
+                // sequenceId THẬT: nút "Gửi bước tiếp ngay" (advance) cần nó (BE advance bắt
+                // buộc sequenceId). FE group dùng enrollmentId nên KHÔNG gom các run lại.
+                sequenceId: r.sequenceName ? (seqIdByName.get(r.sequenceName) ?? null) : null,
+                sequenceName: r.sequenceName,
+                // BE đã biết chính xác state per-run (active/completed/stopped) → truyền thẳng
+                // để FE KHÔNG tự derive sai (run cũ progressUnknown totalSteps=null sẽ bị
+                // deriveState nhầm thành 'active'). FE ưu tiên derivedState nếu có.
+                derivedState: r.state,
+                latestEvent: r.state === 'stopped' ? 'manual_stop' : 'manual_enroll',
+                latestAt: new Date(r.lastSentAt ?? r.enrolledAt),
+                currentStep: r.currentStep,
+                totalSteps: r.totalSteps,
+                nextRunAt: r.nextRunAt,
+                pausedUntilMs: 0,
+                pausedUntil: null,
+                // reenrolled/completed → KHÔNG phải "dừng" (tránh nhãn "Đã dừng" gây hiểu nhầm).
+                // Chỉ stopped thật (sale dừng/KH chặn) mới stopped → vào nhóm Lịch sử.
+                stopped: r.state === 'stopped',
+                etaCompleteAt: null,
+                holdReason: (r.state === 'completed' ? 'completed' : null) as string | null,
+                allowedHourRange: null,
+                timing: [] as unknown[],
+                isManual: true,
+                enrolledByName: r.enrolledByName,
+                enrollReason: r.enrollReason,
+              })) as unknown as typeof result;
+          } catch (err) {
+            logger.warn(`[automation-status] nở manual runs lỗi (giữ card gộp): ${(err as Error).message}`);
+            manualRuns = result.filter((c) => c.systemKind === 'manual_chat_followup');
+          }
+        }
+        return { contactId: cid, triggers: [...nonManual, ...manualRuns] };
+      }
 
       return { contactId: cid, triggers: result };
     },

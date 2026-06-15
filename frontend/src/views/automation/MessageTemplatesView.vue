@@ -223,6 +223,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch, nextTick } from 'vue';
 import RichTextEditor from '@/components/chat/rich-text-editor.vue';
+import { TEMPLATE_VARIABLES } from '@/constants/template-variables';
 import { useAuthStore } from '@/stores/auth';
 import {
   useMessageTemplates, type MessageTemplate, type RichPayload,
@@ -230,11 +231,8 @@ import {
 
 const PROJECT_TAGS = ['Emerald Garden View', 'Emerald Boulevard', 'Emerald River Park', 'Monrei Sài Gòn'];
 const CATEGORIES = ['FAQ', 'Chào', 'Khơi gợi', 'Chốt'];
-const PERSONALIZE_VARS = [
-  { code: '{gender}', label: 'Anh/Chị', icon: 'mdi-human-male-female' },
-  { code: '{name}', label: 'Tên khách', icon: 'mdi-account-outline' },
-  { code: '{sale}', label: 'Tên em (sale)', icon: 'mdi-account-tie-outline' },
-];
+// 8 biến cá nhân hóa dùng chung (anh chốt 2026-06-15) — gom về template-variables.ts.
+const PERSONALIZE_VARS = TEMPLATE_VARIABLES;
 
 const auth = useAuthStore();
 const {

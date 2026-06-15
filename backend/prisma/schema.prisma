@@ -1742,6 +1742,14 @@ model Friend {
   // Dùng cho Stuck Detection (so với current time) + analytics (avg time per stage).
   stageEnteredAt DateTime? @map("stage_entered_at")
 
+  // ── Sequence recode Đợt 1 (2026-06-13) — cột mềm nullable, D1 giữ schema ──
+  // strangerBlocked: KH này tự bật quyền riêng tư "không nhận tin người lạ" trên Zalo.
+  // Set true khi send-message nhận lỗi "User không nhận tin nhắn từ người lạ" → DỪNG
+  // sequence riêng cặp (nick,KH) này (không spam lỗi lặp), báo sale cần kết bạn trước.
+  // Clear khi KH chấp nhận kết bạn (friendshipStatus → accepted). NULL = chưa từng gặp.
+  strangerBlocked   Boolean?  @map("stranger_blocked")
+  strangerBlockedAt DateTime? @map("stranger_blocked_at")
+
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
@@ -2851,7 +2859,7 @@ model CareSession {
 
   // ── Vòng đời ──
   state                   String    @default("active") // 'active' | 'closed'
-  closedReason            String?   @map("closed_reason") // 'source_done'|'sale_resolved'|'customer_blocked'|'janitor_silence'|'deal_won'
+  closedReason            String?   @map("closed_reason") // 'source_done'|'sale_resolved'|'customer_blocked'|'janitor_silence'|'deal_won'|'stranger_blocked'|'completed'
   // Snapshot điều kiện đóng từ trigger.closeConditions lúc tạo (mỗi phiên luật riêng).
   closeConditions         Json?     @map("close_conditions")
   // Cửa sổ im lặng: RESET mỗi event khách (D13 — reset mọi event, không chặn abuse).
@@ -2865,6 +2873,21 @@ model CareSession {
   pausedUntil             DateTime? @map("paused_until")
   // D2 reconcile marker: đã enqueue BullMQ start chưa (tránh enqueue trùng / mồ côi).
   sequenceStartEnqueuedAt DateTime? @map("sequence_start_enqueued_at")
+
+  // ── Sequence recode Đợt 1 (2026-06-13) — luật 4 pause/resume, cột mềm nullable ──
+  // pausedAtStepIdx: bước đang dở khi KH reply (pause). Resume worker đọc cột này để
+  // re-enqueue ĐÚNG bước của ĐÚNG luồng (per-CareSession theo sourceSequenceId). NULL =
+  // không đang pause-giữa-chừng. Clear sau khi resume re-enqueue xong.
+  pausedAtStepIdx Int? @map("paused_at_step_idx")
+  // pauseEpoch: tăng mỗi lần KH reply (pause). Resume chỉ re-enqueue nếu epoch khớp lúc
+  // pause → chống "close cũ hồi sinh send sau reply mới" (Codex #2). NULL/0 = chưa pause.
+  pauseEpoch      Int? @map("pause_epoch")
+  // enrollEpoch (2026-06-15): SỐ LẦN gắn luồng này cho KH — gắn lại tăng epoch → jobId mới
+  // (không đụng job cũ đã completed). Resume/cancel dùng đúng epoch của lần gắn này. NULL=1.
+  enrollEpoch     Int? @map("enroll_epoch")
+  // rulesSnapshot: chụp runtimeRules (giờ/sendGap/cooldown) lúc enroll → đổi cấu hình
+  // KHÔNG ảnh hưởng KH đang chạy (Codex #10). NULL = dùng rules live của sequence (fallback).
+  rulesSnapshot   Json? @map("rules_snapshot")
 
   openedAt DateTime  @default(now()) @map("opened_at")
   closedAt DateTime? @map("closed_at")
