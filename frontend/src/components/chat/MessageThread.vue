@@ -1567,14 +1567,20 @@ function onSenderClick(msg: Message) {
 
 // 2026-06-03: Click avatar/tên trong header cột 3 → mở dialog user info KH
 // (chỉ áp 1-1 user thread, group bỏ qua vì không có 1 contact duy nhất).
+// FIX 2026-06-15 (anh báo "Không tải được thông tin user"): per-account UID — phải dùng
+// conversation.externalThreadId (UID KH NHÌN TỪ NICK ĐANG XEM) thay vì contact.zaloUid
+// (UID cấp Contact cha = UID của 1 nick khác). KH được nhiều nick chat → contact.zaloUid
+// lệch nick hiện tại → getUserInfo qua nick này fail "Tham số không hợp lệ". Khớp các chỗ
+// khác trong file đã dùng externalThreadId (dòng 1459/1706). [[reference_zalocrm_per_nick_uid_ui_trap]]
 const canClickHeader = computed(() => {
   const conv = props.conversation;
-  return !!(conv && conv.threadType !== 'group' && conv.contact?.zaloUid);
+  return !!(conv && conv.threadType !== 'group' && (conv.externalThreadId || conv.contact?.zaloUid));
 });
 function onHeaderAvatarClick() {
   const conv = props.conversation;
   if (!conv || conv.threadType === 'group') return;
-  const uid = conv.contact?.zaloUid;
+  // Per-account UID: ưu tiên externalThreadId (đúng nick đang xem), fallback contact.zaloUid.
+  const uid = conv.externalThreadId || conv.contact?.zaloUid;
   if (!uid) return;
   userInfoUid.value = uid;
   userInfoDialog.value = true;
