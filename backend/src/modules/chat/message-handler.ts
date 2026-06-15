@@ -732,6 +732,8 @@ export async function handleIncomingMessage(
                 // 2026-06-13 (LUẬT 4): KHÔNG remove job (mất tiến độ → không resume được).
                 // Thay bằng: set pause flag (worker guard chặn gửi) + ghi pausedAtStepIdx
                 // per-phiên (resume khi hết phiên). ARCH#1=B: dừng CẢ luồng của khách.
+                // bước dở per-sequence — khai báo NGOÀI block để notify (dưới) dùng lại tên+bước.
+                let stepIdxBySequence: Map<string, number> = new Map();
                 if (triggerId) {
                   const trigger = await prisma.automationTrigger.findUnique({
                     where: { id: triggerId },
@@ -743,7 +745,7 @@ export async function handleIncomingMessage(
                   );
                   await setContactPauseFlag(triggerId, careContactId, trigger?.pauseOnActivityHours ?? 24);
                   // Scan BullMQ 1 lần → bước dở của từng luồng (per sourceSequenceId).
-                  const stepIdxBySequence = await getPendingStepIdxBySequence(triggerId, careContactId);
+                  stepIdxBySequence = await getPendingStepIdxBySequence(triggerId, careContactId);
                   const { pauseSessionsOnReply } = await import(
                     '../automation/care-session/care-session-service.js'
                   );
@@ -771,6 +773,25 @@ export async function handleIncomingMessage(
                     where: { id: notifyOwnerId },
                     select: { fullName: true },
                   });
+                  // 2026-06-15 (anh báo): thông báo phải hiện TÊN LUỒNG thật + bước (không
+                  // fallback tên trigger). Lấy sequence của phiên + bước dở (pausedAtStepIdx).
+                  let notifySequenceName: string | null = null;
+                  let notifyStepInfo: { idx: number; total: number } | null = null;
+                  if (session.sourceSequenceId) {
+                    const seq = await prisma.automationSequence.findUnique({
+                      where: { id: session.sourceSequenceId },
+                      select: { name: true, steps: true },
+                    });
+                    if (seq) {
+                      notifySequenceName = seq.name;
+                      const total = Array.isArray(seq.steps) ? (seq.steps as unknown[]).length : 0;
+                      // bước đang dừng = pausedAtStepIdx (0-based) → đã gửi tới bước đó.
+                      const pausedIdx = stepIdxBySequence.get(session.sourceSequenceId);
+                      if (typeof pausedIdx === 'number' && total > 0) {
+                        notifyStepInfo = { idx: pausedIdx, total }; // "Bước pausedIdx/total" = đã gửi
+                      }
+                    }
+                  }
                   const { dispatchCareNotify } = await import(
                     '../automation/care-session/care-session-service.js'
                   );
@@ -787,6 +808,8 @@ export async function handleIncomingMessage(
                     saleName: saleUser?.fullName ?? '',
                     triggerId, // null cho phiên gắn tay → template "theo dõi tay"
                     triggerName, // null cho phiên gắn tay
+                    sequenceName: notifySequenceName, // TÊN LUỒNG thật (ưu tiên hơn triggerName)
+                    stepInfo: notifyStepInfo,
                   });
                 }
               } catch (err) {

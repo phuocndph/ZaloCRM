@@ -358,12 +358,18 @@ async function processJob(
     // còn pause → defer chờ resume; phiên đã đóng → cho job chạy (hoặc guard khác chặn).
     const pausedSession = await prisma.careSession.findFirst({
       where: { orgId, contactId, sourceSequenceId: sequenceId, state: 'active', pausedAtStepIdx: { not: null } },
-      select: { id: true },
+      select: { id: true, pausedUntil: true },
     });
     if (pausedSession) {
+      // FIX 2026-06-15 (anh báo "Lần gửi tiếp" trôi sai): đẩy thẳng tới ĐÚNG GIỜ HẾT HOLD
+      // (pausedUntil = lúc KH reply + pauseOnActivityHours), KHÔNG đẩy lùi cứng 1h/lần (gây
+      // job tỉnh dậy liên tục + nextRunAt trôi dần thay vì hiện "19:01 + X giờ"). Hết hold
+      // mà phiên vẫn pause (KH chưa được xử) → fallback 1h để vẫn re-check, không kẹt mãi.
+      const pausedUntilMs = pausedSession.pausedUntil?.getTime() ?? 0;
+      const resumeAt = pausedUntilMs > Date.now() ? pausedUntilMs : Date.now() + 60 * 60_000;
       await job.updateData({ ...job.data, deferReason: 'awaiting_reply' }).catch(() => {});
-      await job.moveToDelayed(Date.now() + 60 * 60_000, token);
-      logger.info(`${tag} LUẬT 4: phiên active còn pausedAtStepIdx (khách đã reply) → defer 1h chờ resume contact=${contactId}`);
+      await job.moveToDelayed(resumeAt, token);
+      logger.info(`${tag} LUẬT 4: phiên active còn pausedAtStepIdx → defer tới pausedUntil=${new Date(resumeAt).toISOString()} contact=${contactId}`);
       throw new DelayedError();
     }
   }

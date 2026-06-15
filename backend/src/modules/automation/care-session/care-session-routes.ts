@@ -73,6 +73,8 @@ export async function careSessionRoutes(app: FastifyInstance): Promise<void> {
             sourceType: true,
             sourceTriggerId: true,
             sourceSequenceId: true,
+            enrollEpoch: true, // 2026-06-15: đếm "đã gửi X/N" theo ĐÚNG lần gắn này (per-epoch)
+            pausedAtStepIdx: true, // bước đang dừng khi KH reply (hiển thị tiến độ thật khi hold)
             state: true,
             closedReason: true,
             interestWindowUntil: true,
@@ -112,16 +114,21 @@ export async function careSessionRoutes(app: FastifyInstance): Promise<void> {
           where: { id: { in: nickIds }, orgId: user.orgId },
           select: { id: true, displayName: true },
         }),
-        // Đếm bước đã gửi per (trigger, contact).
-        prisma.automationEventLog.groupBy({
-          by: ['triggerId', 'contactId'],
+        // FIX 2026-06-15 (anh báo Phiên chăm sóc "đã gửi 10/10" SAI): đếm bước đã gửi PER
+        // (trigger, contact, ENROLL_EPOCH) — KHÔNG gom mọi lần gắn. Trước đây groupBy
+        // (trigger,contact) cộng TỔNG bước của 8 lần gắn → vượt totalSteps → cap 10/10 sai.
+        // Lấy event step_sent (có metadata.enrollEpoch + detail "step N/") rồi đếm trong JS
+        // theo đúng epoch của từng phiên. take giới hạn để không kéo cả lịch sử.
+        prisma.automationEventLog.findMany({
           where: {
             orgId: user.orgId,
             eventType: 'sequence_step_sent',
             triggerId: { in: [...new Set(rows.map((r) => r.sourceTriggerId).filter(Boolean) as string[])] },
             contactId: { in: contactIds },
           },
-          _count: { id: true },
+          orderBy: { createdAt: 'desc' },
+          take: 3000,
+          select: { triggerId: true, contactId: true, detail: true, metadata: true },
         }),
         // Tên + tổng bước của sequence (anh chốt 2026-06-07: show sequence là CHÍNH).
         seqIds.length
@@ -132,7 +139,20 @@ export async function careSessionRoutes(app: FastifyInstance): Promise<void> {
           : Promise.resolve([]),
       ]);
       const nickMap = new Map(nicks.map((n) => [n.id, n.displayName]));
-      const sentMap = new Map(sentLogs.map((l) => [`${l.triggerId}|${l.contactId}`, l._count.id]));
+      // sentMap key = `${triggerId}|${contactId}|${epoch}` → SỐ BƯỚC đã gửi của ĐÚNG lần gắn đó.
+      // Mỗi event step_sent: detail "step N/M" (N 0-based → đã gửi N+1), metadata.enrollEpoch.
+      // Giữ N+1 LỚN NHẤT per key (bước cao nhất đã gửi của lần gắn này).
+      const sentMap = new Map<string, number>();
+      for (const ev of sentLogs) {
+        if (!ev.triggerId || !ev.contactId) continue;
+        const epoch = (ev.metadata as { enrollEpoch?: number } | null)?.enrollEpoch ?? 1;
+        const m = ev.detail?.match(/step (\d+)\/(\d+)/);
+        if (!m) continue;
+        const sent = parseInt(m[1], 10) + 1; // step N 0-based → đã gửi N+1 bước
+        const key = `${ev.triggerId}|${ev.contactId}|${epoch}`;
+        const cur = sentMap.get(key) ?? 0;
+        if (sent > cur) sentMap.set(key, sent);
+      }
       const totalStepsMap = new Map(
         seqSteps.map((s) => [s.id, Array.isArray(s.steps) ? (s.steps as unknown[]).length : 0]),
       );
@@ -146,7 +166,11 @@ export async function careSessionRoutes(app: FastifyInstance): Promise<void> {
         const jobs = await queue.getJobs(['delayed', 'waiting', 'active'], 0, 5000);
         for (const job of jobs) {
           if (!job.id) continue;
-          const at = new Date((job.timestamp ?? Date.now()) + (job.opts?.delay ?? 0));
+          // FIX 2026-06-15: job bị moveToDelayed (hold khi KH reply) → giờ chạy THẬT =
+          // (processedOn ?? timestamp) + delay-HIỆN-TẠI, KHÔNG phải timestamp + opts.delay gốc.
+          // Nếu không, "Lần gửi tiếp" hiện giờ cũ (chưa cộng hold).
+          const curDelay = (job as { delay?: number }).delay ?? job.opts?.delay ?? 0;
+          const at = new Date((job.processedOn ?? job.timestamp ?? Date.now()) + curDelay);
           // jobId = triggerId-contactId-stepIdx → key = triggerId|contactId, giữ lần sớm nhất.
           const lastDash = job.id.lastIndexOf('-');
           if (lastDash < 0) continue;
@@ -207,8 +231,13 @@ export async function careSessionRoutes(app: FastifyInstance): Promise<void> {
           openedAt: r.openedAt,
           closedAt: r.closedAt,
           // Tiến độ luồng cho card "đang chăm" (anh chốt 2026-06-07).
+          // FIX 2026-06-15: đếm theo ĐÚNG lần gắn (epoch) — không gom mọi lần gắn.
+          // Khi đang hold (pausedAtStepIdx có): bước đang dừng = đã gửi tới đó (chính xác hơn
+          // event log nếu event chưa kịp ghi). pausedAtStepIdx 0-based = số bước đã gửi.
           nickName: nickMap.get(r.nickId) ?? null,
-          sentSteps: r.sourceTriggerId ? (sentMap.get(`${r.sourceTriggerId}|${r.contactId}`) ?? 0) : 0,
+          sentSteps: r.pausedAtStepIdx != null
+            ? r.pausedAtStepIdx
+            : (r.sourceTriggerId ? (sentMap.get(`${r.sourceTriggerId}|${r.contactId}|${r.enrollEpoch ?? 1}`) ?? 0) : 0),
           totalSteps: r.sourceSequenceId ? (totalStepsMap.get(r.sourceSequenceId) ?? 0) : 0,
           nextRunAt: r.sourceTriggerId
             ? (nextRunMap.get(`${r.sourceTriggerId}|${r.contactId}`) ?? null)

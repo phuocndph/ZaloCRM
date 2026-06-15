@@ -1131,6 +1131,10 @@ export async function dispatchCareNotify(args: {
   saleName?: string | null;
   triggerId?: string | null;
   triggerName?: string | null;
+  // 2026-06-15 (anh báo): thông báo Zalo nội bộ phải hiện TÊN LUỒNG thật + bước, không
+  // fallback về tên trigger ("Bám đuổi khách hàng thủ công").
+  sequenceName?: string | null;
+  stepInfo?: { idx: number; total: number } | null;
 }): Promise<void> {
   const { renderNotifyForTarget } = await import('./notify-privacy.js');
   const { enqueueNotify } = await import('../queues/internal-notify-worker.js');
@@ -1160,6 +1164,9 @@ export async function dispatchCareNotify(args: {
     nickName: '',
     triggerId: args.triggerId ?? undefined,
     triggerName: args.triggerName ?? undefined,
+    // truyền tên LUỒNG + bước → worker hiện "📍 Luồng: {sequence} › Bước N/M" đúng.
+    sequenceName: args.sequenceName ?? undefined,
+    stepInfo: args.stepInfo ?? undefined,
   };
 
   // ── Owner (đầy đủ) ──
