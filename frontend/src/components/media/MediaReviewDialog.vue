@@ -40,7 +40,7 @@
               #{{ tag }}
               <button class="mr-chip-x" :disabled="savingTag" title="Tháo tag" @click="removeTag(tag)"><XIcon :size="11" :stroke-width="2.4" /></button>
             </span>
-            <span v-if="tagIds.length === 0" class="mr-empty">Chưa có tag — gõ thêm bên dưới</span>
+            <span v-if="tagIds.length === 0" class="mr-empty">Chưa có tag — bấm ô dưới để chọn tag có sẵn hoặc gõ tag mới</span>
           </div>
           <div class="mr-addrow">
             <input
@@ -48,6 +48,7 @@
               placeholder="+ Thêm tag · Tab điền nốt · Enter thêm" :disabled="savingTag"
               @keydown="onTagKeydown"
               @input="acIndex = 0"
+              @focus="focused = true"
               @blur="onTagBlur"
             />
             <!-- Dropdown gợi ý tự dựng — bung LÊN TRÊN ô nhập, nền bán trong suốt (mờ ~30%)
@@ -167,17 +168,24 @@ function removeTag(tag: string) {
 // Tab = điền nốt gợi ý đầu vào ô (chưa thêm). Enter = thêm tag (đang gõ hoặc gợi ý chọn).
 // ↑↓ = di chuyển. Esc = đóng gợi ý. Click = thêm. Gõ-trùng-y-hệt-1-gợi-ý vẫn ẩn dropdown.
 const acIndex = ref(0);
+// Đang focus ô nhập? → để hiện sẵn tag kho lúc ô CÒN RỖNG (anh chốt 2026-06-16: trước
+// đây gợi ý chỉ bung khi gõ chữ → mở dialog tưởng "không có tag có sẵn để chọn").
+const focused = ref(false);
 const suggestions = computed<string[]>(() => {
   const q = newTag.value.trim().toLowerCase();
-  if (!q) return [];
   const picked = new Set(tagIds.value);
-  const hits = allTags.value.filter((t) => t.startsWith(q) && !picked.has(t));
+  const pool = allTags.value.filter((t) => !picked.has(t));
+  // Ô rỗng + đang focus → hiện tag kho có sẵn để CHỌN NHANH (cap 8 cho gọn).
+  if (!q) return focused.value ? pool.slice(0, 8) : [];
+  const hits = pool.filter((t) => t.startsWith(q));
   // gõ đúng y hệt 1 tag duy nhất → khỏi gợi ý (không lặp lại cái đã gõ).
   if (hits.length === 1 && hits[0] === q) return [];
   return hits.slice(0, 6);
 });
 function pickSuggestion(s: string) { addTagValue(s); }
-function onTagBlur() { /* dropdown ẩn theo suggestions; mousedown.prevent giữ click trước blur */ }
+// Rời ô → tắt focus (ẩn dropdown). Click 1 gợi ý dùng mousedown.prevent nên KHÔNG blur →
+// thêm xong vẫn giữ focus, dropdown hiện tiếp tag còn lại (gắn nhiều tag nhanh).
+function onTagBlur() { focused.value = false; }
 function onTagKeydown(e: KeyboardEvent) {
   const list = suggestions.value;
   if (e.key === 'Tab') {
