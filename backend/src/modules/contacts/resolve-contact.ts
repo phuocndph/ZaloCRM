@@ -164,17 +164,12 @@ export async function resolveOrCreateContact(input: ResolveContactInput): Promis
     }
   }
 
-  // Step 4: Contact by zaloUsername
-  if (enrichedUsername) {
-    const byUsername = await prisma.contact.findFirst({
-      where: { orgId, zaloUsername: enrichedUsername },
-      select: { id: true, orgId: true, mergedInto: true },
-    });
-    if (byUsername) {
-      const canonical = await followMergedInto(byUsername.id);
-      return { id: canonical.id, orgId: canonical.orgId, created: false, matchedVia: 'username' };
-    }
-  }
+  // Step 4: ĐÃ BỎ match theo zaloUsername (anh chốt 2026-06-16).
+  // Zalo trả username placeholder KHÔNG duy nhất (vd 't_ggzbdcmi80' bị 55 contact dùng
+  // chung) → match theo username nối Friend mới vào Contact Cha SAI ngay tại điểm tạo,
+  // ngoài cả duplicate-detector. Username vẫn được LƯU vào contact (để tham khảo/hiển
+  // thị) nhưng KHÔNG còn là khóa tra cứu gộp. Chỉ match theo globalId (Step 3) + phone
+  // (Step 5). Xem docs/DESIGN-DEDUPE-BANNER-TRONG-CHAT-20260616.md.
 
   // Step 5: Contact by phoneNormalized (alive only)
   if (phoneNormalized) {
