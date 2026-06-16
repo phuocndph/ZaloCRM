@@ -93,17 +93,42 @@
               <v-icon size="13">mdi-lock-outline</v-icon> Không đổi được nick trong chế độ Sửa — tạo Mục tiêu mới nếu cần.
             </template>
             <template v-else>
-              Mỗi nick gửi tối đa 300 lời mời/ngày + 300 tin nhắn/ngày. Nick offline tự động bị loại.
+              Mỗi nick được mời tối đa <strong>{{ defaultFriendCap }}</strong> lời mời/ngày
+              <span class="hint-src">(trần an toàn SDK Zalo — Gửi lời mời kết bạn)</span>. Nick offline tự động bị loại.
             </template>
           </div>
+
+          <!-- Toolbar: lọc theo nhân viên + chọn tất cả (item 3 2026-06-16) -->
+          <div v-if="!isEditMode" class="nick-toolbar">
+            <div class="nick-filter">
+              <v-icon size="14">mdi-account-filter-outline</v-icon>
+              <select v-model="employeeFilter" class="nick-filter-select">
+                <option value="">Tất cả nhân viên</option>
+                <option v-for="e in employees" :key="e.id" :value="e.id">{{ e.name }}</option>
+              </select>
+            </div>
+            <div class="nick-toolbar-right">
+              <span class="nick-count">Đã chọn {{ form.nickIds.length }}/{{ filteredNicks.length }}</span>
+              <button
+                type="button"
+                class="btn btn-ghost btn-sm"
+                :disabled="!selectableNicks.length"
+                @click="toggleSelectAll"
+              >
+                <v-icon size="14">{{ allSelectableSelected ? 'mdi-checkbox-multiple-blank-outline' : 'mdi-checkbox-multiple-marked-outline' }}</v-icon>
+                {{ allSelectableSelected ? 'Bỏ chọn tất cả' : 'Chọn tất cả (online)' }}
+              </button>
+            </div>
+          </div>
+
           <div class="nick-list">
             <div
-              v-for="(n, idx) in nicks"
+              v-for="(n, idx) in filteredNicks"
               :key="n.id"
               class="nick-row"
               :class="{
                 selected: form.nickIds.includes(n.id),
-                disabled: n.status !== 'connected',
+                disabled: !isOnline(n),
               }"
               @click="toggleNick(n)"
             >
@@ -112,18 +137,19 @@
               <div class="nick-info">
                 <div class="nick-name">{{ n.displayName || n.id }}</div>
                 <div class="nick-meta">
-                  <span>
-                    <span class="status-dot" :class="n.status === 'connected' ? 'status-online' : 'status-offline'"></span>
-                    {{ n.status === 'connected' ? 'Online' : 'Offline' }}
+                  <span :class="isOnline(n) ? 'st-online' : 'st-offline'">
+                    <span class="status-dot" :class="isOnline(n) ? 'status-online' : 'status-offline'"></span>
+                    {{ isOnline(n) ? 'Online' : 'Offline' }}
                   </span>
                   <span class="dot">·</span>
-                  <span>KB {{ getMockCounter(n.id, 'kb') }}/300</span>
+                  <span>KB {{ nickFriendSent(n) }}/{{ nickFriendCap(n) }}</span>
                   <span class="dot">·</span>
-                  <span>Tin {{ getMockCounter(n.id, 'msg') }}/300</span>
+                  <span>Tin {{ nickMsgSent(n) }}/{{ nickMsgCap(n) }}</span>
                 </div>
               </div>
             </div>
             <div v-if="!nicks.length" class="empty-hint">Chưa có nick nào kết nối. Hãy kết nối nick Zalo trước.</div>
+            <div v-else-if="!filteredNicks.length" class="empty-hint">Không có nick nào của nhân viên đã chọn.</div>
           </div>
         </div>
 
@@ -247,7 +273,7 @@
                   <span class="msg-item-badge badge-req"><v-icon size="12">mdi-lock-outline</v-icon> Bắt buộc</span>
                 </div>
                 <p class="msg-item-help">Lời nhắn gửi <strong>cùng lúc</strong> với lời mời kết bạn Zalo. Không thể tắt (KB Zalo phải kèm lời chào). Tối đa 200 ký tự.</p>
-                <textarea v-model="form.messages.friendRequest" class="ta" rows="2" maxlength="200"></textarea>
+                <textarea v-model="form.messages.friendRequest" class="ta" rows="2" maxlength="200" @focus="onMsgFocus($event, 'friendRequest')"></textarea>
                 <div class="ta-counter">{{ form.messages.friendRequest.length }}/200</div>
               </div>
 
@@ -263,7 +289,7 @@
                   <span v-if="!form.enableWelcome" class="msg-off-note">— Đang TẮT: bỏ qua tin chào.</span></p>
                 <template v-if="form.enableWelcome">
                   <div class="msg-item-row">
-                    <textarea v-model="form.messages.welcome" class="ta" rows="2"></textarea>
+                    <textarea v-model="form.messages.welcome" class="ta" rows="2" @focus="onMsgFocus($event, 'welcome')"></textarea>
                     <div class="msg-delay-input"><label>Chờ sau khi mời</label>
                       <TimeAmountInput v-model="form.welcomeDelayMinutes" base-unit="minute" :units="['second','minute','hour']" /></div>
                   </div>
@@ -283,7 +309,7 @@
                   <span v-if="!form.enableThankYou" class="msg-off-note">— Đang TẮT.</span></p>
                 <template v-if="form.enableThankYou">
                   <div class="msg-item-row">
-                    <textarea v-model="form.messages.thankYou" class="ta" rows="2"></textarea>
+                    <textarea v-model="form.messages.thankYou" class="ta" rows="2" @focus="onMsgFocus($event, 'thankYou')"></textarea>
                     <div class="msg-delay-input"><label>Chờ sau khi đồng ý</label>
                       <TimeAmountInput v-model="form.thankYouDelayMinutes" base-unit="minute" :units="['second','minute','hour']" /></div>
                   </div>
@@ -303,7 +329,7 @@
                   <span v-if="!form.enableRemind" class="msg-off-note">— Đang TẮT.</span></p>
                 <template v-if="form.enableRemind">
                   <div class="msg-item-row">
-                    <textarea v-model="form.messages.remind" class="ta" rows="2"></textarea>
+                    <textarea v-model="form.messages.remind" class="ta" rows="2" @focus="onMsgFocus($event, 'remind')"></textarea>
                     <div class="msg-delay-input"><label>Nhắc sau</label>
                       <TimeAmountInput v-model="form.remindDelayDays" base-unit="day" :units="['hour','day']" /></div>
                   </div>
@@ -323,7 +349,7 @@
                 <p class="msg-item-help">Gửi qua hộp người lạ khi khách bấm Từ chối. KH reject vẫn được bám đuổi qua hộp người lạ.
                   <span v-if="!form.enableRejectedFollowUp" class="msg-off-note">— Đang TẮT.</span></p>
                 <template v-if="form.enableRejectedFollowUp">
-                  <textarea v-model="form.messages.rejectedFollowUp" class="ta" rows="2"></textarea>
+                  <textarea v-model="form.messages.rejectedFollowUp" class="ta" rows="2" @focus="onMsgFocus($event, 'rejectedFollowUp')"></textarea>
                   <NotifyOwnerBox v-model="form.notifyOwner.rejected" />
                 </template>
               </div>
@@ -340,11 +366,24 @@
             Chỉnh ở mục <router-link to="/marketing/care-listen">Lắng nghe &amp; Nhắc</router-link> (không phải mỗi Mục tiêu một bộ).</span>
           </div>
 
+          <!-- item 4 2026-06-16: chèn biến cá nhân hoá vào ô tin đang chọn -->
           <div class="var-chips">
-            <span class="var-chips-label">Biến dùng được trong cả 5 tin:</span>
-            <span class="var-chip">{gender}</span>
-            <span class="var-chip">{name}</span>
-            <span class="var-chip">{sale}</span>
+            <span class="var-chips-label">
+              <v-icon size="13">mdi-cursor-text</v-icon>
+              Chèn biến cá nhân hoá (bấm vào ô tin trước, rồi bấm biến):
+            </span>
+            <button
+              v-for="v in PERSONALIZE_VARS"
+              :key="v.code"
+              type="button"
+              class="var-chip var-chip-btn"
+              :title="`Chèn ${v.code} — ${v.label} (vd: ${v.example})`"
+              @mousedown.prevent
+              @click="insertVar(v.code)"
+            >
+              <v-icon size="12">{{ v.icon }}</v-icon>
+              <code>{{ v.code }}</code>
+            </button>
           </div>
         </div>
 
@@ -404,20 +443,19 @@
                 </div>
 
                 <!-- Preview steps -->
+                <!-- item 5 2026-06-16: card 2 dòng gọn — dòng 1 tên KHỐI, dòng 2 thời điểm gửi -->
                 <div v-if="selectedSequence && sequenceSteps.length" class="chuoi-preview">
-                  <template v-for="(step, i) in sequenceSteps" :key="i">
-                    <div class="chuoi-step">
-                      <span class="n">{{ i + 1 }}</span>
-                      <div class="when">{{ i === 0 ? 'Ngay sau Welcome' : `Bước ${i + 1}` }}</div>
-                      <div class="what">{{ stepLabel(step, i) }}</div>
+                  <div v-for="(step, i) in sequenceSteps" :key="i" class="chuoi-row2">
+                    <span class="n">{{ i + 1 }}</span>
+                    <div class="r-body">
+                      <div class="r-title">{{ stepLabel(step, i) }}</div>
+                      <div class="r-sub">
+                        <v-icon size="12">mdi-timer-outline</v-icon>
+                        <template v-if="i === 0">Gửi ngay sau Tin chào mừng</template>
+                        <template v-else>Chờ {{ delayLabel(step) }} sau bước {{ i }}</template>
+                      </div>
                     </div>
-                    <div
-                      v-if="i < sequenceSteps.length - 1"
-                      class="chuoi-delay"
-                    >
-                      <v-icon size="13">mdi-timer-outline</v-icon> Chờ {{ delayLabel(sequenceSteps[i + 1]) }}
-                    </div>
-                  </template>
+                  </div>
                 </div>
 
                 <div v-if="selectedSequence" class="chuoi-total">
@@ -497,15 +535,15 @@
             </div>
           </div>
 
-          <!-- Input 2: Khoảng cách giữa các lần gửi -->
+          <!-- Input 2: Khoảng cách giữa các lần gửi (item 6 2026-06-16: làm rõ phạm vi) -->
           <div class="safety-row">
             <div class="safety-label">
-              Khoảng cách giữa các lần gửi <span class="req">*</span>
-              <div class="safety-help">Tối thiểu cách nhau bao lâu giữa 2 KH liên tiếp</div>
+              Khoảng cách tối thiểu giữa 2 lần gửi (mỗi nick) <span class="req">*</span>
+              <div class="safety-help">SÀN an toàn cấp thấp: cùng 1 nick phải cách nhau ít nhất bấy nhiêu giữa 2 lần gửi BẤT KỲ (lời mời hoặc tin bám đuổi). Áp cho từng nick, KHÔNG phải giữa 2 nick khác nhau.</div>
             </div>
             <div class="safety-input-wrap">
               <TimeAmountInput v-model="form.safetyRules.sendIntervalSeconds" base-unit="second" :units="['second','minute']" />
-              <div class="safety-help">Giá trị thấp = gửi nhanh nhưng tăng risk khoá nick. Mặc định 60 giây an toàn cao.</div>
+              <div class="safety-help">Đây chỉ là sàn tối thiểu. Với <em>lời mời kết bạn</em>, nhịp thực tế do ô "Nhịp gửi lời mời mỗi nick" bên dưới quyết định (luôn ≥ sàn này). Mặc định 60 giây.</div>
             </div>
           </div>
 
@@ -514,7 +552,7 @@
           <div class="safety-row">
             <div class="safety-label">
               Nhịp gửi lời mời mỗi nick <span class="req">*</span>
-              <div class="safety-help">Mỗi nick cách nhau ngẫu nhiên trong khoảng này mới gửi 1 lời mời mới</div>
+              <div class="safety-help">Nhịp THỰC TẾ giữa 2 lời mời kết bạn của cùng 1 nick — random trong khoảng này. Đây là ô quyết định tốc độ gửi lời mời (đè lên sàn ở trên).</div>
             </div>
             <div class="safety-input-wrap">
               <div class="num-row" style="gap: 8px; align-items: center;">
@@ -529,29 +567,29 @@
           </div>
         </div>
 
-        <!-- Section 2: Cap & Quota (display only) -->
+        <!-- Section 2: Cap & Quota (item 7 2026-06-16: trần SDK CÒN LẠI hôm nay) -->
         <div class="safety-section">
-          <div class="safety-section-title"><v-icon size="16">mdi-chart-box-outline</v-icon> Giới hạn / Ngày / Nick <span class="badge">đọc từ ZaloAccount</span></div>
+          <div class="safety-section-title"><v-icon size="16">mdi-chart-box-outline</v-icon> Giới hạn / Ngày / Nick <span class="badge">trần SDK còn lại</span></div>
 
           <div class="cap-display-banner">
-            <v-icon size="15">mdi-information-outline</v-icon> <strong>Cap mỗi nick</strong> được cấu hình tại
-            <a href="/settings/channels/zalo" target="_blank">/settings/channels/zalo</a> per-nick.
-            Mục tiêu này dùng cấu hình hiện tại (mặc định <strong>30 lời mời/ngày</strong> + <strong>300 tin nhắn/ngày</strong> mỗi nick).
+            <v-icon size="15">mdi-information-outline</v-icon> Trần an toàn SDK Zalo cấu hình tại
+            <a href="/settings/channels/zalo" target="_blank">/settings/channels/zalo</a>.
+            Số dưới đây là phần CÒN LẠI hôm nay của <strong>{{ form.nickIds.length }} nick đã chọn</strong> (trần − đã gửi).
           </div>
 
           <div class="cap-tiles">
             <div class="cap-tile">
-              <div class="cap-tile-label">Tổng lời mời/ngày</div>
+              <div class="cap-tile-label">Lời mời còn gửi được hôm nay</div>
               <div class="cap-tile-value">
-                {{ totalDailyFriendCap }}
-                <span class="cap-tile-sub">({{ form.nickIds.length }} nick × 30)</span>
+                {{ formatNum(friendRemaining) }}
+                <span class="cap-tile-sub">(đã gửi {{ formatNum(totalFriendSent) }}/{{ formatNum(totalFriendCap) }})</span>
               </div>
             </div>
             <div class="cap-tile">
-              <div class="cap-tile-label">Tổng tin nhắn/ngày</div>
+              <div class="cap-tile-label">Tin nhắn còn gửi được hôm nay</div>
               <div class="cap-tile-value">
-                {{ totalDailyMessageCap }}
-                <span class="cap-tile-sub">({{ form.nickIds.length }} nick × 300)</span>
+                {{ formatNum(msgRemaining) }}
+                <span class="cap-tile-sub">(đã gửi {{ formatNum(totalMsgSent) }}/{{ formatNum(totalMsgCap) }})</span>
               </div>
             </div>
           </div>
@@ -962,11 +1000,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue';
+import { ref, computed, onMounted, watch, nextTick } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import { api } from '@/api';
 import TimeAmountInput from '@/components/automation/TimeAmountInput.vue';
 import NotifyOwnerBox from '@/components/automation/NotifyOwnerBox.vue';
+import { TEMPLATE_VARIABLES } from '@/constants/template-variables';
 
 // CareSession 2026-06-07: cấu hình lắng nghe (7 event × 3 đích) đã TÁCH sang trang
 // chung cấp tổ chức /marketing/care-listen. Wizard KHÔNG còn cấu hình lắng nghe.
@@ -976,8 +1015,23 @@ const route = useRoute();
 
 // ============== TYPES ==============
 interface ListSummary { id: string; name: string; totalEntries: number; }
-interface NickSummary { id: string; displayName: string | null; status: string; dailyFriendAddCap?: number; }
-interface SequenceStep { delayMinutes?: number; name?: string; label?: string; messageTemplate?: string; }
+// 2026-06-16 — nick model lấy từ GET /zalo-accounts/enriched (có metrics today +
+// owner) gộp với trần friend_action từ GET /zalo-accounts/sdk-limits. Counter KB/Tin
+// + cap "Giới hạn/Ngày/Nick" load thật, không còn getMockCounter.
+interface NickSummary {
+  id: string;
+  displayName: string | null;
+  status: string;
+  liveStatus?: string;
+  dailyFriendAddCap?: number;
+  ownerUserId?: string | null;
+  ownerName?: string | null;
+  friendReqSent?: number; // lời mời KB đã gửi hôm nay (metricsToday.friendReqSent)
+  msgToday?: number;      // tin gửi người lạ hôm nay (enriched.msgToday)
+  msgCap?: number;        // trần tin/ngày của nick (enriched.quota = dailyStrangerMessageCap)
+  friendCap?: number;     // trần lời mời/ngày (override per-nick ?? org default friend_action)
+}
+interface SequenceStep { delayMinutes?: number; name?: string; label?: string; messageTemplate?: string; blockId?: string; }
 interface SequenceSummary { id: string; name: string; steps: SequenceStep[] | unknown; }
 
 interface PreviewAllocation {
@@ -1021,6 +1075,15 @@ const nicks = ref<NickSummary[]>([]);
 const sequences = ref<SequenceSummary[]>([]);
 const submitting = ref(false);
 const prefilled = ref(false);
+
+// 2026-06-16 — Step 1: lọc nick theo nhân viên (owner) + chọn tất cả.
+const employeeFilter = ref<string>(''); // ownerUserId, '' = tất cả nhân viên
+// Trần "Gửi lời mời kết bạn" mặc định hệ thống (org default friend_action.daily),
+// load từ GET /zalo-accounts/sdk-limits. Fallback 30 khi chưa cấu hình.
+const defaultFriendCap = ref(30);
+// 2026-06-16 — Step 2: map blockId → tên khối, load từ GET /automation/sequences/:id
+// khi chọn "Dùng chuỗi có sẵn" → preview hiển thị đúng tên khối mỗi bước.
+const sequenceBlockNames = ref<Record<string, string>>({});
 
 // P2 Wave 4 #Edit 2026-06-02 — Edit-mode: route truyền `?edit=<triggerId>` →
 // wizard fetch GET /:id/edit hydrate form, submit gọi PATCH thay POST. Listid /
@@ -1185,15 +1248,22 @@ const workingHoursLabel = computed(() => {
   return `${diff} giờ/ngày`;
 });
 
-const totalDailyFriendCap = computed(() => {
-  const perNick = 30;
-  return form.value.nickIds.length * perNick;
-});
+// ── 2026-06-16 — trần SDK thật của từng nick (load từ enriched + sdk-limits) ──
+function nickFriendCap(n: NickSummary): number { return n.friendCap ?? defaultFriendCap.value; }
+function nickFriendSent(n: NickSummary): number { return n.friendReqSent ?? 0; }
+function nickMsgCap(n: NickSummary): number { return n.msgCap ?? 300; }
+function nickMsgSent(n: NickSummary): number { return n.msgToday ?? 0; }
 
-const totalDailyMessageCap = computed(() => {
-  const perNick = 300;
-  return form.value.nickIds.length * perNick;
-});
+const selectedNickObjs = computed(() => nicks.value.filter(n => form.value.nickIds.includes(n.id)));
+
+// Step 3 "Giới hạn / Ngày / Nick" — trần SDK CÒN LẠI hôm nay của các nick đã chọn ở Step 1.
+const totalFriendCap = computed(() => selectedNickObjs.value.reduce((s, n) => s + nickFriendCap(n), 0));
+const totalFriendSent = computed(() => selectedNickObjs.value.reduce((s, n) => s + nickFriendSent(n), 0));
+const friendRemaining = computed(() => Math.max(0, totalFriendCap.value - totalFriendSent.value));
+
+const totalMsgCap = computed(() => selectedNickObjs.value.reduce((s, n) => s + nickMsgCap(n), 0));
+const totalMsgSent = computed(() => selectedNickObjs.value.reduce((s, n) => s + nickMsgSent(n), 0));
+const msgRemaining = computed(() => Math.max(0, totalMsgCap.value - totalMsgSent.value));
 
 // ===== Step 3: Start mode (Bắt đầu ngay vs Hẹn lịch) =====
 // scheduledAt là string "YYYY-MM-DDTHH:mm" do <input type="datetime-local"> trả ra,
@@ -1298,18 +1368,52 @@ function avatarVariant(idx: number): string {
   return variants[idx % variants.length];
 }
 
-// TODO BE: hiện chưa expose dailyFriendRequestCount/dailyMessageCount per nick.
-// Tạm hardcode counter để minh hoạ UI. Khi BE expose → đổi thành n.dailyFriendRequestCount ?? 0
-function getMockCounter(nickId: string, kind: 'kb' | 'msg'): number {
-  const seedBase = nickId.charCodeAt(0) + nickId.charCodeAt(nickId.length - 1);
-  if (kind === 'kb') return 280 - (seedBase % 80);
-  return 156 - (seedBase % 60);
+// 2026-06-16 — trạng thái online lấy liveStatus (zaloPool realtime) → fallback status.
+function isOnline(n: NickSummary): boolean {
+  return (n.liveStatus ?? n.status) === 'connected';
+}
+
+// ── Step 1: lọc nick theo nhân viên + chọn tất cả ──
+// Danh sách nhân viên (owner) có nick — để render dropdown lọc.
+const employees = computed(() => {
+  const map = new Map<string, string>();
+  for (const n of nicks.value) {
+    if (n.ownerUserId) map.set(n.ownerUserId, n.ownerName || 'Không tên');
+  }
+  return Array.from(map, ([id, name]) => ({ id, name })).sort((a, b) => a.name.localeCompare(b.name, 'vi'));
+});
+
+// Nick hiển thị sau khi áp filter nhân viên (online lên trước cho dễ chọn).
+const filteredNicks = computed(() => {
+  const arr = employeeFilter.value
+    ? nicks.value.filter(n => n.ownerUserId === employeeFilter.value)
+    : nicks.value.slice();
+  return arr.sort((a, b) => Number(isOnline(b)) - Number(isOnline(a)));
+});
+
+// Nick online trong phạm vi đang lọc — đối tượng của "Chọn tất cả".
+const selectableNicks = computed(() => filteredNicks.value.filter(isOnline));
+const allSelectableSelected = computed(() =>
+  selectableNicks.value.length > 0 && selectableNicks.value.every(n => form.value.nickIds.includes(n.id)),
+);
+
+function toggleSelectAll() {
+  if (isEditMode.value) return;
+  const ids = selectableNicks.value.map(n => n.id);
+  if (allSelectableSelected.value) {
+    // Bỏ chọn các nick đang hiển thị (giữ nguyên nick thuộc bộ lọc khác).
+    form.value.nickIds = form.value.nickIds.filter(id => !ids.includes(id));
+  } else {
+    const set = new Set(form.value.nickIds);
+    ids.forEach(id => set.add(id));
+    form.value.nickIds = Array.from(set);
+  }
 }
 
 function toggleNick(n: NickSummary) {
   // Edit mode: locked — nick set không đổi được (xem PATCH endpoint contract).
   if (isEditMode.value) return;
-  if (n.status !== 'connected') return;
+  if (!isOnline(n)) return;
   const idx = form.value.nickIds.indexOf(n.id);
   if (idx >= 0) form.value.nickIds.splice(idx, 1);
   else form.value.nickIds.push(n.id);
@@ -1323,11 +1427,47 @@ function toggleAlreadyFriend() {
   }
 }
 
+// ── Step 2 (item 4 2026-06-16): chèn biến cá nhân hoá vào ô tin ĐANG chọn ──
+// Bấm chip biến → chèn {code} tại vị trí con trỏ của textarea cuối cùng được focus.
+type MsgKey = keyof typeof form.value.messages;
+const PERSONALIZE_VARS = TEMPLATE_VARIABLES;
+const MSG_MAXLEN: Partial<Record<MsgKey, number>> = { friendRequest: 200 };
+const activeMsgField = ref<{ el: HTMLTextAreaElement | null; key: MsgKey }>({ el: null, key: 'friendRequest' });
+
+function onMsgFocus(e: FocusEvent, key: MsgKey) {
+  activeMsgField.value = { el: e.target as HTMLTextAreaElement, key };
+}
+
+function insertVar(code: string) {
+  const { el, key } = activeMsgField.value;
+  const cur = form.value.messages[key] ?? '';
+  const max = MSG_MAXLEN[key];
+  if (el && typeof el.selectionStart === 'number') {
+    const start = el.selectionStart;
+    const end = el.selectionEnd ?? start;
+    let next = cur.slice(0, start) + code + cur.slice(end);
+    if (max && next.length > max) next = next.slice(0, max);
+    form.value.messages[key] = next;
+    nextTick(() => {
+      el.focus();
+      const pos = Math.min(start + code.length, next.length);
+      el.setSelectionRange(pos, pos);
+    });
+  } else {
+    // Chưa focus ô nào → nối vào cuối ô đang chọn (mặc định Lời mời KB).
+    let next = cur + (cur && !cur.endsWith(' ') ? ' ' : '') + code;
+    if (max && next.length > max) next = next.slice(0, max);
+    form.value.messages[key] = next;
+  }
+}
+
 function stepCount(s: SequenceSummary): number {
   return Array.isArray(s.steps) ? (s.steps as SequenceStep[]).length : 0;
 }
 
 function stepLabel(step: SequenceStep, idx: number): string {
+  // 2026-06-16 — ưu tiên TÊN KHỐI thật (resolve blockId → block.name).
+  if (step.blockId && sequenceBlockNames.value[step.blockId]) return sequenceBlockNames.value[step.blockId];
   if (step.label) return step.label;
   if (step.name) return step.name;
   if (step.messageTemplate) {
@@ -1668,19 +1808,44 @@ async function loadForEdit(triggerId: string): Promise<void> {
 
 async function loadData() {
   try {
-    const [lr, nr, sr] = await Promise.all([
+    // 2026-06-16 — dùng /zalo-accounts/enriched (metrics today + owner) thay cho
+    // /zalo-accounts, + /zalo-accounts/sdk-limits để biết trần "Gửi lời mời kết bạn".
+    // enriched + sdk-limits đặt .catch riêng để 1 endpoint lỗi không nuốt lists/sequences.
+    const [lr, nr, sr, kr] = await Promise.all([
       api.get('/customer-lists?status=active&limit=100'),
-      api.get('/zalo-accounts'),
+      api.get('/zalo-accounts/enriched').catch(() => null),
       api.get('/automation/sequences'),
+      api.get('/zalo-accounts/sdk-limits').catch(() => null),
     ]);
     lists.value = (lr.data.lists ?? []) as ListSummary[];
-    nicks.value = (nr.data.accounts ?? nr.data ?? []) as NickSummary[];
     sequences.value = (sr.data.sequences ?? sr.data ?? []) as SequenceSummary[];
+
+    // Trần "Gửi lời mời kết bạn" — org default + override per-nick (friend_action).
+    const orgFriendDaily: number | undefined = kr?.data?.orgDefault?.friend_action?.daily;
+    if (typeof orgFriendDaily === 'number') defaultFriendCap.value = orgFriendDaily;
+    const nickOverrides: Record<string, { friend_action?: { daily?: number } }> = kr?.data?.nickOverrides ?? {};
+
+    // enriched trả mảng trực tiếp. Nếu lỗi → fallback /zalo-accounts (mất counter, vẫn chọn được nick).
+    let nr2 = nr;
+    if (!nr2) { try { nr2 = await api.get('/zalo-accounts'); } catch { nr2 = null; } }
+    const rawNicks = (nr2 ? (Array.isArray(nr2.data) ? nr2.data : (nr2.data.accounts ?? [])) : []) as any[];
+    nicks.value = rawNicks.map((a): NickSummary => ({
+      id: a.id,
+      displayName: a.displayName ?? null,
+      status: a.status,
+      liveStatus: a.liveStatus ?? a.status,
+      ownerUserId: a.ownerUserId ?? a.owner?.id ?? null,
+      ownerName: a.owner?.fullName ?? null,
+      friendReqSent: a.metricsToday?.friendReqSent ?? 0,
+      msgToday: a.msgToday ?? a.metricsToday?.msgSentToStrangers ?? 0,
+      msgCap: a.quota ?? 300,
+      friendCap: nickOverrides[a.id]?.friend_action?.daily ?? defaultFriendCap.value,
+    }));
 
     // Auto-pick first connected nicks as default (top 3)
     if (!form.value.nickIds.length) {
       form.value.nickIds = nicks.value
-        .filter(n => n.status === 'connected')
+        .filter(isOnline)
         .slice(0, 3)
         .map(n => n.id);
     }
@@ -1692,6 +1857,24 @@ async function loadData() {
     console.error('[muc-tieu-wizard] loadData failed', err);
   }
 }
+
+// 2026-06-16 — resolve tên khối của chuỗi đang chọn (GET /automation/sequences/:id
+// trả kèm `blocks`). Dùng cho preview "tên khối ở mỗi bước".
+async function loadSequenceBlockNames(seqId: string) {
+  if (!seqId) { sequenceBlockNames.value = {}; return; }
+  try {
+    const { data } = await api.get(`/automation/sequences/${seqId}`);
+    const blocks = (data?.blocks ?? []) as Array<{ id: string; name: string }>;
+    sequenceBlockNames.value = Object.fromEntries(blocks.map(b => [b.id, b.name]));
+  } catch (err) {
+    console.warn('[muc-tieu-wizard] loadSequenceBlockNames failed', err);
+    sequenceBlockNames.value = {};
+  }
+}
+
+watch(() => form.value.successorSequenceId, (id) => {
+  if (form.value.sequenceMode === 'reuse' && id) loadSequenceBlockNames(id);
+}, { immediate: true });
 
 // Pre-fill from route.query.listId
 watch(() => route.query.listId, (newVal) => {
@@ -1733,7 +1916,10 @@ onMounted(async () => {
   --primary-hover: var(--brand-600, #0f6fa0);
   --primary-bg: var(--brand-soft, #e4f1f8);
   --primary-soft: var(--brand-softer, #f2f8fc);
-  --success: var(--success, #12b76a);
+  /* FIX 2026-06-16: bỏ tự-tham-chiếu vòng (--success: var(--success,...)) — global
+     không định nghĩa --success nên var(--success) bị cyclic → vô hiệu → màu xanh
+     (chấm Online, avatar av-2, banner) mất màu, hiện xám. Gán thẳng hằng số. */
+  --success: #12b76a;
   --success-bg: var(--success-soft, #e7f7ef);
   --warning: var(--warning, #f5a524);
   --warning-bg: var(--warning-soft, #fdf3e2);
@@ -1899,10 +2085,33 @@ onMounted(async () => {
 }
 
 /* NICK LIST */
+/* Toolbar nick (item 3 2026-06-16): lọc nhân viên + chọn tất cả */
+.nick-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 4px 0 10px;
+}
+.nick-filter { display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); }
+.nick-filter-select {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: white;
+  font-size: 12px;
+  color: var(--text-1);
+  min-width: 180px;
+}
+.nick-toolbar-right { display: inline-flex; align-items: center; gap: 10px; }
+.nick-count { font-size: 12px; color: var(--text-3); font-weight: 600; }
+
 .nick-list {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
-  gap: 10px;
+  /* item 2 2026-06-16: xếp gọn hơn — card hẹp hơn, nhiều cột hơn */
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 8px;
 }
 .empty-hint {
   grid-column: 1 / -1;
@@ -1916,8 +2125,8 @@ onMounted(async () => {
 .nick-row {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 12px 14px;
+  gap: 10px;
+  padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: white;
@@ -1950,14 +2159,14 @@ onMounted(async () => {
   font-weight: 700;
 }
 .nick-avatar {
-  width: 36px; height: 36px;
+  width: 30px; height: 30px;
   border-radius: 50%;
   background: linear-gradient(135deg, var(--chip-purple), var(--brand));
   color: white;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
   flex-shrink: 0;
 }
@@ -1967,11 +2176,14 @@ onMounted(async () => {
 .nick-avatar.av-5 { background: linear-gradient(135deg, var(--error), var(--chip-purple)); }
 .nick-info { flex: 1; min-width: 0; }
 .nick-name { font-size: 13px; font-weight: 600; color: var(--text-1); margin-bottom: 2px; }
-.nick-meta { font-size: 11px; color: var(--text-3); display: flex; gap: 8px; flex-wrap: wrap; }
+.nick-meta { font-size: 11px; color: var(--text-3); display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .nick-meta .dot { color: var(--text-mute); }
 .status-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; vertical-align: middle; margin-right: 4px; }
+/* item 2 2026-06-16: Online xanh, Offline ĐỎ */
 .status-online { background: var(--success); }
-.status-offline { background: var(--text-mute); }
+.status-offline { background: var(--danger); }
+.st-online { color: var(--success); font-weight: 600; }
+.st-offline { color: var(--danger); font-weight: 600; }
 
 /* SKIP RULES */
 .skip-rules { display: flex; flex-direction: column; gap: 10px; }
@@ -2080,10 +2292,11 @@ textarea.ta:focus { border-color: var(--primary); outline: none; box-shadow: 0 0
 
 /* VAR CHIPS */
 .var-chips { display: flex; gap: 6px; margin-top: 12px; flex-wrap: wrap; align-items: center; }
-.var-chips-label { font-size: 12px; color: var(--text-3); margin-right: 4px; }
+.var-chips-label { font-size: 12px; color: var(--text-3); margin-right: 4px; display: inline-flex; align-items: center; gap: 4px; }
 .var-chip {
   display: inline-flex;
   align-items: center;
+  gap: 4px;
   padding: 3px 8px;
   background: var(--purple-bg);
   color: var(--purple);
@@ -2094,6 +2307,12 @@ textarea.ta:focus { border-color: var(--primary); outline: none; box-shadow: 0 0
   cursor: pointer;
 }
 .var-chip:hover { background: var(--chip-purple-bg); }
+/* item 4 2026-06-16: chip dạng nút bấm để chèn biến vào ô tin */
+.var-chip-btn { border: 1px solid var(--purple-bg); }
+.var-chip-btn:hover { border-color: var(--purple); }
+.var-chip-btn code { font-family: var(--mono); background: transparent; padding: 0; color: inherit; }
+/* nguồn trần SDK trong section-help nick */
+.hint-src { color: var(--text-mute); font-size: 11px; }
 
 /* MSG BUNDLE */
 .msg-bundle {
@@ -2310,55 +2529,53 @@ textarea.ta:focus { border-color: var(--primary); outline: none; box-shadow: 0 0
 }
 .radio-help { font-size: 12px; color: var(--text-3); }
 
-/* CHUOI PREVIEW */
+/* CHUOI PREVIEW — item 5 2026-06-16: list card 2 dòng gọn (thay grid card to) */
 .chuoi-preview {
   margin-top: 12px;
-  padding: 16px 12px;
+  padding: 10px;
   background: var(--bg-soft);
   border-radius: 6px;
   display: flex;
-  flex-wrap: wrap;
-  align-items: stretch;
-  gap: 8px;
-  justify-content: center;
+  flex-direction: column;
+  gap: 6px;
 }
-.chuoi-step {
+.chuoi-row2 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   background: white;
   border: 1px solid var(--border);
   border-radius: 6px;
-  padding: 12px 10px;
-  text-align: center;
-  width: 200px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
+  padding: 8px 12px;
 }
-.chuoi-step .n {
-  display: inline-block;
-  width: 26px; height: 26px;
+.chuoi-row2 .n {
+  width: 24px; height: 24px;
   border-radius: 50%;
   background: var(--primary-bg);
   color: var(--primary);
   font-weight: 700;
-  font-size: 13px;
-  line-height: 26px;
-  margin-bottom: 6px;
+  font-size: 12px;
+  line-height: 24px;
+  text-align: center;
+  flex-shrink: 0;
 }
-.chuoi-step .when { font-size: 11px; color: var(--text-3); margin-bottom: 6px; font-weight: 600; }
-.chuoi-step .what { font-size: 12px; color: var(--text-2); line-height: 1.4; font-weight: 500; }
-.chuoi-delay {
-  display: inline-flex;
-  align-items: center;
-  align-self: center;
-  padding: 5px 10px;
-  background: white;
-  border: 1px dashed var(--border-strong);
-  border-radius: 14px;
-  font-size: 11px;
+.chuoi-row2 .r-body { min-width: 0; flex: 1; }
+.chuoi-row2 .r-title {
+  font-size: 13px;
+  color: var(--text-1);
   font-weight: 600;
-  color: var(--text-3);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.chuoi-row2 .r-sub {
+  font-size: 11px;
+  color: var(--text-3);
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 1px;
 }
 .chuoi-total {
   margin-top: 12px;
