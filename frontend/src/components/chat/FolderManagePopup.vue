@@ -788,13 +788,13 @@ onMounted(() => {
   gap: 6px;
 }
 
-/* Folder gridcards — card ngang: avatar trái · tên · online/offline. Tối đa 2 dòng rồi cuộn. */
+/* Folder gridcards — card ngang: avatar trái · tên · online/offline. 4 cột × 3 hàng rồi cuộn. */
 .folder-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(155px, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
-  /* 2 hàng card (60px) + gap (8px) + padding → đúng 2 dòng, còn lại cuộn dọc */
-  max-height: 136px;
+  /* 3 hàng card (68px) + 2 gap (8px) + padding → đúng 3 dòng, còn lại cuộn dọc */
+  max-height: 228px;
   overflow-y: auto;
   padding: 2px 2px 6px;
 }
@@ -805,8 +805,8 @@ onMounted(() => {
   flex-direction: row;
   align-items: center;
   justify-content: flex-start;
-  gap: 9px;
-  padding: 9px 10px;
+  gap: 11px;
+  padding: 11px 13px;
   background: white;
   border: 1.5px solid #E4E5E9;
   border-radius: 10px;
@@ -814,7 +814,7 @@ onMounted(() => {
   transition: all 0.12s;
   font-family: inherit;
   text-align: left;
-  height: 60px;
+  height: 68px;
   min-width: 0;
 }
 .fc-body {
@@ -837,8 +837,8 @@ onMounted(() => {
 .folder-card:focus-visible { outline: 2px solid #5E6AD2; outline-offset: 2px; }
 
 .fc-thumb {
-  width: 36px;
-  height: 36px;
+  width: 42px;
+  height: 42px;
   position: relative;
   flex-shrink: 0;
 }
@@ -858,15 +858,15 @@ onMounted(() => {
 }
 .fc-thumb .av {
   position: absolute;
-  width: 22px;
-  height: 22px;
+  width: 26px;
+  height: 26px;
 }
 .fc-thumb .av-0 { top: 0; left: 0; }
 .fc-thumb .av-1 { bottom: 0; right: 0; }
 .fc-thumb .single {
-  width: 36px;
-  height: 36px;
-  font-size: 13px;
+  width: 42px;
+  height: 42px;
+  font-size: 15px;
   border: none;
 }
 .fc-thumb .single.empty {
@@ -874,18 +874,18 @@ onMounted(() => {
   color: #9CA3AF;
 }
 .fc-thumb-all {
-  width: 36px;
-  height: 36px;
+  width: 42px;
+  height: 42px;
   border-radius: 50%;
   background: linear-gradient(135deg, #5E6AD2, #8B5CF6);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 17px;
+  font-size: 20px;
   flex-shrink: 0;
 }
 .fc-name {
-  font-size: 12.5px;
+  font-size: 13.5px;
   font-weight: 600;
   color: #1F2D3D;
   text-align: left;
@@ -900,7 +900,7 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 600;
   color: #6B7785;
   white-space: nowrap;
