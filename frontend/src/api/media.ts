@@ -44,12 +44,31 @@ export interface ListMediaParams {
   sizeMin?: number;
   sizeMax?: number;
   sort?: 'recent' | 'newest' | 'most_used' | 'name';
+  // 2026-06-16: phân trang theo trang + lọc theo người tải lên (block picker).
+  skip?: number;
+  ownerUserId?: string;
 }
 
 /** Liệt kê kho (scope theo owner + visibility ở backend). */
 export async function listMedia(params: ListMediaParams = {}): Promise<MediaAssetItem[]> {
   const { data } = await api.get('/media', { params });
   return data.items as MediaAssetItem[];
+}
+
+/** Như listMedia nhưng KÈM tổng số khớp filter (để phân trang: "Trang X/Y" + đếm). */
+export async function listMediaPaged(
+  params: ListMediaParams = {},
+): Promise<{ items: MediaAssetItem[]; total: number }> {
+  const { data } = await api.get('/media', { params });
+  return { items: data.items as MediaAssetItem[], total: (data.total as number) ?? 0 };
+}
+
+/** Danh sách người tải lên (có ảnh trong scope) + số lượng — đổ vào dropdown lọc người upload. */
+export async function listMediaUploaders(
+  params: { kind?: string; visibility?: string } = {},
+): Promise<Array<{ id: string; name: string; count: number }>> {
+  const { data } = await api.get('/media/uploaders', { params });
+  return data.uploaders as Array<{ id: string; name: string; count: number }>;
 }
 
 /** Tải tệp lên kho (multipart). */

@@ -261,6 +261,9 @@ export async function mediaRoutes(app: FastifyInstance) {
         since?: string;        // '7d' | '30d' | '90d' — tải lên/dùng trong N ngày
         sizeMin?: string; sizeMax?: string; // byte
         sort?: string;         // 'recent' (mặc định, theo lastUsedAt) | 'newest' (createdAt) | 'most_used' | 'name'
+        // 2026-06-16: phân trang theo trang (block picker) + lọc theo người tải lên.
+        skip?: string;         // offset — bỏ qua N kết quả đầu (page * limit)
+        ownerUserId?: string;  // chỉ ảnh của 1 sale cụ thể (dropdown người upload)
       };
 
       // view_all → xem cả org; thường → chỉ asset của mình HOẶC public.
@@ -280,6 +283,9 @@ export async function mediaRoutes(app: FastifyInstance) {
       // Tag lưu lowercase (normalizeTags) → lọc cũng lowercase để khớp dù sale gõ hoa (code-review #2).
       if (q.tag) where.tagIds = { has: q.tag.trim().toLowerCase() };
       if (q.q) where.name = { contains: q.q, mode: 'insensitive' };
+      // Lọc theo người tải lên (chủ sở hữu). AND với scopeWhere → sale thường chỉ thấy
+      // ảnh CÔNG KHAI của người đó (đúng scope), admin view_all thấy tất cả.
+      if (q.ownerUserId) where.ownerUserId = q.ownerUserId;
       // Thời gian: tải lên trong N ngày (createdAt).
       if (q.since) {
         const days = { '7d': 7, '30d': 30, '90d': 90 }[q.since];
@@ -304,18 +310,24 @@ export async function mediaRoutes(app: FastifyInstance) {
       }[q.sort ?? 'recent'] ?? [{ lastUsedAt: { sort: 'desc', nulls: 'last' } }, { createdAt: 'desc' }];
 
       const limit = Math.min(parseInt(q.limit ?? '60', 10) || 60, 200);
+      const skip = Math.max(parseInt(q.skip ?? '0', 10) || 0, 0);
       // include owner + sourceZaloAccount để hiện "ảnh từ nick nào / sale nào" trong 1 query
       // (chống N+1 — eng-review #6). select chỉ field cần, không kéo nguyên row nick/user.
-      const assets = await prisma.mediaAsset.findMany({
-        where,
-        orderBy,
-        take: limit,
-        include: {
-          blobs: { where: { variantType: { in: ['original', 'watermarked'] } } },
-          owner: { select: { fullName: true } },
-          sourceZaloAccount: { select: { displayName: true } },
-        },
-      });
+      // total: tổng số khớp filter (KHÔNG phụ thuộc skip/take) → FE hiện "Trang X/Y" + đếm.
+      const [total, assets] = await Promise.all([
+        prisma.mediaAsset.count({ where }),
+        prisma.mediaAsset.findMany({
+          where,
+          orderBy,
+          skip,
+          take: limit,
+          include: {
+            blobs: { where: { variantType: { in: ['original', 'watermarked'] } } },
+            owner: { select: { fullName: true } },
+            sourceZaloAccount: { select: { displayName: true } },
+          },
+        }),
+      ]);
 
       // Bộ ảnh yêu thích của user (để FE hiện trạng thái ⭐ ngay trong list/panel).
       const favAlbum = await prisma.mediaAlbum.findFirst({
@@ -365,7 +377,52 @@ export async function mediaRoutes(app: FastifyInstance) {
           height: blob?.height ?? null,
         };
       });
-      return { items };
+      // total kèm theo để FE phân trang (block picker). Caller cũ chỉ đọc `items` → không vỡ.
+      return { items, total };
+    },
+  );
+
+  // ── GET /api/v1/media/uploaders — danh sách người tải lên (cho dropdown lọc) ──
+  // Trả các sale có ảnh trong scope hiện tại + số lượng, để FE đổ vào dropdown "Người upload".
+  // Nhận kind/visibility để dropdown KHỚP đúng view (vd block picker chỉ ảnh công khai).
+  app.get(
+    '/api/v1/media/uploaders',
+    { preHandler: requireGrant('media', 'access') },
+    async (request: FastifyRequest) => {
+      const user = request.user!;
+      const userId = (user as any).userId ?? user.id;
+      const q = request.query as { kind?: string; visibility?: string };
+
+      const canViewAll = await userHasGrant(userId, 'media', 'view_all');
+      const scopeWhere = canViewAll
+        ? {}
+        : { OR: [{ ownerUserId: userId }, { visibility: 'public' }] };
+
+      const where: any = {
+        orgId: user.orgId,
+        archivedAt: null,
+        ownerUserId: { not: null },
+        ...scopeWhere,
+      };
+      if (q.kind) where.kind = q.kind;
+      if (q.visibility) where.visibility = q.visibility;
+
+      // groupBy lấy số ảnh mỗi owner trong 1 query, rồi join tên (chống N+1).
+      const rows = await prisma.mediaAsset.groupBy({
+        by: ['ownerUserId'],
+        where,
+        _count: { _all: true },
+      });
+      const ids = rows.map((r) => r.ownerUserId).filter((id): id is string => !!id);
+      const users = ids.length
+        ? await prisma.user.findMany({ where: { id: { in: ids } }, select: { id: true, fullName: true } })
+        : [];
+      const nameById = new Map(users.map((u) => [u.id, u.fullName]));
+      const uploaders = rows
+        .filter((r) => r.ownerUserId)
+        .map((r) => ({ id: r.ownerUserId!, name: nameById.get(r.ownerUserId!) ?? 'Không rõ', count: r._count._all }))
+        .sort((a, b) => b.count - a.count);
+      return { uploaders };
     },
   );
 
