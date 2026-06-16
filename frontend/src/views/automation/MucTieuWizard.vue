@@ -273,8 +273,12 @@
                   <span class="msg-item-badge badge-req"><v-icon size="12">mdi-lock-outline</v-icon> Bắt buộc</span>
                 </div>
                 <p class="msg-item-help">Lời nhắn gửi <strong>cùng lúc</strong> với lời mời kết bạn Zalo. Không thể tắt (KB Zalo phải kèm lời chào). Tối đa 200 ký tự.</p>
-                <textarea v-model="form.messages.friendRequest" class="ta" rows="2" maxlength="200" @focus="onMsgFocus($event, 'friendRequest')"></textarea>
+                <textarea v-model="form.messages.friendRequest" class="ta" rows="2" maxlength="200" :class="{ 'ta-invalid': !friendRequestHasName }" @focus="onMsgFocus($event, 'friendRequest')"></textarea>
                 <div class="ta-counter">{{ form.messages.friendRequest.length }}/200</div>
+                <p v-if="!friendRequestHasName" class="ta-warn">
+                  <v-icon size="13">mdi-alert-circle-outline</v-icon>
+                  Lời mời <strong>bắt buộc</strong> có biến <code>{name}</code> (tên khách). Bấm chip <code>{name}</code> bên dưới để chèn.
+                </p>
               </div>
 
               <!-- TIN 1 · CHÀO MỪNG -->
@@ -535,24 +539,16 @@
             </div>
           </div>
 
-          <!-- Input 2: Khoảng cách giữa các lần gửi (item 6 2026-06-16: làm rõ phạm vi) -->
-          <div class="safety-row">
-            <div class="safety-label">
-              Khoảng cách tối thiểu giữa 2 lần gửi (mỗi nick) <span class="req">*</span>
-              <div class="safety-help">SÀN an toàn cấp thấp: cùng 1 nick phải cách nhau ít nhất bấy nhiêu giữa 2 lần gửi BẤT KỲ (lời mời hoặc tin bám đuổi). Áp cho từng nick, KHÔNG phải giữa 2 nick khác nhau.</div>
-            </div>
-            <div class="safety-input-wrap">
-              <TimeAmountInput v-model="form.safetyRules.sendIntervalSeconds" base-unit="second" :units="['second','minute']" />
-              <div class="safety-help">Đây chỉ là sàn tối thiểu. Với <em>lời mời kết bạn</em>, nhịp thực tế do ô "Nhịp gửi lời mời mỗi nick" bên dưới quyết định (luôn ≥ sàn này). Mặc định 60 giây.</div>
-            </div>
-          </div>
+          <!-- (item 6 2026-06-16 — A) Ô "Khoảng cách tối thiểu 60s" ĐÃ CHUYỂN xuống nhóm
+               "Bám đuổi" + đổi tên theo đúng chức năng (chống gửi dồn tin). Trước đây nó nằm
+               đây cạnh "Nhịp gửi lời mời" gây hiểu nhầm là về lời mời. -->
 
           <!-- Input 3 (#3 2026-06-06): Nhịp gửi lời mời mỗi nick (min–max phút) -->
           <!-- Trước đây HARDCODE 20-40 phút trong hệ thống, ô anh nhập bị bỏ qua. -->
           <div class="safety-row">
             <div class="safety-label">
               Nhịp gửi lời mời mỗi nick <span class="req">*</span>
-              <div class="safety-help">Nhịp THỰC TẾ giữa 2 lời mời kết bạn của cùng 1 nick — random trong khoảng này. Đây là ô quyết định tốc độ gửi lời mời (đè lên sàn ở trên).</div>
+              <div class="safety-help">Nhịp THỰC TẾ giữa 2 lời mời kết bạn của cùng 1 nick — random trong khoảng này. Đây là ô quyết định tốc độ gửi lời mời.</div>
             </div>
             <div class="safety-input-wrap">
               <div class="num-row" style="gap: 8px; align-items: center;">
@@ -633,17 +629,31 @@
 
         <!-- Section 4: Bám đuổi -->
         <div class="safety-section">
-          <div class="safety-section-title"><v-icon size="16">mdi-flash-outline</v-icon> Bám đuổi (sau lời chào kết bạn) <span class="badge">2 input</span></div>
+          <div class="safety-section-title"><v-icon size="16">mdi-flash-outline</v-icon> Bám đuổi (sau lời chào kết bạn) <span class="badge">3 input</span></div>
 
-          <!-- Input 5: Delay sau friend-request -->
+          <!-- (item 6 2026-06-16 — A) Chuyển ô "Khoảng cách tối thiểu" về đây + đổi tên
+               theo đúng chức năng: chống gửi DỒN tin của 1 nick. Cùng field cũ
+               (sendIntervalSeconds), backend giữ nguyên. -->
+          <div class="safety-row">
+            <div class="safety-label">
+              Giãn cách tối thiểu giữa 2 lần gửi của 1 nick <span class="req">*</span>
+              <div class="safety-help">Chống gửi dồn: cùng 1 nick phải cách nhau ít nhất bấy nhiêu giữa 2 lần gửi liên tiếp. Áp cho từng nick (không phải giữa 2 nick).</div>
+            </div>
+            <div class="safety-input-wrap">
+              <TimeAmountInput v-model="form.safetyRules.sendIntervalSeconds" base-unit="second" :units="['second','minute']" />
+              <div class="safety-help">Chủ yếu tác động tới <em>chuỗi tin bám đuổi</em> gửi sát nhau (lời mời đã cách 20–40 phút nên hiếm khi chạm sàn này). Mặc định 60 giây. Muốn test nhanh: đặt = 1 giây.</div>
+            </div>
+          </div>
+
+          <!-- Input 5: Delay sau friend-request (2026-06-16: hỗ trợ GIÂY, mặc định 10s, 0 = ngay) -->
           <div class="safety-row">
             <div class="safety-label">
               Delay sau lời mời <v-icon size="14">mdi-arrow-right</v-icon> bước 1 bám đuổi <span class="req">*</span>
               <div class="safety-help">Tính từ khi gửi lời mời kết bạn (không phụ thuộc KH đã accept hay chưa)</div>
             </div>
             <div class="safety-input-wrap">
-              <TimeAmountInput v-model="form.safetyRules.delayAfterFriendRequestMin" base-unit="minute" :units="['minute','hour','day']" />
-              <div class="safety-help">"Spam HẾT luồng" — KH KHÔNG cần accept vẫn nhận đủ chuỗi qua stranger inbox</div>
+              <TimeAmountInput v-model="form.safetyRules.delayAfterFriendRequestSeconds" base-unit="second" :units="['second','minute','hour']" />
+              <div class="safety-help">Mặc định 10 giây. Đặt <strong>0</strong> = gửi bước 1 ngay sau lời mời (không delay). "Spam HẾT luồng" — KH KHÔNG cần accept vẫn nhận đủ chuỗi qua stranger inbox.</div>
             </div>
           </div>
 
@@ -878,7 +888,7 @@
               </span>
             </div>
             <div class="time-row">
-              <span class="lbl">Khoảng cách giữa các lần gửi</span>
+              <span class="lbl">Giãn cách tối thiểu giữa 2 lần gửi / nick</span>
               <span class="val">
                 {{ formatNum(form.safetyRules.sendIntervalSeconds) }} giây
                 <span class="hint-badge safety-badge">
@@ -911,10 +921,14 @@
             <div class="time-row">
               <span class="lbl">Delay sau khi gửi kết bạn</span>
               <span class="val">
-                {{ formatNum(form.safetyRules.delayAfterFriendRequestMin) }} phút
-                <span class="hint-badge safety-badge">
-                  ~ {{ (form.safetyRules.delayAfterFriendRequestMin / 60).toFixed(form.safetyRules.delayAfterFriendRequestMin % 60 === 0 ? 0 : 1) }} giờ
-                </span>
+                <template v-if="form.safetyRules.delayAfterFriendRequestSeconds <= 0">Gửi ngay (không delay)</template>
+                <template v-else-if="form.safetyRules.delayAfterFriendRequestSeconds < 60">{{ form.safetyRules.delayAfterFriendRequestSeconds }} giây</template>
+                <template v-else>
+                  {{ formatNum(form.safetyRules.delayAfterFriendRequestSeconds) }} giây
+                  <span class="hint-badge safety-badge">
+                    ~ {{ (form.safetyRules.delayAfterFriendRequestSeconds / 60).toFixed(form.safetyRules.delayAfterFriendRequestSeconds % 60 === 0 ? 0 : 1) }} phút
+                  </span>
+                </template>
               </span>
             </div>
             <div class="time-row">
@@ -996,6 +1010,18 @@
       </div>
     </div>
 
+    <!-- 2026-06-16 — xác nhận Hủy (HS theme, thay window.confirm) -->
+    <ConfirmActionModal
+      v-model:open="cancelConfirmOpen"
+      tone="danger"
+      title="Hủy bỏ tạo Mục tiêu?"
+      message="Mọi thông tin đã nhập sẽ mất và không khôi phục được."
+      confirm-text="Hủy bỏ"
+      cancel-text="Tiếp tục soạn"
+      @confirm="doCancelConfirmed"
+      @cancel="cancelConfirmOpen = false"
+    />
+
   </div>
 </template>
 
@@ -1005,7 +1031,45 @@ import { useRouter, useRoute } from 'vue-router';
 import { api } from '@/api';
 import TimeAmountInput from '@/components/automation/TimeAmountInput.vue';
 import NotifyOwnerBox from '@/components/automation/NotifyOwnerBox.vue';
+import ConfirmActionModal from '@/components/chat/ConfirmActionModal.vue';
 import { TEMPLATE_VARIABLES } from '@/constants/template-variables';
+import { useToast } from '@/composables/use-toast';
+
+const toast = useToast();
+
+// 2026-06-16 — Việt hoá lỗi tạo/sửa Mục tiêu từ mã lỗi backend (sale dễ hiểu).
+// Backend trả { error: '<code>', hint?: '<tiếng Việt>' }. Ưu tiên map dưới → hint → mã.
+const TRIGGER_ERROR_VN: Record<string, string> = {
+  name_required: 'Chưa đặt tên Mục tiêu.',
+  listId_required: 'Chưa chọn tệp khách hàng.',
+  nickIds_required: 'Chưa chọn nick gửi mời.',
+  successorSequenceId_required: 'Chưa chọn chuỗi kịch bản bám đuổi.',
+  greetingTemplate_required: 'Chưa nhập nội dung "Lời mời kết bạn".',
+  greetingTemplate_too_long: '"Lời mời kết bạn" quá dài — tối đa 200 ký tự.',
+  greetingTemplate_missing_name:
+    '"Lời mời kết bạn" phải có biến {name} (tên khách). Bấm chip {name} để chèn vào lời mời rồi thử lại.',
+  welcomeMessageTemplate_too_long: '"Tin chào mừng" quá dài — tối đa 4000 ký tự.',
+  welcomeMessageTemplate_missing_var: '"Tin chào mừng" phải có biến {name} hoặc {gender}.',
+  workingHours_invalid_range: 'Giờ hoạt động chưa hợp lệ: giờ bắt đầu phải nhỏ hơn giờ kết thúc.',
+  sendIntervalSeconds_invalid: 'Giãn cách tối thiểu giữa 2 lần gửi chưa hợp lệ.',
+  delayAfterFriendRequestSeconds_invalid: 'Delay sau lời mời chưa hợp lệ (0–604800 giây).',
+  delayAfterFriendRequestMin_invalid: 'Delay sau lời mời chưa hợp lệ.',
+  friendReqIntervalMin_invalid: 'Nhịp gửi lời mời (tối thiểu) chưa hợp lệ.',
+  friendReqIntervalMax_invalid: 'Nhịp gửi lời mời (tối đa) chưa hợp lệ.',
+  friendReqInterval_range: 'Nhịp gửi lời mời: giá trị tối đa phải ≥ tối thiểu.',
+  pauseHoursOnReply_invalid: 'Thời gian tạm dừng khi KH tương tác chưa hợp lệ.',
+  multinickThreshold_invalid: 'Ngưỡng "bỏ qua KH nhiều nick" chưa hợp lệ.',
+  trigger_terminal_state: 'Mục tiêu đã huỷ/hoàn tất nên không sửa được. Hãy tạo Mục tiêu mới.',
+  trigger_not_found: 'Không tìm thấy Mục tiêu.',
+};
+function friendlyTriggerError(err: any): string {
+  const code = err?.response?.data?.error as string | undefined;
+  const hint = err?.response?.data?.hint as string | undefined;
+  if (code && TRIGGER_ERROR_VN[code]) return TRIGGER_ERROR_VN[code];
+  if (hint) return hint;
+  if (code) return code;
+  return err?.message || 'Có lỗi xảy ra, thử lại sau.';
+}
 
 // CareSession 2026-06-07: cấu hình lắng nghe (7 event × 3 đích) đã TÁCH sang trang
 // chung cấp tổ chức /marketing/care-listen. Wizard KHÔNG còn cấu hình lắng nghe.
@@ -1168,7 +1232,7 @@ const form = ref({
     sendIntervalSeconds: 60,        // Input 2 (1 phút)
     recencyDays: 30,                // Input 3 (cross-nick friendship recency)
     multinickThreshold: 0,          // Input 4 (0 = off)
-    delayAfterFriendRequestMin: 60, // Input 5 (~ 1h)
+    delayAfterFriendRequestSeconds: 10, // Input 5 — 2026-06-16: giây, mặc định 10s (0 = ngay)
     pauseHoursOnReply: 24,          // Input 6 (P2.1: KH reply → pause 24h)
     // #3 2026-06-06 (Anh chốt): nhịp gửi lời mời mỗi nick (phút) — trước đây HARDCODE
     // 20-40 phút trong nick-worker, ô UI bị phớt lờ. Giờ Anh nhập đây, worker đọc thật.
@@ -1219,8 +1283,13 @@ const canSaveDraft = computed(() =>
 // Đánh dấu giữ chủ ý (chưa nối nút) để build không báo unused — sẽ dùng ở Đợt 2.
 void canSaveDraft;
 
+// 2026-06-16 — Lời mời kết bạn BẮT BUỘC có {name} (backend chặn). Guard sớm tại Step 2
+// để sale thấy lỗi ngay tại ô, không đợi tới lúc bấm Tạo mới báo.
+const friendRequestHasName = computed(() => form.value.messages.friendRequest.includes('{name}'));
+
 const canNextStep2 = computed(() => {
   return form.value.messages.friendRequest.trim().length > 0
+    && friendRequestHasName.value
     && form.value.messages.welcome.trim().length > 0
     && !!form.value.successorSequenceId;
 });
@@ -1231,7 +1300,7 @@ const canNextStep3 = computed(() => {
   // Required fields with valid ranges:
   if (!r.quietHoursStart || !r.quietHoursEnd) return false;
   if (r.sendIntervalSeconds < 1 || r.sendIntervalSeconds > 3600) return false;
-  if (r.delayAfterFriendRequestMin < 0 || r.delayAfterFriendRequestMin > 10080) return false;
+  if (r.delayAfterFriendRequestSeconds < 0 || r.delayAfterFriendRequestSeconds > 604800) return false;
   if (r.pauseHoursOnReply < 1 || r.pauseHoursOnReply > 720) return false;
   // Quiet hours start < end check (giờ VN):
   const startH = parseInt(r.quietHoursStart.split(':')[0] || '0', 10);
@@ -1516,10 +1585,14 @@ function goStep(n: number) {
   if (n === 4) loadPreview();
 }
 
+// 2026-06-16 — thay window.confirm bằng ConfirmActionModal (HS theme).
+const cancelConfirmOpen = ref(false);
 function onCancel() {
-  if (confirm('Hủy bỏ tạo Mục tiêu? Mọi thay đổi sẽ mất.')) {
-    router.push('/marketing/triggers');
-  }
+  cancelConfirmOpen.value = true;
+}
+function doCancelConfirmed() {
+  cancelConfirmOpen.value = false;
+  router.push('/marketing/triggers');
 }
 
 function computeETALocal() {
@@ -1649,7 +1722,7 @@ function buildSubmitPayload() {
       sendIntervalSeconds: form.value.safetyRules.sendIntervalSeconds,
       recencyDays: form.value.safetyRules.recencyDays,
       multinickThreshold: form.value.safetyRules.multinickThreshold,
-      delayAfterFriendRequestMin: form.value.safetyRules.delayAfterFriendRequestMin,
+      delayAfterFriendRequestSeconds: form.value.safetyRules.delayAfterFriendRequestSeconds,
       pauseHoursOnReply: form.value.safetyRules.pauseHoursOnReply,
       // #3 2026-06-06 — nhịp gửi + sàn welcome + cửa sổ warm (Anh nhập trên UI).
       friendReqIntervalMinMinutes: form.value.safetyRules.friendReqIntervalMinMinutes,
@@ -1675,11 +1748,11 @@ async function submit() {
   // next-tick nên trong khoảng đó nút vẫn bấm được → guard JS chặn chắc chắn.
   if (submitting.value) return;
   if (!canNextStep1.value || !canNextStep2.value || !canNextStep3.value) {
-    alert('Form chưa đủ thông tin. Quay lại các bước trước để bổ sung.');
+    toast.warning('Chưa đủ thông tin. Hãy quay lại các bước trước để bổ sung.');
     return;
   }
   if (!isEditMode.value && form.value.startMode === 'scheduled' && scheduledError.value) {
-    alert(scheduledError.value);
+    toast.warning(scheduledError.value);
     return;
   }
   submitting.value = true;
@@ -1721,7 +1794,7 @@ async function submit() {
   } catch (err: any) {
     submitting.value = false;
     const verb = isEditMode.value ? 'Lưu' : 'Tạo';
-    alert(`${verb} Mục tiêu thất bại: ` + (err?.response?.data?.error ?? err?.message ?? 'unknown'));
+    toast.error(`${verb} Mục tiêu thất bại: ${friendlyTriggerError(err)}`, 6000);
   }
 }
 
@@ -1781,7 +1854,9 @@ async function loadForEdit(triggerId: string): Promise<void> {
       if (typeof s.sendIntervalSeconds === 'number') form.value.safetyRules.sendIntervalSeconds = s.sendIntervalSeconds;
       if (typeof s.recencyDays === 'number') form.value.safetyRules.recencyDays = s.recencyDays;
       if (typeof s.multinickThreshold === 'number') form.value.safetyRules.multinickThreshold = s.multinickThreshold;
-      if (typeof s.delayAfterFriendRequestMin === 'number') form.value.safetyRules.delayAfterFriendRequestMin = s.delayAfterFriendRequestMin;
+      // 2026-06-16 — ưu tiên giây; Mục tiêu cũ chỉ có phút → ×60.
+      if (typeof s.delayAfterFriendRequestSeconds === 'number') form.value.safetyRules.delayAfterFriendRequestSeconds = s.delayAfterFriendRequestSeconds;
+      else if (typeof s.delayAfterFriendRequestMin === 'number') form.value.safetyRules.delayAfterFriendRequestSeconds = s.delayAfterFriendRequestMin * 60;
       if (typeof s.pauseHoursOnReply === 'number') form.value.safetyRules.pauseHoursOnReply = s.pauseHoursOnReply;
     }
     if (t.skipRules && typeof t.skipRules === 'object') {
@@ -1799,7 +1874,7 @@ async function loadForEdit(triggerId: string): Promise<void> {
     form.value.scheduledAt = null;
   } catch (err: any) {
     console.error('[muc-tieu-wizard] loadForEdit failed', err);
-    alert('Không tải được Mục tiêu để sửa: ' + (err?.response?.data?.error ?? err?.message ?? 'unknown'));
+    toast.error('Không tải được Mục tiêu để sửa: ' + friendlyTriggerError(err), 6000);
     router.push('/marketing/triggers');
   } finally {
     editLoading.value = false;
@@ -2288,7 +2363,18 @@ textarea.ta {
   box-sizing: border-box;
 }
 textarea.ta:focus { border-color: var(--primary); outline: none; box-shadow: 0 0 0 3px var(--primary-bg); }
+/* item 2026-06-16: cảnh báo lời mời thiếu {name} */
+textarea.ta.ta-invalid { border-color: var(--danger); }
+textarea.ta.ta-invalid:focus { box-shadow: 0 0 0 3px var(--danger-bg); }
 .ta-counter { font-size: 11px; color: var(--text-3); text-align: right; margin-top: 4px; }
+.ta-warn {
+  display: flex; align-items: center; gap: 5px;
+  font-size: 11.5px; color: var(--danger); margin-top: 4px; font-weight: 500;
+}
+.ta-warn code {
+  font-family: var(--mono); background: var(--danger-bg);
+  color: var(--danger); padding: 0 4px; border-radius: 3px; font-size: 11px;
+}
 
 /* VAR CHIPS */
 .var-chips { display: flex; gap: 6px; margin-top: 12px; flex-wrap: wrap; align-items: center; }
