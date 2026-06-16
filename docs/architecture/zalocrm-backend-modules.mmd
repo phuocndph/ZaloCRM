@@ -1,0 +1,16 @@
+graph TD
+  APP["backend/src/app.ts"]
+
+  APP --> IDA["Identity & Access"]
+  APP --> ZI["Zalo Integration"]
+  APP --> CRM["CRM Core"]
+  APP --> INT["Growth & Intelligence"]
+  APP --> REP["Reporting"]
+  APP --> PLT["Platform / Shared"]
+
+  IDA --> IDA_M["auth, rbac, privacy"]
+  ZI --> ZI_M["zalo, system-notifications"]
+  CRM --> CRM_M["contacts, chat, tags, lead-pool, search"]
+  INT --> INT_M["scoring, engagement, automation, campaign, ai"]
+  REP --> REP_M["analytics, dashboard"]
+  PLT --> PLT_M["api, integrations, notifications, branding, activity, media"]

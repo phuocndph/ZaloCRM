@@ -1,0 +1,19 @@
+graph LR
+  ORG["Organization"]
+  USER["User / Team / Department"]
+  ZA["ZaloAccount (nick)"]
+  CONTACT["Contact (KH Cha - manager view, aggregate)"]
+  FRIEND["Friend (per-nick care card - sale view)"]
+  CONV["Conversation / Message"]
+  SUP["Note / Appointment / ActivityLog"]
+  SCORE["leadScore + 4-dim breakdown (E/I/F/V)"]
+
+  ORG --> USER
+  ORG --> ZA
+  ORG --> CONTACT
+  CONTACT -->|"1 to N (one per nick x identity)"| FRIEND
+  ZA -->|owns| FRIEND
+  FRIEND --> CONV
+  CONTACT --> SUP
+  FRIEND -.score primary.-> SCORE
+  CONTACT -.aggregate MAX.-> SCORE

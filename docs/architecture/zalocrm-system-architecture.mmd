@@ -1,0 +1,30 @@
+graph TD
+  subgraph Client["Frontend - Vue 3 / Vite / Pinia / Vuetify"]
+    UI["25 Views: Chat, Contacts, Friends, Dashboard, Automation, Scoring, RBAC, Mobile"]
+    APIC["API client (composables: use-chat / use-contacts / use-scoring ...)"]
+    WSC["Socket.IO client"]
+  end
+
+  subgraph Server["Backend - Node ESM / Fastify 5 / Prisma 7 / TypeScript"]
+    APP["app.ts (entry + plugins)"]
+    MOD["23 modules: auth, zalo, contacts, chat, automation, scoring, rbac, privacy ..."]
+    RT["shared/realtime (Socket.IO server)"]
+  end
+
+  subgraph DataLayer["Data layer"]
+    PG[("PostgreSQL 16 - 93 Prisma models")]
+    REDIS[("Redis 7 - cache / queue")]
+    MINIO[("MinIO - media / attachments")]
+  end
+
+  ZALO["Zalo personal accounts (zca-js: pool / socket / listener per nick)"]
+
+  APIC -->|REST| APP
+  WSC <-->|live events| RT
+  APP --> MOD
+  MOD --> RT
+  MOD --> PG
+  MOD --> REDIS
+  MOD --> MINIO
+  MOD <-->|friend + message sync every 15m| ZALO
+  RT -.patch UI.-> WSC
