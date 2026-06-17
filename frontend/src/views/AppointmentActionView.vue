@@ -116,9 +116,15 @@ onMounted(load);
 </script>
 
 <style scoped>
-.aa-wrap { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 18px;
+/* 2026-06-17 FIX mobile thật lệch (Chrome desktop OK): 100vh tính cả vùng sau thanh URL
+   động trên mobile → card căn giữa bị đẩy lệch, nút Hoàn thành/Huỷ rớt khỏi màn.
+   → dùng 100dvh (vùng nhìn thấy thật) + fallback 100vh. Căn giữa bằng margin:auto trên
+   card (KHÔNG dùng align-items:center) để khi card cao hơn màn vẫn cuộn được, không cụt
+   đỉnh. index.html có viewport-fit=cover → chừa safe-area (notch/home indicator). */
+.aa-wrap { min-height: 100vh; min-height: 100dvh; display: flex; justify-content: center; overflow-y: auto;
+  padding: calc(16px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right)) calc(16px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
   background: linear-gradient(160deg, #0e445a 0%, #06222f 100%); }
-.aa-card { width: 100%; max-width: 380px; background: #fff; border-radius: 16px; padding: 22px 20px 24px;
+.aa-card { width: 100%; max-width: 380px; margin: auto; background: #fff; border-radius: 16px; padding: 22px 20px 24px;
   box-shadow: 0 16px 48px rgba(0,0,0,.3); font-family: Inter, system-ui, -apple-system, sans-serif; color: #141a24; }
 .aa-brand { display: flex; align-items: center; gap: 8px; font-weight: 800; font-size: 14px; color: #0b5880; margin-bottom: 16px; }
 .aa-logo { width: 26px; height: 26px; border-radius: 8px; background: linear-gradient(135deg, #1786be, #0b5880); color: #fff;
