@@ -107,9 +107,11 @@
 .rpt-scope .muted{color:var(--rk-muted)}.rpt-scope .faint{color:var(--rk-faint)}.rpt-scope .right{text-align:right}.rpt-scope .b{font-weight:700}
 .rpt-scope .rk-loading{padding:48px;text-align:center;color:var(--rk-faint);font-size:13px}
 .rpt-scope .rk-empty{padding:28px;text-align:center;color:var(--rk-faint);font-size:12.5px;font-style:italic}
-/* sub-nav (shell) */
-.rpt-shell{background:var(--bg,#f5f7fa);min-height:calc(100vh - 56px)}
-.rpt-subnav{display:flex;gap:4px;overflow-x:auto;background:#fff;border-bottom:1px solid #e6e9ef;padding:0 18px}
+/* shell — app khoá cuộn cấp trang (main.css overflow:hidden) nên shell PHẢI tự cuộn:
+   flex-column chiều cao = viewport - topnav(48px); sub-nav cố định; vùng nội dung cuộn. */
+.rpt-shell{background:var(--bg,#f5f7fa);height:calc(100vh - var(--smax-topnav-h, 48px));display:flex;flex-direction:column;overflow:hidden}
+.rpt-subnav{flex:none;display:flex;gap:4px;overflow-x:auto;background:#fff;border-bottom:1px solid #e6e9ef;padding:0 18px}
+.rpt-shell>.rpt-scope{flex:1 1 auto;min-height:0;overflow-y:auto}
 .rpt-subnav a{display:inline-flex;align-items:center;gap:7px;padding:13px 14px;font-size:13px;font-weight:600;color:#6b7785;text-decoration:none;border-bottom:2px solid transparent;white-space:nowrap}
 .rpt-subnav a:hover{color:var(--brand-700,#0b5880)}
 .rpt-subnav a.router-link-active{color:var(--brand,#1786be);border-bottom-color:var(--brand,#1786be)}
