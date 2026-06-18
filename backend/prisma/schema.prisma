@@ -555,6 +555,8 @@ model Contact {
   ward           String?
   addressLine    String?   @map("address_line")
   gender         String? // male/female/other/unknown
+  // 2026-06-18: true khi sale chỉnh giới tính TAY → sync SDK (zinstant/cron) KHÔNG đè ngược.
+  genderLocked   Boolean   @default(false) @map("gender_locked")
   birthYear      Int?      @map("birth_year")
   birthDate      DateTime? @map("birth_date") @db.Date
   occupation     String?

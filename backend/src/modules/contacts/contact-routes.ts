@@ -964,7 +964,12 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
       };
       // Hồ sơ KH tổng (CustomerProfileDialog 2026-06-03): cho sửa demographic +
       // multi-phone từ UI hồ sơ. Chỉ patch khi field xuất hiện trong body (undefined → giữ nguyên).
-      if (body.gender !== undefined) updateData.gender = body.gender || null;
+      // Sale chỉnh giới tính TAY → khoá để sync SDK (zinstant/cron) không đè ngược (#2 2026-06-18).
+      // Bỏ trống = mở khoá lại (cho SDK tự điền).
+      if (body.gender !== undefined) {
+        updateData.gender = body.gender || null;
+        updateData.genderLocked = !!body.gender;
+      }
       if (body.occupation !== undefined) updateData.occupation = body.occupation || null;
       if (body.addressLine !== undefined) updateData.addressLine = body.addressLine || null;
       if (body.province !== undefined) updateData.province = body.province || null;

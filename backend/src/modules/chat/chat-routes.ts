@@ -1026,6 +1026,7 @@ export async function chatRoutes(app: FastifyInstance) {
       statusRef: { id: string; name: string; color: string | null; order: number } | null;
       zaloLabels: unknown;
       crmTagsPerNick: unknown;
+      autoTags: unknown;
       aliasInNick: string | null;
     } | null = null;
     if (conversation.threadType === 'user' && conversation.contactId && conversation.externalThreadId) {
@@ -1045,6 +1046,8 @@ export async function chatRoutes(app: FastifyInstance) {
           statusRef: { select: { id: true, name: true, color: true, order: true } },
           zaloLabels: true,
           crmTagsPerNick: true,
+          autoTags: true, // FIX 2026-06-18: detail thiếu autoTags → mở chat rebuild tag
+                          // mất auto-tag (vd "Hoạt động"). List có autoTags; thêm để parity.
           aliasInNick: true,
         },
       });

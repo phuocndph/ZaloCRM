@@ -21,9 +21,11 @@ import { prisma } from '../../shared/database/prisma-client.js';
 import { logger } from '../../shared/utils/logger.js';
 import { zaloOps } from '../../shared/zalo-operations.js';
 
-// 03:00 mỗi ngày (giờ VN) — khung thấp điểm, ít đụng sale đang dùng.
-const CRON_SCHEDULE = '0 3 * * *';
-const MAX_PER_CYCLE = 200;   // trần KH/ngày — chặn burst rate-limit Zalo
+// #3 2026-06-18 (anh báo 16k KH có UID nhưng gender Unknown): tăng throughput để dọn tồn
+// đọng. Mỗi 4 giờ (6 lượt/ngày) × 400 = ~2400 KH/ngày → ~16k tồn dọn trong ~1 tuần. Nhịp an
+// toàn vẫn do THROTTLE_MS (1.5s/call) giữ — KHÔNG burst. (Trước: 03:00/ngày × 200 = ~80 ngày.)
+const CRON_SCHEDULE = '0 */4 * * *';
+const MAX_PER_CYCLE = 400;   // trần KH/lượt — throttle 1.5s/call vẫn chặn burst rate-limit
 const THROTTLE_MS = 1500;    // nghỉ giữa mỗi getUserInfo
 
 let cronRunning = false;
@@ -105,7 +107,7 @@ async function runCycle(): Promise<void> {
       friends: { some: { zaloAccount: { status: 'connected' } } },
     },
     select: {
-      id: true, orgId: true, gender: true, birthDate: true,
+      id: true, orgId: true, gender: true, genderLocked: true, birthDate: true,
       friends: {
         where: { zaloAccount: { status: 'connected' } },
         select: { zaloAccountId: true, zaloUidInNick: true },
@@ -134,7 +136,8 @@ async function runCycle(): Promise<void> {
       if (!profile) { skipped++; continue; }
 
       const data: { gender?: string; birthDate?: Date } = {};
-      if (c.gender == null) {
+      // #2 2026-06-18: tôn trọng khoá — KH đã chỉnh tay (genderLocked) thì không điền/đè.
+      if (c.gender == null && !c.genderLocked) {
         const g = mapGender(profile.gender);
         if (g) data.gender = g;
       }

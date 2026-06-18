@@ -593,16 +593,23 @@ export async function zinstantProxyRoutes(app: FastifyInstance): Promise<void> {
           const sdkAvatar = data.avatarBig || data.avatar || null;
           const sdkZaloName = data.zaloName || null;
 
+          // FIX #1 (2026-06-18, anh báo gender bị ép sai): tra contact theo zaloGlobalId
+          // (ID canonical XUYÊN NICK) thay vì zaloUid=uid (per-nick → click qua nick khác là
+          // TRẬT, fix không vào đúng KH → F5 lại về giá trị cũ). Fallback zaloUid khi thiếu globalId.
+          const gid = data.globalId && data.globalId !== 'undefined' ? data.globalId : null;
           const contact = await prisma.contact.findFirst({
-            where: { orgId: userForScope.orgId, zaloUid: uid },
+            where: gid
+              ? { orgId: userForScope.orgId, zaloGlobalId: gid }
+              : { orgId: userForScope.orgId, zaloUid: uid },
             // FIX 2026-06-03: Contact dùng `zaloUsername` (zalo_username), KHÔNG có
             // cột `zaloName` → typecheck fail + cập nhật tên Zalo từ SDK âm thầm hỏng.
-            select: { id: true, gender: true, avatarUrl: true, zaloUsername: true },
+            select: { id: true, gender: true, genderLocked: true, avatarUrl: true, zaloUsername: true },
           });
           if (!contact) return;
 
           const updateData: Record<string, unknown> = {};
-          if (sdkGender && contact.gender !== sdkGender) updateData.gender = sdkGender;
+          // FIX #2 (2026-06-18): KHÔNG đè gender nếu đã KHOÁ (sale chỉnh tay) → chống ghi đè ngược.
+          if (sdkGender && !contact.genderLocked && contact.gender !== sdkGender) updateData.gender = sdkGender;
           if (sdkAvatar && contact.avatarUrl !== sdkAvatar) updateData.avatarUrl = sdkAvatar;
           if (sdkZaloName && contact.zaloUsername !== sdkZaloName) updateData.zaloUsername = sdkZaloName;
 

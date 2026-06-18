@@ -388,8 +388,15 @@ async function sendTypingEvent(accountId: string, threadId: string, threadType: 
 }
 
 async function deleteMessage(accountId: string, msgId: string, cliMsgId: string, ownerId: string, threadId: string, threadType: 0 | 1, onlyMe: boolean) {
+  // FIX 2026-06-18: zca-js deleteMessage nhận OBJECT dest, không phải positional.
+  // Trước đây gọi positional → dest = msgId (string) → lib đọc dest.data.uidFrom của
+  // undefined → 500 "Cannot read properties of undefined (reading 'uidFrom')".
+  // ownerId = uidFrom (uid người gửi). threadType (0 user/1 group) → type.
   return exec({ accountId, category: 'chat_action', operation: 'deleteMessage' },
-    (api) => api.deleteMessage(msgId, cliMsgId, ownerId, threadId, threadType, onlyMe));
+    (api) => api.deleteMessage(
+      { data: { cliMsgId, msgId, uidFrom: ownerId }, threadId, type: threadType },
+      onlyMe,
+    ));
 }
 
 // FIX 2026-05-21: zca-js api.undo(payload, threadId, type) — payload object { msgId, cliMsgId }.
