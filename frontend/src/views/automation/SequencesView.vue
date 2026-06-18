@@ -73,21 +73,8 @@
             ></button>
           </div>
 
-          <!-- flow: step chain -->
-          <div v-if="seq.steps.length" class="flow">
-            <template v-for="(step, idx) in seq.steps" :key="step.stepId">
-              <div class="arr" v-if="idx > 0"><v-icon size="15">mdi-chevron-right</v-icon></div>
-              <div class="step">
-                <div class="si">
-                  <v-icon size="14">{{ stepActionIcon(seq, step.blockId) }}</v-icon>
-                  {{ stepActionLabel(seq, step.blockId) }}
-                </div>
-                <div class="sl">{{ stepBlockName(seq, step.blockId) }}</div>
-                <div class="sdelay">{{ stepDelayLabel(step.delayMinutes, idx) }}</div>
-              </div>
-            </template>
-          </div>
-          <div v-else class="flow-empty">Chưa có bước nào</div>
+          <!-- flow: đường đua C (2026-06-18) — thay chuỗi ngang tràn cũ; component tự lo empty -->
+          <SequenceFlowMap :steps="flowSteps(seq)" />
 
           <!-- runtime rule chips -->
           <div class="srules">
@@ -348,7 +335,6 @@ import { useRouter } from 'vue-router';
 import { sequencesApi, blocksApi } from '@/api/automation';
 import {
   ACTION_TYPE_LABELS,
-  ACTION_TYPE_ICONS,
   type AutomationSequence,
   type SequenceStep,
   type SequenceRuntimeRules,
@@ -356,6 +342,7 @@ import {
   type BlockActionType,
 } from '@/api/automation/types';
 import SequenceStepEditor from '@/components/automation/phase7/SequenceStepEditor.vue';
+import SequenceFlowMap, { type FlowStep, type FlowCategory } from '@/components/automation/SequenceFlowMap.vue';
 import { useConfirm } from '@/composables/use-confirm';
 import SequencePreviewDialog from '@/components/chat/SequencePreviewDialog.vue';
 
@@ -454,17 +441,33 @@ function stepActionType(seq: AutomationSequence, blockId: string): BlockActionTy
   if (b) return b.actionType;
   return availableBlocks.value.find((x) => x.id === blockId)?.actionType ?? 'send_message';
 }
-function stepActionLabel(seq: AutomationSequence, blockId: string): string {
-  return ACTION_TYPE_LABELS[stepActionType(seq, blockId)];
-}
-function stepActionIcon(seq: AutomationSequence, blockId: string): string {
-  return ACTION_TYPE_ICONS[stepActionType(seq, blockId)] ?? 'mdi-help-circle-outline';
-}
+// stepActionLabel/stepActionIcon cũ đã gỡ (2026-06-18): SequenceFlowMap dùng ACTION_TYPE_LABELS
+// + actionCategory thay cho icon-per-step. ACTION_TYPE_ICONS không còn dùng → bỏ khỏi import.
 function stepDelayLabel(delayMinutes: number, idx: number): string {
   if (idx === 0 || !delayMinutes) return 'Ngay';
   if (delayMinutes % (60 * 24) === 0) return `+${delayMinutes / (60 * 24)} ngày`;
   if (delayMinutes % 60 === 0) return `+${delayMinutes / 60} giờ`;
   return `+${delayMinutes} phút`;
+}
+// 2026-06-18 — map loại hành động → nhóm màu cho SequenceFlowMap (đường đua C).
+function actionCategory(t: BlockActionType): FlowCategory {
+  if (t === 'send_message' || t === 'send_image' || t === 'send_file' || t === 'send_template') return 'message';
+  if (t === 'request_friend') return 'friend';
+  if (t === 'add_tag' || t === 'remove_tag') return 'tag';
+  return 'status'; // update_status | assign_user | update_lead_score
+}
+// Map step thật (blockId + delay) → FlowStep[] cho component đường đua. [] khi chưa có bước.
+function flowSteps(seq: AutomationSequence): FlowStep[] {
+  return seq.steps.map((s, i) => {
+    const at = stepActionType(seq, s.blockId);
+    return {
+      no: i + 1,
+      category: actionCategory(at),
+      label: ACTION_TYPE_LABELS[at] ?? 'Bước',
+      name: stepBlockName(seq, s.blockId),
+      when: stepDelayLabel(s.delayMinutes, i),
+    };
+  });
 }
 function formatNum(n: number | undefined | null): string {
   return (n ?? 0).toLocaleString('vi-VN');

@@ -498,20 +498,9 @@
                   </div>
                 </div>
 
-                <!-- Preview steps -->
-                <!-- item 5 2026-06-16: card 2 dòng gọn — dòng 1 tên KHỐI, dòng 2 thời điểm gửi -->
+                <!-- Preview steps — 2026-06-18: đường đua C (đồng nhất /marketing/sequences) -->
                 <div v-if="selectedSequence && sequenceSteps.length" class="chuoi-preview">
-                  <div v-for="(step, i) in sequenceSteps" :key="i" class="chuoi-row2">
-                    <span class="n">{{ i + 1 }}</span>
-                    <div class="r-body">
-                      <div class="r-title">{{ stepLabel(step, i) }}</div>
-                      <div class="r-sub">
-                        <v-icon size="12">mdi-timer-outline</v-icon>
-                        <template v-if="i === 0">Gửi ngay sau Tin chào mừng</template>
-                        <template v-else>Chờ {{ delayLabel(step) }} sau bước {{ i }}</template>
-                      </div>
-                    </div>
-                  </div>
+                  <SequenceFlowMap :steps="flowSteps" />
                 </div>
 
                 <div v-if="selectedSequence" class="chuoi-total">
@@ -1083,6 +1072,8 @@ import { useRouter, useRoute } from 'vue-router';
 import { api } from '@/api';
 import TimeAmountInput from '@/components/automation/TimeAmountInput.vue';
 import NotifyOwnerBox from '@/components/automation/NotifyOwnerBox.vue';
+import SequenceFlowMap, { type FlowStep, type FlowCategory } from '@/components/automation/SequenceFlowMap.vue';
+import { ACTION_TYPE_LABELS, type BlockActionType } from '@/api/automation/types';
 import ConfirmActionModal from '@/components/chat/ConfirmActionModal.vue';
 import { TEMPLATE_VARIABLES } from '@/constants/template-variables';
 import { useToast } from '@/composables/use-toast';
@@ -1204,6 +1195,28 @@ const defaultFriendCap = ref(30);
 // 2026-06-16 — Step 2: map blockId → tên khối, load từ GET /automation/sequences/:id
 // khi chọn "Dùng chuỗi có sẵn" → preview hiển thị đúng tên khối mỗi bước.
 const sequenceBlockNames = ref<Record<string, string>>({});
+// 2026-06-18 — map blockId → loại hành động (tô màu segment đường đua SequenceFlowMap).
+const sequenceBlockTypes = ref<Record<string, BlockActionType>>({});
+
+function flowCategoryOf(t: BlockActionType): FlowCategory {
+  if (t === 'send_message' || t === 'send_image' || t === 'send_file' || t === 'send_template') return 'message';
+  if (t === 'request_friend') return 'friend';
+  if (t === 'add_tag' || t === 'remove_tag') return 'tag';
+  return 'status';
+}
+// Map bước chuỗi đang chọn → FlowStep[] cho đường đua C (đồng nhất với /marketing/sequences).
+const flowSteps = computed<FlowStep[]>(() =>
+  sequenceSteps.value.map((s, i) => {
+    const at = (s.blockId && sequenceBlockTypes.value[s.blockId]) || 'send_message';
+    return {
+      no: i + 1,
+      category: flowCategoryOf(at),
+      label: ACTION_TYPE_LABELS[at] ?? 'Bước',
+      name: stepLabel(s, i),
+      when: i === 0 ? 'Ngay' : delayLabel(s),
+    };
+  }),
+);
 
 // P2 Wave 4 #Edit 2026-06-02 — Edit-mode: route truyền `?edit=<triggerId>` →
 // wizard fetch GET /:id/edit hydrate form, submit gọi PATCH thay POST. Listid /
@@ -2045,11 +2058,13 @@ async function loadSequenceBlockNames(seqId: string) {
   if (!seqId) { sequenceBlockNames.value = {}; return; }
   try {
     const { data } = await api.get(`/automation/sequences/${seqId}`);
-    const blocks = (data?.blocks ?? []) as Array<{ id: string; name: string }>;
+    const blocks = (data?.blocks ?? []) as Array<{ id: string; name: string; actionType?: BlockActionType }>;
     sequenceBlockNames.value = Object.fromEntries(blocks.map(b => [b.id, b.name]));
+    sequenceBlockTypes.value = Object.fromEntries(blocks.map(b => [b.id, b.actionType ?? 'send_message']));
   } catch (err) {
     console.warn('[muc-tieu-wizard] loadSequenceBlockNames failed', err);
     sequenceBlockNames.value = {};
+    sequenceBlockTypes.value = {};
   }
 }
 
