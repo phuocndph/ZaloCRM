@@ -2517,8 +2517,17 @@ function detailText(ev: { type: string; detail?: unknown; metadata?: unknown }, 
       base = rawDetail || phaseLabel(ev.type);
   }
   // Log (verbose) kèm text thô nếu khác base — để tra cứu đầy đủ.
-  if (verbose && rawDetail && !base.includes(rawDetail.slice(0, 20))) {
-    return `${base} · ${rawDetail}`;
+  // 2026-06-18 (code-review): LỌC chuỗi kỹ thuật (jobId=/msgId=/"step N/M") khỏi text sale thấy —
+  // mấy cái đó nằm ở metadata rồi, hiện ra chỉ làm nhiễu. Sau lọc mà rỗng thì không nối.
+  if (verbose && rawDetail) {
+    const cleanDetail = rawDetail
+      .replace(/,?\s*(jobId|msgId)\s*=\s*[\w-]+/gi, '')
+      .replace(/^step\s+\d+\/\d+[\s,]*/i, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (cleanDetail && !base.includes(cleanDetail.slice(0, 20))) {
+      return `${base} · ${cleanDetail}`;
+    }
   }
   return base;
 }
@@ -2539,12 +2548,21 @@ function phaseTone(type: string): string {
     type === 'sequence_step_sent' ||
     type === 'sequence_done' ||
     type === 'nick_reconnected' ||
-    type === 'nick_resumed'
+    type === 'nick_resumed' ||
+    // 2026-06-18 (code-review): bổ sung family còn thiếu tone.
+    type === 'sequence_step_enqueued' ||
+    type === 'friend_sent' ||
+    type === 'auto_resumed' ||
+    type === 'scheduled_activated'
   ) return 'success';
   if (type === 'customer_reply' || type === 'converted_lead') return 'info';
   if (type === 'reaction_positive') return 'success';
   if (type === 'reaction_negative') return 'danger';
   if (type === 'customer_block' || type === 'nick_hold_reset' || type === 'campaign_timeout') return 'danger';
+  // 2026-06-18 (code-review): nhóm lỗi/chặn = đỏ.
+  if (type === 'sequence_step_failed' || type === 'soft_fail_escalated' || type === 'welcome_blocked' || type === 'customer_block_detected_on_invite') return 'danger';
+  // Nhóm "bị hoãn/bỏ qua/tạm dừng" = vàng (cần để ý, không phải lỗi cứng).
+  if (type === 'sequence_step_blocked' || type === 'friend_quota_exhausted' || type === 'sequence_step_skipped' || type === 'manual_pause' || type === 'manual_stop') return 'warn';
   if (type === 'warning' || type.startsWith('failed_') || type === 'nick_disconnected' || type === 'notification_sent') return 'warn';
   if (type === 'skipped' || type.startsWith('skipped_')) return 'neutral';
   return 'neutral';
@@ -2585,6 +2603,15 @@ function phaseLabel(type: string): string {
     sequence_step_skipped: 'Bỏ qua bước',
     sequence_step_failed: 'Lỗi gửi',
     friend_quota_exhausted: 'Hết lượt KB',
+    // 2026-06-18 (code-review): các loại trước đây hiện RAW tiếng Anh.
+    sequence_step_enqueued: 'Lên lịch bước kế',
+    friend_sent: 'Đã gửi lời mời',
+    welcome_blocked: 'Chặn tin chào',
+    manual_pause: 'Tạm dừng tay',
+    manual_stop: 'Dừng tay',
+    auto_resumed: 'Tự chạy lại',
+    scheduled_activated: 'Đã kích hoạt',
+    customer_block_detected_on_invite: 'KH chặn (lúc mời)',
   };
   return map[type] ?? type;
 }
@@ -2624,6 +2651,15 @@ function phaseMdi(type: string): string {
     sequence_step_skipped: 'mdi-skip-next-outline',
     sequence_step_failed: 'mdi-alert-outline',
     friend_quota_exhausted: 'mdi-account-clock-outline',
+    // 2026-06-18 (code-review).
+    sequence_step_enqueued: 'mdi-timer-sand',
+    friend_sent: 'mdi-send-outline',
+    welcome_blocked: 'mdi-cancel',
+    manual_pause: 'mdi-pause-circle-outline',
+    manual_stop: 'mdi-stop-circle-outline',
+    auto_resumed: 'mdi-play-circle-outline',
+    scheduled_activated: 'mdi-play-circle-outline',
+    customer_block_detected_on_invite: 'mdi-cancel',
   };
   return map[type] ?? 'mdi-circle-small';
 }
@@ -2647,24 +2683,58 @@ function shortAgo(iso: string | null | undefined): string {
   const day = Math.floor(hr / 24);
   return `${day} ngày`;
 }
+// 2026-06-18 (code-review): cột "Trạng thái" SUY THEO LOẠI SỰ KIỆN (ev.type) — KHÔNG theo
+// eventPriority (info/warning/urgent) như trước (không khớp key nào → rơi hết về "Thành công"
+// xanh, kể cả dòng lỗi/bị hoãn → anh không đoán được). Tái dùng class chip estatus có sẵn.
 function logStatusClass(ev: LogEvent): string {
-  if (ev.status === 'success') return 'running';
-  if (ev.status === 'reply') return 'reply';
-  if (ev.status === 'block') return 'block';
-  if (ev.status === 'lead') return 'lead';
-  if (ev.status === 'paused') return 'paused';
-  return 'running';
+  switch (ev.type) {
+    case 'sequence_step_sent': case 'welcome_sent': case 'friend_sent': case 'friend_request_sent':
+    case 'sequence_step_enqueued': case 'scheduled_activated': case 'auto_resumed':
+    case 'friend_accepted': case 'friend_already': case 'sequence_done':
+    case 'notification_sent': case 'reaction_positive': case 'nick_resumed': case 'nick_reconnected':
+      return 'running'; // xanh — tốt
+    case 'converted_lead':
+      return 'lead'; // tím
+    case 'sequence_step_blocked': case 'friend_quota_exhausted': case 'sequence_step_skipped':
+    case 'customer_reply': case 'manual_pause': case 'nick_disconnected': case 'campaign_timeout':
+    case 'nick_hold_reset': case 'reaction_negative':
+      return 'paused'; // cam — cần để ý / bị hoãn
+    case 'sequence_step_failed': case 'send_error': case 'soft_fail_escalated':
+    case 'customer_block': case 'customer_block_detected_on_invite': case 'welcome_blocked':
+      return 'no-zalo'; // đỏ — lỗi / chặn
+    case 'manual_stop':
+      return 'stopped'; // xám đậm — dừng tay
+    default:
+      return 'block'; // xám trung tính
+  }
 }
+// 2026-06-18 (code-review): nhãn trạng thái suy theo loại sự kiện → đọc-là-đoán-được kết quả.
 function logStatusLabel(ev: LogEvent): string {
-  const map: Record<string, string> = {
-    success: 'Thành công',
-    reply: 'Dừng cho KH',
-    block: 'Dừng cho nick',
-    lead: 'Đã thành Lead',
-    paused: 'Tạm dừng',
-    failed: 'Lỗi',
-  };
-  return map[ev.status ?? ''] ?? 'Thành công';
+  switch (ev.type) {
+    case 'sequence_step_sent': case 'welcome_sent': return 'Đã gửi';
+    case 'friend_sent': case 'friend_request_sent': return 'Đã gửi lời mời';
+    case 'sequence_step_enqueued': return 'Đã lên lịch';
+    case 'scheduled_activated': return 'Đã kích hoạt';
+    case 'auto_resumed': case 'nick_resumed': case 'nick_reconnected': return 'Tự chạy lại';
+    case 'friend_accepted': case 'friend_already': return 'Đã kết bạn';
+    case 'sequence_done': return 'Hoàn tất';
+    case 'converted_lead': return 'Đã thành Lead';
+    case 'sequence_step_blocked': case 'friend_quota_exhausted': return 'Bị hoãn';
+    case 'sequence_step_skipped': return 'Bỏ qua';
+    case 'sequence_step_failed': case 'send_error': case 'soft_fail_escalated': return 'Lỗi gửi';
+    case 'customer_reply': return 'KH trả lời';
+    case 'customer_block': case 'customer_block_detected_on_invite': return 'KH chặn';
+    case 'welcome_blocked': return 'Chặn tin chào';
+    case 'manual_pause': return 'Tạm dừng tay';
+    case 'manual_stop': return 'Đã dừng tay';
+    case 'nick_disconnected': return 'Nick ngắt';
+    case 'nick_hold_reset': return 'Reset nick';
+    case 'campaign_timeout': return 'Hết hạn chiến dịch';
+    case 'notification_sent': return 'Đã báo nội bộ';
+    case 'reaction_positive': return 'KH thả tim';
+    case 'reaction_negative': return 'KH phản ứng xấu';
+    default: return '—';
+  }
 }
 
 function estimateDays(remaining: number, nicks: NickStat[]): number {
