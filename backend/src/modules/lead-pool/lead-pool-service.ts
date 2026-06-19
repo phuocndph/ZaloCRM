@@ -2467,6 +2467,11 @@ async function countTotalPoolAvailable(
       ${selfReclaimFilter}
   `;
 
+  // 2026-06-19 (D opt-in): KPI "Pool chờ chia" PHẢI khớp pool thực tế — chỉ đếm tệp ĐƯỢC TÍCH.
+  // Rỗng = không tệp nào (AND FALSE) → khớp serve/preview (cl.id = ANY('{}')). Sanitize UUID.
+  const listClause = config.sourceListIds.length > 0
+    ? `AND cl.id IN (${config.sourceListIds.map((id) => `'${String(id).replace(/[^a-zA-Z0-9-]/g, '')}'`).join(',')})`
+    : 'AND FALSE';
   const customerListSql = `
     SELECT COUNT(*)::INTEGER AS cnt
     FROM customer_list_entries cle
@@ -2474,6 +2479,7 @@ async function countTotalPoolAvailable(
     WHERE cl.org_id = ${safeOrgId}
       AND cl.shareable_to_pool = true
       AND cl.archived_at IS NULL
+      ${listClause}
       AND cle.status IN ('validated', 'enriched')
       AND cle.phone_valid = true
       AND (
