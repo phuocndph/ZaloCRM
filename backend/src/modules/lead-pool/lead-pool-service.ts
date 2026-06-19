@@ -50,8 +50,8 @@ interface PoolConfig {
   // 2026-06-19 (C): mỗi câu = {text, styles} (Zalo-native, như Khối) → preview + gửi-thẳng có
   // màu/đậm. Tương thích ngược: câu cũ lưu string → coi như {text, styles:[]} (text trơn).
   greetingTemplates: GreetingTemplate[];
-  // 2026-06-19 (D) — pool chỉ lấy lead từ các tệp KH này (customer_list ids). Rỗng = lấy
-  // MỌI tệp có shareable_to_pool=true (hành vi cũ). Chỉ áp khi nguồn 'customer_list' đang bật.
+  // 2026-06-19 (D, anh chốt opt-in) — pool CHỈ lấy lead từ các tệp KH được TÍCH (customer_list
+  // ids). Rỗng = KHÔNG lấy tệp nào (phải tích mới lấy — đúng "không lấy hết tất cả tệp").
   sourceListIds: string[];
 }
 
@@ -1232,8 +1232,9 @@ async function queryCustomerListCandidatesTx(
     WHERE cl.org_id = $1
       AND cl.shareable_to_pool = true
       AND cl.archived_at IS NULL
-      -- 2026-06-19 (D): nếu admin chọn tệp cụ thể ($6 non-empty) → chỉ lấy các tệp đó.
-      AND ($6::text[] = '{}'::text[] OR cl.id = ANY($6::text[]))
+      -- 2026-06-19 (D, anh chốt): PHẢI tích tệp mới lấy → chỉ lấy tệp trong source_list_ids.
+      -- Rỗng = cl.id = ANY('{}') = KHÔNG khớp tệp nào → pool ngừng kéo (opt-in, đúng "không lấy hết").
+      AND cl.id = ANY($6::text[])
       AND cle.status IN ('validated', 'enriched')
       AND cle.phone_valid = true
       AND (
@@ -2125,7 +2126,7 @@ export async function previewPool(args: {
       ? queryForgottenCandidates(args.orgId, args.userId, config, limit)
       : Promise.resolve([] as PriorityCandidate[]),
     config.enabledSources.includes('customer_list')
-      ? queryCustomerListPreview(args.orgId, args.userId, limit, config.cooldownAfterNoteDays, config.selfReclaimLockDays)
+      ? queryCustomerListPreview(args.orgId, args.userId, limit, config.cooldownAfterNoteDays, config.selfReclaimLockDays, config.sourceListIds)
       : Promise.resolve([] as PriorityCandidate[]),
   ]);
 
@@ -2494,7 +2495,7 @@ async function countTotalPoolAvailable(
 }
 
 // Variant non-tx của queryCustomerListCandidates cho preview (không tạo stub).
-async function queryCustomerListPreview(orgId: string, userId: string, limit = 50, cooldownDays = 30, selfReclaimLockDays = 7): Promise<PriorityCandidate[]> {
+async function queryCustomerListPreview(orgId: string, userId: string, limit = 50, cooldownDays = 30, selfReclaimLockDays = 7, sourceListIds: string[] = []): Promise<PriorityCandidate[]> {
   // Phase v2.B + v2.I 2026-05-29 — cooldown + self-reclaim rule.
   const rows = await prisma.$queryRawUnsafe<Array<{ contact_id: string; days_in_list: number }>>(
     `
@@ -2504,6 +2505,8 @@ async function queryCustomerListPreview(orgId: string, userId: string, limit = 5
     WHERE cl.org_id = $1
       AND cl.shareable_to_pool = true
       AND cl.archived_at IS NULL
+      -- 2026-06-19 (D): preview khớp pool — PHẢI tích tệp (rỗng = không tệp nào).
+      AND cl.id = ANY($6::text[])
       AND cle.status IN ('validated', 'enriched')
       AND cle.phone_valid = true
       AND cle.contact_id IS NOT NULL
@@ -2529,7 +2532,7 @@ async function queryCustomerListPreview(orgId: string, userId: string, limit = 5
     ORDER BY days_in_list DESC
     LIMIT $3
     `,
-    orgId, userId, limit, String(cooldownDays), String(selfReclaimLockDays),
+    orgId, userId, limit, String(cooldownDays), String(selfReclaimLockDays), sourceListIds,
   );
   return rows.map((r) => ({
     contactId: r.contact_id,

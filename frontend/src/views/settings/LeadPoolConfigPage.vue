@@ -177,8 +177,8 @@
         <!-- 2026-06-19 (D): chọn TỆP cụ thể khi bật nguồn "Tệp khách hàng" -->
         <div v-if="form.enabledSources.includes('customer_list')" class="lpc-listpicker">
           <div class="lpc-listpicker-hd">
-            🎯 Chỉ lấy lead từ các tệp này
-            <small>— KHÔNG chọn tệp nào = lấy TẤT CẢ tệp đang bật "chia sẻ vào pool" (như cũ).</small>
+            🎯 Tích tệp muốn đưa vào pool
+            <small>— CHỈ tệp được tích mới vào pool. KHÔNG tích tệp nào = pool KHÔNG lấy từ tệp.</small>
           </div>
           <div class="lpc-chips">
             <label v-for="cl in customerLists" :key="cl.id" class="lpc-chip">
