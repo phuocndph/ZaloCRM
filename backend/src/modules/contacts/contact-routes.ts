@@ -53,6 +53,7 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
         relationshipKindAny = '', // CSV: 'friend,pending_friend,...' — match KH có ≥1 Friend kind đó
         dateFrom = '',
         dateTo = '',
+        sort = '',            // 'score' = lead score cao lên đầu; mặc định = lastActivity desc
       } = request.query as QueryParams;
 
       const where: any = { orgId: user.orgId, mergedInto: null };
@@ -178,10 +179,16 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
             _count: { select: { conversations: true, appointments: true } },
             ...AGGREGATE_INCLUDE,
           },
-          orderBy: [
-            { lastActivity: { sort: 'desc', nulls: 'last' } },
-            { updatedAt: 'desc' },
-          ],
+          // sort=score → lead score cao lên đầu; mặc định = tương tác mới nhất.
+          orderBy: (sort === 'score'
+            ? [
+                { leadScore: { sort: 'desc', nulls: 'last' } },
+                { lastActivity: { sort: 'desc', nulls: 'last' } },
+              ]
+            : [
+                { lastActivity: { sort: 'desc', nulls: 'last' } },
+                { updatedAt: 'desc' },
+              ]) as any,
           skip: (pageNum - 1) * limitNum,
           take: limitNum,
         }),
