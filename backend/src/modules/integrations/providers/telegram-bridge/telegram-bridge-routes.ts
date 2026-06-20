@@ -6,9 +6,17 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { authMiddleware } from '../../../auth/auth-middleware.js';
 import { requireGrant } from '../../../rbac/rbac-middleware.js';
 import { provisionNickGroup, isProvisionerConfigured } from './provisioner.js';
+import { generateLinkCode } from './link.js';
 
 export async function telegramBridgeRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', authMiddleware);
+
+  // Sinh mã liên kết cho user hiện tại — sale gõ `/link <mã>` cho bot Telegram để gắn.
+  app.post('/api/v1/telegram-bridge/link-code', async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = request.user!;
+    const code = generateLinkCode(user.id, user.orgId);
+    return reply.send({ code, expiresInMinutes: 10, hint: `Gõ trong Telegram: /link ${code}` });
+  });
 
   // Bật cầu cho 1 nick — tự tạo supergroup + topics + thêm bot admin, lưu chat id.
   app.post(

@@ -17,6 +17,8 @@ import { zaloOps } from '../../../../shared/zalo-operations.js';
 import { getUpdates, sendMessage, downloadTelegramFile, cleanupTempFile, type TgMessageUpdate } from './telegram-api.js';
 import { emitChatMessage } from '../../../../shared/realtime/emit-chat.js';
 import { zaloPool } from '../../../zalo/zalo-pool.js';
+import { redeemLinkCode, getLinkedUser } from './link.js';
+import { hasZaloAccess } from '../../../zalo/zalo-access-middleware.js';
 
 // Rút thông tin media từ tin Telegram → file_id + cách gửi Zalo + TÊN GỐC (Zalo hiển thị theo tên này).
 function extractMedia(
@@ -99,6 +101,21 @@ async function processUpdate(u: TgMessageUpdate): Promise<void> {
   const m = u.message;
   if (!m) return;
   if (m.from?.is_bot) return; // bỏ tin của bot
+
+  // /link <mã> — gắn tài khoản Telegram ↔ user CRM (Phase 3.1). Xử ở bất kỳ chat nào.
+  if (m.text && m.text.trim().toLowerCase().startsWith('/link')) {
+    const linkChatId = String(m.chat.id);
+    const code = m.text.trim().split(/\s+/)[1] || '';
+    const ok = code ? await redeemLinkCode(code, String(m.from?.id ?? '')) : false;
+    await sendMessage(
+      linkChatId,
+      ok
+        ? '✅ Đã liên kết tài khoản Telegram với CRM. Giờ bạn gửi tin được.'
+        : '⚠️ Cú pháp: /link [mã lấy ở CRM]. Mã sai hoặc đã hết hạn.',
+      m.message_thread_id,
+    );
+    return;
+  }
   if (!m.message_thread_id) return; // tin ngoài topic (General) → bỏ
 
   const chatId = String(m.chat.id);
@@ -138,6 +155,31 @@ async function processUpdate(u: TgMessageUpdate): Promise<void> {
     return;
   }
 
+  // RBAC (Phase 3.2): tài khoản Telegram phải đã /link + có quyền chat nick (ZaloAccountAccess).
+  const linked = await getLinkedUser(String(m.from?.id ?? ''));
+  if (!linked) {
+    await sendMessage(chatId, '⚠️ Chưa liên kết. Lấy mã ở CRM rồi gõ: /link [mã].', m.message_thread_id);
+    return;
+  }
+  const crmUser = await prisma.user.findUnique({
+    where: { id: linked.userId },
+    select: { role: true, orgId: true, fullName: true },
+  });
+  const allowed = crmUser
+    ? await hasZaloAccess({
+        userId: linked.userId,
+        orgId: crmUser.orgId,
+        role: crmUser.role,
+        zaloAccountId: conv.zaloAccountId,
+        minPermission: 'chat',
+      })
+    : false;
+  if (!allowed) {
+    await sendMessage(chatId, '⚠️ Bạn không có quyền chat nick Zalo này.', m.message_thread_id);
+    return;
+  }
+  const senderCrmName = crmUser?.fullName || m.from?.first_name || m.from?.username || 'Sale';
+
   // ── Phase 2.5: MEDIA từ Telegram → Zalo ──
   // Tải file Telegram về temp → gửi qua zaloOps (cần local path). KHÔNG tạo row: echo
   // selfListen sẽ tạo row với media THẬT (Zalo CDN→minio), forwarder bỏ qua (markBridgeSent).
@@ -176,7 +218,7 @@ async function processUpdate(u: TgMessageUpdate): Promise<void> {
     if (zaloMsgId) markBridgeSent(zaloMsgId);
 
     // Tạo row CRM (self, đánh dấu bridge) → hiện trong chat CRM + echo bị P2002 dedup.
-    const senderName = m.from?.first_name || m.from?.username || 'Sale';
+    const senderName = senderCrmName;
     try {
       const created = await prisma.message.create({
         data: {
