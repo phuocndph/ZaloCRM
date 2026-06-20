@@ -62,7 +62,7 @@ export interface ReplyMessageRef {
 
 interface RawMessage extends Omit<Message, 'reactions' | 'reply' | 'reactionDetails'> {
   quote?: ReplyMessageRef | null;
-  reactions?: Array<{ emoji: string; reactorId: string; reactorName?: string | null; reactorSource?: string | null; count?: number; reacted?: boolean }>;
+  reactions?: Array<{ emoji: string; reactorId: string; reactorName?: string | null; reactorSource?: string | null; reactorAvatar?: string | null; count?: number; reacted?: boolean }>;
 }
 
 export interface FriendshipInfo {
@@ -136,6 +136,7 @@ export interface MessageReactionDetail {
   reactorId: string;
   reactorName: string | null;
   reactorSource: string | null; // "crm" | "zalo"
+  reactorAvatar?: string | null; // avatar thật (Friend.zaloAvatarUrl) — resolve ở BE
   emoji: string;
 }
 
@@ -483,6 +484,7 @@ export function useChat() {
         reactorId: r.reactorId,
         reactorName: r.reactorName ?? null,
         reactorSource: r.reactorSource ?? null,
+        reactorAvatar: r.reactorAvatar ?? null,
         emoji: r.emoji,
       })),
     };
@@ -945,7 +947,7 @@ export function useChat() {
       }
     });
 
-    socket.on('chat:reactions', (data: { messageId?: string; msgId?: string; zaloMsgId?: string; reactions: { userId: string; userName: string; reaction: string; action: 'add' | 'remove'; totalCount?: number }[] }) => {
+    socket.on('chat:reactions', (data: { messageId?: string; msgId?: string; zaloMsgId?: string; reactions: { userId: string; userName: string; avatar?: string | null; source?: string | null; reaction: string; action: 'add' | 'remove'; totalCount?: number }[] }) => {
       const msg = messages.value.find(m => m.id === data.messageId || m.id === data.msgId || m.zaloMsgId === data.zaloMsgId);
       if (!msg) return;
       // Merge với reactions hiện có thay vì replace — tránh mất emoji của user khác
@@ -963,8 +965,13 @@ export function useChat() {
         const isMine = r.userId === myId;
         // Cập nhật detail rows: add → thêm nếu chưa có; remove → bỏ (reactorId, emoji).
         if (r.action === 'add') {
-          if (!details.some((d) => d.reactorId === r.userId && d.emoji === emoji)) {
-            details.push({ reactorId: r.userId, reactorName: r.userName || null, reactorSource: null, emoji });
+          const existing = details.find((d) => d.reactorId === r.userId && d.emoji === emoji);
+          if (existing) {
+            // cập nhật tên/avatar nếu event mang thông tin mới (vd nick resolve được sau)
+            if (r.userName) existing.reactorName = r.userName;
+            if (r.avatar) existing.reactorAvatar = r.avatar;
+          } else {
+            details.push({ reactorId: r.userId, reactorName: r.userName || null, reactorSource: r.source || null, reactorAvatar: r.avatar || null, emoji });
           }
         } else if (r.action === 'remove') {
           for (let i = details.length - 1; i >= 0; i--) {
