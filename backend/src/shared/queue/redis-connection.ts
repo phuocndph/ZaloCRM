@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Nguyễn Tiến Lộc
 // ════════════════════════════════════════════════════════════════════════
 // Luồng Mục Tiêu M1 — BullMQ Redis connection shared (2026-06-01)
 // ════════════════════════════════════════════════════════════════════════

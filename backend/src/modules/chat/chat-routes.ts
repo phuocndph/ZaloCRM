@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Nguyễn Tiến Lộc
 /**
  * chat-routes.ts — REST API for conversations and messages.
  * All routes require JWT auth and are scoped to the user's org.

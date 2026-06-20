@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Nguyễn Tiến Lộc
 /**
  * telegram-api.ts — Bot API client mỏng cho Cầu Telegram (Phase 1).
  * Dùng fetch trực tiếp (cùng kiểu telegram-bot.ts). Token đọc qua telegram-bridge-config.

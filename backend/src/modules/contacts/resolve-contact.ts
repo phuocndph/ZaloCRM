@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Nguyễn Tiến Lộc
 // Wave 1.5-B — Canonical resolveOrCreateContact helper.
 //
 // Anh chốt 2026-05-29: "UID không khớp được. Chỉ khớp duy nhất 2 tham số global_id và phone."

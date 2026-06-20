@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Nguyễn Tiến Lộc
 /**
  * scoring/auto-tag.ts — Auto-tag metadata layer cho Friend.
  *

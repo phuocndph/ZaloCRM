@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!-- Copyright (C) 2026 Nguyễn Tiến Lộc -->
 <!--
   MediaTabPanel — cột 4 tab "Media" (gộp Picker Media + Automation, anh chốt 2026-06-12).
   4 sub-tab: Ảnh / Video / Tệp / Khối. Ảnh/Video/Tệp = kho media (tái dùng logic

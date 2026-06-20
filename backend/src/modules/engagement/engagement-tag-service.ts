@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Nguyễn Tiến Lộc
 /**
  * engagement-tag-service.ts — Làm tag Auto Engagement "sống" (tự cập nhật).
  *

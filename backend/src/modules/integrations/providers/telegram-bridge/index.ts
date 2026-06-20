@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Nguyễn Tiến Lộc
 /**
  * telegram-bridge/index.ts — Cầu Zalo → Telegram (Phase 1: chiều VÀO / mirror).
  *

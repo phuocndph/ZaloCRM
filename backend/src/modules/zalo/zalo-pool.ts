@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Nguyễn Tiến Lộc
 /**
  * ZaloAccountPool — singleton that manages live Zalo SDK instances.
  * Handles QR login, session reconnect, message listener lifecycle,

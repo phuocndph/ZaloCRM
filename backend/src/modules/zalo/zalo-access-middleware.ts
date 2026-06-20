@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Nguyễn Tiến Lộc
 /**
  * Zalo access middleware — checks if user has sufficient permission on a Zalo account.
  * Permission hierarchy: admin > chat > read.

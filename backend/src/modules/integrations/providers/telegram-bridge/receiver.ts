@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Nguyễn Tiến Lộc
 /**
  * receiver.ts — Cầu Telegram chiều RA (Phase 2): sale gõ trong topic Telegram → khách Zalo nhận.
  *

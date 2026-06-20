@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Nguyễn Tiến Lộc
 /**
  * bridge-bus.ts — Bus sự kiện nội bộ cho Cầu Zalo ↔ Telegram (Phase 0).
  *

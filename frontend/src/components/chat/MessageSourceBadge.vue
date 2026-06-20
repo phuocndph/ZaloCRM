@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<!-- Copyright (C) 2026 Nguyễn Tiến Lộc -->
 <!--
 ═══════════════════════════════════════════════════════════════════════
  Luồng Mục Tiêu M11 — Source Identity Badge 5 variant (2026-06-01)

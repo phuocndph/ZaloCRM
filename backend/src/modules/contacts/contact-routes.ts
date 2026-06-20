@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Nguyễn Tiến Lộc
 /**
  * contact-routes.ts — REST API for CRM contact management.
  * Supports list, detail, create, update, delete, pipeline view, and tag updates.

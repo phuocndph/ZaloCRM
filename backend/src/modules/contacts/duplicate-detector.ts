@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Nguyễn Tiến Lộc
 /**
  * duplicate-detector.ts — Detect & auto-merge duplicate contacts per org.
  *

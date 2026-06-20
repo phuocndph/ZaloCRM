@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Nguyễn Tiến Lộc
 /**
  * lead-scoring.ts — Computes lead scores for contacts.
  * Score factors: recent messages, scheduled appointments, status, last activity.

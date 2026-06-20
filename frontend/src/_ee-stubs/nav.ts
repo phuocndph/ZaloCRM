@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (C) 2026 Nguyễn Tiến Lộc
 /**
  * Community-edition stub for extension navigation (open-core).
  * Mirrors the public API of src/_ee/nav.ts with empty data.
