@@ -1094,36 +1094,11 @@ export async function mediaRoutes(app: FastifyInstance) {
         ...(Array.isArray(conv.contact.autoTags) ? conv.contact.autoTags : []),
       ].map((t) => String(t).replace(/^auto:/, '').trim().toLowerCase()).filter(Boolean);
       const custTags = [...new Set(raw)];
-      // contactTags = TOÀN BỘ tag khách (cho chip gợi ý lúc gửi — eng-review #C). matchedTags
-      // chỉ là tag GIAO với ảnh-kho (dùng cho gợi ý ẢNH), KHÔNG đủ làm chip gợi ý tag.
-      if (custTags.length === 0) return { items: [], matchedTags: [], contactTags: [] };
-
-      // Ảnh kho có tagIds giao với tag khách + (public HOẶC của mình) + chưa archive.
-      const assets = await prisma.mediaAsset.findMany({
-        where: {
-          orgId: user.orgId,
-          archivedAt: null,
-          kind: 'image',
-          OR: [{ visibility: 'public' }, { ownerUserId: userId }],
-        },
-        orderBy: [{ usageCount: 'desc' }],
-        take: 50,
-        include: { blobs: { where: { variantType: 'original' }, take: 1 } },
-      });
-
-      // Lọc app-side: asset có ÍT NHẤT 1 tag khớp tag khách (so lowercase).
-      const matched = assets
-        .map((a) => ({ a, hits: a.tagIds.filter((t) => custTags.includes(t.toLowerCase())) }))
-        .filter((x) => x.hits.length > 0)
-        .slice(0, 8);
-
-      const items = matched.map(({ a }) => ({
-        id: a.id, name: a.name, kind: a.kind,
-        url: a.blobs[0]?.publicUrl ?? null,
-        thumbnailUrl: a.thumbnailUrl ?? a.blobs[0]?.publicUrl ?? null,
-        tagIds: a.tagIds,
-      }));
-      return { items, matchedTags: [...new Set(matched.flatMap((m) => m.hits))], contactTags: custTags };
+      // 2026-06-20 (anh chốt): GỠ phần gợi-ý-ẢNH (items) — gợi ý không đúng + sale không dùng.
+      // GIỮ contactTags để MediaSendPicker hiện chip "tag khách" khi sale gửi ảnh (vẫn dùng).
+      // items/matchedTags trả rỗng để KHÔNG vỡ type FE cũ.
+      void userId;
+      return { items: [], matchedTags: [], contactTags: custTags };
     },
   );
 
