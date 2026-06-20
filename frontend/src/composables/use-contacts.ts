@@ -90,6 +90,10 @@ export interface Contact {
   zaloLookupAttempts?: number;
   importBatchId?: string | null;
 
+  // #4 (2026-06-20): số lần gắn sequence (auto+manual), aggregate mức Cha — read-only
+  sequenceAttachCount?: number;
+  sequenceActiveCount?: number;
+
   // Consent
   consentStatus?: string | null;
   consentRevokedAt?: string | null;
@@ -278,6 +282,7 @@ export interface ContactFilters {
   relationshipKindAny?: string;
   dateFrom?: string;
   dateTo?: string;
+  sequenceAttachMin?: number | null; // #4: lọc KH gắn ≥ N sequence
 }
 
 export const SOURCE_OPTIONS = [
@@ -318,6 +323,7 @@ export function useContacts() {
     relationshipKindAny: '',
     dateFrom: '',
     dateTo: '',
+    sequenceAttachMin: null,
   });
 
   const pagination = reactive({ page: 1, limit: 20 });
@@ -342,6 +348,7 @@ export function useContacts() {
           relationshipKindAny: filters.relationshipKindAny || undefined,
           dateFrom: filters.dateFrom || undefined,
           dateTo: filters.dateTo || undefined,
+          sequenceAttachMin: filters.sequenceAttachMin ?? undefined,
         },
       });
       contacts.value = res.data.contacts ?? res.data;

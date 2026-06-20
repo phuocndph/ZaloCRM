@@ -54,6 +54,7 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
         dateFrom = '',
         dateTo = '',
         sort = '',            // 'score' = lead score cao lên đầu; mặc định = lastActivity desc
+        sequenceAttachMin = '', // #4: lọc KH đã gắn ≥ N sequence (đếm CareSession, auto+manual)
       } = request.query as QueryParams;
 
       const where: any = { orgId: user.orgId, mergedInto: null };
@@ -166,6 +167,26 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
         ];
       }
 
+      // #4 (2026-06-20): lọc "KH đã gắn ≥ N sequence". Mỗi lần gắn (auto qua trigger HOẶC
+      // manual qua sale) tạo 1 CareSession → đếm rows = số lần gắn. Pre-resolve contactId đạt
+      // ngưỡng rồi GIAO với where.id (scope sale) hiện có để không vượt rào quyền.
+      const seqMinN = parseInt(sequenceAttachMin) || 0;
+      if (seqMinN > 0) {
+        const grouped = await prisma.careSession.groupBy({
+          by: ['contactId'],
+          where: { orgId: user.orgId },
+          _count: { contactId: true },
+          having: { contactId: { _count: { gte: seqMinN } } },
+        });
+        const seqIds = grouped.map((g) => g.contactId);
+        if (where.id?.in) {
+          const allow = new Set(where.id.in as string[]);
+          where.id = { in: seqIds.filter((id) => allow.has(id)) };
+        } else {
+          where.id = { in: seqIds };
+        }
+      }
+
       const pageNum = parseInt(page);
       const limitNum = parseInt(limit);
 
@@ -194,6 +215,24 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
         }),
         prisma.contact.count({ where }),
       ]);
+
+      // #4: đếm số lần gắn sequence (CareSession) cho các KH trong TRANG này — tổng + đang chạy.
+      // 1 query groupBy theo (contactId, state), indexed @@index([orgId, contactId, nickId, state]).
+      const pageContactIds = contacts.map((c) => c.id);
+      const seqAgg = pageContactIds.length
+        ? await prisma.careSession.groupBy({
+            by: ['contactId', 'state'],
+            where: { orgId: user.orgId, contactId: { in: pageContactIds } },
+            _count: { _all: true },
+          })
+        : [];
+      const seqCountMap = new Map<string, { total: number; active: number }>();
+      for (const g of seqAgg) {
+        const cur = seqCountMap.get(g.contactId) ?? { total: 0, active: 0 };
+        cur.total += g._count._all;
+        if (g.state === 'active') cur.active += g._count._all;
+        seqCountMap.set(g.contactId, cur);
+      }
 
       // Phase Contact Scope Hybrid 2026-05-27: per-viewer preview + aggregate.
       // Sale chỉ thấy preview/score/status từ Friend rows của nick mình; admin/owner giữ aggregate global.
@@ -224,6 +263,9 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
             ...display,
             // Phase Contact Scope Hybrid: badge UI render — "Phụ trách chính" vs "Đồng đội cùng chăm"
             viewerRole: cScope.isOrgAdmin ? 'admin' : (isPrimary ? 'primary' : 'collaborator'),
+            // #4: số lần gắn sequence (auto+manual) ở mức Cha (SĐT) — tổng + đang chạy.
+            sequenceAttachCount: seqCountMap.get(c.id)?.total ?? 0,
+            sequenceActiveCount: seqCountMap.get(c.id)?.active ?? 0,
           };
         })
         .filter((c) => !multiNickOnly || (c.childrenCount ?? 0) > 1);

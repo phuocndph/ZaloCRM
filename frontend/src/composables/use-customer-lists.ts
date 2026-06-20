@@ -96,6 +96,9 @@ export interface CustomerListEntry {
   enrichedAt: string | null;
   createdAt: string;
   updatedAt: string;
+  // #4 (2026-06-20): số lần SĐT này đã được gắn sequence (mức Cha qua contactId) — read-only
+  sequenceAttachCount?: number;
+  sequenceActiveCount?: number;
 }
 
 export interface DryRunResult {
