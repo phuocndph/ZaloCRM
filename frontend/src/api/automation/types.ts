@@ -130,6 +130,9 @@ export interface AutomationSequence {
   createdAt: string;
   updatedAt: string;
   createdBy?: { id: string; fullName: string };
+  // 2026-06-20 — Tổng thời gian luồng (phút, tính cả chờ ngoài giờ 22:00–08:00) do BE tính
+  // qua etaCompleteAt → card hiện "luồng mất ≈ mấy ngày để chạy xong". 0 nếu ≤1 bước.
+  estimatedDurationMinutes?: number;
   _count?: { campaigns: number };
   blocks?: Array<{
     id: string; name: string; actionType: BlockActionType; archivedAt: string | null;

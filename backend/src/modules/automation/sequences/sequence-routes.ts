@@ -30,7 +30,23 @@ import {
 import { checkBlockReferences } from './block-refs.js';
 import { getOwnerScope, applyOwnerScope } from '../../rbac/owner-scope.js';
 // 2026-06-18 — Xem trước Sequence: tính giờ gửi từng bước (delay + né ngoài giờ).
-import { stepDelayMs, nextAllowedTime, resolveWindowMinutes } from '../engine/schedule-calculator.js';
+import { stepDelayMs, nextAllowedTime, resolveWindowMinutes, etaCompleteAt } from '../engine/schedule-calculator.js';
+
+// 2026-06-20 (anh chốt): TỔNG THỜI GIAN luồng = từ enroll tới gửi xong bước cuối, TÍNH CẢ
+// thời gian chờ ngoài giờ (22:00–08:00) → "luồng mất mấy ngày thực". Neo vào đầu khung giờ
+// của 1 ngày cố định (Thứ Hai 2026-01-05) để số ỔN ĐỊNH, không đổi theo thời điểm gọi API.
+// Tái dùng etaCompleteAt (cùng calculator engine dùng) → khớp giờ gửi thật. ≤1 bước = 0.
+function computeSequenceDurationMinutes(rawSteps: unknown, rawRules: unknown): number {
+  const steps = (Array.isArray(rawSteps) ? rawSteps : []) as SequenceStep[];
+  if (steps.length <= 1) return 0;
+  const rules = (rawRules ?? {}) as SequenceRuntimeRules;
+  const w = resolveWindowMinutes(rules);
+  const startMin = w ? w.startMin : 0;
+  const anchor = new Date(Date.UTC(2026, 0, 5, 0, 0, 0) - 7 * 3600_000 + startMin * 60_000);
+  const eta = etaCompleteAt(steps, 0, anchor, rules);
+  if (!eta) return 0;
+  return Math.max(0, Math.round((eta.getTime() - anchor.getTime()) / 60_000));
+}
 // 2026-06-18 — Xem trước Sequence render bong bóng Ở BACKEND = đúng tin gửi thật:
 // bóc block thành tin (resolveBlockContent) + thay đủ ~36 biến + dịch offset format (render-template).
 import { resolveBlockContent } from '../blocks/resolve-block-content.js';
@@ -155,7 +171,12 @@ export async function sequenceRoutes(app: FastifyInstance): Promise<void> {
         _count: { select: { campaigns: true } },
       },
     });
-    return { sequences };
+    // Đính kèm "tổng thời gian luồng" (phút, đã tính cả ngoài giờ) → card hiện "≈ mấy ngày".
+    const withDuration = sequences.map((seq) => ({
+      ...seq,
+      estimatedDurationMinutes: computeSequenceDurationMinutes(seq.steps, seq.runtimeRules),
+    }));
+    return { sequences: withDuration };
   });
 
   // Get one sequence with embedded block lookups for editor

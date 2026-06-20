@@ -91,7 +91,7 @@
           <div class="sstats">
             <div class="sstat">
               <div class="v">{{ formatNum(seqEnrolled(seq)) }}</div>
-              <div class="l">Đã enroll</div>
+              <div class="l">Đã vào luồng</div>
             </div>
             <div class="sstat">
               <div class="v" style="color: var(--success)">{{ formatNum(seqCompleted(seq)) }}</div>
@@ -105,6 +105,22 @@
               <div class="v">{{ formatNum(inProgressCount(seq)) }}</div>
               <div class="l">Đang chạy</div>
             </div>
+          </div>
+
+          <!-- meta: tổng thời gian + người tạo + ngày tạo (2026-06-20, anh chốt) -->
+          <div class="smeta">
+            <span class="smeta-item" title="Tổng thời gian luồng chạy xong — tính CẢ thời gian chờ ngoài giờ (22:00–08:00)">
+              <v-icon size="13">mdi-timer-sand</v-icon>
+              Tổng thời gian: <strong>{{ formatDuration(seq.estimatedDurationMinutes) }}</strong>
+            </span>
+            <span class="smeta-item" title="Người tạo luồng">
+              <v-icon size="13">mdi-account-outline</v-icon>
+              {{ seq.createdBy?.fullName || '—' }}
+            </span>
+            <span class="smeta-item" title="Ngày tạo luồng">
+              <v-icon size="13">mdi-calendar-blank-outline</v-icon>
+              {{ formatDate(seq.createdAt) }}
+            </span>
           </div>
         </article>
       </div>
@@ -496,8 +512,36 @@ function ruleLabels(rules: SequenceRuntimeRules | null | undefined): string[] {
   if (d) out.push(d.min === d.max ? `Giãn ${d.min}p` : `Giãn ${d.min}–${d.max}p`);
   if ((r.perNickThrottle ?? true)) out.push('Giãn đều giữa nick');
   if (r.crossNickRecencyDays && r.crossNickRecencyDays > 0) out.push(`Tránh trùng ${r.crossNickRecencyDays} ngày`);
-  if ((r.stopOnAccept ?? true)) out.push('Dừng khi kết bạn');
+  // 2026-06-20 (anh chốt): BỎ badge "Dừng khi kết bạn" (stopOnAccept) — verify thấy cổng
+  // checkStopOnAccept CHƯA wire vào worker (chỉ unit test gọi; worker chạy worker-guards 5 cổng
+  // KHÔNG có stop-on-accept) → bật cũng không có tác dụng. Hiện chỉ rule THẬT SỰ chạy.
+  // "Dừng khi khách trả lời" (luật 4) ĐÃ wire (PR #58) → hiện khi BẬT, kèm giờ tạm dừng.
+  if ((r.coordinateCareSession ?? true)) out.push(`Dừng khi khách trả lời (tạm ${r.careHoldHours ?? 24}h)`);
   return out;
+}
+
+// 2026-06-20 — Tổng thời gian luồng (phút → "X ngày Y giờ"). BE tính sẵn estimatedDurationMinutes
+// đã CỘNG cả thời gian chờ ngoài giờ. ≤0 (≤1 bước / gửi ngay) → "—".
+function formatDuration(min?: number): string {
+  if (!min || min <= 0) return '—';
+  const dayMin = 24 * 60;
+  if (min >= dayMin) {
+    const d = Math.floor(min / dayMin);
+    const h = Math.round((min - d * dayMin) / 60);
+    return h > 0 ? `${d} ngày ${h} giờ` : `${d} ngày`;
+  }
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  if (h > 0) return m > 0 ? `${h} giờ ${m} phút` : `${h} giờ`;
+  return `${m} phút`;
+}
+
+// Ngày tạo → dd/mm/yyyy.
+function formatDate(iso?: string): string {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
 }
 
 // ── Giờ làm việc tới PHÚT (Anh chốt 2026-06-07) ───────────────────────────
@@ -812,6 +856,20 @@ function onDocClick() {
   padding: 8px 0 14px;
 }
 .srules:empty { display: none; }
+
+/* meta: tổng thời gian + người tạo + ngày tạo (2026-06-20, anh chốt) */
+.smeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  font-size: 12.5px;
+  color: var(--ink-4);
+}
+.smeta-item { display: inline-flex; align-items: center; gap: 4px; }
+.smeta-item strong { color: var(--ink); font-weight: 700; }
 
 /* ── Editor drawer (slide-from-right) ─────────────────────────────────── */
 .panel-overlay {
