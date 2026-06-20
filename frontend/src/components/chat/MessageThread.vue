@@ -944,8 +944,10 @@ const reactionPopupReactions = ref<Array<{ emoji: string; count: number; reacted
 const reactionPopupDetails = ref<Array<{ userId: string; userName?: string | null; emoji: string; source?: 'crm' | 'zalo' }>>([]);
 function onOpenReactionDetail(payload: { reactions: any[]; message: Message }) {
   reactionPopupReactions.value = payload.reactions;
-  // Build details từ message.reactions (raw row per-user per-emoji)
-  const raw = (payload.message as any).reactions ?? [];
+  // 2026-06-20 FIX: build details từ message.reactionDetails (raw per-user rows GIỮ ở
+  // normalizeMessage), KHÔNG phải message.reactions (đã tổng hợp emoji+count, mất reactor →
+  // trước đây luôn ra "Người dùng"). Nay có reactorName thật từ BE.
+  const raw = (payload.message as any).reactionDetails ?? [];
   reactionPopupDetails.value = raw.map((r: any) => ({
     userId: r.reactorId || r.userId || '',
     userName: r.reactorName || r.userName || null,
