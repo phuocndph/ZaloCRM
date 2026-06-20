@@ -60,15 +60,18 @@ async function handleZaloReaction(accountId: string, io: Server | null, reaction
     if (!message) return;
 
     const displayEmoji = ZALO_REACTION_DISPLAY[rawIcon] || rawIcon || '👍';
-    // 2026-06-20 (anh báo popup cảm xúc nhóm chỉ hiện "Người dùng"): Zalo event NHÓM không kèm
-    // tên (data.dName rỗng) → tra Friend của nick để có tên thật rồi lưu + emit (tin live có tên).
+    // 2026-06-20 (anh báo popup cảm xúc nhóm chỉ hiện "Người dùng" + thiếu avatar): Zalo event
+    // không kèm tên/avatar người thả (data.dName rỗng) → tra Friend của nick để có tên + AVATAR
+    // thật rồi lưu + emit (tin LIVE hiện đúng tên + avatar, khỏi đợi reload).
     let reactorName = String(data.dName || '');
-    if (!reactorName) {
+    let reactorAvatar: string | null = null;
+    {
       const fr = await prisma.friend.findFirst({
         where: { zaloAccountId: accountId, zaloUidInNick: reactorZaloUid },
-        select: { aliasInNick: true, zaloDisplayName: true },
+        select: { aliasInNick: true, zaloDisplayName: true, zaloAvatarUrl: true },
       });
-      reactorName = fr?.aliasInNick || fr?.zaloDisplayName || '';
+      if (!reactorName) reactorName = fr?.aliasInNick || fr?.zaloDisplayName || '';
+      reactorAvatar = fr?.zaloAvatarUrl || null;
     }
 
     // Phase A v3 (2026-05-21) — selective self-echo guard via reaction-echo-cache.
@@ -129,6 +132,7 @@ async function handleZaloReaction(accountId: string, io: Server | null, reaction
       reactions: [{
         userId: reactIsMain ? null : reactorZaloUid,
         userName: reactIsMain ? null : reactorName,
+        avatar: reactIsMain ? null : reactorAvatar,
         reaction: displayEmoji,
         action: (!rawIcon || rType < 0) ? 'remove' : 'add',
         source: 'zalo',

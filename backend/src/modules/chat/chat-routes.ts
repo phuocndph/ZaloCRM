@@ -1262,7 +1262,9 @@ export async function chatRoutes(app: FastifyInstance) {
       where: { id, orgId: user.orgId },
       select: {
         id: true,
-        zaloAccount: { select: { privacyMode: true, ownerUserId: true } },
+        // 2026-06-20: displayName+avatar của NICK để hiển thị reaction do sale thả qua CRM
+        // theo DANH TÍNH NICK ZALO (anh chốt: không hiện email tài khoản sale CRM).
+        zaloAccount: { select: { privacyMode: true, ownerUserId: true, displayName: true, avatarUrl: true } },
       },
     });
     if (!conversation) return reply.status(404).send({ error: 'Conversation not found' });
@@ -1415,38 +1417,31 @@ export async function chatRoutes(app: FastifyInstance) {
       };
     }
 
-    // 2026-06-20 (anh báo popup cảm xúc nhóm chỉ hiện "Người dùng"): Zalo event NHÓM không
-    // kèm tên người thả → reactor_name rỗng trong DB. Resolve UID→tên+avatar lúc query:
-    //  - reactor 'zalo' → Friend.zaloUidInNick (của nick này) → aliasInNick/zaloDisplayName + zaloAvatarUrl.
-    //  - reactor 'crm'  → User.fullName/email. Batch 0 N+1, chỉ chạy khi có reaction.
+    // 2026-06-20 (anh báo popup cảm xúc chỉ hiện "Người dùng"/email): resolve người thả → tên+avatar.
+    //  - reactor 'zalo' → Friend.zaloUidInNick (của nick) → aliasInNick/zaloDisplayName + zaloAvatarUrl
+    //    (Zalo event NHÓM không kèm tên → reactor_name rỗng → bắt buộc tra).
+    //  - reactor 'crm'  → DANH TÍNH NICK ZALO của hội thoại (anh chốt: KHÔNG hiện email sale CRM —
+    //    cảm xúc sale thả qua CRM gửi đi DƯỚI nick này, khách thấy nick thả).
+    // Batch Friend 0 N+1, chỉ chạy khi có reaction zalo.
+    const nickName = conversation.zaloAccount?.displayName || null;
+    const nickAvatar = conversation.zaloAccount?.avatarUrl || null;
     const reactorZaloUids = new Set<string>();
-    const reactorCrmIds = new Set<string>();
     for (const m of ordered) {
-      for (const rx of ((m as { reactions?: Array<{ reactorId: string; reactorSource: string | null; reactorName: string | null }> }).reactions || [])) {
-        if (!rx.reactorId) continue;
-        if (rx.reactorSource === 'crm') reactorCrmIds.add(rx.reactorId);
-        else reactorZaloUids.add(rx.reactorId);
+      for (const rx of ((m as { reactions?: Array<{ reactorId: string; reactorSource: string | null }> }).reactions || [])) {
+        if (rx.reactorId && rx.reactorSource !== 'crm') reactorZaloUids.add(rx.reactorId);
       }
     }
     const reactorMap = new Map<string, { name: string | null; avatar: string | null }>();
-    if (reactorZaloUids.size > 0 || reactorCrmIds.size > 0) {
-      const [frx, urx] = await Promise.all([
-        reactorZaloUids.size > 0
-          ? prisma.friend.findMany({
-              where: { orgId: user.orgId, zaloUidInNick: { in: [...reactorZaloUids] } },
-              select: { zaloUidInNick: true, aliasInNick: true, zaloDisplayName: true, zaloAvatarUrl: true },
-            })
-          : Promise.resolve([] as Array<{ zaloUidInNick: string; aliasInNick: string | null; zaloDisplayName: string | null; zaloAvatarUrl: string | null }>),
-        reactorCrmIds.size > 0
-          ? prisma.user.findMany({ where: { id: { in: [...reactorCrmIds] } }, select: { id: true, fullName: true, email: true } })
-          : Promise.resolve([] as Array<{ id: string; fullName: string | null; email: string | null }>),
-      ]);
+    if (reactorZaloUids.size > 0) {
+      const frx = await prisma.friend.findMany({
+        where: { orgId: user.orgId, zaloUidInNick: { in: [...reactorZaloUids] } },
+        select: { zaloUidInNick: true, aliasInNick: true, zaloDisplayName: true, zaloAvatarUrl: true },
+      });
       for (const f of frx) {
         if (!reactorMap.has(f.zaloUidInNick)) {
           reactorMap.set(f.zaloUidInNick, { name: f.aliasInNick || f.zaloDisplayName || null, avatar: f.zaloAvatarUrl || null });
         }
       }
-      for (const u of urx) reactorMap.set(u.id, { name: u.fullName || u.email || null, avatar: null });
     }
 
     const redacted = ordered.map((m) => {
@@ -1459,6 +1454,10 @@ export async function chatRoutes(app: FastifyInstance) {
       const rawReactions = ((r as { reactions?: Array<{ emoji: string; reactorId: string; reactorName: string | null; reactorSource: string | null }> }).reactions) || [];
       const enrichedReactions = rawReactions.map((rx) => {
         if (isRedacted) return { ...rx, reactorName: null, reactorAvatar: null };
+        if (rx.reactorSource === 'crm') {
+          // Sale thả qua CRM → hiện DANH TÍNH NICK ZALO (không phải email tài khoản sale).
+          return { ...rx, reactorName: nickName || rx.reactorName || null, reactorAvatar: nickAvatar };
+        }
         const hit = reactorMap.get(rx.reactorId);
         return { ...rx, reactorName: rx.reactorName || hit?.name || null, reactorAvatar: hit?.avatar || null };
       });

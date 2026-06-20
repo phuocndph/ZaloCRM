@@ -191,7 +191,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
       // Lookup ownNick UID → key (zaloMsgId, emoji, ownUid) → cache 5s.
       const ownNick = await prisma.zaloAccount.findUnique({
         where: { id: conv.zaloAccountId },
-        select: { zaloUid: true },
+        select: { zaloUid: true, displayName: true, avatarUrl: true },
       });
       if (ownNick?.zaloUid) {
         markReactionEchoExpected(refs.zaloMsgId, displayEmoji, ownNick.zaloUid);
@@ -233,11 +233,13 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
         where: { messageId: refs.messageId, emoji: displayEmoji },
       });
       const io = (app as any).io as Server;
+      // 2026-06-20 (anh chốt): sale thả qua CRM → realtime hiện DANH TÍNH NICK ZALO (tên+avatar nick),
+      // KHÔNG phải email tài khoản sale CRM.
       io?.emit('chat:reactions', {
         conversationId: id,
         messageId: refs.messageId,
         msgId: refs.messageId,
-        reactions: [{ userId: user.id, userName: user.email, reaction: displayEmoji, action: 'add', totalCount: newCount }],
+        reactions: [{ userId: user.id, userName: ownNick?.displayName || user.email, avatar: ownNick?.avatarUrl || null, reaction: displayEmoji, action: 'add', totalCount: newCount }],
       });
       void applyContactInteraction({
         conversationId: id,
