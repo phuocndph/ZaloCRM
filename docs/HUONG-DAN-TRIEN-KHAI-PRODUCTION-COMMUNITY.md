@@ -1,74 +1,46 @@
-# Hướng dẫn triển khai ZaloCRM **Community (Open-Source)** lên Production
+# Hướng dẫn triển khai ZaloCRM lên Production (v3.4)
 
-> Runbook cho bản **Community** — bản mã nguồn mở, **không có** 4 nhóm tính năng extension.
-> Các bước hạ tầng chung (backup, rollback, siết bảo mật) dùng chung với
-> [`HUONG-DAN-TRIEN-KHAI-PRODUCTION.md`](./HUONG-DAN-TRIEN-KHAI-PRODUCTION.md).
-> Bản Extension: [`HUONG-DAN-TRIEN-KHAI-PRODUCTION-EE.md`](./HUONG-DAN-TRIEN-KHAI-PRODUCTION-EE.md).
-> Kiến trúc open-core: [`OPEN-CORE.md`](./OPEN-CORE.md).
+> Runbook **tự chứa** cho ZaloCRM (mã nguồn mở, **GPL-3.0**). Gồm 2 luồng: **cài mới từ đầu**
+> và **nâng cấp** bản đang chạy lên v3.4. Mọi thao tác **idempotent + giữ dữ liệu**.
+>
+> Thay `sub.domain.com` / `file.domain.com` bằng domain thật của bạn. Hướng dẫn sử dụng:
+> [`HUONG-DAN-NGUOI-DUNG.md`](./HUONG-DAN-NGUOI-DUNG.md).
 
----
-
-## 0. Community có và KHÔNG có gì?
-
-| Có (core) | KHÔNG có (extension — đã gỡ khỏi source) |
-|---|---|
-| Chat đa nick Zalo, realtime (Socket.IO) | ❌ Lead Pool |
-| Danh bạ / CRM, chấm điểm (lead scoring) | ❌ Tự động hoá + Marketing (triggers, blocks, sequences, broadcasts, lists, care-session) |
-| Lịch hẹn, nhắc hẹn | ❌ Facebook Lead Ads |
-| RBAC, tổ chức, audit, đăng nhập | ❌ Tab "Riêng tư" (Privacy) bị **ẩn** (code vẫn còn nhưng cờ `isExtension=false`) |
-| Tài khoản Zalo (quét QR), media/MinIO | |
-
-**Đặc điểm quan trọng:**
-- Thư mục `backend/src/_ee/` và `frontend/src/_ee/` **không tồn tại** trong source Community →
-  code extension không thể dùng **và** không thể bẻ khoá.
-- App tự nhận diện: khi `_ee/` vắng mặt, log boot là `Community edition — _ee bundle absent`,
-  và mọi route extension trả **404**.
-- `schema.prisma` **giống hệt** bản EE (có vài bảng "ngủ" không dùng) → vô hại, để 1 DB chạy được cả hai bản.
+## Tính năng chính
+Chat đa nick Zalo (realtime Socket.IO), danh bạ/CRM + chấm điểm (lead scoring), lịch hẹn & nhắc hẹn,
+media (ảnh/video/audio/file qua MinIO/S3/R2), cầu **Zalo ↔ Telegram**, RBAC + tổ chức + audit,
+AI assistant (Anthropic/Gemini/OpenAI/Qwen/Kimi), analytics, PWA mobile + push.
 
 ---
 
-## 1. Lấy source Community
+## 1. Yêu cầu
 
-Community **không sửa tay** — nó được **sinh tự động** từ repo Extension (xoá `_ee/`).
-Có 2 cách lấy:
-
-**Cách A — clone repo Community đã publish** (nếu nhóm bạn đã đẩy lên remote công khai):
-```bash
-git clone <community-remote-url> zalocrm-community && cd zalocrm-community
-```
-
-**Cách B — tự sinh từ repo Extension** (chỉ người giữ bản private làm khi release):
-```bash
-# Trong repo Extension:
-scripts/make-community.sh mirror <community-remote-url>   # cần: apt install git-filter-repo
-# Script clone sạch, xoá _ee khỏi TOÀN BỘ lịch sử, rồi in lệnh push để bạn review trước khi đẩy.
-```
-
-Kiểm tra đúng là bản Community (KHÔNG có `_ee/`):
-```bash
-( ! ls backend/src/_ee >/dev/null 2>&1 && ! ls frontend/src/_ee >/dev/null 2>&1 ) \
-  && echo "✓ Community source (no _ee)" || echo "✗ Đây là bản EE (còn _ee)"
-```
+- Docker + Docker Compose. VPS gợi ý **2–4 vCPU / 4 GB RAM / 80 GB SSD**.
+- Domain HTTPS cho app (vd `sub.domain.com`) **và** một domain HTTPS cho ảnh/MinIO (vd `file.domain.com`) — xem §5.
 
 ---
 
-## 2. Tạo `.env` (đầy đủ theo `.env.example`)
+## 2. Lấy source + tạo `.env`
 
-Giống bản EE nhưng **bỏ qua nhóm Facebook/automation** (không có trong Community). Bắt buộc:
+```bash
+git clone <repo-url> zalocrm && cd zalocrm
+cp .env.example .env
+```
+
+Điền `.env` — **bắt buộc** với production:
 
 | Biến | Ghi chú |
 |---|---|
-| `JWT_SECRET`, `ENCRYPTION_KEY` | `openssl rand -hex 32` mỗi cái |
-| `DB_PASSWORD` | mật khẩu Postgres mạnh (KHỚP trong `DATABASE_URL`) |
-| `APP_URL`, `CRM_LOGIN_URL` | domain prod, vd `https://sub.domain.com` |
+| `JWT_SECRET`, `ENCRYPTION_KEY` | `openssl rand -hex 32` mỗi cái (đổi `JWT_SECRET` sau = logout toàn bộ) |
+| `DB_PASSWORD` | mật khẩu Postgres mạnh (KHỚP phần password trong `DATABASE_URL`) |
+| `APP_URL`, `CRM_LOGIN_URL` | domain prod, vd `https://sub.domain.com` — CSP tự ghim `wss://` từ đây |
 | `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` | đổi khác `minioadmin`; `S3_ACCESS_KEY`/`S3_SECRET_KEY` khớp tương ứng |
-| `S3_PUBLIC_URL` | URL HTTPS công khai tới MinIO, vd `https://file.domain.com` (xem §5) |
-| `ANTHROPIC_AUTH_TOKEN` … | tuỳ chọn, nếu dùng AI |
+| `S3_PUBLIC_URL` | **URL HTTPS công khai** tới MinIO, vd `https://file.domain.com` (xem §5) |
+| `TELEGRAM_BRIDGE_BOT_TOKEN` | (tuỳ chọn) bật cầu Zalo↔Telegram; để trống = cầu TẮT |
+| `ANTHROPIC_AUTH_TOKEN` … | (tuỳ chọn) token AI nếu dùng |
 
-**Không cần** (an toàn nếu bỏ trống/không có): `TOKEN_ENCRYPTION_KEY`, `FB_*` — chỉ liên quan
-Facebook Lead Ads (tính năng EE, không có trong Community).
-
-Để mặc định (trỏ service nội bộ compose): `DATABASE_URL`, `REDIS_URL`, `S3_ENDPOINT`.
+Để **mặc định** (trỏ service nội bộ compose): `DATABASE_URL` (host `db`), `REDIS_URL` (`redis`),
+`S3_ENDPOINT` (`http://minio:9000`).
 
 > `.env` đã được `.gitignore` + `.dockerignore` — không commit, không lọt vào image.
 
@@ -85,47 +57,69 @@ echo "MINIO_ROOT_PASSWORD=$(openssl rand -hex 16)"
 ## 3. Build + chạy + tạo DB
 
 ```bash
-# clamav + backup là tuỳ chọn (antivirus mặc định TẮT) → chỉ chạy core services:
+# clamav + backup là service tuỳ chọn (antivirus mặc định TẮT: MEDIA_AV_ENABLED=0)
+# → chỉ chạy core services:
 docker compose up -d --build app db redis minio minio-init     # ~3-8 phút lần đầu
 docker compose ps                                              # app/db/redis/minio "Up"
 
-docker exec zalo-crm-app npx prisma migrate deploy            # app KHÔNG tự migrate
+# App KHÔNG tự migrate — chạy thủ công:
+docker exec zalo-crm-app npx prisma migrate deploy            # → "All migrations ... applied"
 docker compose restart app                                    # boot sạch sau khi có bảng
 ```
 
-Kiểm tra:
+Kiểm tra nhanh:
 ```bash
 curl -s -o /dev/null -w "root / -> %{http_code}\n" http://localhost:3080/        # 200
 curl -s http://localhost:3080/api/v1/setup/status                               # {"needsSetup":true}
-docker logs zalo-crm-app 2>&1 | grep -i "community edition"                      # Community edition — _ee bundle absent
+docker logs zalo-crm-app 2>&1 | grep -i "running on"                            # Zalo CRM running on ...
 ```
 
-> Khác bản EE: log boot **KHÔNG** có `[automation.engine] started` / `[lead-pool-cron]` — đúng,
-> vì các subsystem đó nằm trong `_ee` (đã gỡ). Các cron core (lịch hẹn, health-check Zalo,
-> intelligence, presence, friend-sync…) vẫn chạy.
+> 🛑 **KHÔNG dùng `-v` khi rebuild — sẽ MẤT DATABASE.** Xem [§3a](#3a-an-toàn-dữ-liệu-khi-rebuild-đừng-mất-database).
 
 ---
 
-## 4. Xác nhận đúng là bản Community (tính năng EE biến mất)
+## 3a. An toàn dữ liệu khi rebuild (ĐỪNG mất database)
+
+> Triệu chứng khi làm sai: **rebuild xong đăng nhập lại bị đá về `/setup-password`** (hoặc `/setup`
+> báo `needsSetup:true`). Đó KHÔNG phải bug — là do **database đã bị xoá**: tài khoản mất → app về
+> first-run → owner tạo lại có `passwordChangedAt = null` → router guard ép đổi mật khẩu lần đầu.
+
+Dữ liệu (Postgres, MinIO, Redis) nằm trong **Docker named volumes** (`zalocrm_pg_data`,
+`zalocrm_minio_data`, `zalocrm_redis_data`, `zalocrm_file_storage`). Còn volume = còn dữ liệu.
+
+| Lệnh | DB/tài khoản | Khi nào dùng |
+|---|---|---|
+| `docker compose up -d --build app` | ✅ GIỮ | **Rebuild thường (mặc định)** — đổi code, fix |
+| `docker compose restart app` | ✅ GIỮ | Đọc lại `.env` sau khi sửa (không đổi code) |
+| `docker compose down` | ✅ GIỮ | Tắt tạm; `up -d` lên lại còn nguyên dữ liệu |
+| `docker compose down **-v**` | 🛑 **XOÁ SẠCH** | **CHỈ** khi cố ý reset từ đầu |
+
+**Vì sao đôi khi vẫn phải `-v`?** Mật khẩu `DB_PASSWORD` / `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD`
+được **"đóng băng" vào volume lúc khởi tạo lần đầu**. Đổi các mật khẩu này về sau → muốn áp được
+**bắt buộc** `down -v` (và **mất dữ liệu**). → Hãy **chốt mật khẩu ngay từ đầu** (§2). Nếu buộc phải
+đổi mà muốn giữ dữ liệu: backup trước rồi restore sau khi recreate.
 
 ```bash
-docker logs zalo-crm-app 2>&1 | grep -i "community edition"     # Community edition — _ee bundle absent
-
-# Route EE phải KHÔNG tồn tại (404). (Bản EE sẽ là 401.)
-for p in /api/v1/automation/triggers /api/v1/lead-pool/config; do
-  echo -n "$p -> "; curl -s -o /dev/null -w "%{http_code}\n" http://localhost:3080$p; done   # 404, 404
-
-# Route core vẫn còn (401 = cần đăng nhập):
-curl -s -o /dev/null -w "/api/v1/contacts -> %{http_code}\n" http://localhost:3080/api/v1/contacts   # 401
+# Backup trước mọi thao tác mạo hiểm:
+docker exec zalo-crm-db pg_dump -U crmuser zalocrm > backup-$(date +%F-%H%M).sql
 ```
-Trên UI: **không** thấy menu Tự động hoá / Marketing / Lead Pool / Facebook Lead Ads, và tab
-**Riêng tư** trong Cài đặt → Tài khoản Zalo bị ẩn.
+
+---
+
+## 4. Tạo tài khoản chủ (owner) lần đầu
+
+Mở `https://sub.domain.com` → trang **/setup** tự hiện → tạo tổ chức + owner. Kiểm tra:
+```bash
+curl -s https://sub.domain.com/api/v1/setup/status   # {"needsSetup":false} sau khi tạo
+```
+Sau đó **Cài đặt → Tài khoản Zalo → Thêm nick → quét QR** (KHÔNG mở Zalo Web cùng lúc).
 
 ---
 
 ## 5. HTTPS qua Cloudflare Tunnel (2 Public Hostname)
 
-Tunnel token (dashboard-managed) → vào **Zero Trust → Networks → Tunnels → Public Hostname**:
+Nếu dùng `cloudflared` token (dashboard-managed) → vào **Zero Trust → Networks → Tunnels →
+Public Hostname**, thêm:
 
 | Public hostname | Service |
 |---|---|
@@ -140,100 +134,94 @@ Tunnel token (dashboard-managed) → vào **Zero Trust → Networks → Tunnels 
 Kiểm tra:
 ```bash
 curl -s -o /dev/null -w "%{http_code}\n" https://sub.domain.com/                 # 200
-curl -sI https://file.domain.com/minio/health/live | head -1                  # 200
+curl -sI https://file.domain.com/minio/health/live | head -1                     # 200
 ```
 (App đã `trustProxy: true` → cookie `Secure` + `wss://` chạy đúng sau tunnel.)
 
-(Phương án Caddy + Let's Encrypt trỏ thẳng IP: xem §B5 runbook gốc, đổi domain.)
+> Phương án Caddy + Let's Encrypt trỏ thẳng IP VPS: tạo 2 A record (DNS only), cài `caddy`,
+> `reverse_proxy 127.0.0.1:3080` (app) và `127.0.0.1:9000` (MinIO), mở 80/443.
 
 ---
 
-## 6. Tạo tài khoản chủ (owner) lần đầu
+## 6. Nâng cấp bản đang chạy lên **v3.4** (từ bản cũ → mới)
 
-Mở `https://sub.domain.com` → trang **/setup** tự hiện → tạo tổ chức + owner. Kiểm tra:
-```bash
-curl -s https://sub.domain.com/api/v1/setup/status   # {"needsSetup":false} sau khi tạo
-```
-Sau đó **Cài đặt → Tài khoản Zalo → Thêm nick → quét QR** (KHÔNG mở Zalo Web cùng lúc).
+> **Idempotent + GIỮ dữ liệu.**
 
----
-
-## 7. Giấy phép & banner attribution (Apache 2.0)
-
-ZaloCRM phát hành theo **Apache License 2.0**; banner attribution trên top-nav là **bắt buộc**
-theo §4(d). Muốn ẩn hợp pháp → mua commercial license và điền key vào biến `FRIENDS` trong `.env`
-(liên hệ `locnt@locnguyendata.com`). Không có key thì **giữ banner**.
-
----
-
-## 8. Nâng cấp bản Community đang chạy (từ bản cũ → bản mới)
-
-> **Idempotent + GIỮ dữ liệu.** Chi tiết bảo mật từng biến: runbook gốc
-> [`HUONG-DAN-TRIEN-KHAI-PRODUCTION.md`](./HUONG-DAN-TRIEN-KHAI-PRODUCTION.md).
-
-**Có gì mới ở bản này:** telegram-bridge (core — có ở Community), sequence delay/jitter, fix lead-pool
-*(chỉ ảnh hưởng bản EE)*, clamav tag `1.4`. **Migration mới** (additive): `telegram_bridge_phase0`,
-`sequence_step_jitter`. **Biến `.env` mới (tuỳ chọn):** `TELEGRAM_BRIDGE_BOT_TOKEN` (trống = cầu Telegram TẮT).
+**Có gì mới ở v3.4:** cầu **Zalo ↔ Telegram** (2 chiều, media), media forward/mirror đầy đủ,
+clamav image tag `1.4`, nhiều fix hiệu năng & UI. **Migration mới** (additive — an toàn):
+`telegram_bridge_phase0` và một số migration phụ. **Biến `.env` mới (tuỳ chọn):**
+`TELEGRAM_BRIDGE_BOT_TOKEN`.
 
 ```bash
 # B1 — BACKUP DB trước (bắt buộc)
 docker exec zalo-crm-db pg_dump -U crmuser zalocrm > backup-truoc-nang-cap-$(date +%F-%H%M).sql
+ls -lh backup-truoc-nang-cap-*.sql        # phải > 0 byte
 
-# B2 — Lấy code Community mới (clone mirror mới, hoặc sinh lại từ EE bằng make-community)
+# B2 — Lấy code mới
 git pull
 
-# B3 — Kiểm .env: GIỮ NGUYÊN JWT_SECRET / ENCRYPTION_KEY / DB_PASSWORD / MinIO (đổi = mất phiên/dữ liệu)
+# B3 — Kiểm .env: GIỮ NGUYÊN JWT_SECRET / ENCRYPTION_KEY / DB_PASSWORD / MinIO (đổi = mất phiên/dữ liệu).
+#      (Tuỳ chọn) thêm TELEGRAM_BRIDGE_BOT_TOKEN để bật cầu Telegram.
 
-# B4 — Build lại, GIỮ DB (KHÔNG -v)
+# B4 — Build lại, GIỮ DB (KHÔNG -v — xem §3a)
 docker compose up -d --build app
 
-# B5 — Migrate (BẮT BUỘC — LUÔN deploy, KHÔNG "migrate dev")
+# B5 — Migrate DB (BẮT BUỘC — LUÔN deploy, KHÔNG "migrate dev")
 docker exec zalo-crm-app npx prisma migrate deploy
 
-# B6 — Cutover: ép re-login 1 lần
+# B6 — Cutover: ép mọi user đăng nhập lại 1 lần (đóng token cũ)
 docker exec zalo-crm-db psql -U crmuser -d zalocrm -c "UPDATE users SET jwt_token_version = jwt_token_version + 1;"
 docker compose restart app
 ```
 
 > 🛑 **CHỈ `up -d --build app`, KHÔNG `down -v`** (down -v xoá DB → mất tài khoản → đăng nhập lại bị
-> đá về `/setup-password`). Kiểm tra sau nâng cấp: `curl ... :3080/` → 200; `grep "community edition"`
-> trong log; `SELECT count(*) FROM users` > 0.
+> đá về `/setup-password`). Đổi `crmuser`/`zalocrm` nếu `.env` đặt `DB_USER`/`DB_NAME` khác.
 
-**Chuyển từ bản cũ/EE → Community (lưu ý dữ liệu):** schema giống hệt nên DB của 4 nhóm tính năng EE
-(Lead Pool, Automation/Marketing, Facebook) **vẫn nằm nguyên trong các bảng "ngủ"** — vô hại, KHÔNG mất.
-UI/route các tính năng đó biến mất ở Community. **Có thể đảo ngược**: deploy lại image EE (còn `_ee/`)
-là các tính năng + dữ liệu hiện lại đầy đủ.
+**B7 — Kiểm tra sau nâng cấp:**
+```bash
+curl -s -o /dev/null -w "root → %{http_code}\n" http://localhost:3080/                 # 200
+curl -sI http://localhost:3080/ | grep -i content-security-policy                       # có header CSP
+docker exec zalo-crm-db psql -U crmuser -d zalocrm -tAc "SELECT count(*) FROM users;"   # >0 (DB còn nguyên)
+```
+> User cần **đăng nhập lại 1 lần** sau B6 (đúng, không phải lỗi). Đăng nhập xong vào thẳng dashboard.
 
-> Quy trình open-core: fix/feature ngoài `_ee/` ở repo Extension **tự động** chảy vào Community
-> ở lần `make-community` kế tiếp — không cherry-pick. Đừng merge ngược Community → Extension.
+**B8 — Siết bảo mật SAU vài ngày (không gấp):** `.env` `CSP_MODE=enforce` sau khi `report-only` sạch;
+`SOCKET_REQUIRE_ACCESS_TYP=true` sau ~7 ngày → mỗi lần đổi chỉ cần `docker compose up -d app`.
 
-### Rollback
+### Đổi `S3_PUBLIC_URL` trên hệ đang chạy (2 việc hay quên)
+```bash
+docker compose up -d app   # a. restart KHÔNG đủ — phải recreate để đọc lại .env
+# b. URL ảnh cũ lưu TUYỆT ĐỐI trong DB → rewrite:
+docker exec zalo-crm-db psql -U crmuser -d zalocrm -c \
+  "UPDATE media_blobs SET public_url = replace(public_url, '<URL-CŨ>', '<URL-MỚI>') WHERE public_url LIKE '<URL-CŨ>%';"
+```
+
+### Rollback (nếu sự cố nặng)
 ```bash
 git checkout <branch-hoặc-commit-cũ> && docker compose up -d --build app
-# Migration additive → thường không cần rollback DB. Nếu cần:
+# Migration additive (không drop dữ liệu) → thường KHÔNG cần rollback DB. Nếu cần:
 cat backup-truoc-nang-cap-*.sql | docker exec -i zalo-crm-db psql -U crmuser zalocrm
 ```
 
 ---
 
-## 9. Sự cố thường gặp
+## 7. Giấy phép — GPL-3.0
 
-| Triệu chứng | Xử lý |
-|---|---|
-| Route core trả 404 hết / app không lên | xem `docker logs zalo-crm-app`; kiểm `migrate deploy` đã chạy + `migrate status` "up to date" |
-| Boot đầu log `... does not exist` | transient trước `migrate deploy`; sau migrate + `restart app` hết |
-| `clamav/clamav:1.3 not found` | clamav/backup tuỳ chọn — chỉ `up ... app db redis minio minio-init` |
-| Lỡ thấy menu Automation/Lead Pool | đang chạy nhầm **bản EE** (image còn `_ee`). Kiểm `docker logs ... | grep edition` phải là *Community* |
-| Ảnh chat không hiển thị | `S3_PUBLIC_URL` chưa HTTPS công khai / chưa thêm hostname `fileoss...` trên tunnel (§5) |
-| Muốn dùng Automation/Lead Pool/FB | đó là tính năng **Extension** — chuyển sang bản EE (xem guide EE) |
+ZaloCRM phát hành theo **GNU General Public License v3.0 (GPL-3.0)** — xem [LICENSE](../LICENSE).
+Copyleft: mọi bản **phân phối lại** (kể cả bản đã chỉnh sửa) **bắt buộc** phát hành dưới GPL-3.0 và
+kèm **mã nguồn đầy đủ**. Muốn dùng theo điều khoản thương mại (không chịu ràng buộc copyleft) —
+dual-license: liên hệ `locnt@locnguyendata.com`.
 
 ---
 
-### Phụ lục — đối chiếu nhanh EE ↔ Community
-| | EE | Community |
-|---|---|---|
-| Log boot | `Extension edition — _ee bundle loaded` | `Community edition — _ee bundle absent` |
-| `/api/v1/automation/triggers` | 401 | **404** |
-| `/api/v1/lead-pool/config` | 401 | **404** |
-| Thư mục `_ee/` | có | không |
-| Lệnh build/chạy/migrate | giống nhau | giống nhau |
+## 8. Sự cố thường gặp
+
+| Triệu chứng | Xử lý |
+|---|---|
+| **Rebuild xong đăng nhập bị đá về `/setup-password`** | DB bị xoá do rebuild kèm **`down -v`**. Dùng `docker compose up -d --build app` (giữ volume). Xem [§3a](#3a-an-toàn-dữ-liệu-khi-rebuild-đừng-mất-database). |
+| `migrate deploy` báo lỗi quan hệ/cột | DB thiếu bảng → chụp log gửi dev; KHÔNG `migrate dev` |
+| Build fail `npm run build` | `cd backend && npx tsc` xem lỗi thật → vá rồi build lại |
+| `clamav/clamav:1.x not found` khi `docker compose up` (không kèm tên service) | clamav/backup tuỳ chọn — chạy `docker compose up -d --build app db redis minio minio-init` |
+| Boot đầu log lỗi liên quan bảng chưa tồn tại | transient trước `migrate deploy`; sau migrate + `restart app` hết |
+| Ảnh chat không hiển thị | `S3_PUBLIC_URL` chưa HTTPS công khai / chưa thêm hostname `file.domain.com` (§5) |
+| Mất kết nối Zalo | tự reconnect ~30s; không được → Tài khoản Zalo quét QR lại (KHÔNG mở Zalo Web) |
