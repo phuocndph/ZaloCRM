@@ -48,27 +48,9 @@ export const config = {
   uploadDir: envValue('UPLOAD_DIR') || '/var/lib/zalo-crm/files',
   appUrl: envValue('APP_URL') || 'http://localhost:3000',
 
-  /* --- Storage driver selection (2026-06-20) ---
-   * local — lưu file lên ổ đĩa VPS (UPLOAD_DIR), serve qua route tĩnh /files.
-   *         Mặc định: chạy ngay, không cần cấu hình R2.
-   * r2    — lưu lên Cloudflare R2 (hoặc bất kỳ S3-compatible) qua AWS SDK v3.
-   * Đổi driver = chỉ đổi 1 biến env này, không sửa code. */
-  storageDriver: (() => {
-    const v = (envValue('STORAGE_DRIVER') || 'local').toLowerCase();
-    return v === 'r2' ? 'r2' : 'local';
-  })() as 'local' | 'r2',
-
-  /* Public base URL cho driver local — nơi route tĩnh /files phục vụ UPLOAD_DIR.
-   * Mặc định bám APP_URL (Zalo CDN + trình duyệt tải ảnh qua đây). Đặt riêng nếu
-   * file phục vụ qua host khác (vd Cloudflare Tunnel). KHÔNG có dấu / ở cuối. */
-  localPublicUrl: (envValue('LOCAL_PUBLIC_URL') || `${envValue('APP_URL') || 'http://localhost:3000'}/files`).replace(/\/+$/, ''),
-
-  /* --- S3 / R2 storage (dùng khi STORAGE_DRIVER=r2) ---
-   * R2: s3Endpoint = https://<account>.r2.cloudflarestorage.com,
-   *     s3Region   = auto,
-   *     s3PublicUrl= domain công khai trỏ THẲNG vào bucket (KHÔNG kèm tên bucket). */
+  /* --- S3/MinIO storage for chat attachments --- */
   s3Endpoint: envValue('S3_ENDPOINT') || 'http://localhost:9000',
-  s3PublicUrl: (envValue('S3_PUBLIC_URL') || 'http://localhost:9000').replace(/\/+$/, ''),
+  s3PublicUrl: envValue('S3_PUBLIC_URL') || 'http://localhost:9000',
   s3Bucket: envValue('S3_BUCKET') || 'zalocrm-attachments',
   s3AccessKey: envValue('S3_ACCESS_KEY') || 'minioadmin',
   s3SecretKey: envValue('S3_SECRET_KEY') || 'minioadmin',

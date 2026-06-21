@@ -96,17 +96,6 @@ export interface RbacUser {
   onboarding?: OnboardingSummary | null;
 }
 
-// Tìm node nhóm quyền theo id trong cây (đệ quy children) — dùng để cập nhật grants
-// tại chỗ sau khi PATCH, tránh reload toàn bộ cây.
-function findGroupNode(nodes: PermissionGroupNode[], id: string): PermissionGroupNode | null {
-  for (const n of nodes) {
-    if (n.id === id) return n;
-    const found = findGroupNode(n.children ?? [], id);
-    if (found) return found;
-  }
-  return null;
-}
-
 export const useRbacStore = defineStore('rbac', {
   state: () => ({
     departments: [] as DepartmentNode[],
@@ -177,11 +166,7 @@ export const useRbacStore = defineStore('rbac', {
     },
     async updateGroupGrants(id: string, grants: Record<string, Record<string, boolean>>) {
       await api.patch(`/permission-groups/${id}`, { grants });
-      // Fix 2026-06-20: cập nhật grants TẠI CHỖ thay vì loadPermissionGroups().
-      // Reload cả cây làm màn Phân quyền re-render → nhảy về đầu trang + khóa tick
-      // liên tục. Grants đổi không ảnh hưởng cấu trúc cây/memberCount nên update node là đủ.
-      const node = findGroupNode(this.permissionGroups, id);
-      if (node) node.grants = JSON.parse(JSON.stringify(grants));
+      await this.loadPermissionGroups();
     },
     async setUserPermissionGroup(userId: string, permissionGroupId: string | null) {
       await api.patch(`/rbac/users/${userId}/permission-group`, { permissionGroupId });

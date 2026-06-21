@@ -14,9 +14,11 @@ services:
     environment:
       - NODE_ENV=production
       - DATABASE_URL=postgresql://${DB_USER:-crmuser}:${DB_PASSWORD}@db:5432/${DB_NAME:-zalocrm}
-      # STORAGE 2026-06-20: storage config (STORAGE_DRIVER, S3_*, LOCAL_PUBLIC_URL,
-      # APP_URL) đến từ env_file .env — KHÔNG override ở đây nữa để keys R2 không bị
-      # ghi đè bằng MINIO_ROOT_*. Mặc định STORAGE_DRIVER=local (lưu vào volume bên dưới).
+      - S3_ENDPOINT=${S3_ENDPOINT:-http://minio:9000}
+      - S3_PUBLIC_URL=${S3_PUBLIC_URL:-http://localhost:9000}
+      - S3_BUCKET=${S3_BUCKET:-zalocrm-attachments}
+      - S3_ACCESS_KEY=${MINIO_ROOT_USER:-minioadmin}
+      - S3_SECRET_KEY=${MINIO_ROOT_PASSWORD:-minioadmin}
       # Phase 7 overnight test: STUB mode prevents Zalo SDK calls.
       # Set to 'false' or remove for REAL mode.
       - AUTOMATION_STUB_MODE=${AUTOMATION_STUB_MODE:-false}

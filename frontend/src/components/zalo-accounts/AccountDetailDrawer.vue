@@ -243,63 +243,6 @@
           </div>
         </section>
 
-        <!-- CẦU TELEGRAM (Zalo ↔ Telegram 2 chiều) -->
-        <section v-if="account" class="d-section">
-          <div class="h"><span>Cầu Telegram</span></div>
-
-          <div v-if="tgLoading" class="muted-italic">Đang tải trạng thái…</div>
-
-          <template v-else-if="tgStatus">
-            <div v-if="!tgStatus.botConfigured" class="muted-italic">
-              Chưa cấu hình bot (TELEGRAM_BRIDGE_BOT_TOKEN) — cầu đang tắt ở mức hệ thống.
-            </div>
-
-            <template v-else>
-              <div class="tg-status">
-                <span class="tg-dot" :class="tgStatus.enabled ? 'on' : 'off'"></span>
-                <b>{{ tgStatus.enabled ? 'Đang bật' : 'Chưa bật' }}</b>
-                <span v-if="tgStatus.telegramChatId" class="tg-chat">· group {{ tgStatus.telegramChatId }}</span>
-              </div>
-
-              <div class="actions-grid" style="margin-top:8px">
-                <button
-                  v-if="!tgStatus.enabled"
-                  class="action-btn full"
-                  :disabled="tgProvisioning || !tgStatus.provisionerConfigured || !canEditSettings"
-                  @click="provisionBridge"
-                >
-                  <span class="lbl">{{ tgProvisioning ? 'Đang bật…' : (tgStatus.telegramChatId ? '▶ Bật lại cầu' : 'Bật cầu Telegram') }}</span>
-                </button>
-                <button
-                  v-else
-                  class="action-btn full"
-                  :disabled="tgDisabling || !canEditSettings"
-                  @click="disableBridge"
-                >
-                  <span class="lbl">{{ tgDisabling ? 'Đang tắt…' : '⏸ Tắt cầu Telegram' }}</span>
-                </button>
-                <button class="action-btn full" :disabled="tgLinkLoading" @click="getLinkCode">
-                  <span class="lbl">{{ tgLinkLoading ? 'Đang lấy mã…' : 'Lấy mã liên kết (sale)' }}</span>
-                </button>
-              </div>
-
-              <div v-if="!tgStatus.provisionerConfigured" class="muted-italic" style="margin-top:6px">
-                Chưa cấu hình tài khoản provisioner (TELEGRAM_PROVISIONER_*) — không tự tạo group được.
-              </div>
-              <div v-else-if="!canEditSettings" class="muted-italic" style="margin-top:6px">
-                Cần quyền settings:edit để bật cầu.
-              </div>
-
-              <div v-if="tgLinkCode" class="tg-code">
-                Gõ trong Telegram cho bot: <code>/link {{ tgLinkCode }}</code>
-                <div class="tg-code-hint">(mã hết hạn sau 10 phút)</div>
-              </div>
-            </template>
-          </template>
-
-          <div v-if="tgError" class="tg-err">{{ tgError }}</div>
-        </section>
-
         <!-- DANGER ZONE -->
         <section class="d-section">
           <div class="danger-zone">
@@ -322,7 +265,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue';
+import { ref } from 'vue';
 import type { EnrichedAccount, UptimeBucket } from '@/composables/use-zalo-accounts-dashboard';
 import UptimeSparkline from './UptimeSparkline.vue';
 import { useAuthStore } from '@/stores/auth';
@@ -409,77 +352,6 @@ const emit = defineEmits<{
 function close() {
   emit('update:modelValue', false);
 }
-
-// ── Cầu Telegram (Zalo ↔ Telegram 2 chiều) ───────────────────────────────────
-interface TgStatus { botConfigured: boolean; provisionerConfigured: boolean; enabled: boolean; telegramChatId: string | null }
-const tgStatus = ref<TgStatus | null>(null);
-const tgLoading = ref(false);
-const tgProvisioning = ref(false);
-const tgDisabling = ref(false);
-const tgLinkCode = ref<string | null>(null);
-const tgLinkLoading = ref(false);
-const tgError = ref<string | null>(null);
-const canEditSettings = computed(() => authStore.canAccess('settings', 'edit'));
-
-async function loadTgStatus() {
-  if (!props.account) return;
-  tgLoading.value = true; tgError.value = null; tgLinkCode.value = null;
-  try {
-    const { data } = await api.get<TgStatus>(`/telegram-bridge/${props.account.id}/status`);
-    tgStatus.value = data;
-  } catch {
-    tgStatus.value = null;
-    tgError.value = 'Không tải được trạng thái cầu Telegram.';
-  } finally {
-    tgLoading.value = false;
-  }
-}
-
-async function provisionBridge() {
-  if (!props.account || tgProvisioning.value) return;
-  tgProvisioning.value = true; tgError.value = null;
-  try {
-    await api.post(`/telegram-bridge/provision/${props.account.id}`);
-    await loadTgStatus();
-  } catch (e: unknown) {
-    tgError.value = (e as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Bật cầu thất bại.';
-  } finally {
-    tgProvisioning.value = false;
-  }
-}
-
-async function getLinkCode() {
-  if (tgLinkLoading.value) return;
-  tgLinkLoading.value = true; tgError.value = null;
-  try {
-    const { data } = await api.post<{ code: string }>('/telegram-bridge/link-code');
-    tgLinkCode.value = data.code;
-  } catch (e: unknown) {
-    tgError.value = (e as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Lấy mã liên kết thất bại.';
-  } finally {
-    tgLinkLoading.value = false;
-  }
-}
-
-async function disableBridge() {
-  if (!props.account || tgDisabling.value) return;
-  tgDisabling.value = true; tgError.value = null;
-  try {
-    await api.post(`/telegram-bridge/disable/${props.account.id}`);
-    await loadTgStatus();
-  } catch (e: unknown) {
-    tgError.value = (e as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Tắt cầu thất bại.';
-  } finally {
-    tgDisabling.value = false;
-  }
-}
-
-// Nạp trạng thái khi mở drawer / đổi nick.
-watch(
-  () => [props.modelValue, props.account?.id],
-  () => { if (props.modelValue && props.account) loadTgStatus(); },
-  { immediate: true },
-);
 
 // Phase metrics layer 2026-05-22
 function formatNum(n: number | null | undefined): string {
@@ -888,31 +760,6 @@ function maskPhone(p: string): string {
 .action-btn svg { width: 14px; height: 14px; color: #6B7280; flex-shrink: 0 }
 .action-btn .lbl { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
 .action-btn.full { grid-column: 1/-1 }
-
-/* Cầu Telegram */
-.tg-status { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #374151 }
-.tg-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0 }
-.tg-dot.on { background: #10B981 }
-.tg-dot.off { background: #9CA3AF }
-.tg-chat { color: #6B7280 }
-.tg-code {
-  margin-top: 8px;
-  padding: 8px 10px;
-  background: #EFF6FF;
-  border: 1px solid #BFDBFE;
-  border-radius: 8px;
-  font-size: 12px;
-  color: #1E3A8A;
-}
-.tg-code code {
-  background: #DBEAFE;
-  padding: 2px 6px;
-  border-radius: 5px;
-  font-weight: 600;
-  user-select: all;
-}
-.tg-code-hint { color: #6B7280; font-size: 11px; margin-top: 4px }
-.tg-err { margin-top: 8px; font-size: 12px; color: #B91C1C }
 
 .danger-zone {
   border: 1px dashed #FECACA;

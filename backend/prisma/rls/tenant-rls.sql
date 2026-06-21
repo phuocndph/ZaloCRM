@@ -547,36 +547,3 @@ CREATE POLICY tenant_isolation ON "media_albums"
   USING ("org_id" = current_setting('app.current_org', true) OR current_setting('app.bypass_rls', true) = 'on')
   WITH CHECK ("org_id" = current_setting('app.current_org', true) OR current_setting('app.bypass_rls', true) = 'on');
 
-
--- ── Zalo Ads Lead Form (Extension, thêm 2026-06-20) ────────────────────────
--- zalo_oa_app_configs
-ALTER TABLE "zalo_oa_app_configs" ENABLE ROW LEVEL SECURITY;
-ALTER TABLE "zalo_oa_app_configs" FORCE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS tenant_isolation ON "zalo_oa_app_configs";
-CREATE POLICY tenant_isolation ON "zalo_oa_app_configs"
-  USING ("org_id" = current_setting('app.current_org', true) OR current_setting('app.bypass_rls', true) = 'on')
-  WITH CHECK ("org_id" = current_setting('app.current_org', true) OR current_setting('app.bypass_rls', true) = 'on');
-
--- zalo_oa_connections
-ALTER TABLE "zalo_oa_connections" ENABLE ROW LEVEL SECURITY;
-ALTER TABLE "zalo_oa_connections" FORCE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS tenant_isolation ON "zalo_oa_connections";
-CREATE POLICY tenant_isolation ON "zalo_oa_connections"
-  USING ("org_id" = current_setting('app.current_org', true) OR current_setting('app.bypass_rls', true) = 'on')
-  WITH CHECK ("org_id" = current_setting('app.current_org', true) OR current_setting('app.bypass_rls', true) = 'on');
-
--- zalo_form_mappings
-ALTER TABLE "zalo_form_mappings" ENABLE ROW LEVEL SECURITY;
-ALTER TABLE "zalo_form_mappings" FORCE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS tenant_isolation ON "zalo_form_mappings";
-CREATE POLICY tenant_isolation ON "zalo_form_mappings"
-  USING ("org_id" = current_setting('app.current_org', true) OR current_setting('app.bypass_rls', true) = 'on')
-  WITH CHECK ("org_id" = current_setting('app.current_org', true) OR current_setting('app.bypass_rls', true) = 'on');
-
--- zalo_lead_events
-ALTER TABLE "zalo_lead_events" ENABLE ROW LEVEL SECURITY;
-ALTER TABLE "zalo_lead_events" FORCE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS tenant_isolation ON "zalo_lead_events";
-CREATE POLICY tenant_isolation ON "zalo_lead_events"
-  USING ("org_id" = current_setting('app.current_org', true) OR current_setting('app.bypass_rls', true) = 'on')
-  WITH CHECK ("org_id" = current_setting('app.current_org', true) OR current_setting('app.bypass_rls', true) = 'on');

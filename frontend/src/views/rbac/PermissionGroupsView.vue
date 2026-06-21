@@ -156,11 +156,12 @@
                     <label
                       v-if="(resourceActions[r] ?? []).includes(a)"
                       class="at-checkbox"
-                      :class="{ checked: !!localGrants[r]?.[a] }"
+                      :class="{ checked: !!selected.grants?.[r]?.[a] }"
                     >
                       <input
                         type="checkbox"
-                        :checked="!!localGrants[r]?.[a]"
+                        :checked="!!selected.grants?.[r]?.[a]"
+                        :disabled="saving"
                         @change="toggleGrant(r, a, ($event.target as HTMLInputElement).checked)"
                       />
                       <span class="at-checkbox-box">✓</span>
@@ -236,7 +237,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import { useRbacStore, type PermissionGroupNode, type RbacUser } from '@/stores/rbac';
 import { api } from '@/api/index';
 
@@ -249,9 +250,6 @@ const justSaved = ref(false);
 const copyFromId = ref('');
 
 const selectedId = ref<string | null>(null);
-// Bản nháp grants của nhóm đang chọn — checkbox bind vào đây để tick mượt, không phụ
-// thuộc reload store. Đồng bộ từ store khi đổi nhóm (watch ở mục Grant mutations).
-const localGrants = ref<Record<string, Record<string, boolean>>>({});
 
 onMounted(async () => {
   await Promise.all([
@@ -333,6 +331,8 @@ const ACTION_LABELS: Record<string, string> = {
   create: 'Thêm mới',
   edit: 'Chỉnh sửa',
   delete: 'Xóa',
+  approve: 'Duyệt',
+  pay: 'Thanh toán',
   view_all: 'Xem tất cả',
 };
 function actionLabel(a: string) { return ACTION_LABELS[a] ?? a; }
@@ -386,7 +386,8 @@ function accentByDepth(d: number): string {
 }
 
 function rowCount(r: string): number {
-  const row = localGrants.value?.[r];
+  if (!selected.value) return 0;
+  const row = selected.value.grants?.[r];
   if (!row) return 0;
   let c = 0;
   for (const a of resourceActions.value[r] ?? []) if (row[a]) c++;
@@ -400,110 +401,72 @@ function rowEmpty(r: string): boolean {
   return rowCount(r) === 0;
 }
 
-// ─── Grant mutations (bản nháp local + debounce auto-save, KHÔNG reload cả cây) ───
-// Fix 2026-06-20: trước đây mỗi tick gọi updateGroupGrants → loadPermissionGroups()
-// reload toàn bộ cây quyền (màn nhảy về đầu trang) + :disabled="saving" khóa checkbox
-// (không tick liên tục được) + dựng lại newGrants từ selected.grants mỗi lần (click nhanh
-// làm mất tick trước). Nay: tick cập nhật localGrants tức thì, lưu gộp sau 500ms, store
-// cập nhật grants TẠI CHỖ nên không re-render cả cây.
-// Fix#2 (code-review 2026-06-20): (a) CHỤP snapshot grants theo nhóm NGAY lúc tick (không
-// đọc lại localGrants lúc flush) → đổi nhóm giữa chừng không lưu nhầm/mất tick; (b) re-sync
-// localGrants ĐỒNG BỘ khi đổi nhóm (không await trước khi nạp) → không có khoảng hiện sai;
-// (c) nối CHUỖI save (saveChain) → các PATCH chạy tuần tự, không đè ngược thứ tự.
+// ─── Grant mutations (auto-save) ───
 let saveTimer: any;
-let pendingGroupId: string | null = null;
-let pendingGrants: Record<string, Record<string, boolean>> | null = null;
-let saveChain: Promise<void> = Promise.resolve();
-
-function scheduleSave() {
+async function saveGrants(newGrants: Record<string, Record<string, boolean>>) {
   if (!selected.value) return;
-  pendingGroupId = selected.value.id;
-  // Chụp nguyên trạng bản nháp tại đúng thời điểm tick — flush sau dùng snapshot này.
-  pendingGrants = JSON.parse(JSON.stringify(localGrants.value));
+  clearTimeout(saveTimer);
   saving.value = true;
   justSaved.value = false;
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(flushSave, 500);
+  try {
+    await store.updateGroupGrants(selected.value.id, newGrants);
+    justSaved.value = true;
+    saveTimer = setTimeout(() => { justSaved.value = false; }, 1500);
+  } catch (e: any) {
+    alert(e?.response?.data?.error || 'Lỗi cập nhật quyền');
+  } finally {
+    saving.value = false;
+  }
 }
 
-function flushSave() {
-  clearTimeout(saveTimer);
-  const gid = pendingGroupId;
-  const grants = pendingGrants;
-  pendingGroupId = null;
-  pendingGrants = null;
-  if (!gid || !grants) { saving.value = false; return; }
-  // Nối chuỗi: PATCH chạy lần lượt theo thứ tự lên lịch (snapshot sau ⊇ snapshot trước).
-  saveChain = saveChain.then(async () => {
-    try {
-      await store.updateGroupGrants(gid, grants);
-      justSaved.value = true;
-      setTimeout(() => { justSaved.value = false; }, 1500);
-    } catch (e: any) {
-      alert(e?.response?.data?.error || 'Lỗi cập nhật quyền');
-      // Lưu lỗi → nếu vẫn đang ở đúng nhóm đó, khôi phục bản nháp từ store.
-      if (selected.value?.id === gid) {
-        localGrants.value = JSON.parse(JSON.stringify(selected.value?.grants ?? {}));
-      }
-    } finally {
-      // Chỉ tắt "Đang lưu..." khi không còn lần lưu nào đang chờ.
-      if (!pendingGroupId) saving.value = false;
-    }
-  });
-}
-
-// Đổi nhóm → lưu nốt nhóm trước (dùng snapshot đã chụp, không cần await) rồi nạp bản nháp
-// nhóm mới NGAY (đồng bộ) — không còn khoảng "header nhóm mới + tick nhóm cũ".
-watch(selectedId, (_newId, oldId) => {
-  if (oldId && pendingGroupId) flushSave();
-  localGrants.value = JSON.parse(JSON.stringify(selected.value?.grants ?? {}));
-}, { immediate: true });
-
-// Rời trang khi còn thay đổi chưa lưu → lưu nốt.
-onBeforeUnmount(() => { if (pendingGroupId) flushSave(); });
-
-function toggleGrant(r: string, a: string, v: boolean) {
+async function toggleGrant(r: string, a: string, v: boolean) {
   if (!selected.value) return;
-  if (!localGrants.value[r]) localGrants.value[r] = {};
-  localGrants.value[r][a] = v;
-  scheduleSave();
+  const newGrants = JSON.parse(JSON.stringify(selected.value.grants ?? {}));
+  if (!newGrants[r]) newGrants[r] = {};
+  newGrants[r][a] = v;
+  await saveGrants(newGrants);
 }
 
-function tickAll(value: boolean) {
+async function tickAll(value: boolean) {
   if (!selected.value) return;
   if (value && !confirm(`Tick TẤT CẢ quyền cho nhóm "${selected.value.name}"?`)) return;
   if (!value && !confirm(`Bỏ tick TẤT CẢ quyền cho nhóm "${selected.value.name}"?`)) return;
-  const ng: Record<string, Record<string, boolean>> = {};
+  const newGrants: Record<string, Record<string, boolean>> = {};
   for (const r of resources.value) {
-    ng[r] = {};
-    for (const a of resourceActions.value[r] ?? []) ng[r][a] = value;
+    newGrants[r] = {};
+    for (const a of resourceActions.value[r] ?? []) {
+      newGrants[r][a] = value;
+    }
   }
-  localGrants.value = ng;
-  scheduleSave();
+  await saveGrants(newGrants);
 }
 
-function tickRow(r: string) {
+async function tickRow(r: string) {
   if (!selected.value) return;
+  const newGrants = JSON.parse(JSON.stringify(selected.value.grants ?? {}));
   const allOn = rowFull(r);
-  if (!localGrants.value[r]) localGrants.value[r] = {};
-  for (const a of resourceActions.value[r] ?? []) localGrants.value[r][a] = !allOn;
-  scheduleSave();
+  newGrants[r] = newGrants[r] ?? {};
+  for (const a of resourceActions.value[r] ?? []) {
+    newGrants[r][a] = !allOn;
+  }
+  await saveGrants(newGrants);
 }
 
-function tickColumn(a: string) {
+async function tickColumn(a: string) {
   if (!selected.value) return;
-  // Cột đang bật hết chưa?
+  const newGrants = JSON.parse(JSON.stringify(selected.value.grants ?? {}));
+  // Check if column fully on
   let allOn = true;
   for (const r of resources.value) {
     if (!(resourceActions.value[r] ?? []).includes(a)) continue;
-    if (!localGrants.value[r]?.[a]) { allOn = false; break; }
+    if (!newGrants[r]?.[a]) { allOn = false; break; }
   }
   for (const r of resources.value) {
     if (!(resourceActions.value[r] ?? []).includes(a)) continue;
-    if (!localGrants.value[r]) localGrants.value[r] = {};
-    localGrants.value[r][a] = !allOn;
+    if (!newGrants[r]) newGrants[r] = {};
+    newGrants[r][a] = !allOn;
   }
-  scheduleSave();
+  await saveGrants(newGrants);
 }
 
 async function doCopyFrom() {
@@ -511,8 +474,8 @@ async function doCopyFrom() {
   const src = flatGroupsList.value.find((g) => g.id === copyFromId.value);
   if (!src) return;
   if (!confirm(`Sao chép quyền từ "${src.name}" sang "${selected.value.name}"? Sẽ ghi đè quyền hiện tại của ${selected.value.name}.`)) return;
-  localGrants.value = JSON.parse(JSON.stringify(src.grants ?? {}));
-  scheduleSave();
+  const newGrants = JSON.parse(JSON.stringify(src.grants ?? {}));
+  await saveGrants(newGrants);
   copyFromId.value = '';
 }
 

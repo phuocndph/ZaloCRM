@@ -547,10 +547,6 @@ model Contact {
   hasZalo            Boolean?  @map("has_zalo") // null=unknown, true=verified yes, false=verified no
   zaloLookupAt       DateTime? @map("zalo_lookup_at")
   zaloLookupAttempts Int       @default(0) @map("zalo_lookup_attempts")
-  // #3 (2026-06-20): đếm số lần ĐÃ GỬI kết bạn cho SĐT này (mức Cha) — để sau lọc/loại SĐT bị
-  // nhiều chiến dịch gửi kết bạn. Chỉ +1 khi GỬI MỚI thành công (không tính "đã là bạn").
-  friendInviteSentCount  Int       @default(0) @map("friend_invite_sent_count")
-  friendInviteLastSentAt DateTime? @map("friend_invite_last_sent_at")
   importBatchId      String?   @map("import_batch_id") // soft FK -> phone_list_imports.id (model later)
 
   // ── Compliance ─────────────────────────────────────────────────────────────
@@ -700,7 +696,6 @@ model Contact {
   @@index([orgId, zaloUsername])
   @@index([orgId, mergedInto])
   @@index([orgId, hasZalo])
-  @@index([orgId, friendInviteSentCount]) // #3: lọc "SĐT đã gửi kết bạn ≥ N" nhanh
   @@index([orgId, importBatchId])
   @@index([orgId, consentStatus])
   @@index([orgId, province, district])
@@ -3659,78 +3654,6 @@ model FacebookAppConfig {
   org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
   @@map("facebook_app_configs")
-}
-
-// ── Zalo Ads Lead Form (Extension / _ee/zalo-ads) ──────────────────────────
-// Lead từ quảng cáo Zalo Form qua OA OpenAPI (poll GET oa/form/get). orgId là
-// cột thường (cô lập tenant qua RLS + ORG_SCOPED_MODELS + withTenant), không FK
-// Organization — theo tiền lệ FacebookLeadEvent (giảm coupling).
-model ZaloOaAppConfig {
-  id               String   @id @default(cuid())
-  orgId            String   @unique @map("org_id")
-  appId            String?  @map("app_id")
-  appSecretEnc     String?  @map("app_secret_enc") @db.Text // encryptToken(appSecret)
-  oauthRedirectUri String?  @map("oauth_redirect_uri")
-  createdAt        DateTime @default(now()) @map("created_at")
-  updatedAt        DateTime @updatedAt @map("updated_at")
-
-  @@map("zalo_oa_app_configs")
-}
-
-model ZaloOaConnection {
-  id              String    @id @default(cuid())
-  orgId           String    @map("org_id")
-  oaId            String    @map("oa_id")
-  oaName          String?   @map("oa_name")
-  accessTokenEnc  String    @map("access_token_enc") @db.Text // ~25h
-  refreshTokenEnc String    @map("refresh_token_enc") @db.Text // ~3 tháng, dùng 1 lần (tự xoay)
-  tokenExpiresAt  DateTime? @map("token_expires_at")
-  status          String    @default("connected") // connected | revoked | error
-  lastError       String?   @map("last_error")
-  createdAt       DateTime  @default(now()) @map("created_at")
-  updatedAt       DateTime  @updatedAt @map("updated_at")
-
-  forms ZaloFormMapping[]
-
-  @@unique([orgId, oaId])
-  @@map("zalo_oa_connections")
-}
-
-model ZaloFormMapping {
-  id               String   @id @default(cuid())
-  orgId            String   @map("org_id")
-  oaConnectionId   String   @map("oa_connection_id")
-  formId           String   @map("form_id")
-  formName         String?  @map("form_name")
-  customerListId   String   @map("customer_list_id")
-  fieldMap         Json     @default("{}") @map("field_map") // { "<questionId>": "name|phone|email|<custom>" }
-  questionTitles   Json     @default("{}") @map("question_titles") // { "<questionId>": "<title>" } — hiển thị UI
-  lastSyncedToTime Int?     @map("last_synced_to_time") // epoch s — con trỏ poll
-  enabled          Boolean  @default(true)
-  createdAt        DateTime @default(now()) @map("created_at")
-
-  oaConnection ZaloOaConnection @relation(fields: [oaConnectionId], references: [id], onDelete: Cascade)
-
-  @@unique([orgId, formId])
-  @@map("zalo_form_mappings")
-}
-
-model ZaloLeadEvent {
-  id          String    @id @default(cuid())
-  orgId       String    @map("org_id")
-  dedupeKey   String    @map("dedupe_key") // sha256(orgId+formId+submitTime+phone) — leadId không ổn định
-  formId      String    @map("form_id")
-  rawPayload  Json      @map("raw_payload")
-  processedAt DateTime? @map("processed_at")
-  contactId   String?   @map("contact_id")
-  listEntryId String?   @map("list_entry_id")
-  error       String?
-  createdAt   DateTime  @default(now()) @map("created_at")
-
-  @@unique([orgId, dedupeKey])
-  @@index([orgId, formId])
-  @@index([createdAt])
-  @@map("zalo_lead_events")
 }
 
 // ════════════════════════════════════════════════════════════════════════════

@@ -55,7 +55,6 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
         dateTo = '',
         sort = '',            // 'score' = lead score cao lên đầu; mặc định = lastActivity desc
         sequenceAttachMin = '', // #4: lọc KH đã gắn ≥ N sequence (đếm CareSession, auto+manual)
-        friendInviteMin = '',   // #3: lọc KH đã được gửi kết bạn ≥ N lần
       } = request.query as QueryParams;
 
       const where: any = { orgId: user.orgId, mergedInto: null };
@@ -186,12 +185,6 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
         } else {
           where.id = { in: seqIds };
         }
-      }
-
-      // #3 (2026-06-20): lọc "KH đã được gửi kết bạn ≥ N lần" — cột Contact.friendInviteSentCount.
-      const fiMinN = parseInt(friendInviteMin) || 0;
-      if (fiMinN > 0) {
-        where.friendInviteSentCount = { gte: fiMinN };
       }
 
       const pageNum = parseInt(page);

@@ -4,7 +4,7 @@
  * thêm bot làm admin (manage topics) → lưu chat id vào TelegramBridgeConfig (bật cầu).
  *
  * Session tài khoản công ty lưu ở env TELEGRAM_PROVISIONER_SESSION (mã hoá MTProto, gitignored
- * trong .env). Đăng nhập 1 lần qua backend/scripts/tg-provisioner-login.mjs.
+ * trong .env). Đăng nhập 1 lần qua scripts/tg-provisioner-login.mjs.
  */
 import { TelegramClient, Api } from 'telegram';
 import { StringSession } from 'telegram/sessions/index.js';

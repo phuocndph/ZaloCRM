@@ -45,7 +45,3 @@ _chat_ui_backups/
 secrets/
 .gitnexus
 .env.bak*
-
-# Telegram
-public-key-telegram
-public-key-telegram-product

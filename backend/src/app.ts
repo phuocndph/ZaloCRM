@@ -23,7 +23,6 @@ import fastifyMultipart from '@fastify/multipart';
 import fastifyFormbody from '@fastify/formbody';
 import { Server } from 'socket.io';
 import path from 'node:path';
-import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { Prisma } from '@prisma/client';
@@ -186,22 +185,6 @@ async function bootstrap() {
   });
 
   await app.register(fastifyFormbody);
-
-  // STORAGE 2026-06-20 — driver 'local': serve file đã upload từ UPLOAD_DIR tại /files.
-  // Zalo CDN + trình duyệt tải ảnh qua URL {localPublicUrl}/{key} = {host}/files/media/...
-  // decorateReply:false để KHÔNG đụng decorator của static frontend (đăng ký bên dưới).
-  if (config.storageDriver === 'local') {
-    mkdirSync(config.uploadDir, { recursive: true }); // @fastify/static lỗi nếu root chưa tồn tại
-    await app.register(fastifyStatic, {
-      root: config.uploadDir,
-      prefix: '/files/',
-      decorateReply: false,
-      // Ảnh dedup theo content-hash, bất biến → cache dài hạn.
-      cacheControl: true,
-      maxAge: '365d',
-      immutable: true,
-    });
-  }
 
   // Serve compiled frontend assets in production
   if (config.isProduction) {

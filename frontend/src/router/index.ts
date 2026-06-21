@@ -355,7 +355,6 @@ const ROUTE_TITLES: Record<string, string> = {
   'Settings.AiAssistant': 'Trợ lý AI',
   'Settings.ZaloAccounts': 'Tài khoản Zalo',
   'Settings.FacebookLeadAds': 'Facebook Lead Ads',
-  'Settings.ZaloAdsLeadForm': 'Zalo Ads Lead Form',
   'Settings.RateLimit': 'Giới hạn tốc độ',
   'Settings.Automation': 'Cài đặt Automation',
   'Settings.Integrations': 'Tích hợp',
