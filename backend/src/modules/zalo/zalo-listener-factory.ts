@@ -243,6 +243,8 @@ export interface UserInfoCacheEntry {
   username: string;   // Zalo handle (t_xxx) — cũng toàn cục, debug-friendly
   gender?: unknown;   // raw 0/1 (Đợt 1 capture — message-handler lưu về Contact)
   sdob?: unknown;     // ngày sinh chuỗi (DD/MM/YYYY | YYYY-MM-DD)
+  // Đợt 2b — status/cover/lastActionTime/isExtensionAccount (chỉ getUserInfo trả).
+  status?: unknown; cover?: unknown; lastActionTime?: unknown; isExtensionAccount?: unknown;
   cachedAt: number;
 }
 
@@ -253,10 +255,10 @@ async function resolveZaloName(
   api: any,
   uid: string,
   cache: Map<string, UserInfoCacheEntry>,
-): Promise<{ zaloName: string; avatar: string; globalId: string; username: string; phone: string; gender: unknown; sdob: unknown }> {
+): Promise<{ zaloName: string; avatar: string; globalId: string; username: string; phone: string; gender: unknown; sdob: unknown; status: unknown; cover: unknown; lastActionTime: unknown; isExtensionAccount: unknown }> {
   const cached = cache.get(uid);
   if (cached && Date.now() - cached.cachedAt < USER_INFO_CACHE_TTL_MS) {
-    return { zaloName: cached.zaloName, avatar: cached.avatar, globalId: cached.globalId, username: cached.username, phone: cached.phone ?? '', gender: cached.gender ?? null, sdob: cached.sdob ?? null };
+    return { zaloName: cached.zaloName, avatar: cached.avatar, globalId: cached.globalId, username: cached.username, phone: cached.phone ?? '', gender: cached.gender ?? null, sdob: cached.sdob ?? null, status: cached.status ?? null, cover: cached.cover ?? null, lastActionTime: cached.lastActionTime ?? null, isExtensionAccount: cached.isExtensionAccount ?? null };
   }
 
   try {
@@ -277,15 +279,19 @@ async function resolveZaloName(
         username: String(profile.username || ''),
         gender: profile.gender ?? null,
         sdob: profile.sdob ?? null,
+        status: profile.status ?? null,
+        cover: profile.cover ?? null,
+        lastActionTime: profile.lastActionTime ?? null,
+        isExtensionAccount: profile.isExtensionAccount ?? null,
         cachedAt: Date.now(),
       };
       cache.set(uid, entry);
-      return { zaloName: entry.zaloName, avatar: entry.avatar, globalId: entry.globalId, username: entry.username, phone: entry.phone ?? '', gender: entry.gender ?? null, sdob: entry.sdob ?? null };
+      return { zaloName: entry.zaloName, avatar: entry.avatar, globalId: entry.globalId, username: entry.username, phone: entry.phone ?? '', gender: entry.gender ?? null, sdob: entry.sdob ?? null, status: entry.status ?? null, cover: entry.cover ?? null, lastActionTime: entry.lastActionTime ?? null, isExtensionAccount: entry.isExtensionAccount ?? null };
     }
   } catch (err) {
     logger.warn(`[zalo] getUserInfo failed for ${uid}:`, err);
   }
-  return { zaloName: '', avatar: '', globalId: '', username: '', phone: '', gender: null, sdob: null };
+  return { zaloName: '', avatar: '', globalId: '', username: '', phone: '', gender: null, sdob: null, status: null, cover: null, lastActionTime: null, isExtensionAccount: null };
 }
 
 interface ResolvedGroup {
@@ -616,6 +622,11 @@ export function attachZaloListener(ctx: ListenerContext): void {
       let contactGender: unknown = null;
       let contactSdob: unknown = null;
       let contactPhone: string = '';
+      // Đợt 2b: status/cover/lastActionTime/isExtensionAccount (chỉ getUserInfo trả).
+      let contactStatus: unknown = null;
+      let contactCover: unknown = null;
+      let contactLastActionTime: unknown = null;
+      let contactIsExtension: unknown = null;
       if (senderUid && api.getUserInfo) {
         const resolveUid = message.isSelf ? (message.threadId || '') : senderUid;
         if (resolveUid) {
@@ -627,6 +638,10 @@ export function attachZaloListener(ctx: ListenerContext): void {
           contactGender = userInfo.gender;
           contactSdob = userInfo.sdob;
           contactPhone = userInfo.phone;
+          contactStatus = userInfo.status;
+          contactCover = userInfo.cover;
+          contactLastActionTime = userInfo.lastActionTime;
+          contactIsExtension = userInfo.isExtensionAccount;
           if (message.isSelf) {
             if (userInfo.zaloName) recipientName = userInfo.zaloName;
             if (userInfo.avatar && message.threadId) updateContactAvatar(message.threadId, userInfo.avatar);
@@ -676,6 +691,10 @@ export function attachZaloListener(ctx: ListenerContext): void {
         contactGender: contactGender ?? undefined,
         contactSdob: contactSdob ?? undefined,
         contactPhone: contactPhone || undefined,
+        contactStatus: contactStatus ?? undefined,
+        contactCover: contactCover ?? undefined,
+        contactLastActionTime: contactLastActionTime ?? undefined,
+        contactIsExtension: contactIsExtension ?? undefined,
         groupName,
         groupAvatarUrl,
         groupMembersCount,

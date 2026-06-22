@@ -46,6 +46,11 @@ export interface IncomingMessage {
   contactGender?: unknown;
   contactSdob?: unknown;
   contactPhone?: string;
+  // Đợt 2b — status/cover/lastActionTime/isExtensionAccount (getUserInfo) → 4 cột Contact.
+  contactStatus?: unknown;
+  contactCover?: unknown;
+  contactLastActionTime?: unknown;
+  contactIsExtension?: unknown;
   groupName?: string;       // group name if group message
   groupAvatarUrl?: string;  // group avatar URL from Zalo (via getGroupInfo.avt)
   groupMembersCount?: number; // total members in group
@@ -934,7 +939,8 @@ async function upsertContact(msg: IncomingMessage, orgId: string): Promise<strin
   // Đợt 1 (message-handler): capture gender/ngày sinh/SĐT công khai từ getUserInfo (listener đã
   // fetch + cache) — upsertContact bỏ các field này. Additive, best-effort, fill-không-đè + diff.
   // Gate: chỉ chạy khi getUserInfo trả demographic/SĐT → tránh tải hot-path khi không có gì mới.
-  if (contactUid && (msg.contactGender != null || msg.contactSdob || msg.contactPhone)) {
+  if (contactUid && (msg.contactGender != null || msg.contactSdob || msg.contactPhone
+      || msg.contactStatus != null || msg.contactCover != null || msg.contactLastActionTime != null || msg.contactIsExtension != null)) {
     void captureZaloProfile({
       uid: contactUid,
       zaloName: msg.contactZaloDisplayName ?? null,
@@ -945,6 +951,11 @@ async function upsertContact(msg: IncomingMessage, orgId: string): Promise<strin
       sdob: msg.contactSdob ?? null,
       dob: null,
       phoneNumber: msg.contactPhone ?? null,
+      // Đợt 2b — status/cover (chuỗi), isExtensionAccount + lastActionTime (raw, captureZaloProfile coerce).
+      status: msg.contactStatus ? String(msg.contactStatus) : null,
+      cover: msg.contactCover ? String(msg.contactCover) : null,
+      isExtensionAccount: msg.contactIsExtension,
+      lastActionTime: msg.contactLastActionTime,
     }, { orgId, contactId: contact.id, nickId: msg.accountId });
   }
 
