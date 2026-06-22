@@ -495,6 +495,7 @@
               @sender-click="onSenderClick(item.msg)"
               @callback="onMessageCallback(item.msg)"
               @open-profile="onOpenProfileFromCard"
+              @open-phone="onOpenPhone"
               @open-reaction-detail="onOpenReactionDetail"
               @jump-to-reply="jumpToReply"
             />
@@ -1673,6 +1674,38 @@ function onOpenProfileFromCard(uid: string) {
   if (!uid) return;
   userInfoUid.value = uid;
   userInfoDialog.value = true;
+}
+
+// 2026-06-22 (anh báo UI chat): click SĐT trong tin nhắn → tra người dùng Zalo QUA NICK
+// đang mở hội thoại (findUser SĐT→UID), tìm ra → mở ZaloUserInfoDialog (full info + CRM).
+const phoneLookupBusy = ref(false);
+async function onOpenPhone(phone: string) {
+  if (!phone || phoneLookupBusy.value) return;
+  const accountId = props.conversation?.zaloAccount?.id;
+  if (!accountId) {
+    toast.warning('Hội thoại chưa gắn nick Zalo để tra cứu SĐT');
+    return;
+  }
+  phoneLookupBusy.value = true;
+  toast.push('Đang tra cứu Zalo qua SĐT…');
+  try {
+    const { data } = await api.post<{ found: boolean; uid?: string }>(
+      '/zalo-user-info/find-by-phone',
+      { phone, accountId },
+    );
+    if (data?.found && data.uid) {
+      userInfoUid.value = data.uid;
+      userInfoDialog.value = true;
+    } else {
+      toast.warning('SĐT này không có Zalo (tra qua nick hiện tại)');
+    }
+  } catch (err) {
+    const msg = (err as { response?: { data?: { detail?: string } } }).response?.data?.detail
+      || 'Không tra được Zalo qua SĐT';
+    toast.error(msg);
+  } finally {
+    phoneLookupBusy.value = false;
+  }
 }
 
 function onSenderClick(msg: Message) {

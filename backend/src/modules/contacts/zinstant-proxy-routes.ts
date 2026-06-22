@@ -15,6 +15,7 @@ import { zaloPool } from '../zalo/zalo-pool.js';
 import { prisma } from '../../shared/database/prisma-client.js';
 import { getZaloScope } from '../zalo/zalo-scope.js';
 import { authMiddleware } from '../auth/auth-middleware.js';
+import { zaloOps } from '../../shared/zalo-operations.js';
 
 // Public routes (no auth) — bankcard parser is hit from Zalo iframe context
 // where cookies don't reliably forward, and sticker assets are read-only CDN
@@ -465,6 +466,47 @@ export async function zinstantProxyRoutes(app: FastifyInstance): Promise<void> {
     }));
 
     return reply.header('Cache-Control', 'private, max-age=60').send({ users });
+  });
+
+  // ── POST /api/v1/zalo-user-info/find-by-phone ──────────────────────────────
+  // 2026-06-22 (anh báo UI chat): SĐT trong tin nhắn → bấm để TRA CỨU người dùng Zalo
+  // QUA NICK đang mở hội thoại (findUser: SĐT → UID). Tìm ra UID → FE mở ZaloUserInfoDialog
+  // (đã hiển thị full info + Contact CRM). Thủ công 1 SĐT / 1 click (giống nút "Tìm Zalo"
+  // Lead Pool) nên KHÔNG vi phạm cấm auto-quét SĐT của Zalo.
+  app.post('/api/v1/zalo-user-info/find-by-phone', { preHandler: authMiddleware }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = request.user!;
+    const { phone, accountId } = (request.body ?? {}) as { phone?: string; accountId?: string };
+    if (!phone) return reply.status(400).send({ error: 'phone required' });
+    if (!accountId) return reply.status(400).send({ error: 'accountId required' });
+
+    // Chuẩn hoá → "84xxxxxxxxx" (Zalo findUser nhận số quốc tế, bỏ dấu +). 0xxx → 84xxx.
+    let digits = String(phone).replace(/\D/g, '');
+    if (digits.startsWith('840')) digits = '84' + digits.slice(3);
+    else if (digits.startsWith('0')) digits = '84' + digits.slice(1);
+    if (!/^84\d{9,10}$/.test(digits)) {
+      return reply.status(400).send({ error: 'phone_invalid', detail: 'SĐT không hợp lệ' });
+    }
+
+    // Scope nick: phải thuộc quyền user (chống cross-tenant + nick ngoài quyền) — giống GET :uid.
+    const scope = await getZaloScope(user.id, user.orgId, user.role);
+    const allowed = scope.isOrgAdmin || scope.accessibleIds.includes(accountId);
+    if (!allowed) return reply.status(403).send({ error: 'nick_not_allowed', detail: 'Bạn không có quyền dùng nick này' });
+
+    try {
+      const result = (await zaloOps.findUser(accountId, digits)) as Record<string, unknown> | null;
+      const u = result || {};
+      const uid = String(u.uid || u.userId || '') || null;
+      if (!uid) return reply.send({ found: false });
+      return reply.send({
+        found: true,
+        uid,
+        zaloName: String(u.zaloName || u.displayName || u.display_name || u.zalo_name || '') || null,
+        avatar: String(u.avatar || '') || null,
+      });
+    } catch (err) {
+      logger.warn(`[find-by-phone] nick=${accountId} lookup failed:`, err);
+      return reply.status(502).send({ error: 'zalo_lookup_failed', detail: 'Không tra được Zalo (nick có thể đang offline)' });
+    }
   });
 
   // Fix 2026-06-03: cùng bug như batch — thêm preHandler authMiddleware

@@ -94,3 +94,52 @@ export function plainFormat(text: string): string {
   if (!text) return '';
   return escapeHtml(text).replace(/\r?\n/g, '<br>');
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Auto-link URL + SĐT (2026-06-22 — anh báo UI chat: link/SĐT trong tin không bấm được)
+// ───────────────────────────────────────────────────────────────────────────
+// linkifyHtml chạy SAU khi style/mention tag đã chèn (trên chuỗi HTML đã render).
+// Tách HTML thành [tag] và [text], CHỈ xử lý đoạn text → không phá tag, không match
+// nhầm trong attribute. URL → <a class="link">; SĐT VN → <span class="phone-link">
+// (click wiring ở message-bubble / special-message-renderer → tra Zalo qua nick hội thoại).
+//
+// SĐT: khớp dạng LIỀN-SỐ (vd "84936668266", "0936668266", "+84936668266") — dạng phổ
+// biến trong tin hệ thống + copy-paste. Lookbehind (?<![\d.]) + lookahead (?![\d]) chặn
+// khớp giữa số dài (UID Zalo 19 số, mã đơn…). Bỏ qua dạng có dấu cách "0904 808 000" để
+// tránh gộp nhầm 2 số liền nhau (hiếm gặp trong tin hệ thống).
+const LINKIFY_RE = /(https?:\/\/[^\s<]+)|((?<![\d.])(?:\+?84|0)\d{9,10}(?![\d]))/g;
+
+/** Chuẩn hoá SĐT VN → "84xxxxxxxxx" (khớp BE find-by-phone). null nếu không hợp lệ. */
+function normalizePhoneVN(raw: string): string | null {
+  let d = raw.replace(/\D/g, '');
+  if (d.startsWith('840')) d = '84' + d.slice(3);
+  else if (d.startsWith('0')) d = '84' + d.slice(1);
+  return /^84\d{9,10}$/.test(d) ? d : null;
+}
+
+/** Wrap URL + SĐT trong 1 đoạn text (đã escape). 1 lượt regex để URL "nuốt" trọn token
+ *  → số trông-giống-SĐT nằm trong URL không bị tách riêng. */
+function linkifyTextChunk(text: string): string {
+  return text.replace(LINKIFY_RE, (m: string, url?: string, phone?: string) => {
+    if (url) {
+      // Tách dấu câu cuối (. , ) ] …) ra khỏi URL để không dính vào href.
+      const trail = (url.match(/[.,;:!?)\]]+$/) || [''])[0];
+      const clean = trail ? url.slice(0, url.length - trail.length) : url;
+      return `<a href="${clean}" target="_blank" rel="noopener" class="link">${clean}</a>${trail}`;
+    }
+    if (phone) {
+      const norm = normalizePhoneVN(phone);
+      if (!norm) return m;
+      return `<span class="phone-link" data-phone="${norm}" title="Tra cứu người dùng Zalo qua số này">${phone}</span>`;
+    }
+    return m;
+  });
+}
+
+/** Linkify URL + SĐT trên chuỗi HTML đã render — an toàn với tag (chỉ đụng text node). */
+export function linkifyHtml(html: string): string {
+  if (!html) return '';
+  return html.replace(/(<[^>]+>)|([^<]+)/g, (_m: string, tag?: string, text?: string) =>
+    tag ? tag : linkifyTextChunk(text ?? ''),
+  );
+}

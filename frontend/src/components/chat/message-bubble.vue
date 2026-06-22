@@ -273,6 +273,7 @@
             :content="parseContent(message.content)"
             @callback="$emit('callback', message)"
             @open-profile="onOpenProfile"
+            @open-phone="(p) => emit('open-phone', p)"
           />
 
           <!-- Default text — parse @mention + bullets + linebreaks -->
@@ -352,6 +353,7 @@
 import type { Message } from '@/composables/use-chat';
 import { computed, ref, watch } from 'vue';
 import { formatInOrgTz, weekdayInOrgTz } from '@/composables/use-org-timezone';
+import { linkifyHtml } from '@/composables/use-rich-format';
 import SpecialMessageRenderer from '@/components/chat/special-message-renderer.vue';
 import ReactionDisplay from '@/components/chat/reaction-display.vue';
 import ReactionPicker from '@/components/chat/reaction-picker.vue';
@@ -386,6 +388,7 @@ const emit = defineEmits<{
   'sender-click': [];
   callback: [message: Message];
   'open-profile': [uid: string];
+  'open-phone': [phone: string];
   'open-reaction-detail': [payload: { reactions: any[]; message: Message }];
   'jump-to-reply': [msgId: string];
   // Luồng Mục Tiêu M11 source badge events
@@ -574,10 +577,9 @@ function applyMentionsFormat(
   if (cursor < raw.length) {
     out += escapeHtml(raw.substring(cursor));
   }
-  // Auto-link + linebreak (vẫn áp dụng cho mọi segment)
-  out = out.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener" class="link">$1</a>');
+  // Linebreak + auto-link URL/SĐT (linkifyHtml an toàn với tag mention vừa chèn).
   out = out.replace(/\r?\n/g, '<br>');
-  return out;
+  return linkifyHtml(out);
 }
 
 /**
@@ -591,9 +593,8 @@ function highlightTextRegex(raw: string): string {
     /@(\p{Lu}[\p{L}0-9._]*(?:\s\p{Lu}[\p{L}0-9._]*){0,2}(?:\s[-–—]\s\p{Lu}[\p{L}0-9._]*(?:\s\p{Lu}[\p{L}0-9._]*){0,2})?)/gu,
     '<span class="mention">@$1</span>',
   );
-  s = s.replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener" class="link">$1</a>');
   s = s.replace(/\r?\n/g, '<br>');
-  return s;
+  return linkifyHtml(s);
 }
 
 function highlightText(raw: string): string {
@@ -608,6 +609,13 @@ function highlightText(raw: string): string {
 function onMentionClick(ev: MouseEvent): void {
   const target = ev.target as HTMLElement | null;
   if (!target) return;
+  // SĐT (2026-06-22): click .phone-link → tra Zalo qua nick hội thoại (cha xử lý).
+  const phoneEl = target.closest('.phone-link') as HTMLElement | null;
+  if (phoneEl?.dataset.phone) {
+    ev.stopPropagation();
+    emit('open-phone', phoneEl.dataset.phone);
+    return;
+  }
   // Walk up tới element gần nhất có class .mention (vì <strong>/<em> bên trong có thể là target)
   const mentionEl = target.closest('.mention') as HTMLElement | null;
   if (!mentionEl) return;
@@ -1193,6 +1201,18 @@ async function openFile(href: string, name?: string) {
   word-break: break-word;
   white-space: pre-wrap; /* fallback nếu \n không được replace bằng <br> */
 }
+/* Auto-link URL + SĐT (2026-06-22) — v-html nên dùng :deep. SĐT là <span> nên cần style
+   riêng để trông bấm-được; URL là <a> ăn màu link mặc định, gắn thêm cho đồng nhất. */
+.text-content :deep(.link),
+.media-caption :deep(.link) { color: var(--brand, #1786be); word-break: break-all; }
+.text-content :deep(.phone-link),
+.media-caption :deep(.phone-link) {
+  color: var(--brand, #1786be);
+  cursor: pointer;
+  border-bottom: 1px dashed currentColor;
+}
+.text-content :deep(.phone-link:hover),
+.media-caption :deep(.phone-link:hover) { opacity: 0.8; }
 
 /* Caption text below media (image/video/sticker/gif/file + text) */
 .send-failed {
