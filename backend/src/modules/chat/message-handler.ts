@@ -113,7 +113,7 @@ function isLocalStorageUrl(value: string): boolean {
   return value.startsWith(`${config.s3PublicUrl}/${config.s3Bucket}/`);
 }
 
-function isMirrorableUrl(value: unknown): value is string {
+export function isMirrorableUrl(value: unknown): value is string {
   return typeof value === 'string' &&
     /^https?:\/\//i.test(value) &&
     !isLocalStorageUrl(value);
@@ -160,7 +160,7 @@ function contentTypeToExtension(contentType: string): string {
   }
 }
 
-async function mirrorRemoteMediaUrl(url: string, contentType: string): Promise<string | null> {
+export async function mirrorRemoteMediaUrl(url: string, contentType: string): Promise<string | null> {
   // 2026-06-11 FIX (ảnh từ Zalo Desktop mất hình): Zalo CDN hay trả 200 nhưng body RỖNG
   // (eventual consistency — ảnh vừa gửi chưa sẵn trên CDN). Trước đây upload buffer 0-byte
   // rồi REPLACE href gốc bằng URL MinIO hỏng → ảnh mất vĩnh viễn. Giờ: RETRY 1 lần sau 1.5s
@@ -994,7 +994,15 @@ async function findOrCreateConversation(
     if (msg.threadType === 'group') {
       const updates: { groupName?: string; groupAvatarUrl?: string; groupMembersCount?: number } = {};
       if (msg.groupName && msg.groupName !== existing.groupName) updates.groupName = msg.groupName;
-      if (msg.groupAvatarUrl && msg.groupAvatarUrl !== existing.groupAvatarUrl) updates.groupAvatarUrl = msg.groupAvatarUrl;
+      // Không ghi đè URL nội bộ (đã mirror lên S3 bởi group-info-sync-cron) bằng URL CDN
+      // thô từ tin nhắn — cron sở hữu avatar đã cache, tránh flip-flop CDN↔S3 mỗi tin mới.
+      if (
+        msg.groupAvatarUrl &&
+        msg.groupAvatarUrl !== existing.groupAvatarUrl &&
+        !isLocalStorageUrl(existing.groupAvatarUrl ?? '')
+      ) {
+        updates.groupAvatarUrl = msg.groupAvatarUrl;
+      }
       if (msg.groupMembersCount != null && msg.groupMembersCount !== existing.groupMembersCount) {
         updates.groupMembersCount = msg.groupMembersCount;
       }

@@ -12,6 +12,7 @@ import { prisma } from '../../shared/database/prisma-client.js';
 import { handleIncomingMessage, handleMessageUndo } from '../chat/message-handler.js';
 import { detectContentType, extractAlbumInfo, updateContactAvatar } from './zalo-message-helpers.js';
 import { handleFriendEvent } from './friend-event-handler.js';
+import { refreshGroupInfoNow } from './group-info-refresh.js';
 import { consumeIfExpected as consumeReactionEcho } from '../chat/reaction-echo-cache.js';
 import { emitChatMessage } from '../../shared/realtime/emit-chat.js';
 import { notifyNewInboundMessage } from '../push/push-service.js';
@@ -947,11 +948,24 @@ export function attachZaloListener(ctx: ListenerContext): void {
 
   // Group system events: member join/leave/kick, name change, etc.
   listener.on('group_event', (event: any) => {
-    logger.info(`[zalo:${accountId}] Group event: type=${event?.type ?? 'unknown'}`, {
+    const eventType = event?.type ?? 'unknown';
+    logger.info(`[zalo:${accountId}] Group event: type=${eventType}`, {
       groupId: event?.groupId,
       actorId: event?.actorId,
       members: event?.members,
     });
+    // PATH TỨC THÌ — avatar/tên/cấu hình nhóm đổi → refresh NGAY nhóm đó (mirror avatar mới
+    // + emit live cho client đang mở), bỏ độ trễ ≤6h của cron. update_avatar=đổi ảnh,
+    // update/update_setting=đổi tên/cấu hình. Cron 6h vẫn là lưới an toàn cho lúc offline.
+    if ((eventType === 'update_avatar' || eventType === 'update' || eventType === 'update_setting') && event?.groupId) {
+      void (async () => {
+        const orgId = await resolveOrgId();
+        if (!orgId) return;
+        await refreshGroupInfoNow(accountId, orgId, String(event.groupId), io).catch((err) =>
+          logger.warn(`[zalo:${accountId}] group_event refresh failed:`, err),
+        );
+      })();
+    }
     // Future: store as system message in the group conversation
   });
 

@@ -1032,6 +1032,17 @@ export function useChat() {
       fetchConversations({ bypassCache: true });
     });
 
+    // Thông tin nhóm đổi (avatar/tên/sĩ số) — BE (group-info-refresh) bắn khi nhận
+    // group_event 'update_avatar'/'update' hoặc cron 6h refresh. Patch conversation
+    // IN-PLACE (không refetch cả list) → avatar/tên mới hiện ngay, không cần F5.
+    socket.on('chat:group-info-updated', (data: { conversationId: string; groupName?: string; groupAvatarUrl?: string; groupMembersCount?: number }) => {
+      const conv = conversations.value.find(c => c.id === data.conversationId);
+      if (!conv) return;
+      if (data.groupName != null) conv.groupName = data.groupName;
+      if (data.groupAvatarUrl != null) conv.groupAvatarUrl = data.groupAvatarUrl;
+      if (data.groupMembersCount != null) conv.groupMembersCount = data.groupMembersCount;
+    });
+
     // Quyền truy cập nick đổi (grant/đổi/gỡ) — BE bắn tới user bị ảnh hưởng.
     // Refetch hội thoại (re-scope theo nick được phép) → nick bị gỡ rớt khỏi cột 2 NGAY,
     // không cần F5. Phát window event để cột 1 (nick list) cũng refetch.

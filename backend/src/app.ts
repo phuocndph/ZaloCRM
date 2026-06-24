@@ -387,6 +387,10 @@ async function bootstrap() {
     // native app mà friend_event listener không bắt được (xem friend-sync-cron.ts)
     const { startFriendSyncCron } = await import('./modules/zalo/friend-sync-cron.js');
     startFriendSyncCron(io);
+    // Group info refresh periodic (mỗi 6h) — làm tươi avatar/tên/sĩ số nhóm chống
+    // URL Zalo CDN hết hạn (nhóm im lặng lâu không có message để cập nhật thụ động).
+    const { startGroupInfoSyncCron } = await import('./modules/zalo/group-info-sync-cron.js');
+    startGroupInfoSyncCron();
     // Contact profile enrichment (3am daily) — kéo gender + ngày sinh KH từ Zalo getUserInfo
     // cho KH đang trống. 24h/lần để tránh rate-limit (Anh chốt 2026-06-06).
     if (config.nodeEnv !== 'test') {
