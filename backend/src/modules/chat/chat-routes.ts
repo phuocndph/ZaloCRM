@@ -1352,9 +1352,9 @@ export async function chatRoutes(app: FastifyInstance) {
       ),
     );
     let resolverMaps: {
-      internalNicks: Map<string, { displayName: string | null; ownerId: string | null; ownerFullName: string | null }>;
-      contacts: Map<string, { id: string; crmName: string | null; fullName: string | null }>;
-      friends: Map<string, { aliasInNick: string | null; zaloDisplayName: string | null }>;
+      internalNicks: Map<string, { displayName: string | null; ownerId: string | null; ownerFullName: string | null; avatarUrl: string | null }>;
+      contacts: Map<string, { id: string; crmName: string | null; fullName: string | null; avatarUrl: string | null }>;
+      friends: Map<string, { aliasInNick: string | null; zaloDisplayName: string | null; zaloAvatarUrl: string | null }>;
     } = { internalNicks: new Map(), contacts: new Map(), friends: new Map() };
 
     if (inboundUids.length > 0) {
@@ -1365,19 +1365,20 @@ export async function chatRoutes(app: FastifyInstance) {
             zaloUid: true,
             displayName: true,
             ownerUserId: true,
+            avatarUrl: true,
             owner: { select: { id: true, fullName: true } },
           },
         }),
         prisma.contact.findMany({
           where: { orgId: user.orgId, zaloUid: { in: inboundUids } },
-          select: { id: true, zaloUid: true, crmName: true, fullName: true },
+          select: { id: true, zaloUid: true, crmName: true, fullName: true, avatarUrl: true },
         }),
         prisma.friend.findMany({
           where: {
             orgId: user.orgId,
             zaloUidInNick: { in: inboundUids },
           },
-          select: { zaloUidInNick: true, aliasInNick: true, zaloDisplayName: true },
+          select: { zaloUidInNick: true, aliasInNick: true, zaloDisplayName: true, zaloAvatarUrl: true },
         }),
       ]);
       for (const r of internalNickRows) {
@@ -1386,6 +1387,7 @@ export async function chatRoutes(app: FastifyInstance) {
             displayName: r.displayName,
             ownerId: r.owner?.id ?? r.ownerUserId,
             ownerFullName: r.owner?.fullName ?? null,
+            avatarUrl: r.avatarUrl ?? null,
           });
         }
       }
@@ -1395,6 +1397,7 @@ export async function chatRoutes(app: FastifyInstance) {
             id: r.id,
             crmName: r.crmName,
             fullName: r.fullName,
+            avatarUrl: r.avatarUrl ?? null,
           });
         }
       }
@@ -1402,6 +1405,7 @@ export async function chatRoutes(app: FastifyInstance) {
         resolverMaps.friends.set(r.zaloUidInNick, {
           aliasInNick: r.aliasInNick,
           zaloDisplayName: r.zaloDisplayName,
+          zaloAvatarUrl: r.zaloAvatarUrl ?? null,
         });
       }
     }
@@ -1414,8 +1418,11 @@ export async function chatRoutes(app: FastifyInstance) {
       const crmName = contact?.crmName ?? friend?.aliasInNick ?? null;
       const zaloName = msg.senderName ?? friend?.zaloDisplayName ?? contact?.fullName ?? null;
       const displayName = crmName ?? zaloName ?? 'Người lạ';
+      // Avatar người gửi (group member): Contact > Friend(zalo) > nick nội bộ. null → FE initials.
+      const senderAvatarUrl = contact?.avatarUrl ?? friend?.zaloAvatarUrl ?? internal?.avatarUrl ?? null;
       return {
         senderDisplayName: displayName,
+        senderAvatarUrl,
         senderCrmName: crmName,
         senderZaloName: zaloName,
         senderIsInternalNick: !!internal,

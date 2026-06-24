@@ -830,6 +830,30 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
+      // 2b. ƯU TIÊN hội thoại Zalo THẬT đang có (fix 2026-06-24): nếu KH đã có chat
+      // thật (isVirtual=false) trong phạm vi sale thấy → "Nhắn tin" mở ĐÚNG chat đó,
+      // KHÔNG tạo virtual mới (trước đây bỏ qua → đẻ đoạn chat ảo trùng + welcome
+      // "vừa tạo khách hàng" gây hiểu nhầm là tạo KH mới).
+      const realConv = await prisma.conversation.findFirst({
+        where: {
+          orgId: user.orgId,
+          contactId,
+          isVirtual: false,
+          zaloAccountId: { in: scope.accessibleIds },
+        },
+        orderBy: { lastMessageAt: { sort: 'desc', nulls: 'last' } },
+        select: { id: true },
+      });
+      if (realConv) {
+        await attachContactCollaboratorByUser({
+          orgId: user.orgId,
+          contactId,
+          userId: user.id,
+          source: 'virtual_chat_open',
+        });
+        return reply.status(200).send({ conversationId: realConv.id, created: false });
+      }
+
       // 3. Idempotent: tìm virtual conv đã có cho cặp (contact, nick) chưa
       const externalThreadId = `virtual:${contactId}:${myNickId}`;
       const existing = await prisma.conversation.findFirst({
@@ -885,7 +909,7 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
       const khName = contact.crmName || contact.fullName || 'KH';
       const khPhone = contact.phone || 'chưa có SĐT';
       const welcomeContent =
-        `Chào anh/chị! Em vừa tạo khách hàng **${khName}** (SĐT ${khPhone}) — KH này chưa có Zalo công khai.\n\n` +
+        `Chào anh/chị! Đây là kênh nhật ký chăm sóc cho KH **${khName}** (SĐT ${khPhone}) — KH này chưa có Zalo công khai.\n\n` +
         `Anh/chị có thể chat vào đây để ghi nhật ký chăm sóc + bổ sung thông tin KH. ` +
         `Mỗi tin anh/chị gõ, em sẽ tự động gợi ý câu hỏi khai thác và đề xuất cập nhật thông tin lên hệ thống.\n\n` +
         `Để bắt đầu, anh/chị thử gõ vài thông tin đã biết về KH ${khName} (vd: tuổi, nghề nghiệp, khu vực muốn mua, ngân sách...) để em hỗ trợ nhé!`;
