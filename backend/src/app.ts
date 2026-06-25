@@ -90,6 +90,8 @@ import { telegramBridgeRoutes } from './modules/integrations/providers/telegram-
 import { aiRoutes } from './modules/ai/ai-routes.js';
 import { chatOperationsRoutes, registerChatSocketHandlers } from './modules/chat/chat-operations-routes.js';
 import { groupRoutes } from './modules/zalo/group-routes.js';
+import { groupScanRoutes } from './modules/zalo/group-scan-routes.js';
+import { startGroupScanWorker } from './modules/zalo/group-scan-queue.js';
 import { groupModerationRoutes } from './modules/zalo/group-moderation-routes.js';
 import { friendRoutes } from './modules/zalo/friend-routes.js';
 import { profileRoutes } from './modules/zalo/profile-routes.js';
@@ -324,6 +326,7 @@ async function bootstrap() {
   await app.register(aiRoutes);
   await app.register(chatOperationsRoutes);
   await app.register(groupRoutes);
+  await app.register(groupScanRoutes); // E1 Quét group (🟢 Community)
   await app.register(groupModerationRoutes);
   await app.register(friendRoutes);
   await app.register(profileRoutes);
@@ -376,6 +379,8 @@ async function bootstrap() {
     startZaloHealthCheck();
     startContactIntelligence();
     startLabelsBackgroundSync(60_000); // realtime-ish 2-way pull every 60s
+    // E1 Quét group (🟢 Community) — BullMQ worker xử lý group-scan job.
+    if (config.nodeEnv !== 'test') startGroupScanWorker();
     startInteractionCron(); // daily silent_30d detection (02:00 VN)
     // Phase 8 — Engagement heatmap classification (02:30 VN daily)
     const { startEngagementCron } = await import('./modules/engagement/engagement-cron.js');

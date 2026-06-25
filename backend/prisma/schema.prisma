@@ -55,6 +55,9 @@ model Organization {
   aiSuggestionsApplied        AiSuggestionApplied[]
   pinnedConversations         PinnedConversation[]
   groupPolls                  GroupPoll[]
+  // 2026-06-21 (E1 quét group) — roster member + lịch sử lần quét cấp org.
+  groupMembers                GroupMember[]
+  groupScans                  GroupScan[]
   friendshipAttempts          FriendshipAttempt[]
   friends                     Friend[]
   statuses                    Status[]
@@ -422,6 +425,9 @@ model ZaloAccount {
   mediaAssetsAsSource              MediaAsset[]            @relation("MediaAssetSourceNick")
   // 2026-06-18 — Cầu Zalo↔Telegram: cấu hình cầu per-nick (1 nick = 1 supergroup).
   telegramBridge                   TelegramBridgeConfig?
+  // 2026-06-21 (E1 quét group) — roster member quét ra + lịch sử lần quét per-nick.
+  groupMembers                     GroupMember[]
+  groupScans                       GroupScan[]
 
   @@map("zalo_accounts")
 }
@@ -1775,6 +1781,65 @@ model GroupPoll {
   @@unique([zaloAccountId, zaloPollId])
   @@index([orgId, groupExternalId])
   @@map("group_polls")
+}
+
+// E1 Quét group 2026-06-21 (🟢 Community) — Roster member quét từ group, nguồn sự
+// thật per (nick × group × member). Dedup tự nhiên qua unique key; re-scan = upsert,
+// cập nhật lastSeenAt. isFriend join từ Friend lúc quét (filter audience an toàn).
+model GroupMember {
+  id              String    @id @default(uuid())
+  orgId           String    @map("org_id")
+  zaloAccountId   String    @map("zalo_account_id") // nick quét ra (UID per-nick)
+  groupId         String    @map("group_id") // externalThreadId của group
+  memberUid       String    @map("member_uid") // zaloUid member trong nick này
+  globalId        String?   @map("global_id") // cross-nick identity nếu có
+  displayName     String?   @map("display_name")
+  zaloName        String?   @map("zalo_name")
+  avatarUrl       String?   @map("avatar_url")
+  isAdmin         Boolean   @default(false) @map("is_admin")
+  isFriend        Boolean   @default(false) @map("is_friend") // join Friend lúc quét
+  friendCheckedAt DateTime? @map("friend_checked_at")
+  harvestedAt     DateTime  @default(now()) @map("harvested_at")
+  lastSeenAt      DateTime  @default(now()) @map("last_seen_at") // lần quét gần nhất còn thấy
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  zaloAccount ZaloAccount  @relation(fields: [zaloAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([zaloAccountId, groupId, memberUid]) // dedup trong-group per nick
+  @@index([zaloAccountId, groupId]) // list member 1 group
+  @@index([orgId, memberUid]) // member ở những group nào (cross-group)
+  @@index([zaloAccountId, isFriend]) // filter audience an toàn
+  @@map("group_members")
+}
+
+// E1 Quét group 2026-06-21 (🟢 Community) — Theo dõi 1 lần quét (state machine +
+// resume) cho FE xem tiến độ. groupIds = snapshot lúc tạo; resumeCursor = groupId xử
+// lý cuối để resume sau crash; state queued|running|completed|failed|partial.
+model GroupScan {
+  id            String    @id @default(uuid())
+  orgId         String    @map("org_id")
+  zaloAccountId String    @map("zalo_account_id")
+  scope         String    @default("selected") // 'selected' | 'all'
+  groupIds      Json      @map("group_ids") // ["gid1", ...] (snapshot lúc tạo)
+  state         String    @default("queued") // queued|running|completed|failed|partial
+  totalGroups   Int       @default(0) @map("total_groups")
+  scannedGroups Int       @default(0) @map("scanned_groups")
+  memberCount   Int       @default(0) @map("member_count")
+  friendCount   Int       @default(0) @map("friend_count") // số member là bạn (stat FE)
+  resumeCursor  String?   @map("resume_cursor") // groupId xử lý cuối → resume
+  error         String?
+  startedAt     DateTime? @map("started_at")
+  completedAt   DateTime? @map("completed_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  zaloAccount ZaloAccount  @relation(fields: [zaloAccountId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, zaloAccountId, createdAt(sort: Desc)])
+  @@map("group_scans")
 }
 
 // State machine for outreach: 1 nick × 1 contact = 1 attempt
