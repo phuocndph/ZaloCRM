@@ -148,6 +148,7 @@ import { ref, computed, onMounted, nextTick } from 'vue';
 import { useTheme } from 'vuetify';
 import { useRoute, RouterLink } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
+import { isExtension } from '@ee/edition';
 import { useRouter } from 'vue-router';
 import NotificationBell from '@/components/NotificationBell.vue';
 import GlobalSearch from '@/components/GlobalSearch.vue';
@@ -306,10 +307,20 @@ const marketingEntry = computed(() =>
 // RBAC 2026-06-08 — chỉ hiện tab user có quyền (Dashboard + Lịch hẹn luôn hiện).
 const visiblePrimaryTabs = computed(() => {
   const tabs = primaryTabs.filter((t) => !t.resource || authStore.canAccess(t.resource));
-  // Chèn tab Marketing nếu user có quyền ít nhất 1 chức năng Marketing.
-  if (marketingEntry.value) {
+  // Tab Marketing — edition-aware (open-core):
+  //  - EE: menu Marketing đầy đủ (triggers/sequences/…); hiện khi có quyền ≥1 chức năng.
+  //  - Community: menu Marketing RIÊNG, chỉ Quét nhóm + Tệp khách hàng (route /marketing
+  //    chỉ đăng ký khi !isExtension — xem router). KHÔNG dùng marketingEntry (resource EE).
+  if (isExtension && marketingEntry.value) {
     tabs.push({
       path: marketingEntry.value,
+      label: 'Marketing',
+      icon: 'mdi-bullhorn-outline',
+      matchPrefix: '/marketing',
+    });
+  } else if (!isExtension) {
+    tabs.push({
+      path: '/marketing/group-scan',
       label: 'Marketing',
       icon: 'mdi-bullhorn-outline',
       matchPrefix: '/marketing',

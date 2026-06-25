@@ -5,6 +5,9 @@ import { useAuthStore } from '@/stores/auth';
 import { useToast } from '@/composables/use-toast';
 // Open-core: extension route injection (empty in Community edition via @ee stub).
 import { eeSettingsChildren, eeReportsChildren, eeTopRoutes } from '@ee/routes';
+// Edition flag (open-core): EE=true, Community=false. Dùng để chỉ đăng ký menu
+// Marketing CE khi KHÔNG phải EE (tránh đụng /marketing của EE trong eeTopRoutes).
+import { isExtension } from '@ee/edition';
 
 const routes: RouteRecordRaw[] = [
   {
@@ -206,13 +209,20 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/GroupsView.vue'),
     meta: { requiresAuth: true },
   },
-  {
-    // Feature E1 — Quét nhóm & thành viên (group scan).
-    path: '/groups/scan',
-    name: 'GroupScan',
-    component: () => import('@/views/GroupScanView.vue'),
-    meta: { requiresAuth: true },
-  },
+  // Open-core: menu Marketing cho bản COMMUNITY — chỉ Quét nhóm + Tệp khách hàng.
+  // Gate !isExtension → KHÔNG đăng ký khi là EE (EE đã có /marketing riêng trong eeTopRoutes).
+  ...(!isExtension
+    ? [{
+        path: '/marketing',
+        component: () => import('@/views/marketing/CommunityMarketingShell.vue'),
+        meta: { requiresAuth: true },
+        children: [
+          { path: '', redirect: '/marketing/group-scan' },
+          // E1 — Quét nhóm & thành viên (group scan).
+          { path: 'group-scan', name: 'CE.GroupScan', component: () => import('@/views/GroupScanView.vue'), meta: { requiresAuth: true } },
+        ],
+      } as RouteRecordRaw]
+    : []),
   {
     path: '/friends',
     name: 'Friends',
