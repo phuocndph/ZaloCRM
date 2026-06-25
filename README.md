@@ -126,14 +126,16 @@ Hệ thống quản lý tập trung nhiều tài khoản Zalo cá nhân trên 1 
 
 ### ⚡ Cách nhanh nhất — 1 lệnh (tự động)
 
-Script tự sinh `.env` (secret ngẫu nhiên), build, migrate, kiểm tra — **không cần setup tay**.
-Cùng script này cũng dùng để **nâng cấp** (tự backup DB):
+**1 lệnh** — tự kiểm tra & cài Docker/Compose/git nếu thiếu, tải/cập nhật mã nguồn, build, migrate (cài mới **hoặc** nâng cấp đều được, tự backup DB):
 
 ```bash
-git clone https://github.com/locphamnguyen/ZaloCRM.git
-cd ZaloCRM
-./scripts/zalocrm-deploy.sh          # auto: cài mới nếu chưa có, nâng cấp nếu đã chạy
+curl -fsSL https://raw.githubusercontent.com/locphamnguyen/ZaloCRM/main/scripts/install.sh | bash
 ```
+
+> Tự cài vào `~/zcrm` (đổi: `ZCRM_DIR=/srv/zcrm curl ... | bash`). Đã có mã nguồn thì chạy thẳng:
+> ```bash
+> git clone https://github.com/locphamnguyen/ZaloCRM.git && cd ZaloCRM && ./scripts/zalocrm-deploy.sh
+> ```
 
 Truy cập **http://IP-server:3080** → trang `/setup` tạo tổ chức + tài khoản chủ.
 

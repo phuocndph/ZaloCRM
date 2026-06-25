@@ -10,7 +10,16 @@
 
 > **Mã nguồn (repo):** https://github.com/locphamnguyen/ZaloCRM
 
-Cài mới **hoặc** nâng cấp đều dùng chung 1 script — tự phát hiện, tự backup, không cần setup tay:
+Cài mới **hoặc** nâng cấp chỉ với **1 lệnh duy nhất** — script tự **kiểm tra & cài Docker/Compose/git nếu thiếu**, tải/cập nhật mã nguồn, backup & migrate:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/locphamnguyen/ZaloCRM/main/scripts/install.sh | bash
+```
+
+> Lệnh trên tự: kiểm tra môi trường (Docker · Docker Compose v2 · git · openssl) và **cài phần thiếu** · **clone** mã nguồn (cài mới) hoặc **`git pull`** (cập nhật) vào `~/zcrm` · chạy deploy (tự phát hiện cài mới/nâng cấp, backup DB, migrate, health-check).
+> Đổi thư mục cài: `ZCRM_DIR=/srv/zcrm curl -fsSL .../install.sh | bash`.
+
+**Đã có sẵn mã nguồn?** Dùng thẳng script deploy:
 
 ```bash
 git clone https://github.com/locphamnguyen/ZaloCRM.git zalocrm && cd zalocrm
