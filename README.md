@@ -1,22 +1,18 @@
 # ZaloCRM v3.4 — Quản lý nhiều tài khoản Zalo cá nhân
 
-Hệ thống quản lý tập trung nhiều tài khoản Zalo cá nhân trên 1 giao diện web. Chat real-time, gửi ảnh/video/audio/file qua MinIO/S3/R2, cầu **Zalo ↔ Telegram** 2 chiều, luồng bám đuổi tự động (follow-up sequence), bể lead, Facebook Lead Ingestion, AI assistant, tích hợp đa nền tảng, analytics nâng cao, PWA mobile.
+Hệ thống quản lý tập trung nhiều tài khoản Zalo cá nhân trên 1 giao diện web. Chat real-time, gửi ảnh/video/audio/file qua MinIO/S3/R2, cầu **Zalo ↔ Telegram** 2 chiều, AI assistant, tích hợp đa nền tảng, analytics nâng cao, PWA mobile.
 
 **Mã nguồn mở:** [github.com/locphamnguyen/ZaloCRM](https://github.com/locphamnguyen/ZaloCRM) — phát hành theo **AGPL-3.0** (dual-license thương mại).
 
 ## Ảnh chụp giao diện
 
-| Dashboard | Facebook Lead |
+| Dashboard | Zalo Accounts |
 |---|---|
-| ![Dashboard v3.3](docs/release-images/v3.3/01-dashboard-v33.png) | ![Facebook Lead Ingestion](docs/release-images/v3.3/02-facebook-lead-ingestion.png) |
+| ![Dashboard v3.3](docs/release-images/v3.3/01-dashboard-v33.png) | ![Zalo Accounts](docs/release-images/v3.3/03-zalo-accounts-redesign.png) |
 
-| Zalo Accounts | Chat media |
+| Chat media | Privacy PIN |
 |---|---|
-| ![Zalo Accounts](docs/release-images/v3.3/03-zalo-accounts-redesign.png) | ![Chat media forward](docs/release-images/v3.3/07-chat-media-forward.png) |
-
-| Privacy PIN | RBAC / Tệp khách hàng |
-|---|---|
-| ![Privacy PIN](docs/release-images/v3.3/04-privacy-pin.png) | ![Customer Lists](docs/release-images/v3.3/06-customer-lists.png) |
+| ![Chat media forward](docs/release-images/v3.3/07-chat-media-forward.png) | ![Privacy PIN](docs/release-images/v3.3/04-privacy-pin.png) |
 
 > 📖 Xem hướng dẫn sử dụng đầy đủ tại [docs/HUONG-DAN-NGUOI-DUNG.md](docs/HUONG-DAN-NGUOI-DUNG.md).
 > 📣 Changelog đầy đủ (mọi phiên bản): [CHANGELOG.md](CHANGELOG.md).
@@ -25,15 +21,12 @@ Hệ thống quản lý tập trung nhiều tài khoản Zalo cá nhân trên 1 
 
 ### Mới trong v3.4
 - **Cầu Zalo ↔ Telegram** — Mirror tin nhắn **2 chiều** (vào/ra) giữa Zalo và Telegram, kèm **media** (ảnh/video/audio/file, giữ tên file gốc), realtime + badge chống lặp
-- **Luồng bám đuổi (follow-up sequence) — recode toàn bộ** — 4 luật (giãn cách random + **jitter** từng bước, cooldown, pause/guard/resume), **Luật 4** tự giữ/hoãn theo giờ cấu hình khi khách trả lời, ETA timing 4 mốc, nút "gửi bước tiếp ngay"
-- **Bể Lead (lead-pool) — rebuild** — chia lead round-robin + 2 ca làm việc + 4 màn quản trị + tab "Tổng quan v2" (phân tích sale, lọc lead rác)
 - **Chuông "đang theo dõi"** sau tên khách trong chat + **Phạm vi làm việc** (scope thành điều kiện load hội thoại)
 - **AI** — quản lý API key + model provider per-org ngay trên giao diện
 - **Public REST API** (X-API-Key) + tài liệu API (vi/en) + Postman collection
 - **Mã nguồn mở AGPL-3.0** — relicense sang AGPL-3.0 (copyleft + §13 SaaS), dual-license thương mại, kèm CONTRIBUTING + DCO
 
 ### Mới trong v3.3
-- **Facebook Lead Ingestion** — Kết nối Meta OAuth/page, webhook verify + HMAC, queue lead, tự khám phá form và tự tạo Customer List theo page/form
 - **Media forward đầy đủ** — Chuyển tiếp hình ảnh, video, audio trong chat thay vì chỉ chuyển tiếp text
 - **Inbound media mirror** — Ảnh/video khách gửi đến được mirror/backfill từ Zalo CDN sang MinIO/S3/R2 để CRM kiểm soát file tốt hơn
 - **Cloudflare R2 support** — `.env.example` có block R2, dùng chung cấu hình S3-compatible với MinIO/Amazon S3
@@ -43,10 +36,8 @@ Hệ thống quản lý tập trung nhiều tài khoản Zalo cá nhân trên 1 
 - **Fix issues #24/#25** — Fallback JSON lỗi từ `getFriendOnlines` và nhận diện message type `webchat`
 
 ### v3.2 (21/05/2026)
-- **Bot-Auto framework** — Blocks, Sequences, Triggers, Broadcasts, Lists, engine gửi bằng Zalo SDK thật
 - **Lead Scoring** — Signal detector, auto-decay, 7 auto tag, stuck lead dashboard, scoring settings
-- **Customer Lists** — Import CSV/Excel, column mapping, inline edit, undo delete, 2-axis status
-- **UI redesigns** — Appointments, Friends, Zalo Accounts, Settings layout, Bot-Auto top-level tab
+- **UI redesigns** — Appointments, Friends, Zalo Accounts, Settings layout
 - **Touch profile + alias sync** — Bổ sung thông tin khách từ SDK và đồng bộ alias Zalo Real ↔ CRM
 
 ### v3.1 (04/2026)
@@ -133,6 +124,8 @@ docker compose up -d --build
 
 Truy cập **http://IP-server:3080** → Tạo tài khoản admin lần đầu.
 
+> 📘 Hướng dẫn triển khai production đầy đủ: [docs/HUONG-DAN-TRIEN-KHAI-PRODUCTION-COMMUNITY.md](docs/HUONG-DAN-TRIEN-KHAI-PRODUCTION-COMMUNITY.md)
+
 ### Tạo secret keys
 ```bash
 # JWT_SECRET (32+ chars)
@@ -142,9 +135,11 @@ openssl rand -hex 32
 openssl rand -hex 32
 ```
 
-## Nâng cấp từ v3.x lên v3.3
+## Nâng cấp lên v3.4 (từ v3.x)
 
-> ⚠️ **Backup database trước khi nâng cấp.** v3.3 có thêm Facebook Lead Ingestion, Privacy/RBAC/Zalo UI, media forward và object storage mirror. Không commit `.env` thật lên git.
+> 📘 Hướng dẫn triển khai production đầy đủ: [docs/HUONG-DAN-TRIEN-KHAI-PRODUCTION-COMMUNITY.md](docs/HUONG-DAN-TRIEN-KHAI-PRODUCTION-COMMUNITY.md)
+
+> ⚠️ **Backup database trước khi nâng cấp.** v3.4 thêm **cầu Zalo ↔ Telegram** (migration additive an toàn, chỉ thêm bảng/field mới), cùng Privacy/RBAC/Zalo UI, media forward và object storage mirror. Không commit `.env` thật lên git.
 
 ```bash
 # 1. Backup database
@@ -161,21 +156,25 @@ git pull origin main
 #    Nếu dùng Cloudflare R2, dùng endpoint/account/key của R2 trong block S3_*.
 diff .env .env.example
 
-# 4. Rebuild + restart app
+# 4. Rebuild app
 docker compose up -d --build app
 
-# 5. Verify
+# 5. Áp migration (migrate deploy thủ công) rồi restart app
+docker exec zalo-crm-app npx prisma migrate deploy
+docker compose restart app
+
+# 6. Verify
 curl http://localhost:3080/
-docker logs zalo-crm-app --tail 50 | grep -E "facebook|media|storage|listener|cron"
+docker logs zalo-crm-app --tail 50 | grep -E "telegram|media|storage|listener|cron"
 ```
 
-### Biến môi trường cần rà soát ở v3.3
+### Biến môi trường cần rà soát ở v3.4
 
 | Nhóm | Biến cần kiểm tra | Ghi chú |
 |---|---|---|
 | Object storage | `S3_ENDPOINT`, `S3_PUBLIC_URL`, `S3_BUCKET`, `S3_REGION`, `S3_ACCESS_KEY`, `S3_SECRET_KEY` | Dùng được cho MinIO, Amazon S3 hoặc Cloudflare R2 |
 | MinIO local | `MINIO_ROOT_USER`, `MINIO_ROOT_PASSWORD` | Chỉ dùng khi chạy service MinIO trong Docker Compose |
-| Facebook Lead | Các biến Meta/Facebook trong `.env.example` nếu bật kênh Facebook | Cấu hình app id/secret/webhook theo Meta app |
+| Telegram bridge | `TELEGRAM_BRIDGE_BOT_TOKEN` | (tuỳ chọn) bật cầu Zalo ↔ Telegram, để trống = tắt |
 | Security | `JWT_SECRET`, `ENCRYPTION_KEY`, `DB_PASSWORD` | Không để trống ở production |
 
 ### Cloudflare R2 example
@@ -208,7 +207,7 @@ docker compose up -d --build
 
 ## Nâng cấp từ v3.1 lên v3.2
 
-> ⚠️ **Backup database trước khi nâng cấp.** Schema v3.2 thêm các bảng Phase 7 (Block, Sequence, Trigger, Broadcast, Campaign, Task, CustomerList) và Phase 6 (ScoringConfig, ScoreSignalRule, StageTransitionRule, StuckThreshold, NbaTemplate) + field `Organization.timezone`, `Contact.priorityScore/priorityUpdatedAt`.
+> ⚠️ **Backup database trước khi nâng cấp.** Schema v3.2 thêm các bảng Phase 6 (ScoringConfig, ScoreSignalRule, StageTransitionRule, StuckThreshold, NbaTemplate) + field `Organization.timezone`, `Contact.priorityScore/priorityUpdatedAt`.
 
 ```bash
 # 1. Backup database
@@ -222,20 +221,10 @@ docker compose up -d --build app
 
 # 4. Verify
 curl http://localhost:3080/                                                              # HTTP 200
-docker logs zalo-crm-app --tail 30 | grep -E "broadcast-scheduler|list-enrichment|cron-scheduler"
+docker logs zalo-crm-app --tail 30 | grep -E "scoring|stuck|cron-scheduler"
 ```
 
 ### Tính năng mới v3.2
-
-#### 🤖 Bot-Auto framework (Phase 7) — top-level tab
-| Module | Mô tả |
-|--------|-------|
-| **Blocks** | Reusable content blocks + folders, dùng chung cho sequence/broadcast |
-| **Sequences** | Automated message sequences với cron + stop_on_accept gate |
-| **Triggers** | Event-driven: cron, scheduled_cron, webhook (order_success), birthday, request_friend Zalo SDK |
-| **Broadcasts** | CRUD + scheduler + UI, send batch tới audience |
-| **Lists (Tệp khách hàng)** | Import CSV/Excel với column mapping, inline edit, undo delete, 2-axis status (lifecycle + system) |
-| **Engine** | Action handlers, manual_run, block-bound trigger materializer, real Zalo SDK send |
 
 #### 📊 Lead Scoring (Phase 6) — chấm điểm + phát hiện KH đình trệ
 - Scoring engine: signal detect (inbound/outbound/meeting) + auto decay
@@ -249,14 +238,13 @@ docker logs zalo-crm-app --tail 30 | grep -E "broadcast-scheduler|list-enrichmen
 - **FriendsView** flat per-pair table + kind tabs
 - **ZaloAccountsView** dashboard 2-axis status
 - **Settings layout** overhaul: nav nhóm Personal / Team / CRM / Channels / Dev
-- **Bot-Auto** promoted to top-level primary tab (smax.ai parity)
 - **Responsive overhaul** per Airtable breakpoints
 
 #### ⚙️ Other
 - ContactProfileView, CustomerActivityLogView
 - Touch-profile endpoint: fill gender/phone/birthday/hasZalo từ SDK khi click conv
 - Alias 2-way sync: `Friend.aliasInNick` Zalo Real ↔ CRM (pagination 200/page)
-- Scripts mới: `deploy-local.sh`, `test-phase7-runner.sh`, `test-phase7-setup.sql`
+- Scripts mới: `deploy-local.sh`
 
 ### Rollback về v3.1
 ```bash
@@ -424,11 +412,24 @@ Header: X-API-Key: your-api-key
 
 ## Cộng đồng
 
+### Nhóm hỗ trợ Zalo
+Tham gia nhóm Zalo để được hỗ trợ nhanh, hỏi đáp và cập nhật:
+
+<p align="left">
+  <a href="https://zalo.me/g/lyyt7xg9lynqaitrl26l">
+    <img src="docs/release-images/qr-group-zalo.png" alt="Zalo Group QR" width="200" />
+  </a>
+</p>
+
+- 📲 **Quét QR** bằng app Zalo, hoặc
+- 💬 **Zalo:** [Tham gia nhóm hỗ trợ](https://zalo.me/g/lyyt7xg9lynqaitrl26l)
+
+### Nhóm Telegram
 Tham gia nhóm Telegram để trao đổi, hỏi đáp, nhận thông báo bản phát hành mới:
 
 <p align="left">
   <a href="https://t.me/+KKJ3SJSx6PA3NDE1">
-    <img src="docs/user-guide-images/qr-group-telegram.png" alt="Telegram Group QR" width="200" />
+    <img src="docs/release-images/qr-group-telegram.png" alt="Telegram Group QR" width="200" />
   </a>
 </p>
 
