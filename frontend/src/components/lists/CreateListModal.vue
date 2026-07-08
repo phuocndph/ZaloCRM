@@ -231,6 +231,24 @@
             <span class="clm-pp-ico">⚷</span> <b>{{ dryRunResult.dupWithCrm }} SĐT</b> trùng với Contact hiện có trong CRM
           </div>
         </div>
+
+        <!-- ───── Chi tiết lỗi từng dòng + tải file CSV lỗi ───── -->
+        <div v-if="dryRunResult?.invalidLines?.length" class="clm-errbox">
+          <div class="clm-errbox-head">
+            <span>📊 Chi tiết lỗi ({{ dryRunResult.invalid }} dòng<span v-if="dryRunResult.invalidTruncated">, hiện {{ dryRunResult.invalidLines.length }} đầu tiên</span>)</span>
+            <button class="clm-link" @click="downloadErrorCsv">⬇ Tải file lỗi (CSV)</button>
+          </div>
+          <div class="clm-errlist">
+            <div v-for="e in dryRunResult.invalidLines" :key="e.rowIndex" class="clm-errrow">
+              <span class="clm-errrow-n">Dòng {{ e.rowIndex }}</span>
+              <span class="clm-errrow-p">{{ e.phoneRaw || '(trống)' }}</span>
+              <span class="clm-errrow-r">{{ invalidReasonLabel(e.invalidReason) }}</span>
+            </div>
+          </div>
+          <div v-if="dryRunResult.invalidTruncated" class="clm-hint" style="margin-top:6px">
+            Còn nhiều dòng lỗi hơn — file CSV tải về chỉ gồm 1000 dòng đầu.
+          </div>
+        </div>
       </div>
       <div class="clm-foot">
         <span class="clm-foot-note">Sau khi tạo, hệ thống async lookup UID Zalo qua zalo-pool (không chặn UI).</span>
@@ -256,6 +274,39 @@ import { useCustomerLists, type DryRunResult, type MappedRow } from '@/composabl
 import { useToast } from '@/composables/use-toast';
 
 const toast = useToast();
+
+// Nhãn tiếng Việt cho lý do SĐT không hợp lệ (khớp InvalidReason ở backend).
+const INVALID_REASON_LABEL: Record<string, string> = {
+  empty: 'Trống',
+  too_short: 'Quá ngắn',
+  too_long: 'Quá dài',
+  invalid_prefix: 'Sai đầu số (không phải di động VN)',
+  invalid_format: 'Sai định dạng',
+};
+function invalidReasonLabel(reason: string | null): string {
+  return (reason && INVALID_REASON_LABEL[reason]) || 'Sai định dạng';
+}
+
+/** Xuất danh sách dòng lỗi (từ dry-run) ra file CSV: Dòng, SĐT gốc, Lý do. */
+function downloadErrorCsv() {
+  const rows = dryRunResult.value?.invalidLines ?? [];
+  if (!rows.length) return;
+  const esc = (v: string) => `"${String(v).replace(/"/g, '""')}"`;
+  const csv = [
+    ['Dòng', 'SĐT gốc', 'Lý do'].map(esc).join(','),
+    ...rows.map((e) =>
+      [String(e.rowIndex), e.phoneRaw || '', invalidReasonLabel(e.invalidReason)].map(esc).join(','),
+    ),
+  ].join('\r\n');
+  // BOM để Excel mở đúng tiếng Việt UTF-8.
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `loi-import-${fileName.value || 'danh-sach'}.csv`;
+  link.click();
+  URL.revokeObjectURL(url);
+}
 
 /**
  * Read the first worksheet of an xlsx/xls/csv file into a 2D string-cell
@@ -812,6 +863,38 @@ watch(activeTab, (newTab, oldTab) => {
 .clm-pp--ok { color: var(--success, #12b76a); }
 .clm-pp--err { color: var(--error, #f04438); }
 .clm-pp--warn { color: var(--warning, #b45309); }
+
+/* ── Chi tiết lỗi từng dòng + tải CSV ── */
+.clm-errbox {
+  margin-top: 10px;
+  border: 1px solid var(--line, #e7eaf0);
+  border-radius: 8px;
+  background: var(--surface, #fff);
+  overflow: hidden;
+}
+.clm-errbox-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 9px 12px;
+  background: var(--error-soft, #fdeceb);
+  color: var(--error, #f04438);
+  font-size: 12px; font-weight: 600;
+}
+.clm-errlist { max-height: 300px; overflow-y: auto; }
+.clm-errrow {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 12px;
+  font-size: 12px;
+  border-top: 1px solid var(--line-2, #eef1f6);
+}
+.clm-errrow:nth-child(odd) { background: var(--surface-2, #f7f9fc); }
+.clm-errrow-n { flex: 0 0 64px; color: var(--ink-4, #97a0b3); font-variant-numeric: tabular-nums; }
+.clm-errrow-p {
+  flex: 1 1 auto; min-width: 0;
+  color: var(--ink, #141a24);
+  font-family: var(--mono, ui-monospace, monospace);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.clm-errrow-r { flex: 0 0 auto; color: var(--error, #f04438); font-weight: 500; }
 
 /* ── Buttons ── */
 .clm-btn {

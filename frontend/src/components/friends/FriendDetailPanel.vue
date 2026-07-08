@@ -18,16 +18,16 @@
             <span v-else>{{ customerInitials(friend) }}</span>
           </div>
           <h3>{{ displayCustomerName(friend) }}</h3>
-          <button class="close" @click="$emit('close')">✕</button>
+          <button class="close" @click="$emit('close')"><XIcon :size="16" :stroke-width="2" /></button>
         </div>
 
         <div class="panel-body">
           <div class="panel-section">
             <h5>Thông tin KH</h5>
-            <div class="kv"><span class="k">📱 SĐT</span><span class="v"><b>{{ friend.contact?.phone || '—' }}</b></span></div>
-            <div class="kv"><span class="k">🔵 Zalo UID</span><span class="v">{{ friend.zaloUidInNick || '—' }}</span></div>
+            <div class="kv"><span class="k">SĐT</span><span class="v"><b>{{ friend.contact?.phone || '—' }}</b></span></div>
+            <div class="kv"><span class="k">Zalo UID</span><span class="v">{{ friend.zaloUidInNick || '—' }}</span></div>
             <div class="kv">
-              <span class="k">📅 Là bạn từ</span>
+              <span class="k">Là bạn từ</span>
               <span class="v">
                 <template v-if="friend.becameFriendAt">
                   {{ formatDate(friend.becameFriendAt) }} ({{ daysSince(friend.becameFriendAt) }} ngày)
@@ -36,11 +36,11 @@
               </span>
             </div>
             <div v-if="friend.contact?.birthYear" class="kv">
-              <span class="k">🎂 Năm sinh</span>
+              <span class="k">Năm sinh</span>
               <span class="v">{{ friend.contact.birthYear }} ({{ age(friend.contact.birthYear) }} tuổi)<template v-if="friend.contact.gender"> · {{ genderShort(friend.contact.gender) }}</template></span>
             </div>
             <div v-if="friend.contact?.province" class="kv">
-              <span class="k">📍 Khu vực</span>
+              <span class="k">Khu vực</span>
               <span class="v">{{ [friend.contact.district, friend.contact.province].filter(Boolean).join(', ') }}</span>
             </div>
           </div>
@@ -49,7 +49,7 @@
             <h5>Per-pair với <b>{{ activeNickName }}</b></h5>
             <div class="kv">
               <span class="k">Trạng thái KB</span>
-              <span class="v"><span class="badge" :class="kbClass(friend.relationshipKind)">{{ kbLabel(friend.relationshipKind) }}</span></span>
+              <span class="v"><span class="badge" :class="kbClass(friend.relationshipKind)"><span class="dot" />{{ kbLabel(friend.relationshipKind) }}</span></span>
             </div>
             <div v-if="friend.statusRef" class="kv">
               <span class="k">Trạng thái KH</span>
@@ -97,15 +97,15 @@
                 :key="l.name"
                 class="tag-chip"
                 :style="l.color ? { background: l.color + '22', color: l.color, borderColor: 'transparent' } : undefined"
-              >🔵 {{ l.name }}</span>
+              >{{ l.name }}</span>
             </div>
           </div>
         </div>
 
         <div class="panel-foot">
-          <button class="btn" @click="$emit('open-chat', friend)">💬 Mở chat</button>
-          <button class="btn" @click="$emit('call', friend)">📞 Gọi</button>
-          <button class="btn primary" @click="$emit('open-contact', friend)">👤 Hồ sơ</button>
+          <button class="btn" @click="$emit('open-chat', friend)"><MessageCircleIcon :size="14" :stroke-width="2" /> Mở chat</button>
+          <button class="btn" @click="$emit('call', friend)"><PhoneIcon :size="14" :stroke-width="2" /> Gọi</button>
+          <button class="btn primary" @click="$emit('open-contact', friend)"><UserIcon :size="14" :stroke-width="2" /> Hồ sơ</button>
         </div>
       </template>
     </aside>
@@ -114,6 +114,12 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
+import {
+  X as XIcon,
+  MessageCircle as MessageCircleIcon,
+  Phone as PhoneIcon,
+  User as UserIcon,
+} from 'lucide-vue-next';
 import type { DbFriend } from '@/composables/use-friends';
 import { displayCustomerName, customerInitials } from '@/composables/use-friend-display';
 import { formatInOrgTz } from '@/composables/use-org-timezone';
@@ -164,25 +170,16 @@ function kbClass(kind: string): string {
 }
 function kbLabel(kind: string): string {
   const m: Record<string, string> = {
-    friend: '● Đã kết bạn',
-    pending_friend: '◐ Đã gửi mời',
-    chatting_stranger: '◯ Đang nhắn lạ',
-    ghost: '✕ Đã ngắt',
+    friend: 'Đã kết bạn',
+    pending_friend: 'Đã gửi mời',
+    chatting_stranger: 'Đang nhắn lạ',
+    ghost: 'Đã ngắt',
   };
   return m[kind] ?? '—';
 }
 
 function careLabel(f: DbFriend): string {
-  const name = f.statusRef?.name;
-  if (!name) return '';
-  const lower = name.toLowerCase();
-  if (lower.includes('nóng')) return '🔥 ' + name;
-  if (lower.includes('lạnh')) return '❄ ' + name;
-  if (lower.includes('chốt')) return '✅ ' + name;
-  if (lower.includes('đàm')) return '⚡ ' + name;
-  if (lower.includes('chăm')) return '🤝 ' + name;
-  if (lower.includes('quan tâm')) return '💬 ' + name;
-  return name;
+  return f.statusRef?.name || '';
 }
 function careClass(f: DbFriend): string {
   const name = f.statusRef?.name?.toLowerCase() || '';
@@ -268,8 +265,9 @@ function formatRelative(iso: string): string {
 }
 .panel-head h3 { margin: 0; font-size: 14px; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .panel-head .close {
+  display: flex; align-items: center; justify-content: center;
   background: transparent; border: none;
-  font-size: 18px; color: var(--ink-4); cursor: pointer;
+  color: var(--ink-4); cursor: pointer;
   width: 28px; height: 28px; border-radius: 5px;
   font-family: inherit;
 }
@@ -300,6 +298,7 @@ function formatRelative(iso: string): string {
 .badge.hot { background: var(--error-soft); color: var(--error); }
 .badge.cold { background: #dbeafe; color: #1e40af; }
 .badge.won { background: var(--success-soft); color: var(--success); }
+.badge .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
 
 .tag-chips { display: flex; gap: 4px; flex-wrap: wrap; }
 .tag-chip {
@@ -320,6 +319,7 @@ function formatRelative(iso: string): string {
   display: flex; gap: 6px;
 }
 .panel-foot .btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
   flex: 1;
   padding: 7px 10px; border-radius: 7px;
   border: 1px solid var(--line);

@@ -330,11 +330,23 @@
               />
               <span v-else class="cell-content">{{ entry.phoneRaw }}</span>
             </td>
-            <!-- Readonly: auto-derive từ phoneRaw -->
-            <td v-show="isColVisible('phoneE164')" class="phone-cell e164 readonly cell-scroll" :title="'Tự derive từ Phone (paste). KHÔNG edit ở đây.'">
+            <!-- Readonly: auto-derive từ phoneRaw. Bấm để copy vào clipboard. -->
+            <td
+              v-show="isColVisible('phoneE164')"
+              class="phone-cell e164 readonly cell-scroll"
+              :class="{ copyable: !!entry.phoneE164 }"
+              :title="entry.phoneE164 ? 'Bấm để copy' : 'Tự derive từ Phone (paste). KHÔNG edit ở đây.'"
+              @click.stop="entry.phoneE164 && copyPhone(entry.phoneE164)"
+            >
               <span class="cell-content">{{ entry.phoneE164 || '—' }}</span>
             </td>
-            <td v-show="isColVisible('phoneLocal')" class="phone-cell local readonly cell-scroll" :title="'Tự derive từ Phone (paste). KHÔNG edit ở đây.'">
+            <td
+              v-show="isColVisible('phoneLocal')"
+              class="phone-cell local readonly cell-scroll"
+              :class="{ copyable: !!entry.phoneLocal }"
+              :title="entry.phoneLocal ? 'Bấm để copy' : 'Tự derive từ Phone (paste). KHÔNG edit ở đây.'"
+              @click.stop="entry.phoneLocal && copyPhone(entry.phoneLocal)"
+            >
               <span class="cell-content">{{ entry.phoneLocal || '—' }}</span>
             </td>
             <!-- Editable nameRaw -->
@@ -608,6 +620,28 @@ const router = useRouter();
 
 const toast = useToast();
 const { confirm } = useConfirm();
+
+/** Copy SĐT vào clipboard (bấm ô Phone +84 / local). Fallback execCommand cho
+ *  môi trường không có Clipboard API (http, iframe cũ). */
+async function copyPhone(phone: string) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(phone);
+    } else {
+      const ta = document.createElement('textarea');
+      ta.value = phone;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    toast.success(`Đã copy ${phone}`);
+  } catch {
+    toast.error('Không copy được — thử lại');
+  }
+}
 // Lead-notify Nhịp 1 — drawer cấu hình "Tự động giao & báo lead" per-tệp.
 const showLeadNotify = ref(false);
 function onLeadNotifySaved() {
@@ -1499,6 +1533,12 @@ function nickAvatarStyle(name: string): Record<string, string> {
 .phone-cell.raw { color: var(--ink-3); }
 .phone-cell.e164 { color: var(--ink-2); }
 .phone-cell.local { color: var(--ink); font-weight: 600; }
+.phone-cell.copyable { cursor: pointer; }
+.phone-cell.copyable:hover .cell-content {
+  text-decoration: underline;
+  text-decoration-style: dotted;
+  text-underline-offset: 2px;
+}
 /* Width override cho name cells — scroll-x sẽ handle overflow */
 .name { font-weight: 500; }
 .name.cell-scroll { max-width: 160px; }

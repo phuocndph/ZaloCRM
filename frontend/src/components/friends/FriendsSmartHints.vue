@@ -10,7 +10,8 @@
         :class="h.kind"
         @click="$emit('apply', h)"
       >
-        {{ h.icon }} {{ h.label }}
+        <component :is="KIND_ICON[h.kind]" :size="14" :stroke-width="2" />
+        {{ h.label }}
         <span class="x">→</span>
       </button>
     </div>
@@ -19,15 +20,28 @@
 
 <script setup lang="ts">
 import { computed } from 'vue';
+import {
+  AlertTriangle as AlertTriangleIcon,
+  CheckCircle2 as CheckCircle2Icon,
+  Flame as FlameIcon,
+  Lightbulb as LightbulbIcon,
+} from 'lucide-vue-next';
 import type { DbFriend } from '@/composables/use-friends';
 
 export type HintKey = 'silent7d' | 'newThisWeek' | 'hotPending' | 'aliasDup';
+export type HintKind = 'warn' | 'success' | 'danger' | 'info';
 export interface SmartHint {
   key: HintKey;
   label: string;
-  icon: string;
-  kind: 'warn' | 'success' | 'danger' | 'info';
+  kind: HintKind;
 }
+
+const KIND_ICON: Record<HintKind, typeof AlertTriangleIcon> = {
+  warn: AlertTriangleIcon,
+  success: CheckCircle2Icon,
+  danger: FlameIcon,
+  info: LightbulbIcon,
+};
 
 const props = defineProps<{
   friends: DbFriend[];
@@ -53,7 +67,6 @@ const hints = computed<SmartHint[]>(() => {
     list.push({
       key: 'silent7d',
       label: `${silent} KH chưa nhắn ≥7 ngày — risk lạnh`,
-      icon: '⚠',
       kind: 'warn',
     });
   }
@@ -66,7 +79,6 @@ const hints = computed<SmartHint[]>(() => {
     list.push({
       key: 'newThisWeek',
       label: `${newKB} KH mới kết bạn tuần này`,
-      icon: '✓',
       kind: 'success',
     });
   }
@@ -76,7 +88,6 @@ const hints = computed<SmartHint[]>(() => {
     list.push({
       key: 'hotPending',
       label: `${hot} KH đang "Nóng" cần follow gấp`,
-      icon: '🔥',
       kind: 'danger',
     });
   }
@@ -91,7 +102,6 @@ const hints = computed<SmartHint[]>(() => {
     list.push({
       key: 'aliasDup',
       label: `${dupAlias} alias trùng — gợi ý merge`,
-      icon: '💡',
       kind: 'info',
     });
   }

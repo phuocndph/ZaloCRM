@@ -4048,3 +4048,146 @@ model MediaUsageEvent {
   @@index([orgId, createdAt])
   @@map("media_usage_events")
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+// Outreach Campaign (🟢 Community) — tự động kết bạn + nhắn tin cho tập khách đã
+// đồng ý. Self-contained: FK dạng string (KHÔNG relation tới model cũ) để không
+// đụng Organization/CustomerList/ZaloAccount; chỉ relation nội bộ giữa 3 model
+// mới (cascade khi xoá campaign). Engine chạy qua BullMQ worker riêng.
+// ════════════════════════════════════════════════════════════════════════════
+
+model OutreachCampaign {
+  id             String  @id @default(uuid())
+  orgId          String  @map("org_id")
+  createdById    String? @map("created_by_id")
+  name           String
+  description    String?
+  // Nguồn khách = 1 Tệp khách hàng (CustomerList); gửi từ 1 nick Zalo.
+  customerListId String  @map("customer_list_id")
+  zaloAccountId  String  @map("zalo_account_id")
+
+  // ── Cấu hình kết bạn ──
+  enableAutoAdd   Boolean @default(true) @map("enable_auto_add")
+  addFriendMessage String? @map("add_friend_message")
+  addDelayMinMs   Int     @default(2000) @map("add_delay_min_ms")
+  addDelayMaxMs   Int     @default(5000) @map("add_delay_max_ms")
+  maxAddPerDay    Int     @default(100) @map("max_add_per_day")
+
+  // ── Cấu hình nhắn tin ──
+  enableAutoMessage Boolean @default(true) @map("enable_auto_message")
+  waitAfterAddMinMs Int     @default(60000) @map("wait_after_add_min_ms")
+  waitAfterAddMaxMs Int     @default(120000) @map("wait_after_add_max_ms")
+  msgDelayMinMs     Int     @default(3000) @map("msg_delay_min_ms")
+  msgDelayMaxMs     Int     @default(8000) @map("msg_delay_max_ms")
+  maxMsgPerDay      Int     @default(500) @map("max_msg_per_day")
+
+  // ── Trạng thái + counter ──
+  state          String @default("draft") // draft|running|paused|completed|cancelled|failed
+  runCount       Int    @default(0) @map("run_count") // số lần đã chạy (tăng mỗi lần start/restart)
+  totalTarget    Int    @default(0) @map("total_target")
+  totalAdded     Int    @default(0) @map("total_added")
+  totalAddFailed Int    @default(0) @map("total_add_failed")
+  totalMsgSent   Int    @default(0) @map("total_msg_sent")
+  totalMsgFailed Int    @default(0) @map("total_msg_failed")
+  totalSkipped   Int    @default(0) @map("total_skipped")
+
+  startedAt   DateTime? @map("started_at")
+  completedAt DateTime? @map("completed_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  templates OutreachTemplate[]
+  logs      OutreachLog[]
+  phones    OutreachPhone[]
+  runs      OutreachRun[]
+
+  @@index([orgId, state])
+  @@index([customerListId])
+  @@map("outreach_campaigns")
+}
+
+// Lịch sử mỗi lần chạy (append-only — KHÔNG ghi đè). "Lần chạy 1/2/3…" + operation log
+// (ai chạy, lúc nào). Giữ lịch sử để user biết campaign đã chạy bao nhiêu lần.
+model OutreachRun {
+  id            String    @id @default(uuid())
+  campaignId    String    @map("campaign_id")
+  runNumber     Int       @map("run_number")
+  state         String    @default("running") // running | completed | cancelled
+  startedById   String?   @map("started_by_id")
+  startedByName String?   @map("started_by_name")
+  action        String    @default("start") // start | restart
+  startedAt     DateTime  @default(now()) @map("started_at")
+  completedAt   DateTime? @map("completed_at")
+
+  campaign OutreachCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId, runNumber])
+  @@map("outreach_runs")
+}
+
+model OutreachTemplate {
+  id            String   @id @default(uuid())
+  campaignId    String   @map("campaign_id")
+  title         String?
+  content       String // hỗ trợ biến {{name}}, {{phone}}, ...
+  weight        Int      @default(1) // tỷ lệ chọn ngẫu nhiên
+  imageAssetIds String[] @default([]) @map("image_asset_ids") // MediaAsset ids, random 1
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  campaign OutreachCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId])
+  @@map("outreach_templates")
+}
+
+model OutreachLog {
+  id           String    @id @default(uuid())
+  campaignId   String    @map("campaign_id")
+  entryId      String?   @map("entry_id") // CustomerListEntry
+  contactId    String?   @map("contact_id")
+  phone        String
+  actionType   String    @map("action_type") // add_friend | send_message
+  status       String    @default("pending") // pending|success|failed|skipped
+  resultData   Json?     @map("result_data")
+  errorMessage String?   @map("error_message")
+  durationMs   Int?      @map("duration_ms")
+  executedAt   DateTime? @map("executed_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  campaign OutreachCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@index([campaignId])
+  @@index([campaignId, status])
+  @@index([campaignId, actionType, createdAt])
+  @@map("outreach_logs")
+}
+
+// Trạng thái GỘP theo TỪNG SỐ (1 số = 1 dòng) — worker cập nhật TẠI CHỖ (upsert) mỗi
+// khi kết bạn/nhắn tin đổi trạng thái. Bảng nguồn cho UI "Hoạt động" per-phone: query
+// phân trang/search/filter/sort + đếm summary hiệu quả (index sẵn). OutreachLog vẫn giữ
+// làm audit append-only.
+model OutreachPhone {
+  id            String   @id @default(uuid())
+  campaignId    String   @map("campaign_id")
+  entryId       String   @map("entry_id")
+  phone         String
+  seq           Int      @default(0) // thứ tự xử lý (chat cũ nhất trước, chưa chat cuối cùng)
+  // overall: 'waiting'(Chờ lượt) | 'processing'(Đang xử lý) | 'success'(Thành công) | 'skipped'(Bỏ qua)
+  overallStatus String   @default("waiting") @map("overall_status")
+  // friend: 'none' | 'success' | 'already_friend' | 'waiting' | 'failed'
+  friendStatus  String   @default("none") @map("friend_status")
+  // message: 'none' | 'sent' | 'waiting' | 'failed'
+  messageStatus String   @default("none") @map("message_status")
+  note          String?
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  campaign OutreachCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, entryId])
+  @@index([campaignId, overallStatus])
+  @@index([campaignId, updatedAt])
+  @@index([campaignId, phone])
+  @@map("outreach_phones")
+}

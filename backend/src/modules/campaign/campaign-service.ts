@@ -20,6 +20,10 @@ export const DEFAULT_REQUEST_MESSAGE =
 
 export type AttemptOutcome =
   | { ok: true; state: 'sent'; zaloUid: string }
+  // Đã là bạn (zalo:225) hoặc đã gửi lời mời đang chờ chấp nhận (pending) →
+  // KHÔNG cần gửi lời mời nữa; caller vẫn đi tiếp bước nhắn tin. Không phải lỗi.
+  | { ok: true; state: 'already_friend'; zaloUid: string }
+  | { ok: true; state: 'pending'; zaloUid: string }
   | { ok: false; state: 'no_zalo'; reason: 'phone_not_on_zalo' }
   | { ok: false; state: 'error'; errorCode: string; errorDetail: string };
 
@@ -83,15 +87,23 @@ export async function attemptFriendRequest(args: {
 }): Promise<{ attemptId: string } & AttemptOutcome> {
   const { orgId, zaloAccountId, contactId, phone, message } = args;
 
-  // Create attempt row first so we always have an audit trail, even on crash.
-  // unique(zalo_account_id, contact_id) — if a row already exists this throws P2002.
-  const attempt = await prisma.friendshipAttempt.create({
-    data: {
+  // Upsert attempt row — idempotent: nếu cặp (nick, contact) đã có attempt cũ (vd chạy
+  // lại campaign trên cùng danh sách) thì RESET về looking_up + xoá lỗi cũ, KHÔNG throw
+  // P2002. Trước đây create() throw unique-constraint khi lặp → worker campaign crash.
+  const attempt = await prisma.friendshipAttempt.upsert({
+    where: { zaloAccountId_contactId: { zaloAccountId, contactId } },
+    create: {
       orgId,
       zaloAccountId,
       contactId,
       state: 'looking_up',
       requestMsg: message,
+    },
+    update: {
+      state: 'looking_up',
+      requestMsg: message,
+      errorCode: null,
+      errorDetail: null,
     },
   });
 
@@ -188,6 +200,32 @@ export async function attemptFriendRequest(args: {
     data: { zaloUid },
   });
 
+  // ── 1b. Kiểm tra quan hệ hiện tại — tránh gửi lời mời thừa ────────────────
+  // is_friend=1 → đã là bạn; is_requested=1 → mình đã gửi lời mời, đang chờ chấp nhận.
+  // Cả 2 coi là "không cần gửi lời mời nữa" (không phải lỗi), caller đi tiếp bước nhắn tin.
+  try {
+    const st = (await zaloOps.getFriendRequestStatus(zaloAccountId, zaloUid)) as
+      | { is_friend?: number; is_requested?: number; is_requesting?: number }
+      | null;
+    if (st?.is_friend === 1) {
+      await prisma.friendshipAttempt.update({
+        where: { id: attempt.id },
+        data: { state: 'accepted', zaloUidFound: zaloUid, lookedUpAt: new Date(), decidedAt: new Date() },
+      });
+      return { attemptId: attempt.id, ok: true, state: 'already_friend', zaloUid };
+    }
+    if (st?.is_requested === 1) {
+      await prisma.friendshipAttempt.update({
+        where: { id: attempt.id },
+        data: { state: 'sent', zaloUidFound: zaloUid, lookedUpAt: new Date(), sentAt: new Date() },
+      });
+      return { attemptId: attempt.id, ok: true, state: 'pending', zaloUid };
+    }
+  } catch (statusErr) {
+    // Không đọc được status → cứ thử gửi lời mời như thường (fallback bên dưới sẽ bắt 225).
+    logger.debug(`[campaign] getFriendRequestStatus lỗi uid=${zaloUid}: ${(statusErr as Error)?.message ?? statusErr}`);
+  }
+
   // ── 2. sendFriendRequest ────────────────────────────────────────────────
   try {
     await zaloOps.sendFriendRequest(zaloAccountId, message, zaloUid);
@@ -206,6 +244,14 @@ export async function attemptFriendRequest(args: {
   } catch (err: any) {
     const code = err instanceof ZaloOpError ? err.code : 'SEND_FRIEND_REQ_FAILED';
     const detail = String(err?.message ?? err);
+    // Fallback: Zalo báo "đã là bạn bè" (error_code 225) → coi như đã là bạn, không phải lỗi.
+    if (/\[zalo:225\]|đã là bạn/i.test(detail)) {
+      await prisma.friendshipAttempt.update({
+        where: { id: attempt.id },
+        data: { state: 'accepted', zaloUidFound: zaloUid, lookedUpAt: new Date(), decidedAt: new Date() },
+      });
+      return { attemptId: attempt.id, ok: true, state: 'already_friend', zaloUid };
+    }
     logger.warn(`[campaign] sendFriendRequest failed for uid=${zaloUid}: ${detail}`);
     await prisma.friendshipAttempt.update({
       where: { id: attempt.id },

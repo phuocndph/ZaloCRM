@@ -7,11 +7,10 @@
         <span>Nick Zalo của bạn</span>
         <span class="total">{{ accounts.length }}</span>
       </div>
-      <input
-        v-model="searchQuery"
-        class="search"
-        placeholder="🔍 Tìm nick..."
-      />
+      <div class="field search">
+        <SearchIcon :size="13" :stroke-width="2" />
+        <input v-model="searchQuery" placeholder="Tìm nick..." />
+      </div>
     </div>
 
     <div
@@ -66,6 +65,7 @@
 
 <script setup lang="ts">
 import { ref, computed } from 'vue';
+import { Search as SearchIcon } from 'lucide-vue-next';
 import type { ZaloAccount } from '@/composables/use-zalo-accounts';
 
 const props = defineProps<{
@@ -160,15 +160,12 @@ function onNickAvatarError(e: Event): void {
 }
 .head .search {
   width: 100%;
-  padding: 6px 10px;
-  border: 1px solid var(--line);
+  height: 32px;
   border-radius: var(--r-xs);
-  font-size: 12px;
   background: var(--surface-2);
-  font-family: inherit;
-  box-sizing: border-box;
 }
-.head .search:focus { outline: none; background: var(--surface); border-color: var(--brand); }
+.head .search input { font-size: 12px; }
+.head .search:focus-within { background: var(--surface); border-color: var(--brand); }
 
 .all-row {
   display: flex; align-items: center; gap: 8px;

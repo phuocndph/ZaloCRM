@@ -26,15 +26,15 @@ vi.mock('../src/shared/database/prisma-client.js', () => ({ prisma: prismaMock }
 vi.mock('../src/shared/utils/logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
-vi.mock('../src/modules/automation/lists/list-entry-routes.js', () => ({
+vi.mock('../src/modules/lists/list-entry-routes.js', () => ({
   recomputeListCounters: recomputeListCountersMock,
 }));
-vi.mock('../src/modules/automation/lists/list-system-messages.js', () => ({
+vi.mock('../src/modules/lists/list-system-messages.js', () => ({
   appendSystemMessage: appendSystemMessageMock,
 }));
 
 const { kickoffEnrichment } = await import(
-  '../src/modules/automation/lists/list-enrichment-service.js'
+  '../src/modules/lists/list-enrichment-service.js'
 );
 
 beforeEach(() => {

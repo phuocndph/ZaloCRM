@@ -24,7 +24,10 @@
       <button class="chip" :class="{ on: !!careStatus }" @click="toggleCareDropdown">
         <span v-if="selectedStatus" class="dot" :style="{ background: selectedStatus.color || 'var(--ink-4)' }" />
         <span>{{ selectedStatus ? selectedStatus.name : 'Trạng thái KH' }}</span>
-        <span class="caret" :class="{ clear: !!careStatus }" @click.stop="careStatus ? onCarePick('') : toggleCareDropdown()">{{ careStatus ? '✕' : '▾' }}</span>
+        <span class="caret" :class="{ clear: !!careStatus }" @click.stop="careStatus ? onCarePick('') : toggleCareDropdown()">
+          <XIcon v-if="careStatus" :size="12" :stroke-width="2.2" />
+          <ChevronDownIcon v-else :size="12" :stroke-width="2.2" />
+        </span>
       </button>
       <div v-if="careDropdown" class="dropdown care-dd">
         <button :class="{ active: !careStatus }" @click="onCarePick('')">Tất cả trạng thái</button>
@@ -42,6 +45,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
+import { X as XIcon, ChevronDown as ChevronDownIcon } from 'lucide-vue-next';
 import { api } from '@/api/index';
 import type { FriendKindFilter } from '@/composables/use-friends-state';
 
@@ -140,7 +144,7 @@ function onCarePick(v: string) {
 }
 .chip:hover { background: var(--surface-3); color: var(--ink); }
 .chip.on { background: var(--brand-soft); color: var(--brand-700); border-color: var(--brand); }
-.chip .caret { opacity: .55; font-size: 9px; }
+.chip .caret { display: inline-flex; opacity: .55; }
 
 .saved-view {
   margin-left: auto;

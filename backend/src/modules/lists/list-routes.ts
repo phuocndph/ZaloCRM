@@ -207,14 +207,24 @@ export async function customerListRoutes(app: FastifyInstance): Promise<void> {
           input,
           user.orgId,
         );
+        // Danh sách dòng lỗi (per-row) để FE hiện "Chi tiết lỗi" + tải file CSV lỗi.
+        // Cap 1000 dòng để tránh response phình to với file rác cực lớn; FE báo nếu bị cắt.
+        const INVALID_CAP = 1000;
+        const allInvalid = lines.filter((l) => !l.valid);
         return {
           total: lines.length,
-          valid: lines.filter((l) => l.valid).length,
-          invalid: lines.filter((l) => !l.valid).length,
+          valid: lines.length - allInvalid.length,
+          invalid: allInvalid.length,
           dupInList: internalDup.size,
           dupCrossList: crossListDup.size,
           dupWithCrm: crmContactDup.size,
           sample: lines.slice(0, 10),
+          invalidLines: allInvalid.slice(0, INVALID_CAP).map((l) => ({
+            rowIndex: l.rowIndex,
+            phoneRaw: l.phoneRaw,
+            invalidReason: l.invalidReason,
+          })),
+          invalidTruncated: allInvalid.length > INVALID_CAP,
         };
       } catch (err) {
         logger.error({ err }, '[customer-lists] dry-run failed');

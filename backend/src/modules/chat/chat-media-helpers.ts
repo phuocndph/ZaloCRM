@@ -58,6 +58,20 @@ export function candidateDownloadUrls(url: string): string[] {
   } catch {
     // keep original only
   }
+  // Local storage driver: publicUrl bám APP_URL (cổng HOST, vd :3080) → KHÔNG reachable
+  // từ trong container (app nghe cổng nội bộ config.port, vd :3000). Thêm ứng viên trỏ
+  // localhost:<port nội bộ> để fetch route tĩnh /files của chính app thành công.
+  try {
+    const u = new URL(url);
+    const appu = new URL(config.appUrl);
+    if (u.host === appu.host) {
+      u.protocol = 'http:';
+      u.host = `localhost:${config.port}`;
+      candidates.push(u.toString());
+    }
+  } catch {
+    // ignore
+  }
   return [...new Set(candidates)];
 }
 

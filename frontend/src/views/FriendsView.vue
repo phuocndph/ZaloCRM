@@ -14,7 +14,7 @@
 
       <main class="main">
         <header class="page-head">
-          <h1>👥 Bạn bè</h1>
+          <h1>Bạn bè</h1>
 
           <span v-if="activeAccount" class="active-nick">
             <span class="av" :class="nickAvatarClass(activeAccount.id)">{{ nickInitials(activeAccount.displayName) }}</span>
@@ -30,16 +30,18 @@
           </span>
 
           <div class="spacer" />
-          <input
-            v-model="searchInput"
-            class="head-search"
-            placeholder="🔍 Tìm KH theo tên / SĐT / nick Zalo..."
-            @input="debouncedFetch"
-          />
-          <button class="btn" title="Xuất CSV (chưa làm)" @click="onExportCsv">⬇ Xuất CSV</button>
+          <div class="field head-search-field">
+            <SearchIcon :size="14" :stroke-width="2" />
+            <input
+              v-model="searchInput"
+              placeholder="Tìm KH theo tên / SĐT / nick Zalo..."
+              @input="debouncedFetch"
+            />
+          </div>
+          <button class="btn" title="Xuất CSV (chưa làm)" @click="onExportCsv"><DownloadIcon :size="14" :stroke-width="2" /> Xuất CSV</button>
           <v-menu :close-on-content-click="false">
             <template #activator="{ props: act }">
-              <button v-bind="act" class="btn" title="Bật/tắt cột tuỳ chọn">⚙ Cột</button>
+              <button v-bind="act" class="btn" title="Bật/tắt cột tuỳ chọn"><SlidersHorizontalIcon :size="14" :stroke-width="2" /> Cột</button>
             </template>
             <v-list density="compact" min-width="280">
               <v-list-subheader>Cột mặc định (luôn hiện)</v-list-subheader>
@@ -73,7 +75,7 @@
             :disabled="syncing"
             title="Auto-sync mỗi 15 phút. Click để refresh ngay lập tức."
             @click="onSync"
-          >{{ syncing ? '↻ Đang làm mới…' : '↻ Làm mới ngay' }}</button>
+          ><RefreshCwIcon :size="14" :stroke-width="2" :class="{ spin: syncing }" /> {{ syncing ? 'Đang làm mới…' : 'Làm mới ngay' }}</button>
         </header>
 
         <FriendsSmartHints :friends="friendsDb" @apply="onApplyHint" />
@@ -181,6 +183,12 @@ import FriendDetailPanel from '@/components/friends/FriendDetailPanel.vue';
 import CustomerProfileDialog from '@/components/contacts/CustomerProfileDialog.vue';
 import { useToast } from '@/composables/use-toast';
 import type { SmartHint } from '@/components/friends/FriendsSmartHints.vue';
+import {
+  Search as SearchIcon,
+  Download as DownloadIcon,
+  SlidersHorizontal as SlidersHorizontalIcon,
+  RefreshCw as RefreshCwIcon,
+} from 'lucide-vue-next';
 
 const router = useRouter();
 const toast = useToast();
@@ -215,23 +223,23 @@ const DENSITY_OPTIONS: { value: DensityMode; label: string }[] = [
 // ─── Column toggle (Tier 1 default vs Tier 2 optional) ───
 // Tier 1: KB từ ngày, Đình trệ, Auto tag — luôn hiện, không toggle được (subheader disable)
 const DEFAULT_COLUMNS = [
-  { key: 'becameFriendAt', label: '🕒 KB từ ngày',  hint: 'Ngày trở thành bạn bè trên Zalo' },
-  { key: 'stuckSince',     label: '⚠ Đình trệ',    hint: 'KH bị cron flag stuck do không tương tác' },
-  { key: 'autoTags',       label: '🤖 Auto tag',    hint: 'System auto: active / stuck / cold / ready ...' },
+  { key: 'becameFriendAt', label: 'KB từ ngày',  hint: 'Ngày trở thành bạn bè trên Zalo' },
+  { key: 'stuckSince',     label: 'Đình trệ',    hint: 'KH bị cron flag stuck do không tương tác' },
+  { key: 'autoTags',       label: 'Auto tag',    hint: 'System auto: active / stuck / cold / ready ...' },
 ] as const;
 
 // Tier 2: optional, toggle qua menu, persist localStorage
 const OPTIONAL_COLUMNS = [
-  { key: 'zaloGlobalId',  label: '🌐 Global ID',         hint: 'Zalo global identity, cross-nick' },
-  { key: 'zaloUsername',  label: '@ Username',           hint: 'Zalo handle (@t_abc...)' },
-  { key: 'lastInboundAt', label: '📥 KH nhắn cuối',      hint: 'Tách riêng inbound (tin từ KH)' },
-  { key: 'lastOutboundAt',label: '📤 Sale nhắn cuối',    hint: 'Tách riêng outbound (tin từ sale)' },
-  { key: 'firstMessageAt',label: '💬 First message',     hint: 'Mở chat 1-1 lần đầu' },
-  { key: 'stageEnteredAt',label: '⏱ Stage từ',           hint: 'Vào trạng thái KH hiện tại lúc nào' },
+  { key: 'zaloGlobalId',  label: 'Global ID',         hint: 'Zalo global identity, cross-nick' },
+  { key: 'zaloUsername',  label: 'Username',           hint: 'Zalo handle (@t_abc...)' },
+  { key: 'lastInboundAt', label: 'KH nhắn cuối',      hint: 'Tách riêng inbound (tin từ KH)' },
+  { key: 'lastOutboundAt',label: 'Sale nhắn cuối',    hint: 'Tách riêng outbound (tin từ sale)' },
+  { key: 'firstMessageAt',label: 'First message',     hint: 'Mở chat 1-1 lần đầu' },
+  { key: 'stageEnteredAt',label: 'Stage từ',           hint: 'Vào trạng thái KH hiện tại lúc nào' },
   // Phase 2 — Derived cols (tính từ field có sẵn)
-  { key: 'silent',        label: '🔇 Silent',            hint: 'Số ngày KH không nhắn (KH cold tail)' },
-  { key: 'replyRate',     label: '📨 Reply rate',        hint: 'Tỷ lệ outbound/inbound — sale có chăm đủ không' },
-  { key: 'healthBars',    label: '🌡 Health bars',       hint: 'Score breakdown 4-dim mini bars (engagement/intent/fit/velocity)' },
+  { key: 'silent',        label: 'Silent',            hint: 'Số ngày KH không nhắn (KH cold tail)' },
+  { key: 'replyRate',     label: 'Reply rate',        hint: 'Tỷ lệ outbound/inbound — sale có chăm đủ không' },
+  { key: 'healthBars',    label: 'Health bars',       hint: 'Score breakdown 4-dim mini bars (engagement/intent/fit/velocity)' },
 ] as const;
 
 type OptionalColKey = (typeof OPTIONAL_COLUMNS)[number]['key'];
@@ -575,15 +583,13 @@ onMounted(async () => {
 
 .spacer { flex: 1; }
 
-.head-search {
-  padding: 8px 12px;
-  border: 1px solid var(--line); border-radius: var(--r-sm);
-  width: 280px; font-size: 13px;
-  color: var(--ink);
-  font-family: inherit;
-  transition: border-color .12s, box-shadow .12s;
+.head-search-field {
+  width: 280px;
+  height: 34px;
 }
-.head-search:focus { outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-soft); }
+.head-search-field input {
+  font-size: 13px;
+}
 
 .btn {
   display: inline-flex; align-items: center; gap: 6px;

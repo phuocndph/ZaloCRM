@@ -110,6 +110,12 @@ export interface CustomerListEntry {
   friendInviteSentCount?: number;
 }
 
+export interface DryRunInvalidLine {
+  rowIndex: number;
+  phoneRaw: string;
+  invalidReason: string | null;
+}
+
 export interface DryRunResult {
   total: number;
   valid: number;
@@ -118,6 +124,10 @@ export interface DryRunResult {
   dupCrossList: number;
   dupWithCrm: number;
   sample: any[];
+  /** Chi tiết từng dòng SĐT lỗi (cap 1000 phía BE) — để hiện danh sách + tải CSV lỗi. */
+  invalidLines?: DryRunInvalidLine[];
+  /** true nếu số dòng lỗi vượt cap → danh sách/CSV chỉ chứa 1000 dòng đầu. */
+  invalidTruncated?: boolean;
 }
 
 export type ListStatusFilter = 'active' | 'archived' | 'all';

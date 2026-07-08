@@ -2,18 +2,22 @@
 <!-- Copyright (C) 2026 Nguyễn Tiến Lộc -->
 <template>
   <div class="msg-row" :class="{ self: isSelf }">
-    <!-- Avatar bên trái cho tin nhắn đến (cả group + 1-1) — click → mở Zalo user info -->
-    <Avatar
-      v-if="!isSelf"
-      :src="senderAvatarUrl"
-      :name="message.senderName || '?'"
-      :size="32"
-      :gradient-seed="message.senderUid || message.senderName || ''"
-      class="msg-avatar msg-avatar-clickable"
-      @click="emit('sender-click')"
-    />
+    <!-- Avatar bên trái cho tin nhắn đến — Phase 1: CHỈ hiện ở tin ĐẦU cụm (Zalo-style),
+         tin sau chừa spacer để bong bóng vẫn thẳng lề. Click → mở Zalo user info. -->
+    <template v-if="!isSelf">
+      <Avatar
+        v-if="isGroupStart"
+        :src="senderAvatarUrl"
+        :name="message.senderName || '?'"
+        :size="32"
+        :gradient-seed="message.senderUid || message.senderName || ''"
+        class="msg-avatar msg-avatar-clickable"
+        @click="emit('sender-click')"
+      />
+      <div v-else class="msg-avatar-spacer" aria-hidden="true" />
+    </template>
 
-    <div class="bubble-wrapper">
+    <div class="bubble-wrapper" :class="{ 'has-reaction': reactions && reactions.length > 0 }">
       <!-- bubble-anchor: positioning parent CHỈ cho bubble + reaction. Tách khỏi
            wrapper để reaction-display absolute bottom: tính từ BUBBLE BOTTOM, không
            phải wrapper bottom (wrapper kéo dài khi có receipt chip phía dưới). -->
@@ -32,7 +36,7 @@
              4a. Hiện ở CẢ 1-1 + group (đồng nhất)
              Click → mở Zalo user info dialog. -->
         <div
-          v-if="!isSelf && (message as any).senderResolved"
+          v-if="!isSelf && isGroupStart && (message as any).senderResolved"
           class="sender-name sender-name-clickable"
           :class="{ 'is-internal': (message as any).senderResolved?.senderIsInternalNick }"
           @click="emit('sender-click')"
@@ -62,7 +66,7 @@
 
         <!-- Fallback group cũ khi senderResolved null (vd tin cũ trước migration) -->
         <div
-          v-else-if="isGroup && !isSelf"
+          v-else-if="isGroup && !isSelf && isGroupStart"
           class="sender-name sender-name-clickable"
           @click="emit('sender-click')"
         >
@@ -77,8 +81,9 @@
              (Sale CRM / Sale Native / Bot Automation / Bot AI / Bot System).
              Logic ưu tiên: M11 badge nếu có metadata.sender hoặc sentVia != 'user';
              fallback M55 .other-sale-tag cho legacy multi-sale case. -->
+        <!-- Phase 1: badge nguồn ("Sale CRM · …") CHỈ hiện 1 lần ở tin ĐẦU cụm để bớt lặp. -->
         <MessageSourceBadge
-          v-if="message.sentVia || message.metadata?.sender"
+          v-if="isGroupStart && (message.sentVia || message.metadata?.sender)"
           :message="message"
           :prev-message="prevMessage ?? null"
           @open-sequence="(sid) => emit('open-sequence', sid)"
@@ -86,7 +91,7 @@
           @audit-ai="emit('audit-ai')"
         />
         <div
-          v-else-if="isSelf && otherSaleSenderName"
+          v-else-if="isGroupStart && isSelf && otherSaleSenderName"
           class="other-sale-tag"
           :title="`Tin do ${otherSaleSenderName} gửi`"
         >
@@ -289,8 +294,8 @@
           Gửi thất bại: {{ sendFailReason }}
         </div>
 
-        <!-- Timestamp -->
-        <div class="bubble-time" :class="{ 'text-end': isSelf }">
+        <!-- Timestamp — Phase 1: chỉ hiện ở tin CUỐI cụm (1 lần/cụm), nhỏ + xám. -->
+        <div v-if="isGroupEnd" class="bubble-time" :class="{ 'text-end': isSelf }">
           {{ formatTime(message.sentAt) }}
           <!-- Bug 3 fix: badge "(đã sửa)" + tooltip hover xem nội dung gốc.
                Edit không sync Zalo — KH ở Zalo vẫn thấy bản cũ. Tooltip giúp sale tự verify. -->
@@ -378,7 +383,17 @@ const props = defineProps<{
   prevMessage?: Message | null;
   /** M55 2026-05-30 — viewer userId để phân biệt "tin mình gửi" vs "tin sale khác cùng chăm gửi" */
   currentUserId?: string | null;
+  /** Phase 1 redesign (Zalo-style grouping): tin ĐẦU cụm → hiện avatar + tên người gửi
+   *  + badge nguồn (Sale CRM…). Tin GIỮA/CUỐI cụm ẩn để bớt lặp. Mặc định true =
+   *  giữ hành vi cũ khi caller không truyền (an toàn ngược). */
+  isGroupStart?: boolean;
+  /** Tin CUỐI cụm → hiện timestamp (1 lần/cụm). Mặc định true. */
+  isGroupEnd?: boolean;
 }>();
+
+// Grouping defaults: khi prop không truyền → coi như cụm 1 tin (hiện đủ) để giữ tương thích.
+const isGroupStart = computed(() => props.isGroupStart !== false);
+const isGroupEnd = computed(() => props.isGroupEnd !== false);
 
 const emit = defineEmits<{
   contextmenu: [event: MouseEvent];
@@ -962,8 +977,10 @@ async function openFile(href: string, name?: string) {
 .msg-row {
   display: flex;
   align-items: flex-start;
-  gap: 7px;
-  margin-bottom: 5px;
+  gap: 8px;
+  /* Phase 1: khoảng cách trong-cụm do .messages gap + .msg-bubble-wrap.group-end lo,
+     KHÔNG cộng thêm margin ở đây (tránh khoảng trắng thừa — §5). */
+  margin-bottom: 0;
 }
 .msg-row.self {
   flex-direction: row-reverse;
@@ -971,13 +988,22 @@ async function openFile(href: string, name?: string) {
 .msg-avatar {
   flex-shrink: 0;
 }
+/* Spacer thay avatar cho tin giữa/cuối cụm — giữ bong bóng thẳng lề trái (§2). */
+.msg-avatar-spacer {
+  width: 32px;
+  flex-shrink: 0;
+}
 .msg-avatar-clickable { cursor: pointer; transition: transform 0.1s ease; }
 .msg-avatar-clickable:hover { transform: scale(1.06); }
 .bubble-wrapper {
-  max-width: 65%;
+  max-width: 68%;
   position: relative;
-  /* Chừa chỗ cho reaction-display overlap (12px = 50% chiều cao chip 24px) */
-  margin-bottom: 12px;
+  /* Phase 1 (§5): mặc định gần như sát; chỉ chừa chỗ overlap reaction KHI CÓ reaction. */
+  margin-bottom: 2px;
+}
+/* Chừa chỗ cho reaction-display overlap (50% chiều cao chip) — chỉ khi có reaction. */
+.bubble-wrapper.has-reaction {
+  margin-bottom: 14px;
 }
 /* bubble-anchor: positioning context cho reaction-display absolute.
    Wrap bubble + reaction để bottom: tính từ BUBBLE bottom, không phải wrapper
@@ -1012,27 +1038,27 @@ async function openFile(href: string, name?: string) {
 }
 
 .message-bubble {
-  padding: 8px 13px;
-  border-radius: 15px;
+  padding: 9px 14px;
+  border-radius: 18px;
   font-size: 14px;
-  line-height: 1.45;
+  line-height: 1.5;
   word-wrap: break-word;
   word-break: break-word;
   position: relative;
-  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.06);
+  box-shadow: 0 1px 1.5px rgba(15, 23, 42, 0.05);
 }
 /* INBOUND bubble — GIỮ NGUYÊN trắng như cũ (Anh chốt lại 2026-06-03:
    chỉ nền tím PHẦN TÊN người gửi, không nhuộm cả bubble) */
 .message-bubble.is-other {
   background: var(--smax-bg, #ffffff);
   color: var(--smax-text, #212121);
-  border-radius: 4px 15px 15px 15px;
+  border-radius: 6px 18px 18px 18px;
   border: 1px solid var(--smax-grey-200, #ebedf0);
 }
 .message-bubble.is-self {
   background: var(--smax-bubble-self, #d7ecf7);
   color: var(--smax-text, #212121);
-  border-radius: 15px 15px 4px 15px;
+  border-radius: 18px 18px 6px 18px;
 }
 
 /* INBOUND sender name row (Anh chốt 2026-06-03 - 3 case):

@@ -4,15 +4,23 @@
   <div v-if="count > 0" class="bulk-bar">
     <span class="count">{{ count }}</span>
     <span>đã chọn</span>
-    <button @click="$emit('msg-batch')">💬 Nhắn hàng loạt</button>
-    <button @click="$emit('tag')">🏷 Gắn tag</button>
-    <button @click="$emit('change-status')">📅 Đổi trạng thái</button>
-    <button @click="$emit('export')">⬇ Xuất</button>
-    <span class="clear" @click="$emit('clear')">✕ Bỏ chọn</span>
+    <button @click="$emit('msg-batch')"><MessageSquareIcon :size="14" :stroke-width="2" /> Nhắn hàng loạt</button>
+    <button @click="$emit('tag')"><TagIcon :size="14" :stroke-width="2" /> Gắn tag</button>
+    <button @click="$emit('change-status')"><CalendarClockIcon :size="14" :stroke-width="2" /> Đổi trạng thái</button>
+    <button @click="$emit('export')"><DownloadIcon :size="14" :stroke-width="2" /> Xuất</button>
+    <span class="clear" @click="$emit('clear')"><XIcon :size="13" :stroke-width="2" /> Bỏ chọn</span>
   </div>
 </template>
 
 <script setup lang="ts">
+import {
+  MessageSquare as MessageSquareIcon,
+  Tag as TagIcon,
+  CalendarClock as CalendarClockIcon,
+  Download as DownloadIcon,
+  X as XIcon,
+} from 'lucide-vue-next';
+
 defineProps<{
   count: number;
 }>();
@@ -43,6 +51,7 @@ defineEmits<{
 }
 .bulk-bar .count { font-weight: 700; }
 .bulk-bar button {
+  display: inline-flex; align-items: center; gap: 5px;
   background: rgba(255,255,255,.12);
   border: 1px solid rgba(255,255,255,.2);
   color: #fff;
@@ -54,6 +63,7 @@ defineEmits<{
 }
 .bulk-bar button:hover { background: rgba(255,255,255,.2); }
 .bulk-bar .clear {
+  display: inline-flex; align-items: center; gap: 4px;
   margin-left: auto;
   cursor: pointer;
   opacity: .8;

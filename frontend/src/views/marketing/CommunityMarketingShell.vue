@@ -41,6 +41,7 @@ const route = useRoute();
 const navItems = [
   { to: '/marketing/group-scan', label: 'Quét nhóm', icon: 'mdi-account-group-outline' },
   { to: '/marketing/lists', label: 'Tệp khách hàng', icon: 'mdi-format-list-bulleted' },
+  { to: '/marketing/campaigns', label: 'Chiến dịch', icon: 'mdi-rocket-launch-outline' },
 ];
 
 function isActive(to: string): boolean {
@@ -49,7 +50,12 @@ function isActive(to: string): boolean {
 </script>
 
 <style scoped>
-.ce-marketing-shell { display: flex; height: 100%; min-height: 0; }
+/* Chiều cao xác định theo viewport (trừ top-nav) — KHÔNG dùng height:100% vì
+   cha <v-main> của Vuetify không có chiều cao cố định (min-height + flex), khiến
+   height:100% quy về auto → shell cao theo nội dung → vùng .ce-mkt-content
+   (overflow:auto) không bao giờ tràn để cuộn → danh sách dài (vd 90 nhóm quét)
+   bị cắt, không cuộn được. Pattern chuẩn: giống report-kit.css / FriendsView. */
+.ce-marketing-shell { display: flex; height: calc(100vh - var(--smax-topnav-h, 48px)); min-height: 0; }
 .ce-mkt-sidebar {
   flex: 0 0 220px; border-right: 1px solid var(--border, #e5e4e7);
   background: #fbfbfc; display: flex; flex-direction: column; padding: 12px 8px;

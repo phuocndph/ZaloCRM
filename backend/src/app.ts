@@ -94,6 +94,8 @@ import { chatOperationsRoutes, registerChatSocketHandlers } from './modules/chat
 import { groupRoutes } from './modules/zalo/group-routes.js';
 import { groupScanRoutes } from './modules/zalo/group-scan-routes.js';
 import { startGroupScanWorker, stopGroupScanWorker } from './modules/zalo/group-scan-queue.js';
+import { outreachRoutes } from './modules/outreach/outreach-routes.js';
+import { startOutreachWorker, stopOutreachWorker, setOutreachIO } from './modules/outreach/outreach-queue.js';
 import { groupModerationRoutes } from './modules/zalo/group-moderation-routes.js';
 import { friendRoutes } from './modules/zalo/friend-routes.js';
 import { profileRoutes } from './modules/zalo/profile-routes.js';
@@ -229,6 +231,8 @@ async function bootstrap() {
 
   // Pass io to zalo pool for real-time event emission
   zaloPool.setIO(io);
+  // Outreach campaign worker emit tiến độ qua io (org room).
+  setOutreachIO(io);
 
   // Phase 1b 2026-06-07 — Socket.IO auth PHẢI đăng ký TRƯỚC mọi handler:
   // io.use() verify JWT + auto-join org room từ token (vá P0 IDOR cross-tenant WS).
@@ -335,6 +339,7 @@ async function bootstrap() {
   await app.register(friendRoutes);
   await app.register(profileRoutes);
   await app.register(credentialRoutes);
+  await app.register(outreachRoutes); // Outreach Campaign (🟢 Community)
 
   // Open-core: extension route registrations (no-op in Community edition).
   await ee?.registerExtensionRoutes?.(app);
@@ -385,6 +390,8 @@ async function bootstrap() {
     startLabelsBackgroundSync(60_000); // realtime-ish 2-way pull every 60s
     // E1 Quét group (🟢 Community) — BullMQ worker xử lý group-scan job.
     if (config.nodeEnv !== 'test') startGroupScanWorker();
+    // Outreach Campaign worker (🟢 Community) — kết bạn + nhắn tin tự động.
+    if (config.nodeEnv !== 'test') startOutreachWorker();
     startInteractionCron(); // daily silent_30d detection (02:00 VN)
     // Phase 8 — Engagement heatmap classification (02:30 VN daily)
     const { startEngagementCron } = await import('./modules/engagement/engagement-cron.js');
@@ -472,6 +479,7 @@ async function bootstrap() {
       force.unref();
       try {
         await stopGroupScanWorker().catch((e) => logger.warn('[shutdown] stopGroupScanWorker lỗi:', e));
+        await stopOutreachWorker().catch((e) => logger.warn('[shutdown] stopOutreachWorker lỗi:', e));
         await app.close().catch((e) => logger.warn('[shutdown] app.close lỗi:', e));
         logger.info('[shutdown] đóng gọn xong.');
       } finally {
