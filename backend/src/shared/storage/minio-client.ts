@@ -68,6 +68,19 @@ export function keyFromPublicUrl(url: string): string {
     }
   }
 
+  // 4) LEGACY driver local: URL tuyệt đối `{scheme}://{host}/files/{key}` sinh trước khi
+  // localPublicUrl chuyển sang tương đối `/files`. Bóc mọi origin để hàng DB cũ (chưa
+  // backfill) vẫn phân giải ra key đúng.
+  const legacy = url.match(/^https?:\/\/[^/]+(\/files\/.+)$/);
+  const relative = legacy ? legacy[1] : url.startsWith('/files/') ? url : '';
+  if (relative) {
+    try {
+      return decodeURIComponent(relative.slice('/files/'.length).split('?')[0]);
+    } catch {
+      return '';
+    }
+  }
+
   // Ngoài storage của mình → ''
   return '';
 }

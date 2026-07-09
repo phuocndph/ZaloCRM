@@ -51,6 +51,17 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/ChatView.vue'),
     meta: { requiresAuth: true, resource: 'conversation' },
   },
+  // ── PWA Mobile (/m) — chunk riêng, lazy-load, KHÔNG dính vào bundle desktop ──
+  {
+    path: '/m',
+    component: () => import('@/views/mobile/MobileShell.vue'),
+    meta: { requiresAuth: true, resource: 'conversation' },
+    children: [
+      { path: '', name: 'M.Conversations', component: () => import('@/views/mobile/MConversationsView.vue'), meta: { requiresAuth: true, resource: 'conversation' } },
+      { path: 'c/:convId', name: 'M.Chat', component: () => import('@/views/mobile/MChatView.vue'), meta: { requiresAuth: true, resource: 'conversation' } },
+      { path: 'settings', name: 'M.Settings', component: () => import('@/views/mobile/MSettingsView.vue'), meta: { requiresAuth: true } },
+    ],
+  },
   {
     path: '/contacts',
     name: 'Contacts',
@@ -277,6 +288,13 @@ router.beforeEach(async (to, _from, next) => {
   // Skip guard for setup and login pages
   if (to.name === 'Setup' || to.name === 'Login') {
     return next();
+  }
+
+  // PWA Mobile: màn hình hẹp vào /chat → đưa sang /m (thay cho <MobileChatView v-if>
+  // từng nằm trong ChatView). Chỉ chạy khi width < 768 ⇒ desktop KHÔNG bị ảnh hưởng.
+  if (to.name === 'Chat' && typeof window !== 'undefined' && window.innerWidth < 768) {
+    const convId = to.params.convId as string | undefined;
+    return next(convId ? { name: 'M.Chat', params: { convId } } : { name: 'M.Conversations' });
   }
 
   // Check auth for protected routes

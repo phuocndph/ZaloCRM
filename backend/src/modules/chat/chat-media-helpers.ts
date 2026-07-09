@@ -41,6 +41,10 @@ function sameOrigin(a: string, b: string): boolean {
  * → s3Endpoint (khi bucket nội bộ không expose public host).
  */
 export function candidateDownloadUrls(url: string): string[] {
+  // URL TƯƠNG ĐỐI (driver local mặc định, vd `/files/media/<hash>.jpg`): không fetch thẳng
+  // được — gắn origin nội bộ của chính app (localhost:<port container>) để đọc route tĩnh /files.
+  if (url.startsWith('/')) return [`http://localhost:${config.port}${url}`];
+
   const candidates = [url];
   try {
     if (sameOrigin(url, config.s3PublicUrl)) {

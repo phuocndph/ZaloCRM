@@ -18,7 +18,7 @@ import { findExistingUserConversation } from './conversation-resolver.js';
 import { captureZaloProfile } from '../contacts/zalo-profile-capture.js';
 import { onInboundMessage as onInboundScoring, onOutboundMessage as onOutboundScoring } from '../scoring/scoring-hooks.js';
 import { syncReminderFromMessage } from '../contacts/reminder-sync.js';
-import { uploadBuffer } from '../../shared/storage/minio-client.js';
+import { uploadBuffer, keyFromPublicUrl } from '../../shared/storage/minio-client.js';
 import { compressImage } from '../media/media-service.js';
 import { config } from '../../config/index.js';
 // Open-core: customer-reply care-session reaction moved to extension engine
@@ -109,13 +109,19 @@ function safeParseJsonObject(value: string): Record<string, unknown> | null {
   }
 }
 
+/**
+ * URL đã thuộc storage của mình? Hỏi thẳng tầng storage (keyFromPublicUrl trả '' khi URL
+ * nằm ngoài) → đúng cho MỌI driver + mọi định dạng (path-style MinIO, R2 public domain,
+ * local absolute legacy, local tương đối). Trước đây chỉ so với format MinIO nên URL của
+ * driver local luôn lọt qua → tin đã mirror bị tải + mirror lại thừa một vòng.
+ */
 function isLocalStorageUrl(value: string): boolean {
-  return value.startsWith(`${config.s3PublicUrl}/${config.s3Bucket}/`);
+  return keyFromPublicUrl(value) !== '';
 }
 
 export function isMirrorableUrl(value: unknown): value is string {
   return typeof value === 'string' &&
-    /^https?:\/\//i.test(value) &&
+    /^https?:\/\//i.test(value) && // URL tương đối (/files/...) = của mình → không mirror
     !isLocalStorageUrl(value);
 }
 

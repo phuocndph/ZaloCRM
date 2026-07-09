@@ -19,6 +19,8 @@ import { applyContactAggregateFromMessage, applyContactInteraction, applyFriendA
 import { markExpected as markReactionEchoExpected } from './reaction-echo-cache.js';
 import { getUserFullName } from './chat-helpers.js';
 import { downloadMediaToTemp, extractZaloMsgId } from './chat-media-helpers.js';
+import { getSocketAuth } from '../../shared/realtime/socket-auth.js';
+import { setViewing, clearViewing } from '../push/presence.js';
 
 interface ResolvedMessageRefs {
   messageId: string;
@@ -815,6 +817,19 @@ export function registerChatSocketHandlers(io: Server): void {
       } catch (err) {
         logger.error('[socket] chat:typing error:', err);
       }
+    });
+
+    // PWA Mobile — user đang MỞ hội thoại nào (để không bắn Web Push cho chính họ).
+    // userId lấy TỪ TOKEN đã verify (socket.data.authCtx), KHÔNG nhận từ client → chống giả mạo.
+    socket.on('presence:viewing', (data: { conversationId: string | null }) => {
+      const ctx = getSocketAuth(socket);
+      if (!ctx) return;
+      void setViewing(ctx.userId, data?.conversationId ?? null);
+    });
+
+    socket.on('disconnect', () => {
+      const ctx = getSocketAuth(socket);
+      if (ctx) void clearViewing(ctx.userId);
     });
   });
 }

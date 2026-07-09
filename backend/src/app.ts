@@ -98,6 +98,7 @@ import { outreachRoutes } from './modules/outreach/outreach-routes.js';
 import { startOutreachWorker, stopOutreachWorker, setOutreachIO } from './modules/outreach/outreach-queue.js';
 import { followupRoutes } from './modules/followup/followup-routes.js';
 import { startFollowupWorker, stopFollowupWorker, setFollowupIO } from './modules/followup/followup-queue.js';
+import { pushRoutes } from './modules/push/push-routes.js';
 import { groupModerationRoutes } from './modules/zalo/group-moderation-routes.js';
 import { friendRoutes } from './modules/zalo/friend-routes.js';
 import { profileRoutes } from './modules/zalo/profile-routes.js';
@@ -345,6 +346,7 @@ async function bootstrap() {
   await app.register(credentialRoutes);
   await app.register(outreachRoutes); // Outreach Campaign (🟢 Community)
   await app.register(followupRoutes); // Follow-up Workflow (🟢 Community)
+  await app.register(pushRoutes); // Web Push cho PWA Mobile (VAPID)
 
   // Open-core: extension route registrations (no-op in Community edition).
   await ee?.registerExtensionRoutes?.(app);

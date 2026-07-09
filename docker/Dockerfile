@@ -48,6 +48,12 @@ RUN mkdir -p /var/lib/zalo-crm/files
 EXPOSE 3000
 ENTRYPOINT ["/sbin/tini", "--"]
 # 2026-06-02: Bỏ "prisma db push --accept-data-loss" — pattern này DROP cột mới
-# (vd scheduled_at) khi schema image cũ hơn DB. Migrations chạy qua "prisma migrate deploy"
-# ở deploy step thay vì auto khi container start.
-CMD ["node", "dist/app.js"]
+# (vd scheduled_at) khi schema image cũ hơn DB.
+#
+# 2026-07-09: Migrate lại lúc khởi động, nhưng bằng "prisma migrate deploy" — KHÁC HẲN
+# "db push": chỉ áp các migration CÒN THIẾU theo đúng thứ tự, KHÔNG drop cột/bảng, KHÔNG
+# reset, idempotent. Lý do: quên bước migrate ở deploy làm API bảng mới trả 500.
+# Migrate lỗi → container KHÔNG start (fail fast), tránh chạy app trên schema sai.
+# Tắt khi cần (vd nhiều bản app song song, chỉ 1 bản chạy migrate): SKIP_MIGRATIONS=1
+# `exec` để node thay shell → tini gửi SIGTERM thẳng tới node, shutdown vẫn gọn.
+CMD ["sh", "-c", "if [ \"$SKIP_MIGRATIONS\" = \"1\" ]; then echo '[entrypoint] SKIP_MIGRATIONS=1 -> bo qua migrate'; else npx prisma migrate deploy; fi && exec node dist/app.js"]

@@ -20,6 +20,8 @@ import { readFileSync } from 'node:fs';
 import { prisma } from '../../shared/database/prisma-client.js';
 import { logger } from '../../shared/utils/logger.js';
 import { resolvePushTargetUserIds } from './push-targets.js';
+import { sendWebPushToUsers } from './web-push-service.js';
+import { getUsersViewing } from './presence.js';
 
 // firebase-admin chỉ import động khi thật sự có creds (tránh khởi tạo thừa ở chế độ NO-OP).
 type FirebaseMessaging = {
@@ -202,10 +204,26 @@ export async function notifyNewInboundMessage(args: NotifyNewInboundArgs): Promi
     const targets = await resolvePushTargetUserIds(zaloAccountId, orgId, args.senderUserId ?? null);
     if (targets.length === 0) return;
 
+    // Nick main + không phải owner → body đã che; owner (hoặc nick thường) → body thật.
+    const bodyFor = (userId: string) => (isPrivate && userId !== ownerUserId ? redactedBody : realBody);
+
+    // 1) FCM/APNs — app native. GIỮ NGUYÊN hành vi cũ: không suppress, không đổi gì.
     for (const userId of targets) {
-      // Nick main + không phải owner → body đã che; owner (hoặc nick thường) → body thật.
-      const body = isPrivate && userId !== ownerUserId ? redactedBody : realBody;
-      await sendPushToUser(userId, { title, body, data });
+      await sendPushToUser(userId, { title, body: bodyFor(userId), data });
+    }
+
+    // 2) Web Push — PWA Mobile (thêm mới, chạy song song). NO-OP nếu thiếu VAPID env.
+    //    Bỏ qua ai đang MỞ đúng hội thoại này (yêu cầu PRD). Lỗi ở đây được nuốt gọn:
+    //    push hỏng KHÔNG được ảnh hưởng pipeline nhận/lưu/emit tin.
+    try {
+      const viewing = await getUsersViewing(targets, conversationId);
+      await sendWebPushToUsers(
+        targets,
+        (userId) => ({ title, body: bodyFor(userId), conversationId, sentAt: new Date().toISOString() }),
+        viewing,
+      );
+    } catch (err) {
+      logger.warn('[web-push] fan-out lỗi:', (err as Error).message);
     }
   } catch (err) {
     logger.warn('[push] notifyNewInboundMessage failed:', (err as Error).message);

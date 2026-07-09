@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="light only" />
+    <title>Mất kết nối — ZaloCRM</title>
+    <style>
+      body {
+        margin: 0; min-height: 100dvh;
+        display: flex; align-items: center; justify-content: center;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        background: #f5f6fa; color: #212121; text-align: center; padding: 24px;
+      }
+      .box { max-width: 320px; }
+      .dot { width: 56px; height: 56px; margin: 0 auto 18px; border-radius: 50%;
+             background: #ffe6e0; display: flex; align-items: center; justify-content: center; font-size: 26px; }
+      h1 { font-size: 19px; margin: 0 0 8px; }
+      p { font-size: 14px; line-height: 1.5; color: #5a6478; margin: 0 0 20px; }
+      button { background: #1786be; color: #fff; border: 0; border-radius: 10px;
+               padding: 12px 22px; font-size: 15px; font-weight: 600; cursor: pointer; }
+    </style>
+  </head>
+  <body>
+    <div class="box">
+      <div class="dot">📡</div>
+      <h1>Mất kết nối mạng</h1>
+      <p>Không tải được nội dung. Kiểm tra Wi-Fi hoặc dữ liệu di động rồi thử lại.</p>
+      <button onclick="location.reload()">Thử lại</button>
+    </div>
+    <script>
+      // Có mạng trở lại → tự tải lại, không cần bấm.
+      window.addEventListener('online', () => location.reload());
+    </script>
+  </body>
+</html>

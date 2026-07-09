@@ -73,18 +73,40 @@ export async function listMediaUploaders(
   return data.uploaders as Array<{ id: string; name: string; count: number }>;
 }
 
-/** Tải tệp lên kho (multipart). */
-export async function uploadMedia(
+/** Số tệp tối đa mỗi request — PHẢI khớp `limits.files` của @fastify/multipart
+ *  trong backend/src/app.ts. Vượt ngưỡng, busboy huỷ request ("reach files limit"). */
+const MAX_FILES_PER_REQUEST = 10;
+
+function buildUploadForm(
   files: File[],
-  opts: { visibility?: 'private' | 'public'; folderId?: string; tagIds?: string[] } = {},
-): Promise<{ assets: Array<{ id: string; name: string; deduped: boolean }> }> {
+  opts: { visibility?: 'private' | 'public'; folderId?: string; tagIds?: string[] },
+): FormData {
   const form = new FormData();
   for (const f of files) form.append('files', f);
   if (opts.visibility) form.append('visibility', opts.visibility);
   if (opts.folderId) form.append('folderId', opts.folderId);
   if (opts.tagIds) form.append('tagIds', JSON.stringify(opts.tagIds));
-  const { data } = await api.post('/media/upload', form);
-  return data;
+  return form;
+}
+
+/** Tải tệp lên kho (multipart). Chọn nhiều hơn MAX_FILES_PER_REQUEST → tự chia lô
+ *  và gửi tuần tự, gộp kết quả (trước đây nhồi hết vào 1 request → lỗi 500). */
+export async function uploadMedia(
+  files: File[],
+  opts: { visibility?: 'private' | 'public'; folderId?: string; tagIds?: string[] } = {},
+): Promise<{ assets: Array<{ id: string; name: string; deduped: boolean }> }> {
+  // ≤ giới hạn (kể cả rỗng) → giữ nguyên hành vi cũ, 1 request.
+  if (files.length <= MAX_FILES_PER_REQUEST) {
+    const { data } = await api.post('/media/upload', buildUploadForm(files, opts));
+    return data;
+  }
+  const assets: Array<{ id: string; name: string; deduped: boolean }> = [];
+  for (let i = 0; i < files.length; i += MAX_FILES_PER_REQUEST) {
+    const chunk = files.slice(i, i + MAX_FILES_PER_REQUEST);
+    const { data } = await api.post('/media/upload', buildUploadForm(chunk, opts));
+    assets.push(...((data?.assets ?? []) as typeof assets));
+  }
+  return { assets };
 }
 
 /** Lưu 1 tin nhắn (ảnh/file khách hoặc mình gửi) vào kho. */

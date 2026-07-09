@@ -1,8 +1,9 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2026 Nguyễn Tiến Lộc -->
 <template>
-  <MobileChatView v-if="isMobile" />
-  <div v-else class="smax-chat-grid">
+  <!-- Mobile đã tách sang route riêng /m (router guard chuyển hướng khi width < 768).
+       ChatView giờ CHỈ phục vụ desktop — không còn nhánh mobile ở đây. -->
+  <div class="smax-chat-grid">
     <!-- COL 1: NEW Filter Sidebar (Phase 6+ Inbox Triage) -->
     <ConversationFilterSidebar
       :filters="inboxFilters"
@@ -158,7 +159,6 @@ import { useChatOperations } from '@/composables/use-chat-operations';
 import { useZaloAccounts } from '@/composables/use-zalo-accounts';
 import { useWorkScope } from '@/composables/use-work-scope';
 import { shouldAdoptNickScope } from '@/composables/work-scope-logic';
-import MobileChatView from '@/views/MobileChatView.vue';
 import { useMobile } from '@/composables/use-mobile';
 
 const { isMobile } = useMobile();

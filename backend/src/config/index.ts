@@ -58,10 +58,17 @@ export const config = {
     return v === 'r2' ? 'r2' : 'local';
   })() as 'local' | 'r2',
 
-  /* Public base URL cho driver local — nơi route tĩnh /files phục vụ UPLOAD_DIR.
-   * Mặc định bám APP_URL (Zalo CDN + trình duyệt tải ảnh qua đây). Đặt riêng nếu
-   * file phục vụ qua host khác (vd Cloudflare Tunnel). KHÔNG có dấu / ở cuối. */
-  localPublicUrl: (envValue('LOCAL_PUBLIC_URL') || `${envValue('APP_URL') || 'http://localhost:3000'}/files`).replace(/\/+$/, ''),
+  /* Public base cho driver local — nơi route tĩnh /files phục vụ UPLOAD_DIR.
+   *
+   * MẶC ĐỊNH `/files` = ĐƯỜNG DẪN TƯƠNG ĐỐI (không hostname). Lý do: publicUrl bị LƯU
+   * VÀO DB (messages.content, media_blobs.public_url). Nhúng hostname vào đó khiến data
+   * dính chặt 1 môi trường — deploy lên VPS/đổi domain là ảnh chết ("localhost:3080"
+   * trên máy khách). URL tương đối tự phân giải theo origin đang mở → chạy đúng ở mọi
+   * domain, mọi cổng, không cần backfill khi đổi tên miền.
+   *
+   * Chỉ đặt LOCAL_PUBLIC_URL (absolute) khi file phục vụ qua HOST KHÁC với app (vd CDN /
+   * Cloudflare Tunnel riêng). KHÔNG có dấu / ở cuối. */
+  localPublicUrl: (envValue('LOCAL_PUBLIC_URL') || '/files').replace(/\/+$/, ''),
 
   /* --- S3 / R2 storage (dùng khi STORAGE_DRIVER=r2) ---
    * R2: s3Endpoint = https://<account>.r2.cloudflarestorage.com,

@@ -305,6 +305,8 @@ model User {
   refreshTokens             RefreshToken[]
   // Mobile App 2026-06-15 — thiết bị nhận push (FCM/APNs)
   devices                   Device[]
+  // PWA Mobile — subscription Web Push (VAPID), song song với devices ở trên.
+  pushSubscriptions         PushSubscription[]
   // Phase FB Lead Ads "Form" 2026-06-09 — round-robin chia lead cho sale.
   customerListAssignments   CustomerListSaleAssignment[]
   // Phase Media Library 2026-06-11 — kho phương tiện (owner + người tạo).
@@ -4367,4 +4369,32 @@ model FollowupLog {
   @@index([workflowId, eventType])
   @@index([contactId, createdAt])
   @@map("followup_logs")
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Web Push (PWA Mobile) — chuẩn W3C Push API + VAPID.
+//
+// Vì sao KHÔNG dùng lại model `Device`: Device chỉ lưu `fcmToken` (FCM/APNs cho app
+// native). Web Push cần bộ 3 endpoint + p256dh + auth — không có chỗ chứa.
+// Hai transport chạy SONG SONG, độc lập: thiếu VAPID → web push NO-OP, FCM vẫn chạy.
+// ══════════════════════════════════════════════════════════════════════════
+model PushSubscription {
+  id         String    @id @default(uuid())
+  userId     String    @map("user_id")
+  orgId      String    @map("org_id") // scope tenant, đồng bộ với mọi bảng khác
+  endpoint   String    @unique // URL push service của trình duyệt (định danh subscription)
+  p256dh     String // khoá công khai của client (mã hoá payload)
+  auth       String // secret xác thực của client
+  userAgent  String?   @map("user_agent")
+  deviceName String?   @map("device_name")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+  lastSeenAt DateTime  @default(now()) @map("last_seen_at")
+  revokedAt  DateTime? @map("revoked_at") // subscription chết (404/410) → đánh dấu, không xoá cứng
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+  @@index([orgId])
+  @@map("push_subscriptions")
 }

@@ -105,7 +105,8 @@ export function buildSendFileName(
   // suy đuôi từ url-basename (vd .../<hash>.pdf)
   let ext = '';
   try {
-    const urlName = decodeURIComponent(new URL(blob.publicUrl).pathname.split('/').pop() || '');
+    // base giả → nhận được CẢ url tuyệt đối lẫn tương đối ('/files/media/<hash>.pdf').
+    const urlName = decodeURIComponent(new URL(blob.publicUrl, 'http://local').pathname.split('/').pop() || '');
     const m = urlName.match(/\.[A-Za-z0-9]{2,5}$/);
     if (m) ext = m[0];
   } catch { /* ignore */ }
@@ -503,6 +504,15 @@ export async function mediaRoutes(app: FastifyInstance) {
         return { assets: created };
       } catch (err: any) {
         logger.error('[media] upload error:', err);
+        // @fastify/multipart huỷ request khi vượt limits (app.ts: files=10, fileSize=500MB).
+        // Trước đây trả 500 + message tiếng Anh → UI chỉ hiện "Máy chủ lỗi", user không hiểu.
+        const msg = String(err?.message ?? '');
+        if (/reach files limit/i.test(msg)) {
+          return reply.status(413).send({ error: 'Chỉ tải tối đa 10 tệp mỗi lần. Vui lòng chọn ít tệp hơn.' });
+        }
+        if (/reach (file size|fields) limit|request file too large/i.test(msg)) {
+          return reply.status(413).send({ error: 'Tệp quá lớn so với giới hạn cho phép.' });
+        }
         return reply.status(500).send({ error: err?.message ?? 'upload failed' });
       }
     },

@@ -19,9 +19,24 @@ app.use(router);
 app.use(vuetify);
 app.mount('#app');
 
-// TODO: Re-enable PWA when vite-plugin-pwa supports vite 8
-// if ('serviceWorker' in navigator) {
-//   import('virtual:pwa-register').then(({ registerSW }) => {
-//     registerSW({ immediate: true });
-//   });
-// }
+// ── PWA ─────────────────────────────────────────────────────────────────────
+// (Comment "chờ vite-plugin-pwa hỗ trợ vite 8" đã hết hiệu lực: 1.3.0 peer ^8.0.0.)
+// SW chỉ đăng ký ở bản build (devOptions.enabled=false) và cần secure context
+// (https hoặc localhost) — nơi khác trình duyệt tự bỏ qua, không lỗi.
+if ('serviceWorker' in navigator && import.meta.env.PROD) {
+  import('virtual:pwa-register')
+    .then(({ registerSW }) => registerSW({ immediate: true }))
+    .catch(() => { /* không có SW cũng không sao — app vẫn chạy */ });
+}
+
+// Sau mỗi lần deploy, các chunk cũ bị xoá khỏi server; tab đang mở vẫn giữ tên chunk
+// cũ → dynamic import trả về index.html (text/html) → route chết IM LẶNG.
+// Bắt sự kiện của Vite và reload đúng MỘT lần (cờ sessionStorage chống lặp vô hạn).
+const RELOAD_FLAG = 'chunk-reload-once';
+window.addEventListener('vite:preloadError', (e) => {
+  e.preventDefault();
+  if (sessionStorage.getItem(RELOAD_FLAG)) return;
+  sessionStorage.setItem(RELOAD_FLAG, '1');
+  window.location.reload();
+});
+window.addEventListener('load', () => sessionStorage.removeItem(RELOAD_FLAG));
