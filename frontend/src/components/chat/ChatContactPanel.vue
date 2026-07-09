@@ -502,8 +502,16 @@
 
     <!-- ════════ TAB FOLLOW-UP — Luồng Mục Tiêu M9 wire 2026-06-02 ════════ -->
     <div v-if="mainTab === 'followup'" class="main-tab-body main-tab-body--no-padding">
-      <AutomationCardList
+      <!-- Follow-up Workflow (CE) — engine chăm sóc/bám đuổi nhiều bước. -->
+      <FollowupPanel
         v-if="contact?.id"
+        :contact-id="contact.id"
+        :zalo-account-id="props.activeZaloAccountId || null"
+      />
+      <!-- Luồng Sequence là tính năng bản Enterprise — ở Community các API Sequence
+           không tồn tại (modal báo "Lỗi tải danh sách Sequence"). Chỉ hiện khi là EE. -->
+      <AutomationCardList
+        v-if="contact?.id && isExtension"
         ref="automationCardListRef"
         :contact-id="contact.id"
         :nick-id="props.activeZaloAccountId || null"
@@ -519,7 +527,7 @@
 
     <!-- Modal "+ Gắn thêm luồng" — mount qua Teleport để overlay full viewport -->
     <AddFlowModal
-      v-if="showAddFlowModal && contact"
+      v-if="showAddFlowModal && contact && isExtension"
       :contact-id="contact.id"
       :contact-name="contact.fullName || contact.crmName || ''"
       :nick-id="props.activeZaloAccountId || ''"
@@ -589,6 +597,8 @@ import ChatAppointments from './ChatAppointments.vue';
 import AiSummaryCard from '@/components/ai/ai-summary-card.vue';
 import AiSentimentBadge from '@/components/ai/ai-sentiment-badge.vue';
 import AutomationCardList from './AutomationCardList.vue';
+import FollowupPanel from './FollowupPanel.vue';
+import { isExtension } from '@ee/edition';
 import AddFlowModal from './AddFlowModal.vue';
 import MediaTabPanel from './MediaTabPanel.vue';
 import Avatar from '@/components/ui/Avatar.vue';

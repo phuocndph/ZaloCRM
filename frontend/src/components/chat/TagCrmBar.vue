@@ -358,21 +358,11 @@ function goToSettings() {
   display: flex;
   align-items: center;
   gap: 6px;
-  /* Phase 1 (§9): giữ 1 hàng gọn, tag thừa cuộn ngang (không vỡ nhiều dòng gây rối).
-     Bar-label + nút "+ Thêm tag" không co lại nhờ flex-shrink:0. */
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  overflow-y: hidden;
-  padding: 5px 8px;
+  flex-wrap: wrap;
+  padding: 6px 8px;
   font-size: 12px;
   min-height: 32px;
-  scrollbar-width: thin;
-  scrollbar-color: var(--smax-grey-300, #d4d8de) transparent;
 }
-.tag-crm-bar::-webkit-scrollbar { height: 5px; }
-.tag-crm-bar::-webkit-scrollbar-thumb { background: var(--smax-grey-300, #d4d8de); border-radius: 3px; }
-.tag-crm-bar::-webkit-scrollbar-track { background: transparent; }
-.tag-crm-bar > * { flex-shrink: 0; }
 .bar-label { font-size: 14px; flex-shrink: 0; }
 
 .tag-divider {

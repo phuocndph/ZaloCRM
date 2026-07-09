@@ -2,8 +2,7 @@
 <!-- Copyright (C) 2026 Nguyễn Tiến Lộc -->
 <template>
   <div class="msg-row" :class="{ self: isSelf }">
-    <!-- Avatar bên trái cho tin nhắn đến — Phase 1: CHỈ hiện ở tin ĐẦU cụm (Zalo-style),
-         tin sau chừa spacer để bong bóng vẫn thẳng lề. Click → mở Zalo user info. -->
+    <!-- Avatar tin đến — CHỈ ở tin đầu cụm (Zalo-style); tin sau chừa spacer để thẳng lề. -->
     <template v-if="!isSelf">
       <Avatar
         v-if="isGroupStart"
@@ -25,7 +24,7 @@
       <!-- Bubble -->
       <div
         class="message-bubble"
-        :class="{ 'is-self': isSelf, 'is-other': !isSelf }"
+        :class="{ 'is-self': isSelf, 'is-other': !isSelf, 'is-bare': isBareMedia }"
         @contextmenu.prevent="emit('contextmenu', $event)"
       >
         <!-- Tên người gửi cho tin INBOUND — Anh chốt 2026-06-03 (4 case):
@@ -81,7 +80,7 @@
              (Sale CRM / Sale Native / Bot Automation / Bot AI / Bot System).
              Logic ưu tiên: M11 badge nếu có metadata.sender hoặc sentVia != 'user';
              fallback M55 .other-sale-tag cho legacy multi-sale case. -->
-        <!-- Phase 1: badge nguồn ("Sale CRM · …") CHỈ hiện 1 lần ở tin ĐẦU cụm để bớt lặp. -->
+        <!-- Nhãn nguồn ("Sale CRM · …") CHỈ hiện 1 lần ở tin đầu cụm — hết lặp. -->
         <MessageSourceBadge
           v-if="isGroupStart && (message.sentVia || message.metadata?.sender)"
           :message="message"
@@ -294,7 +293,7 @@
           Gửi thất bại: {{ sendFailReason }}
         </div>
 
-        <!-- Timestamp — Phase 1: chỉ hiện ở tin CUỐI cụm (1 lần/cụm), nhỏ + xám. -->
+        <!-- Timestamp — chỉ hiện ở tin CUỐI cụm (1 lần), nhỏ + xám. -->
         <div v-if="isGroupEnd" class="bubble-time" :class="{ 'text-end': isSelf }">
           {{ formatTime(message.sentAt) }}
           <!-- Bug 3 fix: badge "(đã sửa)" + tooltip hover xem nội dung gốc.
@@ -383,15 +382,13 @@ const props = defineProps<{
   prevMessage?: Message | null;
   /** M55 2026-05-30 — viewer userId để phân biệt "tin mình gửi" vs "tin sale khác cùng chăm gửi" */
   currentUserId?: string | null;
-  /** Phase 1 redesign (Zalo-style grouping): tin ĐẦU cụm → hiện avatar + tên người gửi
-   *  + badge nguồn (Sale CRM…). Tin GIỮA/CUỐI cụm ẩn để bớt lặp. Mặc định true =
-   *  giữ hành vi cũ khi caller không truyền (an toàn ngược). */
+  /** Gom cụm Zalo-style: tin ĐẦU cụm → hiện avatar + tên + nhãn nguồn "Sale CRM…".
+   *  Tin giữa/cuối cụm ẩn đi để hết lặp. Mặc định true (an toàn ngược). */
   isGroupStart?: boolean;
-  /** Tin CUỐI cụm → hiện timestamp (1 lần/cụm). Mặc định true. */
+  /** Tin CUỐI cụm → hiện timestamp 1 lần. Mặc định true. */
   isGroupEnd?: boolean;
 }>();
 
-// Grouping defaults: khi prop không truyền → coi như cụm 1 tin (hiện đủ) để giữ tương thích.
 const isGroupStart = computed(() => props.isGroupStart !== false);
 const isGroupEnd = computed(() => props.isGroupEnd !== false);
 
@@ -718,6 +715,19 @@ const messageCaption = computed<string>(() => {
 
 const formattedCaption = computed(() => highlightText(messageCaption.value));
 
+// Phase 2: tin CHỈ có media (ảnh/sticker/video/gif) đứng một mình → bong bóng "trần"
+// (không nền/viền/padding) để ảnh render sạch, không bị bọc khung màu. Có caption /
+// reply / là reminder / file / special → giữ khung bình thường.
+const isBareMedia = computed(() => {
+  const m = props.message;
+  if (m.isDeleted || props.reply || formattedCaption.value) return false;
+  if (isReminderMessage(m)) return false;
+  const ct = m.contentType;
+  if (ct === 'sticker' || ct === 'video' || ct === 'gif') return true;
+  if (getImageUrl(m) && !getFileInfo(m) && !isSpecialType(ct) && !isCallMessage.value) return true;
+  return false;
+});
+
 // Bug B 2026-06-22: tin gửi thất bại (metadata.sendStatus='failed') → hiện lý do.
 const sendFailReason = computed<string | null>(() => {
   const m = props.message.metadata as { sendStatus?: string; failReason?: string } | null | undefined;
@@ -978,8 +988,7 @@ async function openFile(href: string, name?: string) {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  /* Phase 1: khoảng cách trong-cụm do .messages gap + .msg-bubble-wrap.group-end lo,
-     KHÔNG cộng thêm margin ở đây (tránh khoảng trắng thừa — §5). */
+  /* Khoảng cách trong/giữa cụm do .messages gap + .group-end lo (tránh trắng thừa). */
   margin-bottom: 0;
 }
 .msg-row.self {
@@ -988,7 +997,7 @@ async function openFile(href: string, name?: string) {
 .msg-avatar {
   flex-shrink: 0;
 }
-/* Spacer thay avatar cho tin giữa/cuối cụm — giữ bong bóng thẳng lề trái (§2). */
+/* Spacer thay avatar cho tin giữa/cuối cụm — giữ bong bóng thẳng lề. */
 .msg-avatar-spacer {
   width: 32px;
   flex-shrink: 0;
@@ -998,10 +1007,9 @@ async function openFile(href: string, name?: string) {
 .bubble-wrapper {
   max-width: 68%;
   position: relative;
-  /* Phase 1 (§5): mặc định gần như sát; chỉ chừa chỗ overlap reaction KHI CÓ reaction. */
+  /* Mặc định sát; chỉ chừa chỗ overlap reaction KHI CÓ reaction. */
   margin-bottom: 2px;
 }
-/* Chừa chỗ cho reaction-display overlap (50% chiều cao chip) — chỉ khi có reaction. */
 .bubble-wrapper.has-reaction {
   margin-bottom: 14px;
 }
@@ -1049,17 +1057,77 @@ async function openFile(href: string, name?: string) {
 }
 /* INBOUND bubble — GIỮ NGUYÊN trắng như cũ (Anh chốt lại 2026-06-03:
    chỉ nền tím PHẦN TÊN người gửi, không nhuộm cả bubble) */
+/* Phase 2 (Messenger-style): tin NHẬN trắng, KHÔNG viền, đổ bóng nhẹ. */
 .message-bubble.is-other {
   background: var(--smax-bg, #ffffff);
   color: var(--smax-text, #212121);
   border-radius: 6px 18px 18px 18px;
-  border: 1px solid var(--smax-grey-200, #ebedf0);
+  border: none;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
 }
+/* Tin GỬI: xanh thương hiệu đậm, chữ trắng. */
 .message-bubble.is-self {
-  background: var(--smax-bubble-self, #d7ecf7);
-  color: var(--smax-text, #212121);
+  background: var(--smax-primary, #1786be);
+  color: #ffffff;
   border-radius: 18px 18px 6px 18px;
+  box-shadow: 0 1px 2px rgba(23, 134, 190, 0.25);
 }
+
+/* ── Phase 2: phần tử con TRONG tin gửi (nền xanh) phải sang tông trắng ──
+   Tránh chữ xanh/đậm trên nền xanh bị "vô hình". */
+.message-bubble.is-self .bubble-time { color: rgba(255, 255, 255, 0.8); }
+.message-bubble.is-self .edited-badge { color: rgba(255, 255, 255, 0.7); }
+.message-bubble.is-self .media-caption { color: #ffffff; }
+.message-bubble.is-self :deep(.link),
+.message-bubble.is-self :deep(.phone-link) {
+  color: #ffffff;
+  border-bottom-color: rgba(255, 255, 255, 0.6);
+}
+.message-bubble.is-self :deep(.mention) {
+  background: rgba(255, 255, 255, 0.22);
+  color: #ffffff;
+}
+/* Thẻ trả lời trong tin gửi — nền/viền/chữ tông trắng mờ. */
+.message-bubble.is-self .reply-card {
+  background: rgba(255, 255, 255, 0.16);
+  border-left-color: rgba(255, 255, 255, 0.65);
+}
+.message-bubble.is-self .reply-header { color: rgba(255, 255, 255, 0.95); }
+.message-bubble.is-self .reply-text { color: #ffffff; opacity: 0.9; }
+/* Thẻ file trong tin gửi. */
+.message-bubble.is-self .file-card {
+  background: rgba(255, 255, 255, 0.15);
+  border-color: rgba(255, 255, 255, 0.28);
+}
+.message-bubble.is-self .file-card :deep(.v-icon),
+.message-bubble.is-self .file-card .text-body-2,
+.message-bubble.is-self .file-card .text-caption { color: #ffffff !important; }
+
+/* Phase 2: bong bóng "trần" cho media đứng một mình — ảnh/sticker/video render sạch.
+   Đặt SAU is-self/is-other để thắng cascade. */
+.message-bubble.is-bare {
+  background: transparent;
+  box-shadow: none;
+  border: none;
+  padding: 0;
+}
+/* Media trần không có nền màu → timestamp phải xám (không phải trắng) để đọc được. */
+.message-bubble.is-bare .bubble-time { color: var(--smax-grey-700, #5a6478); }
+
+/* Phase 2: nhãn "Sale CRM · …" (user_crm) ẨN mặc định, CHỈ hiện khi RÊ CHUỘT vào
+   bong bóng. Absolute nổi phía trên → KHÔNG đẩy layout. Chỉ áp cho tin gửi (self). */
+.message-bubble :deep(.source-badge--user_crm) {
+  position: absolute;
+  top: -17px;
+  right: 2px;
+  margin: 0;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+  z-index: 3;
+  white-space: nowrap;
+}
+.message-bubble:hover :deep(.source-badge--user_crm) { opacity: 1; }
 
 /* INBOUND sender name row (Anh chốt 2026-06-03 - 3 case):
    Pill tím pastel BAO QUANH TÊN người gửi để phân biệt với OUTBOUND.
@@ -1181,9 +1249,9 @@ async function openFile(href: string, name?: string) {
 }
 .reply-card {
   padding: 6px 10px;
-  border-radius: 7px;
-  background: rgba(33, 150, 243, 0.08);
-  border-left: 3px solid var(--smax-primary, #2962ff);
+  border-radius: 8px;
+  background: rgba(33, 150, 243, 0.06);
+  border-left: 2px solid var(--smax-primary, #2962ff);
   margin-bottom: 6px;
   transition: background-color 0.15s ease;
 }

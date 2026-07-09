@@ -9,6 +9,7 @@ import { prisma } from '../../shared/database/prisma-client.js';
 import { authMiddleware } from '../auth/auth-middleware.js';
 import { logger } from '../../shared/utils/logger.js';
 import { startCampaign, pauseCampaign, resumeCampaign, cancelCampaign, restartCampaign } from './outreach-queue.js';
+import { evaluateAudience, type FriendRelation } from './outreach-audience.js';
 
 export async function outreachRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', authMiddleware);
@@ -25,6 +26,8 @@ export async function outreachRoutes(app: FastifyInstance): Promise<void> {
     addDelayMinMs?: number; addDelayMaxMs?: number; maxAddPerDay?: number;
     enableAutoMessage?: boolean; waitAfterAddMinMs?: number; waitAfterAddMaxMs?: number;
     msgDelayMinMs?: number; msgDelayMaxMs?: number; maxMsgPerDay?: number;
+    filterRequireTags?: string[]; filterExcludeTags?: string[];
+    filterSkipChattedDays?: number | null; filterFriendRelation?: string;
     templates?: Array<{ title?: string; content: string; weight?: number; imageAssetIds?: string[] }>;
   } }>('/api/v1/outreach/campaigns', async (request, reply) => {
     const user = request.user!;
@@ -68,6 +71,11 @@ export async function outreachRoutes(app: FastifyInstance): Promise<void> {
         enableAutoMessage: b.enableAutoMessage ?? true,
         waitAfterAddMinMs: b.waitAfterAddMinMs ?? 60000, waitAfterAddMaxMs: b.waitAfterAddMaxMs ?? 120000,
         msgDelayMinMs: b.msgDelayMinMs ?? 3000, msgDelayMaxMs: b.msgDelayMaxMs ?? 8000, maxMsgPerDay: b.maxMsgPerDay ?? 500,
+        // Điều kiện gửi (rỗng/'any' = không lọc).
+        filterRequireTags: Array.isArray(b.filterRequireTags) ? b.filterRequireTags.filter(Boolean) : [],
+        filterExcludeTags: Array.isArray(b.filterExcludeTags) ? b.filterExcludeTags.filter(Boolean) : [],
+        filterSkipChattedDays: b.filterSkipChattedDays != null && b.filterSkipChattedDays > 0 ? Math.floor(b.filterSkipChattedDays) : null,
+        filterFriendRelation: ['friend_only', 'non_friend_only'].includes(b.filterFriendRelation ?? '') ? b.filterFriendRelation! : 'any',
         templates: b.templates?.length ? {
           create: b.templates.filter(t => t.content?.trim()).map(t => ({
             title: t.title ?? null, content: t.content, weight: Math.max(1, t.weight ?? 1),
@@ -78,6 +86,47 @@ export async function outreachRoutes(app: FastifyInstance): Promise<void> {
       include: { templates: true },
     });
     return reply.status(201).send({ success: true, campaign });
+  });
+
+  // ── POST /audience/preview — đếm + danh sách theo Điều kiện gửi (dùng lúc tạo, trước khi lưu) ──
+  app.post<{ Body: {
+    customerListId: string; zaloAccountId: string;
+    requireTags?: string[]; excludeTags?: string[];
+    skipChattedDays?: number | null; friendRelation?: string;
+    search?: string; limit?: number;
+  } }>('/api/v1/outreach/audience/preview', async (request, reply) => {
+    const user = request.user!;
+    const b = request.body ?? ({} as typeof request.body);
+    if (!b.customerListId || !b.zaloAccountId) {
+      return reply.status(400).send({ error: 'customerListId + zaloAccountId bắt buộc' });
+    }
+    const [list, nick] = await Promise.all([
+      prisma.customerList.findFirst({ where: { id: b.customerListId, orgId: user.orgId }, select: { id: true } }),
+      prisma.zaloAccount.findFirst({ where: { id: b.zaloAccountId, orgId: user.orgId }, select: { id: true } }),
+    ]);
+    if (!list || !nick) return reply.status(400).send({ error: 'Tệp hoặc nick không hợp lệ' });
+
+    const rel = (['friend_only', 'non_friend_only'].includes(b.friendRelation ?? '') ? b.friendRelation : 'any') as FriendRelation;
+    const evaluated = await evaluateAudience(user.orgId, b.customerListId, b.zaloAccountId, {
+      requireTags: Array.isArray(b.requireTags) ? b.requireTags.filter(Boolean) : [],
+      excludeTags: Array.isArray(b.excludeTags) ? b.excludeTags.filter(Boolean) : [],
+      skipChattedDays: b.skipChattedDays != null && b.skipChattedDays > 0 ? Math.floor(b.skipChattedDays) : null,
+      friendRelation: rel,
+    });
+
+    const total = evaluated.length;
+    const eligible = evaluated.filter((e) => e.eligible).length;
+    const skipped = total - eligible;
+
+    // Danh sách preview: lọc theo search (tên/SĐT), giới hạn để dialog không quá tải.
+    const q = (b.search ?? '').trim().toLowerCase();
+    const limit = Math.min(Math.max(b.limit ?? 300, 1), 1000);
+    const items = evaluated
+      .filter((e) => !q || (e.name ?? '').toLowerCase().includes(q) || e.phone.includes(q))
+      .slice(0, limit)
+      .map((e) => ({ name: e.name, phone: e.phone, tags: e.tags, eligible: e.eligible, reason: e.reason }));
+
+    return { total, eligible, skipped, items };
   });
 
   // ── GET /campaigns — danh sách ──

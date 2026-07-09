@@ -90,9 +90,97 @@
         <button class="oc-link" @click="addTemplate">+ Thêm mẫu tin</button>
       </section>
 
-      <!-- Bước 4: thời gian nhắn -->
+      <!-- Bước 4: Điều kiện gửi (audience filter) -->
       <section class="oc-step">
-        <h3>4. Cấu hình nhắn tin</h3>
+        <h3>4. Điều kiện gửi <span class="oc-optional">(tùy chọn — để trống sẽ gửi tất cả)</span></h3>
+        <p class="oc-filter-intro">Lọc trước khi gửi để đúng khách, tránh làm phiền. Bỏ trống mọi điều kiện thì chiến dịch chạy như bình thường.</p>
+
+        <div class="oc-filters">
+          <!-- Filter 1: chỉ gửi cho KH có tag -->
+          <div class="oc-fcard">
+            <div class="oc-fcard-head">
+              <span class="oc-fcard-title">Chỉ gửi cho khách hàng có Tag</span>
+              <span class="oc-fcard-desc">Chỉ khách có ít nhất một trong các Tag được chọn mới nhận chiến dịch.</span>
+            </div>
+            <select class="oc-tagpick" :value="''" @change="addTag('require', ($event.target as HTMLSelectElement).value); ($event.target as HTMLSelectElement).value = ''">
+              <option value="" disabled>+ Thêm Tag…</option>
+              <option v-for="t in availableTags(filters.requireTags)" :key="t.name" :value="t.name">{{ t.name }}</option>
+            </select>
+            <div class="oc-badges" v-if="filters.requireTags.length">
+              <span v-for="name in filters.requireTags" :key="name" class="oc-badge-tag" :style="tagStyle(name)">
+                {{ name }}<button class="oc-badge-x" @click="removeTag('require', name)">×</button>
+              </span>
+            </div>
+            <span v-else class="oc-fcard-empty">Chưa chọn — không lọc theo điều kiện này.</span>
+          </div>
+
+          <!-- Filter 2: không gửi cho KH có tag -->
+          <div class="oc-fcard">
+            <div class="oc-fcard-head">
+              <span class="oc-fcard-title">Không gửi cho khách hàng có Tag</span>
+              <span class="oc-fcard-desc">Khách có bất kỳ Tag nào dưới đây sẽ bị loại khỏi chiến dịch.</span>
+            </div>
+            <select class="oc-tagpick" :value="''" @change="addTag('exclude', ($event.target as HTMLSelectElement).value); ($event.target as HTMLSelectElement).value = ''">
+              <option value="" disabled>+ Thêm Tag…</option>
+              <option v-for="t in availableTags(filters.excludeTags)" :key="t.name" :value="t.name">{{ t.name }}</option>
+            </select>
+            <div class="oc-badges" v-if="filters.excludeTags.length">
+              <span v-for="name in filters.excludeTags" :key="name" class="oc-badge-tag oc-badge-excl" :style="tagStyle(name)">
+                {{ name }}<button class="oc-badge-x" @click="removeTag('exclude', name)">×</button>
+              </span>
+            </div>
+            <span v-else class="oc-fcard-empty">Chưa chọn — không lọc theo điều kiện này.</span>
+          </div>
+
+          <!-- Filter 3: không gửi nếu đã chat trong N ngày -->
+          <div class="oc-fcard">
+            <div class="oc-fcard-head">
+              <span class="oc-fcard-title">Không gửi nếu đã chat trong</span>
+              <span class="oc-fcard-desc">Bỏ qua khách vừa trò chuyện gần đây để tránh làm phiền.</span>
+            </div>
+            <div class="oc-chatdays">
+              <select class="oc-tagpick" v-model="chatDaysPreset">
+                <option value="">Không giới hạn (tắt)</option>
+                <option value="1">1 ngày</option>
+                <option value="3">3 ngày</option>
+                <option value="7">7 ngày</option>
+                <option value="15">15 ngày</option>
+                <option value="30">30 ngày</option>
+                <option value="custom">Tùy chỉnh số ngày…</option>
+              </select>
+              <input v-if="chatDaysPreset === 'custom'" type="number" min="1" max="3650" v-model.number="chatDaysCustom" class="oc-chatdays-input" placeholder="Số ngày" />
+            </div>
+          </div>
+
+          <!-- Filter 4: quan hệ bạn bè -->
+          <div class="oc-fcard">
+            <div class="oc-fcard-head">
+              <span class="oc-fcard-title">Quan hệ bạn bè</span>
+              <span class="oc-fcard-desc">Lọc theo việc khách đã là bạn của nick gửi hay chưa.</span>
+            </div>
+            <div class="oc-radios">
+              <label class="oc-radio"><input type="radio" value="any" v-model="filters.friendRelation" /> Không quan tâm</label>
+              <label class="oc-radio"><input type="radio" value="friend_only" v-model="filters.friendRelation" /> Chỉ gửi người đã là bạn</label>
+              <label class="oc-radio"><input type="radio" value="non_friend_only" v-model="filters.friendRelation" /> Chỉ gửi người chưa là bạn</label>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tóm tắt: tổng / đủ điều kiện / không đủ -->
+        <div class="oc-audience" v-if="form.customerListId && form.zaloAccountId">
+          <div class="oc-aud-cards">
+            <div class="oc-aud"><span class="oc-aud-n">{{ previewLoading ? '…' : audience.total.toLocaleString('vi') }}</span><span class="oc-aud-l">Tổng khách hàng</span></div>
+            <div class="oc-aud ok"><span class="oc-aud-n">{{ previewLoading ? '…' : audience.eligible.toLocaleString('vi') }}</span><span class="oc-aud-l">Đủ điều kiện gửi</span></div>
+            <div class="oc-aud no"><span class="oc-aud-n">{{ previewLoading ? '…' : audience.skipped.toLocaleString('vi') }}</span><span class="oc-aud-l">Không đủ điều kiện</span></div>
+          </div>
+          <button class="oc-link" @click="openPreview">Xem danh sách →</button>
+        </div>
+        <p v-else class="oc-fcard-empty">Chọn Tệp khách hàng và Nick Zalo (Bước 1) để xem số lượng đủ điều kiện.</p>
+      </section>
+
+      <!-- Bước 5: thời gian nhắn -->
+      <section class="oc-step">
+        <h3>5. Cấu hình nhắn tin</h3>
         <label class="oc-check"><input type="checkbox" v-model="form.enableAutoMessage" /> Tự động nhắn tin sau khi kết bạn</label>
         <template v-if="form.enableAutoMessage">
           <div class="oc-grid3">
@@ -198,22 +286,65 @@
         </div>
       </div>
     </div>
+
+    <!-- ════ MODAL XEM DANH SÁCH ĐIỀU KIỆN GỬI ════ -->
+    <div v-if="preview.open" class="oc-modal-overlay" @click.self="preview.open = false">
+      <div class="oc-modal oc-modal-lg">
+        <div class="oc-modal-head">
+          <h3>Danh sách khách hàng theo điều kiện</h3>
+          <button class="oc-modal-x" @click="preview.open = false">×</button>
+        </div>
+        <div class="oc-modal-body">
+          <div class="oc-prev-bar">
+            <input v-model="preview.search" class="oc-modal-search" placeholder="Tìm theo tên hoặc SĐT…" @input="debouncedPreviewList" style="margin-bottom:0" />
+            <span class="oc-prev-counts">
+              <span class="oc-prev-ok">Được gửi: {{ audience.eligible.toLocaleString('vi') }}</span> ·
+              <span class="oc-prev-no">Bỏ qua: {{ audience.skipped.toLocaleString('vi') }}</span>
+            </span>
+          </div>
+          <div v-if="preview.loading" class="oc-hint" style="padding:16px">Đang tải…</div>
+          <table v-else class="oc-modal-table">
+            <thead><tr><th>Tên khách hàng</th><th>SĐT</th><th>Tag</th><th>Kết quả</th><th>Lý do</th></tr></thead>
+            <tbody>
+              <tr v-for="(row, i) in preview.items" :key="i">
+                <td class="oc-modal-name">{{ row.name || '—' }}</td>
+                <td class="oc-mono">{{ row.phone || '—' }}</td>
+                <td>
+                  <span v-for="t in row.tags.slice(0, 3)" :key="t" class="oc-badge-tag oc-badge-mini" :style="tagStyle(t)">{{ t }}</span>
+                  <span v-if="!row.tags.length" class="oc-dim">—</span>
+                  <span v-if="row.tags.length > 3" class="oc-dim"> +{{ row.tags.length - 3 }}</span>
+                </td>
+                <td><span class="oc-result" :class="row.eligible ? 'ok' : 'no'">{{ row.eligible ? 'Được gửi' : 'Bỏ qua' }}</span></td>
+                <td class="oc-dim">{{ row.reason || (row.eligible ? '—' : '') }}</td>
+              </tr>
+              <tr v-if="!preview.items.length"><td colspan="5" class="oc-empty">Không có khách hàng nào khớp.</td></tr>
+            </tbody>
+          </table>
+          <p v-if="preview.items.length >= 300" class="oc-hint" style="margin-top:10px">Chỉ hiển thị 300 kết quả đầu — dùng ô tìm kiếm để thu hẹp.</p>
+        </div>
+        <div class="oc-modal-foot">
+          <button class="oc-btn primary" @click="preview.open = false">Đóng</button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, computed, onMounted } from 'vue';
+import { ref, reactive, computed, watch, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
-import { useOutreach, useOutreachSocket, type OutreachTemplate, type ImageAsset, type OutreachCampaign } from '@/composables/use-outreach';
+import { useOutreach, useOutreachSocket, type OutreachTemplate, type ImageAsset, type OutreachCampaign, type AudiencePreviewItem } from '@/composables/use-outreach';
 import { useCustomerLists } from '@/composables/use-customer-lists';
 import { useZaloAccounts } from '@/composables/use-zalo-accounts';
 import { useToast } from '@/composables/use-toast';
+import { useCrmTagDefs } from '@/composables/use-crm-tag-defs';
 
 const router = useRouter();
 const toast = useToast();
-const { campaigns, fetchCampaigns, createCampaign, control, remove, fetchImageAssets } = useOutreach();
+const { campaigns, fetchCampaigns, createCampaign, control, remove, previewAudience, fetchImageAssets } = useOutreach();
 const { lists, fetchLists } = useCustomerLists();
 const { accounts, fetchAccounts } = useZaloAccounts();
+const { tagDefs, loadTagDefs, tagColor } = useCrmTagDefs();
 
 const showCreate = ref(false);
 const submitting = ref(false);
@@ -230,6 +361,92 @@ const form = reactive({
   enableAutoMessage: true, maxMsgPerDay: 500,
   templates: [{ content: 'Chào {{name}}! Cảm ơn bạn đã mua hàng. Shop có ưu đãi mới gửi bạn tham khảo nhé.', weight: 1, imageAssetIds: [] }] as OutreachTemplate[],
 });
+
+// ── Điều kiện gửi (audience filter) ──
+const filters = reactive({
+  requireTags: [] as string[],
+  excludeTags: [] as string[],
+  friendRelation: 'any' as 'any' | 'friend_only' | 'non_friend_only',
+});
+const chatDaysPreset = ref<'' | '1' | '3' | '7' | '15' | '30' | 'custom'>('');
+const chatDaysCustom = ref<number | null>(null);
+const audience = reactive({ total: 0, eligible: 0, skipped: 0 });
+const previewLoading = ref(false);
+const preview = reactive({ open: false, loading: false, search: '', items: [] as AudiencePreviewItem[] });
+
+// Số ngày chat hiệu lực (null = tắt).
+const chatDays = computed<number | null>(() => {
+  if (chatDaysPreset.value === '') return null;
+  if (chatDaysPreset.value === 'custom') return chatDaysCustom.value && chatDaysCustom.value > 0 ? Math.floor(chatDaysCustom.value) : null;
+  return Number(chatDaysPreset.value);
+});
+
+function availableTags(exclude: string[]) {
+  const taken = new Set(exclude);
+  return tagDefs.value.filter(t => !taken.has(t.name));
+}
+function addTag(kind: 'require' | 'exclude', name: string) {
+  if (!name) return;
+  const arr = kind === 'require' ? filters.requireTags : filters.excludeTags;
+  if (!arr.includes(name)) arr.push(name);
+}
+function removeTag(kind: 'require' | 'exclude', name: string) {
+  const arr = kind === 'require' ? filters.requireTags : filters.excludeTags;
+  const i = arr.indexOf(name); if (i >= 0) arr.splice(i, 1);
+}
+function tagStyle(name: string) {
+  const c = tagColor(name);
+  return { '--tag-c': c } as Record<string, string>;
+}
+
+function filterPayload(extra: { search?: string; limit?: number } = {}) {
+  return {
+    customerListId: form.customerListId, zaloAccountId: form.zaloAccountId,
+    requireTags: filters.requireTags, excludeTags: filters.excludeTags,
+    skipChattedDays: chatDays.value, friendRelation: filters.friendRelation,
+    ...extra,
+  };
+}
+
+// Đếm tóm tắt — debounced, tự chạy khi filter/list/nick đổi.
+let previewTimer: ReturnType<typeof setTimeout> | null = null;
+async function refreshAudienceCounts() {
+  if (!form.customerListId || !form.zaloAccountId) { audience.total = 0; audience.eligible = 0; audience.skipped = 0; return; }
+  previewLoading.value = true;
+  try {
+    const r = await previewAudience(filterPayload({ limit: 1 }));
+    audience.total = r.total; audience.eligible = r.eligible; audience.skipped = r.skipped;
+  } catch { /* im lặng — chỉ là số ước tính */ }
+  finally { previewLoading.value = false; }
+}
+function scheduleRefresh() {
+  if (previewTimer) clearTimeout(previewTimer);
+  previewTimer = setTimeout(refreshAudienceCounts, 500);
+}
+
+// Dialog "Xem danh sách".
+async function loadPreviewList() {
+  if (!form.customerListId || !form.zaloAccountId) return;
+  preview.loading = true;
+  try {
+    const r = await previewAudience(filterPayload({ search: preview.search || undefined, limit: 300 }));
+    preview.items = r.items;
+    audience.total = r.total; audience.eligible = r.eligible; audience.skipped = r.skipped;
+  } catch { toast.error('Không tải được danh sách'); }
+  finally { preview.loading = false; }
+}
+function openPreview() { preview.open = true; preview.search = ''; loadPreviewList(); }
+let previewListTimer: ReturnType<typeof setTimeout> | null = null;
+function debouncedPreviewList() {
+  if (previewListTimer) clearTimeout(previewListTimer);
+  previewListTimer = setTimeout(loadPreviewList, 400);
+}
+
+// Bất kỳ thay đổi nào ảnh hưởng eligibility → cập nhật đếm.
+watch(
+  () => [form.customerListId, form.zaloAccountId, filters.requireTags.length, filters.excludeTags.length, filters.friendRelation, chatDays.value],
+  scheduleRefresh,
+);
 
 function addTemplate() { form.templates.push({ content: '', weight: 1, imageAssetIds: [] }); }
 function removeImg(t: OutreachTemplate, id: string) {
@@ -308,6 +525,8 @@ async function submit(runNow: boolean) {
       enableAutoMessage: form.enableAutoMessage,
       waitAfterAddMinMs: waitMinS.value * 1000, waitAfterAddMaxMs: waitMaxS.value * 1000,
       msgDelayMinMs: msgMinS.value * 1000, msgDelayMaxMs: msgMaxS.value * 1000, maxMsgPerDay: form.maxMsgPerDay,
+      filterRequireTags: filters.requireTags, filterExcludeTags: filters.excludeTags,
+      filterSkipChattedDays: chatDays.value, filterFriendRelation: filters.friendRelation,
       templates: form.templates.filter(t => t.content.trim()),
     } as any);
     if (!created?.id) { toast.error('Tạo chiến dịch thất bại'); return; }
@@ -358,7 +577,7 @@ useOutreachSocket((p) => {
 });
 
 onMounted(async () => {
-  await Promise.all([fetchCampaigns(), fetchLists(), fetchAccounts()]);
+  await Promise.all([fetchCampaigns(), fetchLists(), fetchAccounts(), loadTagDefs()]);
   imageAssets.value = await fetchImageAssets();
 });
 </script>
@@ -459,4 +678,48 @@ onMounted(async () => {
 .oc-modal-sm { width: 440px; }
 .oc-del-msg { margin: 0 0 8px; font-size: 13.5px; line-height: 1.55; color: var(--ink-2); }
 .oc-del-msg b { color: var(--ink); }
+
+/* ── Điều kiện gửi ── */
+.oc-optional { font-size: 11.5px; font-weight: 500; color: var(--ink-4); }
+.oc-filter-intro { font-size: 12px; color: var(--ink-3); margin: 0 0 12px; }
+.oc-filters { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.oc-fcard { border: 1px solid var(--line); border-radius: var(--r-md, 10px); padding: 12px 14px; background: var(--surface-2); }
+.oc-fcard-head { display: flex; flex-direction: column; gap: 2px; margin-bottom: 10px; }
+.oc-fcard-title { font-size: 13px; font-weight: 700; color: var(--ink); }
+.oc-fcard-desc { font-size: 11.5px; color: var(--ink-4); line-height: 1.4; }
+.oc-fcard-empty { font-size: 11.5px; color: var(--ink-4); font-style: italic; }
+.oc-tagpick { width: 100%; padding: 7px 10px; border: 1px solid var(--line); border-radius: var(--r-sm, 8px); font-family: inherit; font-size: 13px; color: var(--ink); background: var(--surface); }
+.oc-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.oc-badge-tag { display: inline-flex; align-items: center; gap: 4px; padding: 3px 6px 3px 9px; border-radius: 999px; font-size: 11.5px; font-weight: 600; color: var(--tag-c, #6B7280); background: color-mix(in srgb, var(--tag-c, #6B7280) 14%, transparent); border: 1px solid color-mix(in srgb, var(--tag-c, #6B7280) 35%, transparent); }
+.oc-badge-excl { text-decoration: none; }
+.oc-badge-mini { padding: 1px 7px; margin-right: 3px; font-size: 10.5px; }
+.oc-badge-x { border: none; background: none; color: currentColor; cursor: pointer; font-size: 14px; line-height: 1; padding: 0 1px; opacity: .7; }
+.oc-badge-x:hover { opacity: 1; }
+.oc-chatdays { display: flex; gap: 8px; align-items: center; }
+.oc-chatdays-input { width: 110px !important; margin: 0 !important; }
+.oc-radios { display: flex; flex-direction: column; gap: 8px; }
+.oc-radio { display: flex !important; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-2); margin: 0 !important; cursor: pointer; }
+.oc-radio input { width: auto !important; margin: 0 !important; }
+
+/* ── Tóm tắt đủ điều kiện ── */
+.oc-audience { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 14px; flex-wrap: wrap; }
+.oc-aud-cards { display: grid; grid-template-columns: repeat(3, minmax(120px, 1fr)); gap: 10px; flex: 1; }
+.oc-aud { display: flex; flex-direction: column; gap: 2px; padding: 10px 14px; border: 1px solid var(--line); border-radius: var(--r-md, 10px); background: var(--surface); }
+.oc-aud-n { font-size: 20px; font-weight: 800; color: var(--ink); font-variant-numeric: tabular-nums; }
+.oc-aud-l { font-size: 11.5px; color: var(--ink-3); }
+.oc-aud.ok .oc-aud-n { color: var(--success, #12b76a); }
+.oc-aud.no .oc-aud-n { color: var(--error, #f04438); }
+
+/* ── Modal xem danh sách ── */
+.oc-modal-lg { width: 820px; }
+.oc-prev-bar { display: flex; align-items: center; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.oc-prev-bar .oc-modal-search { flex: 1; min-width: 200px; }
+.oc-prev-counts { font-size: 12px; color: var(--ink-3); }
+.oc-prev-ok { color: var(--success, #12b76a); font-weight: 700; }
+.oc-prev-no { color: var(--error, #f04438); font-weight: 700; }
+.oc-mono { font-family: var(--mono, monospace); color: var(--ink); font-weight: 600; font-size: 12px; }
+.oc-result { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+.oc-result.ok { background: #dcfce7; color: #166534; }
+.oc-result.no { background: #fee2e2; color: #b91c1c; }
+@media (max-width: 720px) { .oc-filters { grid-template-columns: 1fr; } }
 </style>

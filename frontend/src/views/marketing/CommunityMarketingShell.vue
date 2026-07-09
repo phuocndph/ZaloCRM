@@ -42,6 +42,7 @@ const navItems = [
   { to: '/marketing/group-scan', label: 'Quét nhóm', icon: 'mdi-account-group-outline' },
   { to: '/marketing/lists', label: 'Tệp khách hàng', icon: 'mdi-format-list-bulleted' },
   { to: '/marketing/campaigns', label: 'Chiến dịch', icon: 'mdi-rocket-launch-outline' },
+  { to: '/marketing/followup', label: 'Follow-up', icon: 'mdi-timeline-clock-outline' },
 ];
 
 function isActive(to: string): boolean {

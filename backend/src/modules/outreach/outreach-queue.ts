@@ -25,6 +25,7 @@ import {
   STUB_MODE, randDelay, selectWeightedTemplate, renderTemplate,
   sendCampaignMessage, countActionsToday, writeLog, emitProgress,
 } from './outreach-service.js';
+import { evaluateAudience, orderEligibleByChat, filterFromCampaign, type EvaluatedEntry } from './outreach-audience.js';
 
 export const OUTREACH_QUEUE = 'outreach';
 
@@ -79,31 +80,37 @@ function getQueue(): Queue<OutreachJob> {
 // ── Điều khiển campaign ──────────────────────────────────────────────────────
 
 /**
- * Sắp entries theo THỜI GIAN CHAT: chat cũ nhất trước → mới hơn; CHƯA CHAT (null) xử lý CUỐI.
- * Dùng Contact.lastInteractionAt. Trả về [{id, phone}] theo đúng thứ tự xử lý.
+ * Seed dòng per-số cho khách BỊ BỎ theo Điều kiện gửi: overall='skipped' + note=lý do,
+ * seq=-1 (KHÔNG bao giờ được finishPhone chọn vì nó chỉ đi tới seq>=0). Không enqueue.
+ * Idempotent (restart): createMany skipDuplicates + raw update ép trạng thái skipped.
  */
-async function orderEntriesByChat(customerListId: string): Promise<Array<{ id: string; phone: string }>> {
-  const entries = await prisma.customerListEntry.findMany({
-    where: { customerListId },
-    select: { id: true, contactId: true, phoneLocal: true, phoneE164: true, phoneRaw: true },
+async function seedSkipped(campaignId: string, skipped: EvaluatedEntry[]) {
+  if (!skipped.length) return;
+  await prisma.outreachPhone.createMany({
+    data: skipped.map((e) => ({
+      campaignId, entryId: e.id, phone: e.phone, seq: -1,
+      overallStatus: 'skipped', friendStatus: 'none', messageStatus: 'none',
+      note: e.reason ? `Bỏ qua - ${e.reason}` : 'Bỏ qua - không đủ điều kiện',
+    })),
+    skipDuplicates: true,
   });
-  const contactIds = entries.map((e) => e.contactId).filter((x): x is string => !!x);
-  const contacts = contactIds.length
-    ? await prisma.contact.findMany({ where: { id: { in: contactIds } }, select: { id: true, lastInteractionAt: true } })
-    : [];
-  const chatMap = new Map(contacts.map((c) => [c.id, c.lastInteractionAt ? c.lastInteractionAt.getTime() : null]));
-  const withTime = entries.map((e) => ({
-    id: e.id,
-    phone: e.phoneLocal || e.phoneE164 || e.phoneRaw || '',
-    t: e.contactId ? (chatMap.get(e.contactId) ?? null) : null,
-  }));
-  withTime.sort((a, b) => {
-    if (a.t === null && b.t === null) return 0;
-    if (a.t === null) return 1;   // a chưa chat → xếp sau
-    if (b.t === null) return -1;  // b chưa chat → xếp sau
-    return a.t - b.t;             // chat cũ nhất (nhỏ) trước
-  });
-  return withTime.map(({ id, phone }) => ({ id, phone }));
+  const entryIds = skipped.map((e) => e.id);
+  const notes = skipped.map((e) => (e.reason ? `Bỏ qua - ${e.reason}` : 'Bỏ qua - không đủ điều kiện'));
+  await prisma.$executeRawUnsafe(
+    `UPDATE outreach_phones AS p
+       SET seq = -1, overall_status='skipped', friend_status='none', message_status='none', note = t.note, updated_at=now()
+     FROM unnest($1::text[], $2::text[]) AS t(entry_id, note)
+     WHERE p.campaign_id = $3 AND p.entry_id = t.entry_id`,
+    entryIds, notes, campaignId,
+  );
+  // Ghi audit log cho từng khách bị bỏ (hiện trong lịch sử chiến dịch) — batch 1 query.
+  await prisma.outreachLog.createMany({
+    data: skipped.map((e) => ({
+      campaignId, entryId: e.id, contactId: e.contactId, phone: e.phone,
+      actionType: 'add_friend', status: 'skipped',
+      errorMessage: e.reason ? `Bỏ qua - ${e.reason}` : 'Bỏ qua - không đủ điều kiện',
+    })),
+  }).catch(() => {});
 }
 
 /** Tạo/RESET dòng per-số + gán seq theo thứ tự (idempotent — chạy lại không tạo trùng). */
@@ -150,7 +157,11 @@ export async function startCampaign(campaignId: string, opts?: { userId?: string
   const c = await prisma.outreachCampaign.findUnique({ where: { id: campaignId } });
   if (!c) throw new Error('campaign_not_found');
 
-  const ordered = await orderEntriesByChat(c.customerListId);
+  // Điều kiện gửi: chỉ khách ĐỦ ĐIỀU KIỆN vào hàng đợi; khách bị bỏ ghi rõ lý do (không enqueue).
+  const evaluated = await evaluateAudience(c.orgId, c.customerListId, c.zaloAccountId, filterFromCampaign(c));
+  const eligible = orderEligibleByChat(evaluated.filter((e) => e.eligible)); // chat cũ nhất trước
+  const skipped = evaluated.filter((e) => !e.eligible);
+  const ordered = eligible.map((e) => ({ id: e.id, phone: e.phone }));
   const newRun = (c.runCount ?? 0) + 1;
 
   await prisma.outreachCampaign.update({
@@ -162,9 +173,13 @@ export async function startCampaign(campaignId: string, opts?: { userId?: string
   });
   await createRun(campaignId, newRun, opts?.action ?? 'start', opts?.userId, opts?.userName);
 
+  // Seed dòng "Bỏ qua" (theo filter) trước — luôn hiện trong bảng dù không có ai đủ điều kiện.
+  await seedSkipped(campaignId, skipped);
+
   if (ordered.length === 0) {
     await prisma.outreachCampaign.update({ where: { id: campaignId }, data: { state: 'completed', completedAt: new Date() } });
     await closeRun(campaignId, 'completed');
+    await emitProgress(ioRef, c.orgId, campaignId);
     return 0;
   }
 
@@ -177,7 +192,7 @@ export async function startCampaign(campaignId: string, opts?: { userId?: string
     { kind: 'add_friend', campaignId, entryId: ordered[0].id, seq: 0 },
     { delay: STUB_MODE() ? 500 : randDelay(c.addDelayMinMs, c.addDelayMaxMs) },
   );
-  logger.info(`[outreach] campaign=${campaignId} run#${newRun} (${opts?.action ?? 'start'}), ${ordered.length} số theo chat-time.`);
+  logger.info(`[outreach] campaign=${campaignId} run#${newRun} (${opts?.action ?? 'start'}): ${ordered.length} đủ điều kiện, ${skipped.length} bỏ qua theo filter.`);
   return ordered.length;
 }
 

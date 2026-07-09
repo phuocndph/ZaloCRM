@@ -283,11 +283,11 @@ function handleClick(): void {
   display: inline-flex;
   align-items: flex-start;
   gap: 3px;
-  font-size: 10px;
+  font-size: 10.5px;
   font-weight: 600;
   border-radius: 6px;
   padding: 1px 6px;
-  margin-bottom: 4px;
+  margin-bottom: 3px;
   border: 1px solid transparent;
   line-height: 1.4;
   user-select: none;
@@ -318,14 +318,20 @@ function handleClick(): void {
   opacity: 0.75;
 }
 
-/* 1. User CRM — cam M55 (giữ palette legacy)
-   ✨ Anh chốt 2026-06-02: bao gồm cả tin sync từ Zalo Real (icon 🔄 trailing).
-   Phân biệt với CSS: tin sync có .source-badge-sync child. */
+/* 1. User CRM — Phase 1: làm NHẸ thành caption xám mờ (bỏ nền cam chói + viền),
+   vì đây là nhãn xuất hiện nhiều nhất (tin sale gửi). Bot_* vẫn giữ nền nổi để audit.
+   Chỉ hiện 1 lần/cụm (gom cụm ở MessageBubble) → gọn, hết lặp. */
+/* Phase 2: user_crm = pill nổi tối, chữ trắng (đọc rõ trên mọi nền). Việc ẨN/HIỆN
+   khi rê chuột + định vị absolute do message-bubble.vue lo (nó sở hữu .message-bubble). */
 .source-badge--user_crm {
-  color: #7c2d12;
-  background: rgba(254, 215, 170, 0.6);
-  border-color: rgba(251, 146, 60, 0.4);
+  color: #ffffff;
+  background: rgba(15, 23, 42, 0.72);
+  border-color: transparent;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 999px;
 }
+.source-badge--user_crm .source-badge-icon { opacity: 0.85; }
 
 /* 3. Bot Automation — violet (sequence/marketing) */
 .source-badge--bot_automation {

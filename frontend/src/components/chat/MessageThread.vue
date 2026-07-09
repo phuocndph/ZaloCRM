@@ -36,7 +36,7 @@
           <Avatar
             :src="headerAvatarSrc"
             :name="headerName"
-            :size="40"
+            :size="46"
             :gender="contactGender"
             :is-group="conversation.threadType === 'group'"
             :gradient-seed="conversation.id"
@@ -540,64 +540,63 @@
           @cancel="onCancelReplyEdit"
         />
 
-        <!-- Compact toolbar (Phase 1 §7) — gom hành động phụ vào 1 menu "+"; chỉ chừa
-             Sticker cạnh đây. Emoji 😊 + nút Gửi nằm ở input-row bên dưới. -->
+        <!-- Compact toolbar — Lucide icons (anh chốt 2026-05-22 — bộ icon đồng bộ line 1.5px) -->
         <div class="input-toolbar-top">
-          <!-- Sticker (biểu cảm — để cạnh emoji theo thói quen Zalo) -->
+          <!-- Group 1: Media -->
           <StickerPicker @select="onSendSticker" />
+          <button class="icon-tool" title="Gửi ảnh" @click="onPickImage">
+            <ImageIcon :size="18" :stroke-width="1.5" />
+          </button>
+          <button class="icon-tool" title="Gửi file" @click="onPickFile">
+            <PaperclipIcon :size="18" :stroke-width="1.5" />
+          </button>
+          <button class="icon-tool" title="Chèn từ kho Media (ảnh/video/tệp/khối) — mở cột Media" @click="$emit('open-media-tab')">
+            <ImagesIcon :size="18" :stroke-width="1.5" />
+          </button>
+          <span class="toolbar-divider"></span>
 
-          <!-- "+" More: Ảnh / File / Kho Media / Danh thiếp / Định dạng / Nhắc hẹn / Template / Khối / AI -->
-          <v-menu location="top start" :close-on-content-click="true">
-            <template #activator="{ props: moreProps }">
-              <button class="icon-tool more-tool" v-bind="moreProps" title="Thêm — ảnh, file, template, nhắc hẹn, AI…">
-                <PlusIcon :size="19" :stroke-width="1.8" />
-              </button>
-            </template>
-            <v-list density="compact" min-width="220">
-              <v-list-item title="Gửi ảnh" @click="onPickImage">
-                <template #prepend><ImageIcon :size="17" :stroke-width="1.6" class="more-ic" /></template>
-              </v-list-item>
-              <v-list-item title="Gửi file" @click="onPickFile">
-                <template #prepend><PaperclipIcon :size="17" :stroke-width="1.6" class="more-ic" /></template>
-              </v-list-item>
-              <v-list-item title="Chèn từ kho Media" @click="$emit('open-media-tab')">
-                <template #prepend><ImagesIcon :size="17" :stroke-width="1.6" class="more-ic" /></template>
-              </v-list-item>
-              <v-list-item title="Gửi danh thiếp" @click="todoToast('Danh thiếp')">
-                <template #prepend><ContactIcon :size="17" :stroke-width="1.6" class="more-ic" /></template>
-              </v-list-item>
-              <v-divider />
-              <v-list-item
-                :title="formatBarVisible ? 'Ẩn định dạng văn bản' : 'Định dạng văn bản (B I U S…)'"
-                @click="toggleFormat"
-              >
-                <template #prepend><TypeIcon :size="17" :stroke-width="1.6" class="more-ic" /></template>
-              </v-list-item>
-              <v-list-item title="Template tin nhắn (gõ /)" @click="openTemplatePopup">
-                <template #prepend><ZapIcon :size="17" :stroke-width="1.6" class="more-ic" /></template>
-              </v-list-item>
-              <v-list-item
-                title="Tạo nhắc hẹn cho KH"
-                :disabled="!conversation.contact"
-                @click="showAppointmentDialog = true"
-              >
-                <template #prepend><CalendarClockIcon :size="17" :stroke-width="1.6" class="more-ic" /></template>
-              </v-list-item>
-              <!-- M14: Chèn Khối tin nhắn (Automation) — chỉ chat 1-1, không group. -->
-              <v-list-item
-                v-if="conversation.threadType === 'user'"
-                title="Chèn Khối tin nhắn (Automation)"
-                :disabled="!privacyVisibility.canSendInConv(conversation) || !!editingMessage"
-                @click="openBlockPicker"
-              >
-                <template #prepend><PackageIcon :size="17" :stroke-width="1.6" class="more-ic" /></template>
-              </v-list-item>
-              <v-divider />
-              <v-list-item title="AI soạn tin" :disabled="aiSuggestionLoading" @click="$emit('ask-ai')">
-                <template #prepend><SparklesIcon :size="17" :stroke-width="1.6" class="more-ic" /></template>
-              </v-list-item>
-            </v-list>
-          </v-menu>
+          <!-- Group 2: Contact / format -->
+          <button class="icon-tool" title="Gửi danh thiếp" @click="todoToast('Danh thiếp')">
+            <ContactIcon :size="18" :stroke-width="1.5" />
+          </button>
+          <button
+            class="icon-tool"
+            :class="{ active: formatBarVisible }"
+            :title="formatBarVisible ? 'Ẩn định dạng văn bản' : 'Hiện định dạng văn bản (B I U S ...)'"
+            @click="toggleFormat"
+          >
+            <TypeIcon :size="18" :stroke-width="1.5" />
+          </button>
+          <span class="toolbar-divider"></span>
+
+          <!-- Group 3: Productivity -->
+          <button
+            class="icon-tool"
+            :class="{ active: showAppointmentDialog }"
+            title="Tạo nhắc hẹn cho KH này"
+            :disabled="!conversation.contact"
+            @click="showAppointmentDialog = true"
+          >
+            <CalendarClockIcon :size="18" :stroke-width="1.5" />
+          </button>
+          <button class="icon-tool" title="Template tin nhắn (gõ /)" @click="openTemplatePopup">
+            <ZapIcon :size="18" :stroke-width="1.5" />
+          </button>
+          <!-- M14 (2026-06-02) — Chèn Khối "Gửi tin nhắn" từ Automation Blocks vào composer.
+               Ẩn ở group thread (memory feedback_crm_filter_1to1_not_group: Block 1-1 only).
+               Disable khi composer bị Privacy lock hoặc đang edit message để tránh ghi đè text edit. -->
+          <button
+            v-if="conversation.threadType === 'user'"
+            class="icon-tool"
+            title="Chèn Khối tin nhắn (Automation Blocks)"
+            :disabled="!privacyVisibility.canSendInConv(conversation) || !!editingMessage"
+            @click="openBlockPicker"
+          >
+            <PackageIcon :size="18" :stroke-width="1.5" />
+          </button>
+          <button class="icon-tool ai-btn" title="AI compose" :disabled="aiSuggestionLoading" @click="$emit('ask-ai')">
+            <SparklesIcon :size="18" :stroke-width="1.5" />
+          </button>
         </div>
 
         <div class="input-row">
@@ -967,7 +966,6 @@ import {
   Zap as ZapIcon,
   Sparkles as SparklesIcon,
   Package as PackageIcon,
-  Plus as PlusIcon,
   // Header action + chrome icons (anh chốt 2026-06-08 — bỏ emoji thô, đồng bộ Lucide)
   UserPlus as UserPlusIcon,
   UserCheck as UserCheckIcon,
@@ -2430,8 +2428,8 @@ type DisplayItem =
   | { kind: 'divider'; key: string; label: string }
   | { kind: 'album'; key: string; senderType: string; senderName: string | null; sentAt: string; totalExpected: number | null; messages: Message[]; groupStart?: boolean; groupEnd?: boolean };
 
-// Phase 1 (§2): khóa gộp cụm tin liên tiếp CÙNG người gửi (Zalo-style). Với tin gửi
-// (self) tách theo TỪNG sale để badge "Sale CRM · …" không gộp nhầm 2 sale khác nhau.
+// Khóa gộp cụm tin liên tiếp CÙNG người gửi (Zalo-style). Tin gửi (self) tách theo
+// TỪNG sale để nhãn "Sale CRM · …" không gộp nhầm 2 sale khác nhau.
 function groupKeyOf(msg: Message): string {
   if (msg.senderType === 'self') {
     const m = msg as any;
@@ -2440,7 +2438,6 @@ function groupKeyOf(msg: Message): string {
   }
   return `${msg.senderType}|${msg.senderUid || msg.senderName || ''}`;
 }
-const GROUP_GAP_MS = 5 * 60 * 1000; // cách > 5 phút → tách cụm mới (§2 "large time gap")
 
 function dayLabel(iso: string): string {
   const d = new Date(iso);
@@ -2451,11 +2448,10 @@ function dayLabel(iso: string): string {
   const dd = d.getDate().toString().padStart(2, '0');
   const mm = (d.getMonth() + 1).toString().padStart(2, '0');
   const yyyy = d.getFullYear();
-  const hh = d.getHours().toString().padStart(2, '0');
-  const mi = d.getMinutes().toString().padStart(2, '0');
-  if (day.getTime() === today.getTime()) return `Hôm nay ${hh}:${mi}`;
-  if (day.getTime() === yesterday.getTime()) return `Hôm qua ${hh}:${mi}`;
-  return `${dd}/${mm}/${yyyy} ${hh}:${mi}`;
+  // Phase 2: divider theo NGÀY nên bỏ giờ ở nhãn (giờ đã có ở từng cụm tin).
+  if (day.getTime() === today.getTime()) return 'Hôm nay';
+  if (day.getTime() === yesterday.getTime()) return 'Hôm qua';
+  return `${dd}/${mm}/${yyyy}`;
 }
 
 const displayItems = computed<DisplayItem[]>(() => {
@@ -2470,7 +2466,8 @@ const displayItems = computed<DisplayItem[]>(() => {
 
   for (const msg of props.messages) {
     const d = new Date(msg.sentAt);
-    const dayKey = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}-${Math.floor(d.getHours() / 4)}`;
+    // Phase 2: 1 divider / NGÀY (trước đây mỗi 4h → quá dày, chia cắt vụn).
+    const dayKey = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
     if (dayKey !== lastDayKey) {
       out.push({ kind: 'divider', key: 'div:' + dayKey, label: dayLabel(msg.sentAt) });
       lastDayKey = dayKey;
@@ -2508,28 +2505,25 @@ const displayItems = computed<DisplayItem[]>(() => {
     }
   }
 
-  // Phase 1 (§2/§3/§6): đánh dấu ĐẦU/CUỐI cụm cho tin liên tiếp cùng người gửi.
-  // groupStart → hiện avatar + tên + badge nguồn; groupEnd → hiện timestamp. Ngắt cụm
-  // khi: gặp divider, đổi người gửi, cách > 5 phút, hoặc gặp album (album tự là 1 cụm).
+  // Gom cụm: đánh dấu ĐẦU/CUỐI cụm tin liên tiếp cùng người gửi. groupStart → hiện
+  // avatar + tên + nhãn "Sale CRM…"; groupEnd → hiện timestamp. NGẮT cụm khi: gặp
+  // divider (mốc thời gian), đổi người gửi, hoặc gặp album (album tự là 1 cụm).
+  // KHÔNG ngắt theo khoảng cách phút → nhãn "Sale CRM" gộp tối đa, hết lặp.
   let prevKey: string | null = null;
-  let prevMs = 0;
   let prevMsgItem: Extract<DisplayItem, { kind: 'single' | 'album' }> | null = null;
   for (const item of out) {
-    if (item.kind === 'divider') { prevKey = null; prevMsgItem = null; prevMs = 0; continue; }
+    if (item.kind === 'divider') { prevKey = null; prevMsgItem = null; continue; }
     const isAlbum = item.kind === 'album';
-    const ms = new Date(isAlbum ? item.sentAt : item.msg.sentAt).getTime();
     const key = isAlbum ? `album:${item.key}` : groupKeyOf(item.msg);
     const continues =
       !isAlbum &&
       prevMsgItem != null &&
       prevMsgItem.kind === 'single' &&
-      prevKey === key &&
-      ms - prevMs <= GROUP_GAP_MS;
+      prevKey === key;
     item.groupStart = !continues;
     item.groupEnd = true;
     if (continues && prevMsgItem) prevMsgItem.groupEnd = false;
     prevKey = key;
-    prevMs = ms;
     prevMsgItem = item;
   }
 
@@ -3184,19 +3178,16 @@ watch(() => props.editingMessage?.id, async (id) => {
 .chat-header {
   position: relative;
   background: var(--smax-bg);
-  /* Phase 1 (§1): header gọn ~60px, padding dọc nhỏ lại. */
-  padding: 7px 16px;
+  padding: 10px 17px;
   border-bottom: 1px solid var(--smax-grey-200);
-  display: flex; align-items: center; gap: 11px;
+  display: flex; align-items: flex-start; gap: 13px;
   flex-shrink: 0;
 }
 .chat-header > .ch-avatar-wrap { align-self: center; }
 .chat-header > .ch-actions {
   position: absolute;
-  /* Phase 1: canh giữa dọc theo header gọn thay vì ghim top. */
-  top: 50%;
-  transform: translateY(-50%);
-  right: 16px;
+  top: 8px;
+  right: 17px;
 }
 /* Gom 2 dòng 2026-06-06 (Anh chốt):
    Dòng 1 (.ch-row-1) = tên + gender + deal-stage, chừa chỗ phải cho actions cluster.
@@ -3207,14 +3198,13 @@ watch(() => props.editingMessage?.id, async (id) => {
   min-width: 0;
 }
 
-/* Row 2 — meta (nick + số tin + online…). Phase 1 (§1): KHÔNG cho xuống nhiều dòng —
-   giữ 1 hàng, phần thừa ẩn (không làm header cao lên). */
+/* Row 2 — gom tất cả meta còn lại, cho phép wrap nếu hẹp (1366/1280). */
 .ch-row-chips {
-  display: flex; align-items: center; flex-wrap: nowrap;
+  display: flex; align-items: center; flex-wrap: wrap;
   gap: 8px;
   min-width: 0;
-  padding: 1px 0;
-  overflow: hidden;
+  padding: 2px 0;
+  row-gap: 5px;
 }
 
 /* Click avatar + tên header → mở dialog user info */
@@ -3226,7 +3216,7 @@ watch(() => props.editingMessage?.id, async (id) => {
 
 .ch-info {
   flex: 1; min-width: 0;
-  display: flex; flex-direction: column; gap: 2px;
+  display: flex; flex-direction: column; gap: 3px;
 }
 
 /* ── Responsive 1366×768 HD-first (Anh báo 2026-06-03) ──
@@ -3771,14 +3761,19 @@ watch(() => props.editingMessage?.id, async (id) => {
      Chat UI must NEVER scroll horizontally (anh chốt). */
   overflow-x: hidden;
   padding: 14px 26px;
-  /* Phase 1 (§5): gap nền nhỏ (trong cụm ~4px). Khoảng giữa các cụm do .group-end lo. */
+  /* Gap nền nhỏ (trong cụm ~4px). Khoảng giữa các cụm do .group-end lo. */
   display: flex; flex-direction: column; gap: 4px;
 }
-/* Phase 1 (§5): tin CUỐI mỗi cụm chừa thêm khoảng cách → tách cụm rõ (~10-12px tổng). */
+/* Tin CUỐI mỗi cụm chừa thêm khoảng cách → tách cụm rõ (~11px tổng). */
 .msg-bubble-wrap.group-end { margin-bottom: 7px; }
 .msg-divider {
-  text-align: center; margin: 13px 0 9px;
-  color: var(--smax-grey-700); font-size: 11px;
+  align-self: center;
+  margin: 10px 0 6px;
+  padding: 2px 12px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.05);
+  color: var(--smax-grey-700);
+  font-size: 11px; font-weight: 500;
 }
 /* E07 Image lightbox — anh chốt 2026-05-21: nút ‹ › + arrow keys, KHÔNG loop. */
 .lightbox-wrap {
@@ -3858,9 +3853,9 @@ watch(() => props.editingMessage?.id, async (id) => {
 .msg-album-body { max-width: 60%; }
 .bubble.album {
   background: var(--smax-bg);
-  border-radius: 13px;
+  border-radius: 16px;
   overflow: hidden;
-  box-shadow: 0 1px 1px rgba(0,0,0,0.06);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
 }
 .album-sender {
   font-size: 11.5px; color: var(--smax-primary);
@@ -3991,8 +3986,6 @@ watch(() => props.editingMessage?.id, async (id) => {
   margin-right: 4px; padding-right: 4px;
 }
 .icon-tool.ai-btn { color: #9c27b0; }
-/* "+" More menu icons (Phase 1 §7) — màu xám trung tính trong dropdown. */
-.more-ic { color: var(--smax-grey-700, #5a6478); }
 
 .input-row {
   /* Anh chốt 2026-05-22 (issue 3): sticker avatar căn giữa trục dọc với editor.

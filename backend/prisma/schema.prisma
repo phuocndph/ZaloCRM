@@ -4081,6 +4081,14 @@ model OutreachCampaign {
   msgDelayMaxMs     Int     @default(8000) @map("msg_delay_max_ms")
   maxMsgPerDay      Int     @default(500) @map("max_msg_per_day")
 
+  // ── Điều kiện gửi (audience filter) — rỗng/any = KHÔNG lọc (hành vi như cũ) ──
+  // require: gửi nếu có ÍT NHẤT 1 tag trong danh sách. exclude: bỏ nếu có BẤT KỲ tag.
+  // skipChattedDays: bỏ nếu đã chat trong N ngày. friendRelation: any|friend_only|non_friend_only.
+  filterRequireTags     String[] @default([]) @map("filter_require_tags")
+  filterExcludeTags     String[] @default([]) @map("filter_exclude_tags")
+  filterSkipChattedDays Int?     @map("filter_skip_chatted_days")
+  filterFriendRelation  String   @default("any") @map("filter_friend_relation")
+
   // ── Trạng thái + counter ──
   state          String @default("draft") // draft|running|paused|completed|cancelled|failed
   runCount       Int    @default(0) @map("run_count") // số lần đã chạy (tăng mỗi lần start/restart)
@@ -4190,4 +4198,173 @@ model OutreachPhone {
   @@index([campaignId, updatedAt])
   @@index([campaignId, phone])
   @@map("outreach_phones")
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// Follow-up Workflow (CE) — engine chăm sóc/bám đuổi KH nhiều bước, độc lập với
+// bộ Sequence/Trigger/CareSession của bản EE. Dùng String-enum + Json config
+// theo đúng convention Outreach ở trên.
+// ══════════════════════════════════════════════════════════════════════════
+
+model FollowupWorkflow {
+  id            String  @id @default(uuid())
+  orgId         String  @map("org_id")
+  createdById   String? @map("created_by_id")
+  createdByName String? @map("created_by_name")
+
+  name        String
+  description String?
+  // type: intro | after_quote | care | rebuy | post_sale | promo | reengage | custom
+  type        String  @default("custom")
+
+  // ── Goal (mục tiêu) ── đạt Goal → dừng ngay, không gửi bước còn lại.
+  // goalType: none | replied | requested_quote | purchased | has_tag | custom
+  goalType    String  @default("none") @map("goal_type")
+  goalTag     String? @map("goal_tag")   // dùng khi goalType=has_tag
+  goalTagOnReach   String? @map("goal_tag_on_reach")   // gắn tag này khi đạt Goal
+  nextWorkflowId   String? @map("next_workflow_id")    // chuyển workflow kế tiếp khi đạt Goal/hoàn thành
+
+  // ── Versioning ── workflow đang chạy KHÔNG sửa trực tiếp; sửa → tạo version mới.
+  version       Int     @default(1)
+  rootId        String? @map("root_id")   // gốc chuỗi version (null = chính nó)
+  isLatest      Boolean @default(true) @map("is_latest")
+
+  // ── Cấu hình an toàn gửi ──
+  sendWindowStart Int @default(480) @map("send_window_start")  // phút từ 00:00 (480=08:00)
+  sendWindowEnd   Int @default(1080) @map("send_window_end")   // 1080=18:00
+  minGapMinutes   Int @default(1440) @map("min_gap_minutes")   // tối thiểu giữa 2 tin (1440=1 ngày)
+  maxMessages     Int @default(5) @map("max_messages")         // trần số tin/khách
+  timezone        String @default("Asia/Ho_Chi_Minh")
+
+  // ── Điều kiện dừng ──
+  stopOnPurchase    Boolean  @default(true) @map("stop_on_purchase")
+  stopOnTags        String[] @default([]) @map("stop_on_tags")  // tên tag → gặp là dừng (vd "Không làm phiền","Đã mua")
+
+  // ── Trạng thái ──
+  status String @default("draft")  // draft | active | paused | archived
+
+  // ── Counter (cập nhật khi enrollment đổi trạng thái) ──
+  totalEnrolled     Int @default(0) @map("total_enrolled")
+  totalRunning      Int @default(0) @map("total_running")
+  totalWaiting      Int @default(0) @map("total_waiting")
+  totalWaitingSale  Int @default(0) @map("total_waiting_sale")
+  totalCompleted    Int @default(0) @map("total_completed")
+  totalStopped      Int @default(0) @map("total_stopped")
+  totalGoalReached  Int @default(0) @map("total_goal_reached")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  steps       FollowupStep[]
+  enrollments FollowupEnrollment[]
+  logs        FollowupLog[]
+
+  @@index([orgId, status])
+  @@index([orgId, rootId])
+  @@map("followup_workflows")
+}
+
+model FollowupStep {
+  id         String @id @default(uuid())
+  workflowId String @map("workflow_id")
+
+  // key: định danh node TRONG workflow (vd "start","s1","c1") — dùng cho nhánh/nextStep.
+  key        String
+  // type: start | send | wait | condition | tag_add | tag_remove | sale_task | end
+  type       String
+  orderIndex Int    @default(0) @map("order_index")  // thứ tự hiển thị (builder danh sách)
+  label      String?
+
+  // config Json theo type:
+  //  send      : { content, imageAssetIds?[] }
+  //  wait      : { amount, unit: "hour"|"day"|"week" }
+  //  condition : { check: "replied"|"not_replied"|"is_friend"|"not_friend"|"has_tag"|"no_tag", tag?, trueKey, falseKey }
+  //  tag_add   : { tag }
+  //  tag_remove: { tag }
+  //  sale_task : { title, note? }
+  config     Json?
+
+  // nextKey: bước kế mặc định cho node tuyến tính (send/wait/tag_*/sale_task/start).
+  // condition dùng config.trueKey/falseKey; end không có nextKey.
+  nextKey    String? @map("next_key")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  workflow FollowupWorkflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+
+  @@unique([workflowId, key])
+  @@index([workflowId, orderIndex])
+  @@map("followup_steps")
+}
+
+model FollowupEnrollment {
+  id              String  @id @default(uuid())
+  orgId           String  @map("org_id")
+  workflowId      String  @map("workflow_id")
+  workflowVersion Int     @map("workflow_version")  // "đóng băng" version lúc enroll
+
+  contactId     String  @map("contact_id")
+  friendId      String? @map("friend_id")
+  zaloAccountId String  @map("zalo_account_id")     // nick dùng để gửi
+
+  // status: running | waiting | waiting_sale | completed | stopped | goal_reached
+  status        String  @default("waiting")
+  currentStepKey String? @map("current_step_key")
+  messagesSent  Int     @default(0) @map("messages_sent")
+  lastMessageAt DateTime? @map("last_message_at")
+  nextRunAt     DateTime? @map("next_run_at")       // thời điểm job kế fire (BullMQ)
+  jobId         String?  @map("job_id")             // id job BullMQ đang chờ (để huỷ khi dừng)
+
+  goalReached   Boolean  @default(false) @map("goal_reached")
+  // stopReason: purchased | do_not_disturb | sale_stopped | rejected | switched | goal | max_messages | manual | completed
+  stopReason    String?  @map("stop_reason")
+  saleTaskTitle String?  @map("sale_task_title")    // task đang chờ Sale (khi waiting_sale)
+
+  enrolledById   String? @map("enrolled_by_id")
+  enrolledByName String? @map("enrolled_by_name")
+
+  startedAt   DateTime  @default(now()) @map("started_at")
+  completedAt DateTime? @map("completed_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  workflow FollowupWorkflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  logs     FollowupLog[]
+
+  @@index([orgId, contactId, status])
+  @@index([workflowId, status])
+  @@index([status, nextRunAt])
+  @@map("followup_enrollments")
+}
+
+model FollowupLog {
+  id           String  @id @default(uuid())
+  orgId        String  @map("org_id")
+  enrollmentId String  @map("enrollment_id")
+  workflowId   String  @map("workflow_id")
+  contactId    String  @map("contact_id")
+
+  stepKey  String? @map("step_key")
+  stepType String? @map("step_type")
+  // eventType: enrolled | message_sent | message_failed | waited | condition_eval |
+  //   tag_added | tag_removed | sale_task_created | sale_task_done | goal_reached |
+  //   stopped | completed | switched_workflow | restarted | note
+  eventType String  @map("event_type")
+  message   String?          // dòng timeline dễ đọc (tiếng Việt)
+  detail    Json?
+
+  // actorType: system | sale
+  actorType String  @default("system") @map("actor_type")
+  actorId   String? @map("actor_id")
+  actorName String? @map("actor_name")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  enrollment FollowupEnrollment @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
+  workflow   FollowupWorkflow   @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+
+  @@index([enrollmentId, createdAt])
+  @@index([workflowId, eventType])
+  @@index([contactId, createdAt])
+  @@map("followup_logs")
 }

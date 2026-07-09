@@ -30,6 +30,10 @@ export interface OutreachCampaign {
   enableAutoMessage: boolean;
   waitAfterAddMinMs: number; waitAfterAddMaxMs: number;
   msgDelayMinMs: number; msgDelayMaxMs: number; maxMsgPerDay: number;
+  filterRequireTags?: string[];
+  filterExcludeTags?: string[];
+  filterSkipChattedDays?: number | null;
+  filterFriendRelation?: 'any' | 'friend_only' | 'non_friend_only';
   state: string;
   runCount: number;
   totalTarget: number; totalAdded: number; totalAddFailed: number;
@@ -69,6 +73,19 @@ export interface OutreachPhone {
   note: string | null; updatedAt: string;
 }
 export interface PhoneSummary { total: number; success: number; waiting: number; processing: number; skipped: number }
+
+export interface AudiencePreviewItem {
+  name: string | null; phone: string; tags: string[]; eligible: boolean; reason: string | null;
+}
+export interface AudiencePreview {
+  total: number; eligible: number; skipped: number; items: AudiencePreviewItem[];
+}
+export interface AudienceFilterPayload {
+  customerListId: string; zaloAccountId: string;
+  requireTags?: string[]; excludeTags?: string[];
+  skipChattedDays?: number | null; friendRelation?: string;
+  search?: string; limit?: number;
+}
 export interface PhonePayload {
   campaignId: string; entryId: string; phone: string;
   overallStatus: OutreachPhone['overallStatus'];
@@ -105,6 +122,11 @@ export function useOutreach() {
   const restart = (id: string) => api.post(`/outreach/campaigns/${id}/restart`);
 
   const remove = (id: string) => api.delete(`/outreach/campaigns/${id}`);
+
+  async function previewAudience(payload: AudienceFilterPayload): Promise<AudiencePreview> {
+    const { data } = await api.post('/outreach/audience/preview', payload);
+    return data as AudiencePreview;
+  }
 
   async function getRuns(id: string): Promise<OutreachRun[]> {
     try { const { data } = await api.get(`/outreach/campaigns/${id}/runs`); return data?.runs ?? []; }
@@ -147,7 +169,7 @@ export function useOutreach() {
     return data as { phones: OutreachPhone[]; pagination: { page: number; limit: number; total: number }; summary: PhoneSummary };
   }
 
-  return { campaigns, loading, fetchCampaigns, getCampaign, createCampaign, control, restart, remove, getRuns, getProgress, getLogs, getPhones, fetchImageAssets };
+  return { campaigns, loading, fetchCampaigns, getCampaign, createCampaign, control, restart, remove, previewAudience, getRuns, getProgress, getLogs, getPhones, fetchImageAssets };
 }
 
 // ── Realtime progress ──
