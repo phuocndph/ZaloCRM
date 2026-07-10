@@ -81,6 +81,9 @@ export async function searchRoutes(app: FastifyInstance) {
             select: {
               id: true,
               zaloAccountId: true,
+              // Riêng tư cấp hội thoại 2026-07-09 — bắt buộc cho redactMessage.
+              isPrivate: true,
+              privateOwnerUserId: true,
               contact: { select: { fullName: true } },
               zaloAccount: { select: { privacyMode: true, ownerUserId: true } },
             },
@@ -104,18 +107,22 @@ export async function searchRoutes(app: FastifyInstance) {
     ]);
 
     // Phase Riêng Tư v2: blur message content khi conversation thuộc nick main-nick non-owned.
-    const { buildPrivacyContext, redactMessage, buildOffendingContactIds, PRIVACY_BLUR_TOKEN } =
+    const { buildPrivacyContext, redactMessage, buildOffendingContactIds, PRIVACY_BLUR_TOKEN, isConversationPrivateFor } =
       await import('../privacy/redact.js');
     const privacyCtx = await buildPrivacyContext(request);
-    const redactedMessages = messages.map((m: any) => {
-      const conv = m.conversation;
-      if (!conv?.zaloAccount) return m;
-      return redactMessage(
-        { ...m, conversationId: conv.id },
-        { zaloAccount: conv.zaloAccount },
-        privacyCtx,
-      );
-    });
+    const redactedMessages = messages
+      // Riêng tư cấp hội thoại (yêu cầu 3): LOẠI HẲN khỏi kết quả tìm kiếm của người khác,
+      // không trả row mờ — hội thoại riêng tư không được lộ cả sự tồn tại lẫn thời điểm.
+      .filter((m: any) => !isConversationPrivateFor(m.conversation ?? { isPrivate: false, privateOwnerUserId: null }, privacyCtx.viewerUserId))
+      .map((m: any) => {
+        const conv = m.conversation;
+        if (!conv?.zaloAccount) return m;
+        return redactMessage(
+          { ...m, conversationId: conv.id },
+          { zaloAccount: conv.zaloAccount, isPrivate: conv.isPrivate, privateOwnerUserId: conv.privateOwnerUserId },
+          privacyCtx,
+        );
+      });
 
     // PRIVACY 2026-06-11 (audit H8/H9): nhánh contacts + appointments cũng trả PII KH
     // (fullName/phone + appointment.notes) — phải redact KH thuộc nick main non-owner.

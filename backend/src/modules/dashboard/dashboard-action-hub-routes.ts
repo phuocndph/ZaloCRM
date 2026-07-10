@@ -275,6 +275,9 @@ export async function dashboardActionHubRoutes(app: FastifyInstance): Promise<vo
           // privacyMode + ownerUserId BẮT BUỘC để canSeeConversationContent quyết đúng
           // (thiếu → coi như nick thường → LỘ tin nick main). Đừng bỏ.
           zaloAccount: { select: { id: true, displayName: true, privacyMode: true, ownerUserId: true } },
+          // Riêng tư cấp hội thoại 2026-07-09 — bắt buộc cho canSeeConversationContent.
+          isPrivate: true,
+          privateOwnerUserId: true,
           // Tin nhắn cuối cho preview (rẻ với take:5). Cùng orderBy như màn chat.
           messages: {
             take: 1,
@@ -289,7 +292,8 @@ export async function dashboardActionHubRoutes(app: FastifyInstance): Promise<vo
       // Privacy context — tái dùng cơ chế đã audit (chat-routes). Quyết blur theo
       // ownerUserId của nick vs viewer (KHÔNG theo targetUserId) → manager xem-hộ nick
       // riêng tư của NV tự động bị blur. buildPrivacyContext đọc priv_session cookie.
-      const { buildPrivacyContext, canSeeConversationContent, PRIVACY_BLUR_TOKEN } = await import('../privacy/redact.js');
+      const { buildPrivacyContext, canSeeConversationContent, isConversationPrivateFor, PRIVACY_BLUR_TOKEN } =
+        await import('../privacy/redact.js');
       const urgentPrivacyCtx = await buildPrivacyContext(request);
 
       // Today appointments (no privacy split — appointment không gắn nick)
@@ -436,8 +440,12 @@ export async function dashboardActionHubRoutes(app: FastifyInstance): Promise<vo
           newFriends: friendsToday,
           newLeads: leadsToday,
         },
-        urgent: urgentConvs.map((c) => {
-          const canSee = canSeeConversationContent(c as { zaloAccount: { privacyMode: string; ownerUserId: string } }, urgentPrivacyCtx);
+        urgent: urgentConvs
+          // Riêng tư cấp hội thoại (yêu cầu 3 — "nội dung trong báo cáo"): loại hẳn khỏi
+          // báo cáo của người khác. Không trả row mờ: tên KH + giờ nhắn cũng là thông tin.
+          .filter((c) => !isConversationPrivateFor(c, urgentPrivacyCtx.viewerUserId))
+          .map((c) => {
+          const canSee = canSeeConversationContent(c, urgentPrivacyCtx);
           const m = c.messages[0];
           // Preview: tin thu hồi → nhãn riêng; còn lại = content (cắt 60). Nick riêng tư +
           // người ngoài → BLUR_TOKEN (FE blur). KHÔNG lộ nội dung nick main.

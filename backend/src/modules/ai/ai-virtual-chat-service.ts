@@ -176,9 +176,16 @@ async function runVirtualChatAiReply(
     const safeMessage = { ...aiMessage, zaloMsgIdNum: null as string | null };
     const conv = await prisma.conversation.findUnique({
       where: { id: conversationId },
-      select: { zaloAccountId: true, zaloAccount: { select: { privacyMode: true, ownerUserId: true } } },
+      select: {
+        zaloAccountId: true,
+        // Riêng tư cấp hội thoại 2026-07-09 — bắt buộc cho emitChatMessage.
+        isPrivate: true,
+        privateOwnerUserId: true,
+        zaloAccount: { select: { privacyMode: true, ownerUserId: true } },
+      },
     });
     // PRIVACY 2026-06-11: qua emit-chat (redact + scope org).
+    // Fail-closed: conv không tìm thấy → coi như riêng tư, không phát ra room org.
     await emitChatMessage({
       io,
       orgId,
@@ -187,6 +194,8 @@ async function runVirtualChatAiReply(
       message: safeMessage,
       privacyMode: conv?.zaloAccount?.privacyMode ?? 'sub',
       ownerUserId: conv?.zaloAccount?.ownerUserId ?? null,
+      isPrivate: conv?.isPrivate ?? true,
+      privateOwnerUserId: conv?.privateOwnerUserId ?? null,
       extra: { _virtual: true, _aiAssistant: true },
     });
     if (entities) {

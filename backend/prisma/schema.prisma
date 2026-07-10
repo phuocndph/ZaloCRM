@@ -53,6 +53,34 @@ model Organization {
   aiConfig                    AiConfig?
   aiSuggestions               AiSuggestion[]
   aiSuggestionsApplied        AiSuggestionApplied[]
+  aiAgents                    AiAgent[]
+  aiPersonas                  AiPersona[]
+  aiSkills                    AiSkill[]
+  aiAgentSkills               AiAgentSkill[]
+  aiPrompts                   AiPrompt[]
+  aiPromptVersions            AiPromptVersion[]
+  aiModelConfigs              AiModelConfig[]
+  aiKnowledgeSources          AiKnowledgeSource[]
+  aiKnowledgeDocuments        AiKnowledgeDocument[]
+  aiKnowledgeChunks           AiKnowledgeChunk[]
+  aiRuns                      AiRun[]
+  aiConversationSummaries     AiConversationSummary[]
+  aiCustomerMemories          AiCustomerMemory[]
+  aiIntentAnalyses            AiIntentAnalysis[]
+  aiEmotionAnalyses           AiEmotionAnalysis[]
+  aiAssistantSuggestions      AiAssistantSuggestion[]
+  aiSentMessages              AiSentMessage[]
+  aiFeedbackEvents            AiFeedback[]
+  aiLearningCandidates        AiLearningCandidate[]
+  aiApprovedExamples          AiApprovedExample[]
+  aiBlockedExamples           AiBlockedExample[]
+  aiActions                   AiAction[]
+  aiHandoffs                  AiHandoff[]
+  aiEvaluationCases           AiEvaluationCase[]
+  aiEvaluationRuns            AiEvaluationRun[]
+  aiEvaluationResults         AiEvaluationResult[]
+  aiAuditLogs                 AiAuditLog[]
+  aiUsageRecords              AiUsageRecord[]
   pinnedConversations         PinnedConversation[]
   groupPolls                  GroupPoll[]
   // 2026-06-21 (E1 quét group) — roster member + lịch sử lần quét cấp org.
@@ -124,13 +152,13 @@ model Organization {
 
   // Lịch hẹn → Nhắc hẹn Zalo (2026-06-16): bật đẩy Nhắc hẹn Zalo cho sale qua nick hệ thống
   // + delay (phút) gửi tin "link đánh dấu hoàn thành/huỷ" SAU giờ hẹn (admin chỉnh trong Cài đặt lịch hẹn).
-  appointmentZaloReminderEnabled Boolean @default(false) @map("appointment_zalo_reminder_enabled")
-  appointmentActionDelayMinutes  Int     @default(15)    @map("appointment_action_delay_minutes")
+  appointmentZaloReminderEnabled  Boolean @default(false) @map("appointment_zalo_reminder_enabled")
+  appointmentActionDelayMinutes   Int     @default(15) @map("appointment_action_delay_minutes")
   // 2026-06-18 "Nhắc 3 lần": mảng KHOẢNG CÁCH (interval) giữa các lần nhắc, đơn vị GIỜ.
   // [1,3,6] = nhắc lần 1 ở +1h, lần 2 ở +4h, lần 3 ở +10h (cộng dồn) sau giờ hẹn. Validate 3 phần tử, 0<v≤168.
-  appointmentReminderOffsetsHours Json @default("[1, 3, 6]") @map("appointment_reminder_offsets_hours")
+  appointmentReminderOffsetsHours Json    @default("[1, 3, 6]") @map("appointment_reminder_offsets_hours")
   // Digest trưởng phòng dừng sau N ngày kể từ lần digest đầu (Luật D2). 0 = không bao giờ dừng.
-  appointmentDigestStopDays      Int  @default(7) @map("appointment_digest_stop_days")
+  appointmentDigestStopDays       Int     @default(7) @map("appointment_digest_stop_days")
 
   // Wave 2 Welcome Probe 2026-05-29 — config send welcome msg sau friend accept
   welcomeDelayAfterFriendReqSec Int     @default(60) @map("welcome_delay_after_friend_req_sec")
@@ -260,60 +288,82 @@ model User {
   createdAt                    DateTime             @default(now()) @map("created_at")
   updatedAt                    DateTime             @updatedAt @map("updated_at")
 
-  org                       Organization                 @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  team                      Team?                        @relation(fields: [teamId], references: [id])
-  zaloAccounts              ZaloAccount[]
-  zaloAccess                ZaloAccountAccess[]
-  assignedContacts          Contact[]                    @relation("AssignedContacts")
-  contactAccess             ContactAccess[]
-  appointments              Appointment[]
-  statusChangedAppointments Appointment[]                @relation("AppointmentStatusChanger")
-  repliedMessages           Message[]                    @relation("RepliedMessages")
-  activityLogs              ActivityLog[]
-  messageTemplates          MessageTemplate[]
-  authoredNotes             Note[]                       @relation("NoteAuthor")
-  noteReactions             NoteReaction[]
-  preferences               UserPreference[]
+  org                          Organization                 @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  team                         Team?                        @relation(fields: [teamId], references: [id])
+  zaloAccounts                 ZaloAccount[]
+  zaloAccess                   ZaloAccountAccess[]
+  assignedContacts             Contact[]                    @relation("AssignedContacts")
+  contactAccess                ContactAccess[]
+  appointments                 Appointment[]
+  statusChangedAppointments    Appointment[]                @relation("AppointmentStatusChanger")
+  repliedMessages              Message[]                    @relation("RepliedMessages")
+  activityLogs                 ActivityLog[]
+  messageTemplates             MessageTemplate[]
+  authoredNotes                Note[]                       @relation("NoteAuthor")
+  noteReactions                NoteReaction[]
+  preferences                  UserPreference[]
   // Phase 6+ — Inbox Triage Filter (per-user)
-  accountFolders            AccountFolder[]
-  savedFilterPresets        SavedFilterPreset[]
+  accountFolders               AccountFolder[]
+  savedFilterPresets           SavedFilterPreset[]
   // Phase 7 — Automation framework (createdBy backrefs)
-  createdBlocks             Block[]                      @relation("BlockCreatedBy")
-  createdBlockFolders       BlockFolder[]                @relation("BlockFolderCreatedBy")
-  ownedBlockFolders         BlockFolder[]                @relation("BlockFolderOwnerUser")
-  createdMessageTemplates   MessageTemplate[]            @relation("MessageTemplateCreatedBy")
-  createdMTFolders          MessageTemplateFolder[]      @relation("MTFolderCreatedBy")
-  ownedMTFolders            MessageTemplateFolder[]      @relation("MTFolderOwnerUser")
-  createdSequences          AutomationSequence[]         @relation("SequenceCreatedBy")
-  createdTriggers           AutomationTrigger[]          @relation("TriggerCreatedBy")
-  createdBroadcasts         AutomationBroadcast[]        @relation("BroadcastCreatedBy")
+  createdBlocks                Block[]                      @relation("BlockCreatedBy")
+  createdBlockFolders          BlockFolder[]                @relation("BlockFolderCreatedBy")
+  ownedBlockFolders            BlockFolder[]                @relation("BlockFolderOwnerUser")
+  createdMessageTemplates      MessageTemplate[]            @relation("MessageTemplateCreatedBy")
+  createdMTFolders             MessageTemplateFolder[]      @relation("MTFolderCreatedBy")
+  ownedMTFolders               MessageTemplateFolder[]      @relation("MTFolderOwnerUser")
+  createdSequences             AutomationSequence[]         @relation("SequenceCreatedBy")
+  createdTriggers              AutomationTrigger[]          @relation("TriggerCreatedBy")
+  createdBroadcasts            AutomationBroadcast[]        @relation("BroadcastCreatedBy")
   // Phase metrics layer 2026-05-22 — phone search by user
-  phoneSearchEvents         PhoneSearchEvent[]
-  systemNotifyRecipients    SystemNotifyRecipient[]
-  systemNotifications       SystemNotification[]
+  phoneSearchEvents            PhoneSearchEvent[]
+  systemNotifyRecipients       SystemNotifyRecipient[]
+  systemNotifications          SystemNotification[]
   // Phase Lead Pool 2026-05-24
-  leadRequests              LeadRequest[]
+  leadRequests                 LeadRequest[]
   // Phase Lead Pool admin reset 2026-05-28
-  leadBonusReceived         LeadPoolBonusQuota[]         @relation("LeadPoolBonusRecipient")
-  leadBonusGranted          LeadPoolBonusQuota[]         @relation("LeadPoolBonusGranter")
-  leadDistributionsReceived LeadPoolDistribution[]       @relation("LeadDistributionRecipient")
+  leadBonusReceived            LeadPoolBonusQuota[]         @relation("LeadPoolBonusRecipient")
+  leadBonusGranted             LeadPoolBonusQuota[]         @relation("LeadPoolBonusGranter")
+  leadDistributionsReceived    LeadPoolDistribution[]       @relation("LeadDistributionRecipient")
   // Phase Privacy OTP 2026-05-27
-  privacyOtpTokens          PrivacyOtpToken[]            @relation("PrivacyOtpUser")
+  privacyOtpTokens             PrivacyOtpToken[]            @relation("PrivacyOtpUser")
   // M53 (2026-05-30): AI suggestions sale applied
-  aiSuggestionsApplied      AiSuggestionApplied[]
+  aiSuggestionsApplied         AiSuggestionApplied[]
   // Phase 2 bảo mật 2026-06-08 — refresh token rotation
-  refreshTokens             RefreshToken[]
+  refreshTokens                RefreshToken[]
   // Mobile App 2026-06-15 — thiết bị nhận push (FCM/APNs)
-  devices                   Device[]
+  devices                      Device[]
   // PWA Mobile — subscription Web Push (VAPID), song song với devices ở trên.
-  pushSubscriptions         PushSubscription[]
+  pushSubscriptions            PushSubscription[]
   // Phase FB Lead Ads "Form" 2026-06-09 — round-robin chia lead cho sale.
-  customerListAssignments   CustomerListSaleAssignment[]
+  customerListAssignments      CustomerListSaleAssignment[]
   // Phase Media Library 2026-06-11 — kho phương tiện (owner + người tạo).
-  ownedMediaAssets          MediaAsset[]                 @relation("MediaAssetOwner")
-  createdMediaAssets        MediaAsset[]                 @relation("MediaAssetCreatedBy")
-  ownedMediaAlbums          MediaAlbum[]                 @relation("MediaAlbumOwner")
-  createdMediaAlbums        MediaAlbum[]                 @relation("MediaAlbumCreatedBy")
+  ownedMediaAssets             MediaAsset[]                 @relation("MediaAssetOwner")
+  createdMediaAssets           MediaAsset[]                 @relation("MediaAssetCreatedBy")
+  ownedMediaAlbums             MediaAlbum[]                 @relation("MediaAlbumOwner")
+  createdMediaAlbums           MediaAlbum[]                 @relation("MediaAlbumCreatedBy")
+  // Riêng tư cấp hội thoại 2026-07-09 — các hội thoại user này đang bật "Chỉ mình tôi xem".
+  privateConversations         Conversation[]               @relation("ConversationPrivateOwner")
+  aiAgentsCreated              AiAgent[]                    @relation("AiAgentCreatedBy")
+  aiPersonasCreated            AiPersona[]                  @relation("AiPersonaCreatedBy")
+  aiSkillsCreated              AiSkill[]                    @relation("AiSkillCreatedBy")
+  aiPromptsCreated             AiPrompt[]                   @relation("AiPromptCreatedBy")
+  aiPromptVersionsCreated      AiPromptVersion[]            @relation("AiPromptVersionCreatedBy")
+  aiPromptVersionsApproved     AiPromptVersion[]            @relation("AiPromptVersionApprovedBy")
+  aiModelConfigsCreated        AiModelConfig[]              @relation("AiModelConfigCreatedBy")
+  aiKnowledgeSourcesCreated    AiKnowledgeSource[]          @relation("AiKnowledgeSourceCreatedBy")
+  aiKnowledgeDocumentsCreated  AiKnowledgeDocument[]        @relation("AiKnowledgeDocumentCreatedBy")
+  aiKnowledgeDocumentsApproved AiKnowledgeDocument[]        @relation("AiKnowledgeDocumentApprovedBy")
+  aiRunsRequested              AiRun[]                      @relation("AiRunRequestedBy")
+  aiMemoriesApproved           AiCustomerMemory[]           @relation("AiMemoryApprovedBy")
+  aiFeedbackAuthored           AiFeedback[]                 @relation("AiFeedbackUser")
+  aiExamplesApproved           AiApprovedExample[]          @relation("AiApprovedExampleBy")
+  aiExamplesBlocked            AiBlockedExample[]           @relation("AiBlockedExampleBy")
+  aiActionsApproved            AiAction[]                   @relation("AiActionApprovedBy")
+  aiHandoffsAssigned           AiHandoff[]                  @relation("AiHandoffAssignedTo")
+  aiEvaluationCasesCreated     AiEvaluationCase[]           @relation("AiEvaluationCaseCreatedBy")
+  aiEvaluationRunsCreated      AiEvaluationRun[]            @relation("AiEvaluationRunCreatedBy")
+  aiAuditEvents                AiAuditLog[]                 @relation("AiAuditActor")
 
   @@map("users")
 }
@@ -351,36 +401,36 @@ model RefreshToken {
 
 // Zalo account linked to a user (one user may own multiple Zalo accounts)
 model ZaloAccount {
-  id              String    @id @default(uuid())
-  orgId           String    @map("org_id")
-  ownerUserId     String    @map("owner_user_id")
-  zaloUid         String?   @unique @map("zalo_uid")
-  displayName     String?   @map("display_name")
-  avatarUrl       String?   @map("avatar_url")
-  phone           String?
-  status          String    @default("disconnected") // connected, disconnected, qr_pending
-  proxyUrl        String?   @map("proxy_url") // per-account proxy (PR#11)
-  sessionData     Json?     @map("session_data")
-  lastConnectedAt DateTime? @map("last_connected_at")
+  id               String    @id @default(uuid())
+  orgId            String    @map("org_id")
+  ownerUserId      String    @map("owner_user_id")
+  zaloUid          String?   @unique @map("zalo_uid")
+  displayName      String?   @map("display_name")
+  avatarUrl        String?   @map("avatar_url")
+  phone            String?
+  status           String    @default("disconnected") // connected, disconnected, qr_pending
+  proxyUrl         String?   @map("proxy_url") // per-account proxy (PR#11)
+  sessionData      Json?     @map("session_data")
+  lastConnectedAt  DateTime? @map("last_connected_at")
   // 2026-06-16 (Anh chốt): phân biệt NGẮT THỦ CÔNG vs MẤT KẾT NỐI THỤ ĐỘNG.
   //   disconnectedAt    = thời điểm nick rời trạng thái connected (mốc để FE đếm/hiển thị).
   //   disconnectReason  = 'manual' (sale bấm Ngắt → KHÔNG tự reconnect, hiện "Đã ngắt lúc {giờ}")
   //                     | 'passive' (nick rớt do Zalo/mạng → FE đếm phút:giây tăng) | null (đang connected).
   // Cron health-check + autoReconnect BỎ QUA nick disconnectReason='manual' (ngắt là ngắt thật).
-  disconnectedAt    DateTime? @map("disconnected_at")
-  disconnectReason  String?   @map("disconnect_reason")
+  disconnectedAt   DateTime? @map("disconnected_at")
+  disconnectReason String?   @map("disconnect_reason")
   // Phase Riêng Tư 2026-05-22: sale gắn nick là 'main' → blur content cho user khác,
   // chỉ owner unlock PIN xem được. Default 'sub' (org public). Xem design doc:
   // ~/.gstack/projects/zalocrm/thanh-private-mode-design-20260521.md
-  privacyMode     String    @default("sub") @map("privacy_mode")
+  privacyMode      String    @default("sub") @map("privacy_mode")
   // 2026-06-09 (Anh chốt): xóa MỀM — sale/admin xóa nick khỏi danh sách nhưng GIỮ
   // dữ liệu (hội thoại/tin/bạn bè) trong DB. archivedAt != null = đã ẩn khỏi danh sách.
   // Listener + health-check BỎ QUA nick đã archive (không reconnect).
-  archivedAt      DateTime? @map("archived_at")
+  archivedAt       DateTime? @map("archived_at")
   // T13 (2026-06-21): user.id người bấm XÓA nick (null = hệ thống tự dọn thẻ ma / xóa trước khi
   // có field này). Tab "Nick đã xóa" resolve tên qua User. KHÔNG FK (giữ nhẹ, xóa user ko cascade).
-  archivedById    String?   @map("archived_by_id")
-  createdAt       DateTime  @default(now()) @map("created_at")
+  archivedById     String?   @map("archived_by_id")
+  createdAt        DateTime  @default(now()) @map("created_at")
 
   org                Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
   owner              User                  @relation(fields: [ownerUserId], references: [id])
@@ -513,60 +563,60 @@ model ZaloAccountAccess {
 
 // CRM contact record — generic pipeline with status field
 model Contact {
-  id               String    @id @default(uuid())
-  orgId            String    @map("org_id")
-  zaloUid          String?   @map("zalo_uid")
+  id                String    @id @default(uuid())
+  orgId             String    @map("org_id")
+  zaloUid           String?   @map("zalo_uid")
   // Zalo identifiers toàn cục — KHÔNG đổi giữa các account viewer (khác với zaloUid per-account).
   // Dùng làm khóa dedup chính: cùng person từ 2 account CRM khác nhau có cùng zaloGlobalId.
-  zaloGlobalId     String?   @map("zalo_global_id")
-  zaloUsername     String?   @map("zalo_username")
+  zaloGlobalId      String?   @map("zalo_global_id")
+  zaloUsername      String?   @map("zalo_username")
   // Đợt 2b 2026-06-22 — hồ sơ Zalo mở rộng từ getUserInfo (verify raw runtime, KHÔNG đoán):
   // status=trạng thái/bio, cover=ảnh bìa, isExtensionAccount=cờ KH doanh nghiệp, lastActionTime
   // =hoạt động cuối. Fill chủ yếu qua message-handler (KH nhắn → getUserInfo). lastActive dùng GREATEST.
-  zaloStatus       String?   @map("zalo_status")
-  zaloCoverUrl     String?   @map("zalo_cover_url")
-  isBusinessAccount Boolean? @map("is_business_account")
-  zaloLastActiveAt DateTime? @map("zalo_last_active_at")
-  phone            String?
+  zaloStatus        String?   @map("zalo_status")
+  zaloCoverUrl      String?   @map("zalo_cover_url")
+  isBusinessAccount Boolean?  @map("is_business_account")
+  zaloLastActiveAt  DateTime? @map("zalo_last_active_at")
+  phone             String?
   // Canonical SĐT (84xxx no +/space) — auto-derive từ `phone` qua normalizePhone()
   // trên mọi write path. Index để search exact O(log n), dedup chính xác cross-format
   // (0xxx ↔ 84xxx ↔ +84xxx cùng map về 84xxx). Hiện chỉ index phone chính; phone2/3
   // vẫn search via contains variants vì ít dùng.
-  phoneNormalized  String?   @map("phone_normalized")
-  email            String?   @map("email")
-  fullName         String?   @map("full_name")
-  crmName          String?   @map("crm_name")
-  avatarUrl        String?   @map("avatar_url")
-  source           String? // FB, TT, GT, CN, phone_import, etc.
-  sourceDate       DateTime? @map("source_date")
-  firstContactDate DateTime? @map("first_contact_date")
-  status           String?   @default("new") // LEGACY: new/contacted/interested/converted/lost — giữ 1 release, sau drop. Field mới: statusId FK -> Status table
-  statusId         String?   @map("status_id")
+  phoneNormalized   String?   @map("phone_normalized")
+  email             String?   @map("email")
+  fullName          String?   @map("full_name")
+  crmName           String?   @map("crm_name")
+  avatarUrl         String?   @map("avatar_url")
+  source            String? // FB, TT, GT, CN, phone_import, etc.
+  sourceDate        DateTime? @map("source_date")
+  firstContactDate  DateTime? @map("first_contact_date")
+  status            String?   @default("new") // LEGACY: new/contacted/interested/converted/lost — giữ 1 release, sau drop. Field mới: statusId FK -> Status table
+  statusId          String?   @map("status_id")
   // ── Parent-Child (KH cha gom nhiều KH con — cross-Zalo-identity human-level link) ───
   // Khác mergedInto (hard-merge same Zalo identity, secondary hidden): parentContactId
   // soft-link, child visible, aggregate status/score/hasZalo từ children. Canonical son
   // làm cha → parentContactId=NULL cho cha, các con khác trỏ về.
-  parentContactId  String?   @map("parent_contact_id")
-  nextAppointment  DateTime? @map("next_appointment")
-  assignedUserId   String?   @map("assigned_user_id")
-  notes            String?
-  tags             Json      @default("[]") // CRM tags do sale gắn ("vip","quan_tam_3pn",...). Auto tag prefix "auto:"
-  metadata         Json      @default("{}")
-  leadScore        Int       @default(0) @map("lead_score")
-  lastActivity     DateTime? @map("last_activity")
-  mergedInto       String?   @map("merged_into")
-  createdAt        DateTime  @default(now()) @map("created_at")
-  updatedAt        DateTime  @updatedAt @map("updated_at")
+  parentContactId   String?   @map("parent_contact_id")
+  nextAppointment   DateTime? @map("next_appointment")
+  assignedUserId    String?   @map("assigned_user_id")
+  notes             String?
+  tags              Json      @default("[]") // CRM tags do sale gắn ("vip","quan_tam_3pn",...). Auto tag prefix "auto:"
+  metadata          Json      @default("{}")
+  leadScore         Int       @default(0) @map("lead_score")
+  lastActivity      DateTime? @map("last_activity")
+  mergedInto        String?   @map("merged_into")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
 
   // ── Discovery via friend-request attempt ─────────────────────────────────
-  hasZalo            Boolean?  @map("has_zalo") // null=unknown, true=verified yes, false=verified no
-  zaloLookupAt       DateTime? @map("zalo_lookup_at")
-  zaloLookupAttempts Int       @default(0) @map("zalo_lookup_attempts")
+  hasZalo                Boolean?  @map("has_zalo") // null=unknown, true=verified yes, false=verified no
+  zaloLookupAt           DateTime? @map("zalo_lookup_at")
+  zaloLookupAttempts     Int       @default(0) @map("zalo_lookup_attempts")
   // #3 (2026-06-20): đếm số lần ĐÃ GỬI kết bạn cho SĐT này (mức Cha) — để sau lọc/loại SĐT bị
   // nhiều chiến dịch gửi kết bạn. Chỉ +1 khi GỬI MỚI thành công (không tính "đã là bạn").
   friendInviteSentCount  Int       @default(0) @map("friend_invite_sent_count")
   friendInviteLastSentAt DateTime? @map("friend_invite_last_sent_at")
-  importBatchId      String?   @map("import_batch_id") // soft FK -> phone_list_imports.id (model later)
+  importBatchId          String?   @map("import_batch_id") // soft FK -> phone_list_imports.id (model later)
 
   // ── Compliance ─────────────────────────────────────────────────────────────
   consentStatus    String    @default("implicit") @map("consent_status") // implicit/granted/revoked
@@ -618,13 +668,13 @@ model Contact {
   totalOutbound     Int @default(0) @map("total_outbound")
   totalAppointments Int @default(0) @map("total_appointments")
 
-  org               Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  assignedUser      User?               @relation("AssignedContacts", fields: [assignedUserId], references: [id])
-  mergedIntoContact Contact?            @relation("ContactMerge", fields: [mergedInto], references: [id])
-  mergedFrom        Contact[]           @relation("ContactMerge")
-  parent            Contact?            @relation("ContactFather", fields: [parentContactId], references: [id], onDelete: SetNull)
-  children          Contact[]           @relation("ContactFather")
-  statusRef         Status?             @relation(fields: [statusId], references: [id], onDelete: SetNull)
+  org               Organization           @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  assignedUser      User?                  @relation("AssignedContacts", fields: [assignedUserId], references: [id])
+  mergedIntoContact Contact?               @relation("ContactMerge", fields: [mergedInto], references: [id])
+  mergedFrom        Contact[]              @relation("ContactMerge")
+  parent            Contact?               @relation("ContactFather", fields: [parentContactId], references: [id], onDelete: SetNull)
+  children          Contact[]              @relation("ContactFather")
+  statusRef         Status?                @relation(fields: [statusId], references: [id], onDelete: SetNull)
   conversations     Conversation[]
   appointments      Appointment[]
   attempts          FriendshipAttempt[]
@@ -643,9 +693,9 @@ model Contact {
   // lastPooledAt = NULL nghĩa CHƯA từng chia qua pool → ưu tiên đầu vòng tuyệt đối.
   // pooledCount = số lần đã chia (đếm vòng). ORDER BY (pooledCount ASC, lastPooledAt
   // ASC NULLS FIRST, created_at, id) cho FIFO: lead mới đầu vòng, đã chia/trả xuống cuối.
-  lastPooledAt        DateTime?               @map("last_pooled_at")
-  pooledCount         Int                     @default(0) @map("pooled_count")
-  leadDistributions   LeadPoolDistribution[]
+  lastPooledAt      DateTime?              @map("last_pooled_at")
+  pooledCount       Int                    @default(0) @map("pooled_count")
+  leadDistributions LeadPoolDistribution[]
 
   // Per-Contact counters (cache from Friend rows; updated by friend-aggregate hooks)
   acceptedNicksCount Int @default(0) @map("accepted_nicks_count")
@@ -699,6 +749,11 @@ model Contact {
 
   // M53 (2026-05-30): AI suggestions applied to this Contact (virtual chat assistant)
   aiSuggestionsApplied AiSuggestionApplied[]
+  aiRuns               AiRun[]
+  aiCustomerMemories   AiCustomerMemory[]
+  aiIntentAnalyses     AiIntentAnalysis[]
+  aiEmotionAnalyses    AiEmotionAnalysis[]
+  aiHandoffs           AiHandoff[]
 
   // Phase Tag Taxonomy v2 2026-05-31 (M57) — junction TagContact (Big-Bang Refactor).
   // Chạy song song Contact.tags JSON cho dual-write Wave 3-4.
@@ -764,39 +819,59 @@ model Status {
 
 // A chat thread between a Zalo account and a contact (or group)
 model Conversation {
-  id                String    @id @default(uuid())
-  orgId             String    @map("org_id")
-  zaloAccountId     String    @map("zalo_account_id")
-  contactId         String?   @map("contact_id")
-  threadType        String    @default("user") // user, group
-  externalThreadId  String?   @map("external_thread_id")
+  id                 String    @id @default(uuid())
+  orgId              String    @map("org_id")
+  zaloAccountId      String    @map("zalo_account_id")
+  contactId          String?   @map("contact_id")
+  threadType         String    @default("user") // user, group
+  externalThreadId   String?   @map("external_thread_id")
   // Group-specific (chỉ set khi threadType=group; resolve qua getGroupInfo từ zca-js)
-  groupName         String?   @map("group_name")
-  groupAvatarUrl    String?   @map("group_avatar_url")
-  groupMembersCount Int?      @map("group_members_count")
-  lastMessageAt     DateTime? @map("last_message_at")
-  unreadCount       Int       @default(0) @map("unread_count")
-  isReplied         Boolean   @default(true) @map("is_replied")
-  tab               String    @default("main") @map("tab") // main, other
+  groupName          String?   @map("group_name")
+  groupAvatarUrl     String?   @map("group_avatar_url")
+  groupMembersCount  Int?      @map("group_members_count")
+  lastMessageAt      DateTime? @map("last_message_at")
+  unreadCount        Int       @default(0) @map("unread_count")
+  isReplied          Boolean   @default(true) @map("is_replied")
+  tab                String    @default("main") @map("tab") // main, other
   // M53 (2026-05-30): Virtual conversation cho KH no-Zalo. isVirtual=true → chat-routes skip
   // Zalo SDK send, lưu thẳng Message isLocal=true. externalThreadId synthetic 'virtual:{contactId}:{nickId}'.
   // Memory M53: anh chốt Approach A — sale có 1 chỗ duy nhất xem TẤT CẢ KH trong /chat.
-  isVirtual         Boolean   @default(false) @map("is_virtual")
+  isVirtual          Boolean   @default(false) @map("is_virtual")
   // 2026-06-11 — Xóa mềm hội thoại từ cột 2 (anh chốt: ẩn đi, khôi phục được).
   // Khi != null → mọi query list/count loại trừ. KHÔNG xóa Message vật lý.
-  deletedAt         DateTime? @map("deleted_at")
-  createdAt         DateTime  @default(now()) @map("created_at")
+  deletedAt          DateTime? @map("deleted_at")
+  // Riêng tư cấp HỘI THOẠI 2026-07-09 — "Chỉ mình tôi xem cuộc hội thoại này".
+  // Độc lập hoàn toàn với ZaloAccount.privacyMode (riêng tư cấp NICK + OTP).
+  // isPrivate=true → CHỈ privateOwnerUserId xem được nội dung, KHÔNG cần OTP.
+  // Mọi tài khoản khác (kể cả owner/admin) bị chặn ở tầng redact, không phải tầng phân quyền.
+  // privateOwnerUserId FK SetNull: user bị xóa → cờ vẫn còn, chỉ Admin gỡ được (yêu cầu 10).
+  isPrivate          Boolean   @default(false) @map("is_private")
+  privateOwnerUserId String?   @map("private_owner_user_id")
+  privateEnabledAt   DateTime? @map("private_enabled_at")
+  privateDisabledAt  DateTime? @map("private_disabled_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
 
-  org           Organization         @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  zaloAccount   ZaloAccount          @relation(fields: [zaloAccountId], references: [id], onDelete: Cascade)
-  contact       Contact?             @relation(fields: [contactId], references: [id])
-  messages      Message[]
-  aiSuggestions AiSuggestion[]
-  pins          PinnedConversation[]
+  org                    Organization            @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  zaloAccount            ZaloAccount             @relation(fields: [zaloAccountId], references: [id], onDelete: Cascade)
+  contact                Contact?                @relation(fields: [contactId], references: [id])
+  privateOwner           User?                   @relation("ConversationPrivateOwner", fields: [privateOwnerUserId], references: [id], onDelete: SetNull)
+  messages               Message[]
+  aiSuggestions          AiSuggestion[]
+  aiRuns                 AiRun[]
+  aiSummaries            AiConversationSummary[]
+  aiIntentAnalyses       AiIntentAnalysis[]
+  aiEmotionAnalyses      AiEmotionAnalysis[]
+  aiAssistantSuggestions AiAssistantSuggestion[]
+  aiSentMessages         AiSentMessage[]
+  aiActions              AiAction[]
+  aiHandoffs             AiHandoff[]
+  aiAuditLogs            AiAuditLog[]
+  pins                   PinnedConversation[]
   // 2026-06-18 — Cầu Telegram: 1 hội thoại = 1 forum topic (định tuyến reply).
-  telegramTopic TelegramTopicMap?
+  telegramTopic          TelegramTopicMap?
 
   @@unique([zaloAccountId, externalThreadId])
+  @@index([privateOwnerUserId])
   @@index([orgId, zaloAccountId, isReplied, lastMessageAt])
   @@index([orgId, zaloAccountId, lastMessageAt])
   @@index([orgId, tab, lastMessageAt])
@@ -877,9 +952,15 @@ model Message {
   clientEchoId        String?   @map("client_echo_id")
   createdAt           DateTime  @default(now()) @map("created_at")
 
-  conversation Conversation      @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  repliedBy    User?             @relation("RepliedMessages", fields: [repliedByUserId], references: [id])
-  reactions    MessageReaction[]
+  conversation         Conversation            @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  repliedBy            User?                   @relation("RepliedMessages", fields: [repliedByUserId], references: [id])
+  reactions            MessageReaction[]
+  aiTriggeredRuns      AiRun[]                 @relation("AiRunTriggerMessage")
+  aiSummaryBoundaries  AiConversationSummary[] @relation("AiSummaryThroughMessage")
+  aiIntentAnalyses     AiIntentAnalysis[]
+  aiEmotionAnalyses    AiEmotionAnalysis[]
+  aiSuggestionTriggers AiAssistantSuggestion[] @relation("AiSuggestionTriggerMessage")
+  aiSentMessage        AiSentMessage?
 
   @@unique([conversationId, zaloMsgId])
   // BE-3 idempotency — 1 echoId duy nhất / conversation. Multiple NULL cho phép (tin cũ).
@@ -1013,7 +1094,7 @@ model Device {
   userId     String   @map("user_id")
   orgId      String   @map("org_id")
   fcmToken   String   @unique @map("fcm_token") // token Google FCM / Apple APNs
-  platform   String   // 'ios' | 'android'
+  platform   String // 'ios' | 'android'
   deviceId   String   @map("device_id") // định danh máy (ổn định)
   lastSeenAt DateTime @default(now()) @map("last_seen_at")
   createdAt  DateTime @default(now()) @map("created_at")
@@ -1059,27 +1140,27 @@ model SystemNotification {
 // externalRef = Zalo reminderId (unique per org để dedup khi reminder edit/fire lại).
 // zaloMessageId = FK mềm tới Message.id của reminder card → deep-link conversation.
 model Appointment {
-  id              String   @id @default(uuid())
-  orgId           String   @map("org_id")
-  contactId       String   @map("contact_id")
-  assignedUserId  String?  @map("assigned_user_id")
-  appointmentDate DateTime @map("appointment_date")
-  appointmentTime String?  @map("appointment_time")
+  id                   String    @id @default(uuid())
+  orgId                String    @map("org_id")
+  contactId            String    @map("contact_id")
+  assignedUserId       String?   @map("assigned_user_id")
+  appointmentDate      DateTime  @map("appointment_date")
+  appointmentTime      String?   @map("appointment_time")
   // 2026-05-21 "Nhắc hẹn" refactor — anh chốt 1 modal cho create+edit:
   //   title       — tiêu đề (default = "Gọi nhắc KH X")
   //   durationMin — dự kiến dành thời gian (phút), endAt tính ngầm = startAt + duration
   //   location    — địa điểm (5 preset chips + smart suggest từ title)
   //   type        — 4 values: call | message | meeting | follow_up
-  title           String?
-  durationMin     Int      @default(15) @map("duration_min")
-  location        String?
-  type            String?
-  status          String   @default("scheduled") // scheduled, completed, cancelled, no_show
-  notes           String?
-  reminderSent    Boolean  @default(false) @map("reminder_sent")
+  title                String?
+  durationMin          Int       @default(15) @map("duration_min")
+  location             String?
+  type                 String?
+  status               String    @default("scheduled") // scheduled, completed, cancelled, no_show
+  notes                String?
+  reminderSent         Boolean   @default(false) @map("reminder_sent")
   // 2026-06-16: đã gửi tin "link đánh dấu hoàn thành/huỷ" (sau giờ hẹn) chưa — LEGACY (cron cũ set true 1 lần).
   // 2026-06-18 đổi sang đếm: giữ cột này để migration cũ không vỡ, logic mới đọc actionPromptCount.
-  actionPromptSent Boolean @default(false) @map("action_prompt_sent")
+  actionPromptSent     Boolean   @default(false) @map("action_prompt_sent")
   // 2026-06-18 "Nhắc 3 lần + digest trưởng phòng":
   //   actionPromptCount    — đã gửi nhắc mấy lần (0..3); cron tăng SAU khi gửi OK (Luật D4).
   //   lastActionPromptAt   — mốc gửi nhắc gần nhất.
@@ -1089,7 +1170,7 @@ model Appointment {
   lastActionPromptAt   DateTime? @map("last_action_prompt_at")
   managerDigestedAt    DateTime? @map("manager_digested_at")
   managerDigestFirstAt DateTime? @map("manager_digest_first_at")
-  createdAt       DateTime @default(now()) @map("created_at")
+  createdAt            DateTime  @default(now()) @map("created_at")
 
   // Nguồn + link Zalo
   source        String  @default("manual") // "manual" | "zalo"
@@ -1102,10 +1183,10 @@ model Appointment {
   statusChangedAt       DateTime? @map("status_changed_at")
   statusChangedBy       User?     @relation("AppointmentStatusChanger", fields: [statusChangedByUserId], references: [id])
 
-  org          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  contact      Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
-  assignedUser User?        @relation(fields: [assignedUserId], references: [id])
-  fromNotes    Note[]       @relation("NoteAppointment")
+  org          Organization            @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  contact      Contact                 @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  assignedUser User?                   @relation(fields: [assignedUserId], references: [id])
+  fromNotes    Note[]                  @relation("NoteAppointment")
   actionLinks  AppointmentActionLink[]
 
   @@unique([orgId, externalRef])
@@ -3131,13 +3212,13 @@ model CareSession {
   // pausedAtStepIdx: bước đang dở khi KH reply (pause). Resume worker đọc cột này để
   // re-enqueue ĐÚNG bước của ĐÚNG luồng (per-CareSession theo sourceSequenceId). NULL =
   // không đang pause-giữa-chừng. Clear sau khi resume re-enqueue xong.
-  pausedAtStepIdx Int? @map("paused_at_step_idx")
+  pausedAtStepIdx Int?  @map("paused_at_step_idx")
   // pauseEpoch: tăng mỗi lần KH reply (pause). Resume chỉ re-enqueue nếu epoch khớp lúc
   // pause → chống "close cũ hồi sinh send sau reply mới" (Codex #2). NULL/0 = chưa pause.
-  pauseEpoch      Int? @map("pause_epoch")
+  pauseEpoch      Int?  @map("pause_epoch")
   // enrollEpoch (2026-06-15): SỐ LẦN gắn luồng này cho KH — gắn lại tăng epoch → jobId mới
   // (không đụng job cũ đã completed). Resume/cancel dùng đúng epoch của lần gắn này. NULL=1.
-  enrollEpoch     Int? @map("enroll_epoch")
+  enrollEpoch     Int?  @map("enroll_epoch")
   // rulesSnapshot: chụp runtimeRules (giờ/sendGap/cooldown) lúc enroll → đổi cấu hình
   // KHÔNG ảnh hưởng KH đang chạy (Codex #10). NULL = dùng rules live của sequence (fallback).
   rulesSnapshot   Json? @map("rules_snapshot")
@@ -3916,8 +3997,8 @@ model MediaBlob {
   durationSec Int?     @map("duration_sec") // video
   createdAt   DateTime @default(now()) @map("created_at")
 
-  org        Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  asset      MediaAsset       @relation(fields: [assetId], references: [id], onDelete: Cascade)
+  org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  asset MediaAsset   @relation(fields: [assetId], references: [id], onDelete: Cascade)
 
   // Dedup key: cùng org + cùng bytes = 1 blob. statObject + upsert chống trùng.
   @@unique([orgId, contentHash])
@@ -3964,16 +4045,16 @@ model MediaAsset {
   createdAt           DateTime  @default(now()) @map("created_at")
   updatedAt           DateTime  @updatedAt @map("updated_at")
 
-  org        Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  owner      User?            @relation("MediaAssetOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
-  createdBy  User?            @relation("MediaAssetCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
-  folder     MediaAlbum?      @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  org               Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  owner             User?             @relation("MediaAssetOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
+  createdBy         User?             @relation("MediaAssetCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  folder            MediaAlbum?       @relation(fields: [folderId], references: [id], onDelete: SetNull)
   // 2026-06-15: relation tới nick nguồn để Prisma `include` join displayName 1 query (chống
   // N+1 khi list 60-200 ảnh hiện "nick nào"). SetNull: nick xóa → vẫn giữ ảnh, mất tên nick.
-  sourceZaloAccount ZaloAccount? @relation("MediaAssetSourceNick", fields: [sourceZaloAccountId], references: [id], onDelete: SetNull)
-  blobs      MediaBlob[]
-  albumItems MediaAlbumItem[]
-  usageEvents MediaUsageEvent[]
+  sourceZaloAccount ZaloAccount?      @relation("MediaAssetSourceNick", fields: [sourceZaloAccountId], references: [id], onDelete: SetNull)
+  blobs             MediaBlob[]
+  albumItems        MediaAlbumItem[]
+  usageEvents       MediaUsageEvent[]
 
   @@index([orgId, kind])
   @@index([orgId, visibility])
@@ -4032,15 +4113,15 @@ model MediaAlbumItem {
 // Codex/observability S8 + usageCount-tách-event: usageCount giữ tổng (đếm nhanh),
 // event này lưu chi tiết loại (sent_chat / sent_album / broadcast / saved_public).
 model MediaUsageEvent {
-  id           String   @id @default(uuid())
-  orgId        String   @map("org_id")
-  mediaAssetId String   @map("media_asset_id")
+  id             String   @id @default(uuid())
+  orgId          String   @map("org_id")
+  mediaAssetId   String   @map("media_asset_id")
   // eventType: 'sent_chat' | 'sent_album' | 'broadcast' | 'saved_from_chat' | 'made_public'
-  eventType    String   @map("event_type")
-  userId       String?  @map("user_id") // ai thực hiện (audit privacy)
-  conversationId String? @map("conversation_id")
-  meta         Json?    // dữ liệu phụ (vd albumCount, deduped, fromPrivateNick)
-  createdAt    DateTime @default(now()) @map("created_at")
+  eventType      String   @map("event_type")
+  userId         String?  @map("user_id") // ai thực hiện (audit privacy)
+  conversationId String?  @map("conversation_id")
+  meta           Json? // dữ liệu phụ (vd albumCount, deduped, fromPrivateNick)
+  createdAt      DateTime @default(now()) @map("created_at")
 
   org   Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
   asset MediaAsset   @relation(fields: [mediaAssetId], references: [id], onDelete: Cascade)
@@ -4069,11 +4150,11 @@ model OutreachCampaign {
   zaloAccountId  String  @map("zalo_account_id")
 
   // ── Cấu hình kết bạn ──
-  enableAutoAdd   Boolean @default(true) @map("enable_auto_add")
+  enableAutoAdd    Boolean @default(true) @map("enable_auto_add")
   addFriendMessage String? @map("add_friend_message")
-  addDelayMinMs   Int     @default(2000) @map("add_delay_min_ms")
-  addDelayMaxMs   Int     @default(5000) @map("add_delay_max_ms")
-  maxAddPerDay    Int     @default(100) @map("max_add_per_day")
+  addDelayMinMs    Int     @default(2000) @map("add_delay_min_ms")
+  addDelayMaxMs    Int     @default(5000) @map("add_delay_max_ms")
+  maxAddPerDay     Int     @default(100) @map("max_add_per_day")
 
   // ── Cấu hình nhắn tin ──
   enableAutoMessage Boolean @default(true) @map("enable_auto_message")
@@ -4221,38 +4302,38 @@ model FollowupWorkflow {
 
   // ── Goal (mục tiêu) ── đạt Goal → dừng ngay, không gửi bước còn lại.
   // goalType: none | replied | requested_quote | purchased | has_tag | custom
-  goalType    String  @default("none") @map("goal_type")
-  goalTag     String? @map("goal_tag")   // dùng khi goalType=has_tag
-  goalTagOnReach   String? @map("goal_tag_on_reach")   // gắn tag này khi đạt Goal
-  nextWorkflowId   String? @map("next_workflow_id")    // chuyển workflow kế tiếp khi đạt Goal/hoàn thành
+  goalType       String  @default("none") @map("goal_type")
+  goalTag        String? @map("goal_tag") // dùng khi goalType=has_tag
+  goalTagOnReach String? @map("goal_tag_on_reach") // gắn tag này khi đạt Goal
+  nextWorkflowId String? @map("next_workflow_id") // chuyển workflow kế tiếp khi đạt Goal/hoàn thành
 
   // ── Versioning ── workflow đang chạy KHÔNG sửa trực tiếp; sửa → tạo version mới.
-  version       Int     @default(1)
-  rootId        String? @map("root_id")   // gốc chuỗi version (null = chính nó)
-  isLatest      Boolean @default(true) @map("is_latest")
+  version  Int     @default(1)
+  rootId   String? @map("root_id") // gốc chuỗi version (null = chính nó)
+  isLatest Boolean @default(true) @map("is_latest")
 
   // ── Cấu hình an toàn gửi ──
-  sendWindowStart Int @default(480) @map("send_window_start")  // phút từ 00:00 (480=08:00)
-  sendWindowEnd   Int @default(1080) @map("send_window_end")   // 1080=18:00
-  minGapMinutes   Int @default(1440) @map("min_gap_minutes")   // tối thiểu giữa 2 tin (1440=1 ngày)
-  maxMessages     Int @default(5) @map("max_messages")         // trần số tin/khách
+  sendWindowStart Int    @default(480) @map("send_window_start") // phút từ 00:00 (480=08:00)
+  sendWindowEnd   Int    @default(1080) @map("send_window_end") // 1080=18:00
+  minGapMinutes   Int    @default(1440) @map("min_gap_minutes") // tối thiểu giữa 2 tin (1440=1 ngày)
+  maxMessages     Int    @default(5) @map("max_messages") // trần số tin/khách
   timezone        String @default("Asia/Ho_Chi_Minh")
 
   // ── Điều kiện dừng ──
-  stopOnPurchase    Boolean  @default(true) @map("stop_on_purchase")
-  stopOnTags        String[] @default([]) @map("stop_on_tags")  // tên tag → gặp là dừng (vd "Không làm phiền","Đã mua")
+  stopOnPurchase Boolean  @default(true) @map("stop_on_purchase")
+  stopOnTags     String[] @default([]) @map("stop_on_tags") // tên tag → gặp là dừng (vd "Không làm phiền","Đã mua")
 
   // ── Trạng thái ──
-  status String @default("draft")  // draft | active | paused | archived
+  status String @default("draft") // draft | active | paused | archived
 
   // ── Counter (cập nhật khi enrollment đổi trạng thái) ──
-  totalEnrolled     Int @default(0) @map("total_enrolled")
-  totalRunning      Int @default(0) @map("total_running")
-  totalWaiting      Int @default(0) @map("total_waiting")
-  totalWaitingSale  Int @default(0) @map("total_waiting_sale")
-  totalCompleted    Int @default(0) @map("total_completed")
-  totalStopped      Int @default(0) @map("total_stopped")
-  totalGoalReached  Int @default(0) @map("total_goal_reached")
+  totalEnrolled    Int @default(0) @map("total_enrolled")
+  totalRunning     Int @default(0) @map("total_running")
+  totalWaiting     Int @default(0) @map("total_waiting")
+  totalWaitingSale Int @default(0) @map("total_waiting_sale")
+  totalCompleted   Int @default(0) @map("total_completed")
+  totalStopped     Int @default(0) @map("total_stopped")
+  totalGoalReached Int @default(0) @map("total_goal_reached")
 
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
@@ -4274,7 +4355,7 @@ model FollowupStep {
   key        String
   // type: start | send | wait | condition | tag_add | tag_remove | sale_task | end
   type       String
-  orderIndex Int    @default(0) @map("order_index")  // thứ tự hiển thị (builder danh sách)
+  orderIndex Int     @default(0) @map("order_index") // thứ tự hiển thị (builder danh sách)
   label      String?
 
   // config Json theo type:
@@ -4284,11 +4365,11 @@ model FollowupStep {
   //  tag_add   : { tag }
   //  tag_remove: { tag }
   //  sale_task : { title, note? }
-  config     Json?
+  config Json?
 
   // nextKey: bước kế mặc định cho node tuyến tính (send/wait/tag_*/sale_task/start).
   // condition dùng config.trueKey/falseKey; end không có nextKey.
-  nextKey    String? @map("next_key")
+  nextKey String? @map("next_key")
 
   createdAt DateTime @default(now()) @map("created_at")
 
@@ -4300,27 +4381,27 @@ model FollowupStep {
 }
 
 model FollowupEnrollment {
-  id              String  @id @default(uuid())
-  orgId           String  @map("org_id")
-  workflowId      String  @map("workflow_id")
-  workflowVersion Int     @map("workflow_version")  // "đóng băng" version lúc enroll
+  id              String @id @default(uuid())
+  orgId           String @map("org_id")
+  workflowId      String @map("workflow_id")
+  workflowVersion Int    @map("workflow_version") // "đóng băng" version lúc enroll
 
   contactId     String  @map("contact_id")
   friendId      String? @map("friend_id")
-  zaloAccountId String  @map("zalo_account_id")     // nick dùng để gửi
+  zaloAccountId String  @map("zalo_account_id") // nick dùng để gửi
 
   // status: running | waiting | waiting_sale | completed | stopped | goal_reached
-  status        String  @default("waiting")
-  currentStepKey String? @map("current_step_key")
-  messagesSent  Int     @default(0) @map("messages_sent")
-  lastMessageAt DateTime? @map("last_message_at")
-  nextRunAt     DateTime? @map("next_run_at")       // thời điểm job kế fire (BullMQ)
-  jobId         String?  @map("job_id")             // id job BullMQ đang chờ (để huỷ khi dừng)
+  status         String    @default("waiting")
+  currentStepKey String?   @map("current_step_key")
+  messagesSent   Int       @default(0) @map("messages_sent")
+  lastMessageAt  DateTime? @map("last_message_at")
+  nextRunAt      DateTime? @map("next_run_at") // thời điểm job kế fire (BullMQ)
+  jobId          String?   @map("job_id") // id job BullMQ đang chờ (để huỷ khi dừng)
 
-  goalReached   Boolean  @default(false) @map("goal_reached")
+  goalReached   Boolean @default(false) @map("goal_reached")
   // stopReason: purchased | do_not_disturb | sale_stopped | rejected | switched | goal | max_messages | manual | completed
-  stopReason    String?  @map("stop_reason")
-  saleTaskTitle String?  @map("sale_task_title")    // task đang chờ Sale (khi waiting_sale)
+  stopReason    String? @map("stop_reason")
+  saleTaskTitle String? @map("sale_task_title") // task đang chờ Sale (khi waiting_sale)
 
   enrolledById   String? @map("enrolled_by_id")
   enrolledByName String? @map("enrolled_by_name")
@@ -4340,19 +4421,19 @@ model FollowupEnrollment {
 }
 
 model FollowupLog {
-  id           String  @id @default(uuid())
-  orgId        String  @map("org_id")
-  enrollmentId String  @map("enrollment_id")
-  workflowId   String  @map("workflow_id")
-  contactId    String  @map("contact_id")
+  id           String @id @default(uuid())
+  orgId        String @map("org_id")
+  enrollmentId String @map("enrollment_id")
+  workflowId   String @map("workflow_id")
+  contactId    String @map("contact_id")
 
-  stepKey  String? @map("step_key")
-  stepType String? @map("step_type")
+  stepKey   String? @map("step_key")
+  stepType  String? @map("step_type")
   // eventType: enrolled | message_sent | message_failed | waited | condition_eval |
   //   tag_added | tag_removed | sale_task_created | sale_task_done | goal_reached |
   //   stopped | completed | switched_workflow | restarted | note
   eventType String  @map("event_type")
-  message   String?          // dòng timeline dễ đọc (tiếng Việt)
+  message   String? // dòng timeline dễ đọc (tiếng Việt)
   detail    Json?
 
   // actorType: system | sale
@@ -4397,4 +4478,739 @@ model PushSubscription {
   @@index([userId, revokedAt])
   @@index([orgId])
   @@map("push_subscriptions")
+}
+
+// AI Assistant database foundation.
+model AiAgent {
+  id              String            @id @default(uuid())
+  orgId           String            @map("org_id")
+  key             String
+  name            String
+  status          String            @default("draft")
+  personaId       String?           @map("persona_id")
+  promptVersionId String?           @map("prompt_version_id")
+  modelConfigId   String?           @map("model_config_id")
+  capabilities    Json              @default("[]")
+  policy          Json              @default("{}")
+  autoReplyMode   String            @default("disabled") @map("auto_reply_mode")
+  createdByUserId String?           @map("created_by_user_id")
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+  deletedAt       DateTime?         @map("deleted_at")
+  org             Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  persona         AiPersona?        @relation(fields: [personaId], references: [id], onDelete: SetNull)
+  promptVersion   AiPromptVersion?  @relation(fields: [promptVersionId], references: [id], onDelete: SetNull)
+  modelConfig     AiModelConfig?    @relation(fields: [modelConfigId], references: [id], onDelete: SetNull)
+  createdBy       User?             @relation("AiAgentCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  skills          AiAgentSkill[]
+  runs            AiRun[]
+  evaluationRuns  AiEvaluationRun[]
+
+  @@unique([orgId, key])
+  @@index([orgId, status, deletedAt])
+  @@map("ai_agents")
+}
+
+model AiPersona {
+  id               String       @id @default(uuid())
+  orgId            String       @map("org_id")
+  name             String
+  contentEncrypted Bytes?       @map("content_encrypted")
+  contentHash      String?      @map("content_hash")
+  previewRedacted  String?      @map("preview_redacted") @db.Text
+  style            Json         @default("{}")
+  createdByUserId  String?      @map("created_by_user_id")
+  createdAt        DateTime     @default(now()) @map("created_at")
+  updatedAt        DateTime     @updatedAt @map("updated_at")
+  deletedAt        DateTime?    @map("deleted_at")
+  org              Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy        User?        @relation("AiPersonaCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  agents           AiAgent[]
+
+  @@index([orgId, deletedAt])
+  @@map("ai_personas")
+}
+
+model AiSkill {
+  id              String         @id @default(uuid())
+  orgId           String         @map("org_id")
+  key             String
+  name            String
+  handlerType     String         @map("handler_type")
+  config          Json           @default("{}")
+  credentialRef   String?        @map("credential_ref")
+  riskTier        String         @default("low") @map("risk_tier")
+  createdByUserId String?        @map("created_by_user_id")
+  createdAt       DateTime       @default(now()) @map("created_at")
+  updatedAt       DateTime       @updatedAt @map("updated_at")
+  deletedAt       DateTime?      @map("deleted_at")
+  org             Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy       User?          @relation("AiSkillCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  agentLinks      AiAgentSkill[]
+
+  @@unique([orgId, key])
+  @@index([orgId, deletedAt])
+  @@map("ai_skills")
+}
+
+model AiAgentSkill {
+  id             String       @id @default(uuid())
+  orgId          String       @map("org_id")
+  agentId        String       @map("agent_id")
+  skillId        String       @map("skill_id")
+  isEnabled      Boolean      @default(true) @map("is_enabled")
+  configOverride Json?        @map("config_override")
+  createdAt      DateTime     @default(now()) @map("created_at")
+  updatedAt      DateTime     @updatedAt @map("updated_at")
+  org            Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  agent          AiAgent      @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  skill          AiSkill      @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@unique([agentId, skillId])
+  @@index([orgId, isEnabled])
+  @@index([skillId])
+  @@map("ai_agent_skills")
+}
+
+model AiPrompt {
+  id              String            @id @default(uuid())
+  orgId           String            @map("org_id")
+  key             String
+  name            String
+  taskType        String            @map("task_type")
+  createdByUserId String?           @map("created_by_user_id")
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+  deletedAt       DateTime?         @map("deleted_at")
+  org             Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy       User?             @relation("AiPromptCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  versions        AiPromptVersion[]
+
+  @@unique([orgId, key])
+  @@index([orgId, taskType, deletedAt])
+  @@map("ai_prompts")
+}
+
+model AiPromptVersion {
+  id               String             @id @default(uuid())
+  orgId            String             @map("org_id")
+  promptId         String             @map("prompt_id")
+  version          Int
+  status           String             @default("draft")
+  contentEncrypted Bytes              @map("content_encrypted")
+  contentHash      String             @map("content_hash")
+  previewRedacted  String?            @map("preview_redacted") @db.Text
+  inputSchema      Json?              @map("input_schema")
+  outputSchema     Json?              @map("output_schema")
+  createdByUserId  String?            @map("created_by_user_id")
+  approvedByUserId String?            @map("approved_by_user_id")
+  approvedAt       DateTime?          @map("approved_at")
+  createdAt        DateTime           @default(now()) @map("created_at")
+  updatedAt        DateTime           @updatedAt @map("updated_at")
+  org              Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  prompt           AiPrompt           @relation(fields: [promptId], references: [id], onDelete: Cascade)
+  createdBy        User?              @relation("AiPromptVersionCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  approvedBy       User?              @relation("AiPromptVersionApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  agents           AiAgent[]
+  runs             AiRun[]
+  evaluationCases  AiEvaluationCase[]
+  evaluationRuns   AiEvaluationRun[]
+
+  @@unique([promptId, version])
+  @@index([orgId, status])
+  @@map("ai_prompt_versions")
+}
+
+model AiModelConfig {
+  id              String            @id @default(uuid())
+  orgId           String            @map("org_id")
+  name            String
+  provider        String
+  model           String
+  credentialRef   String?           @map("credential_ref")
+  parameters      Json              @default("{}")
+  dataPolicy      Json              @default("{}") @map("data_policy")
+  status          String            @default("draft")
+  createdByUserId String?           @map("created_by_user_id")
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+  deletedAt       DateTime?         @map("deleted_at")
+  org             Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy       User?             @relation("AiModelConfigCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  agents          AiAgent[]
+  runs            AiRun[]
+  evaluationRuns  AiEvaluationRun[]
+
+  @@index([orgId, provider, status, deletedAt])
+  @@map("ai_model_configs")
+}
+
+model AiKnowledgeSource {
+  id              String                @id @default(uuid())
+  orgId           String                @map("org_id")
+  name            String
+  type            String
+  config          Json                  @default("{}")
+  credentialRef   String?               @map("credential_ref")
+  status          String                @default("draft")
+  lastSyncedAt    DateTime?             @map("last_synced_at")
+  createdByUserId String?               @map("created_by_user_id")
+  createdAt       DateTime              @default(now()) @map("created_at")
+  updatedAt       DateTime              @updatedAt @map("updated_at")
+  deletedAt       DateTime?             @map("deleted_at")
+  org             Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy       User?                 @relation("AiKnowledgeSourceCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  documents       AiKnowledgeDocument[]
+
+  @@index([orgId, type, status, deletedAt])
+  @@map("ai_knowledge_sources")
+}
+
+model AiKnowledgeDocument {
+  id               String             @id @default(uuid())
+  orgId            String             @map("org_id")
+  sourceId         String             @map("source_id")
+  externalId       String?            @map("external_id")
+  title            String
+  status           String             @default("pending")
+  contentRef       String?            @map("content_ref")
+  contentHash      String?            @map("content_hash")
+  version          Int                @default(1)
+  metadata         Json               @default("{}")
+  createdByUserId  String?            @map("created_by_user_id")
+  approvedByUserId String?            @map("approved_by_user_id")
+  approvedAt       DateTime?          @map("approved_at")
+  createdAt        DateTime           @default(now()) @map("created_at")
+  updatedAt        DateTime           @updatedAt @map("updated_at")
+  deletedAt        DateTime?          @map("deleted_at")
+  org              Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  source           AiKnowledgeSource  @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  createdBy        User?              @relation("AiKnowledgeDocumentCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  approvedBy       User?              @relation("AiKnowledgeDocumentApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  chunks           AiKnowledgeChunk[]
+
+  @@unique([sourceId, externalId, version])
+  @@index([orgId, status, deletedAt])
+  @@map("ai_knowledge_documents")
+}
+
+model AiKnowledgeChunk {
+  id               String              @id @default(uuid())
+  orgId            String              @map("org_id")
+  documentId       String              @map("document_id")
+  chunkIndex       Int                 @map("chunk_index")
+  contentEncrypted Bytes?              @map("content_encrypted")
+  contentRedacted  String?             @map("content_redacted") @db.Text
+  contentHash      String              @map("content_hash")
+  tokenCount       Int?                @map("token_count")
+  embedding        Float[]             @default([])
+  embeddingModel   String?             @map("embedding_model")
+  metadata         Json                @default("{}")
+  createdAt        DateTime            @default(now()) @map("created_at")
+  updatedAt        DateTime            @updatedAt @map("updated_at")
+  deletedAt        DateTime?           @map("deleted_at")
+  org              Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  document         AiKnowledgeDocument @relation(fields: [documentId], references: [id], onDelete: Cascade)
+
+  @@unique([documentId, chunkIndex])
+  @@index([orgId, deletedAt])
+  @@index([contentHash])
+  @@map("ai_knowledge_chunks")
+}
+
+model AiRun {
+  id                 String                  @id @default(uuid())
+  orgId              String                  @map("org_id")
+  agentId            String                  @map("agent_id")
+  requestedByUserId  String?                 @map("requested_by_user_id")
+  taskType           String                  @map("task_type")
+  status             String                  @default("queued")
+  riskTier           String                  @default("low") @map("risk_tier")
+  conversationId     String?                 @map("conversation_id")
+  contactId          String?                 @map("contact_id")
+  triggerMessageId   String?                 @map("trigger_message_id")
+  promptVersionId    String?                 @map("prompt_version_id")
+  modelConfigId      String?                 @map("model_config_id")
+  contextManifest    Json                    @default("{}") @map("context_manifest")
+  knowledgeRefs      Json                    @default("[]") @map("knowledge_refs")
+  inputHash          String?                 @map("input_hash")
+  outputHash         String?                 @map("output_hash")
+  errorCode          String?                 @map("error_code")
+  createdAt          DateTime                @default(now()) @map("created_at")
+  updatedAt          DateTime                @updatedAt @map("updated_at")
+  completedAt        DateTime?               @map("completed_at")
+  org                Organization            @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  agent              AiAgent                 @relation(fields: [agentId], references: [id], onDelete: Restrict)
+  requestedBy        User?                   @relation("AiRunRequestedBy", fields: [requestedByUserId], references: [id], onDelete: SetNull)
+  conversation       Conversation?           @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  contact            Contact?                @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  triggerMessage     Message?                @relation("AiRunTriggerMessage", fields: [triggerMessageId], references: [id], onDelete: SetNull)
+  promptVersion      AiPromptVersion?        @relation(fields: [promptVersionId], references: [id], onDelete: SetNull)
+  modelConfig        AiModelConfig?          @relation(fields: [modelConfigId], references: [id], onDelete: SetNull)
+  summaries          AiConversationSummary[]
+  memories           AiCustomerMemory[]
+  intentAnalyses     AiIntentAnalysis[]
+  emotionAnalyses    AiEmotionAnalysis[]
+  suggestions        AiAssistantSuggestion[]
+  sentMessages       AiSentMessage[]
+  feedback           AiFeedback[]
+  learningCandidates AiLearningCandidate[]
+  actions            AiAction[]
+  handoffs           AiHandoff[]
+  evaluationResults  AiEvaluationResult[]
+  auditLogs          AiAuditLog[]
+  usageRecords       AiUsageRecord[]
+
+  @@index([orgId, taskType, status, createdAt])
+  @@index([conversationId, createdAt])
+  @@index([contactId, createdAt])
+  @@map("ai_runs")
+}
+
+model AiConversationSummary {
+  id                     String       @id @default(uuid())
+  orgId                  String       @map("org_id")
+  runId                  String?      @map("run_id")
+  conversationId         String       @map("conversation_id")
+  sourceThroughMessageId String?      @map("source_through_message_id")
+  version                Int
+  status                 String       @default("active")
+  summaryEncrypted       Bytes        @map("summary_encrypted")
+  summaryRedacted        String?      @map("summary_redacted") @db.Text
+  summaryHash            String       @map("summary_hash")
+  createdAt              DateTime     @default(now()) @map("created_at")
+  updatedAt              DateTime     @updatedAt @map("updated_at")
+  org                    Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  run                    AiRun?       @relation(fields: [runId], references: [id], onDelete: SetNull)
+  conversation           Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sourceThroughMessage   Message?     @relation("AiSummaryThroughMessage", fields: [sourceThroughMessageId], references: [id], onDelete: SetNull)
+
+  @@unique([conversationId, version])
+  @@index([orgId, status, createdAt])
+  @@map("ai_conversation_summaries")
+}
+
+model AiCustomerMemory {
+  id               String       @id @default(uuid())
+  orgId            String       @map("org_id")
+  runId            String?      @map("run_id")
+  contactId        String       @map("contact_id")
+  key              String
+  valueEncrypted   Bytes?       @map("value_encrypted")
+  valueRedacted    String?      @map("value_redacted") @db.Text
+  valueHash        String       @map("value_hash")
+  evidence         Json         @default("[]")
+  status           String       @default("candidate")
+  confidence       Float?
+  approvedByUserId String?      @map("approved_by_user_id")
+  approvedAt       DateTime?    @map("approved_at")
+  createdAt        DateTime     @default(now()) @map("created_at")
+  updatedAt        DateTime     @updatedAt @map("updated_at")
+  deletedAt        DateTime?    @map("deleted_at")
+  org              Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  run              AiRun?       @relation(fields: [runId], references: [id], onDelete: SetNull)
+  contact          Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  approvedBy       User?        @relation("AiMemoryApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, status, deletedAt])
+  @@index([contactId, key, status])
+  @@map("ai_customer_memories")
+}
+
+model AiIntentAnalysis {
+  id             String        @id @default(uuid())
+  orgId          String        @map("org_id")
+  runId          String        @map("run_id")
+  conversationId String?       @map("conversation_id")
+  messageId      String?       @map("message_id")
+  contactId      String?       @map("contact_id")
+  label          String
+  confidence     Float
+  secondary      Json          @default("[]")
+  reasonRedacted String?       @map("reason_redacted") @db.Text
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+  org            Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  run            AiRun         @relation(fields: [runId], references: [id], onDelete: Cascade)
+  conversation   Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  message        Message?      @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  contact        Contact?      @relation(fields: [contactId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, label, createdAt])
+  @@index([runId])
+  @@index([conversationId, createdAt])
+  @@map("ai_intent_analyses")
+}
+
+model AiEmotionAnalysis {
+  id             String        @id @default(uuid())
+  orgId          String        @map("org_id")
+  runId          String        @map("run_id")
+  conversationId String?       @map("conversation_id")
+  messageId      String?       @map("message_id")
+  contactId      String?       @map("contact_id")
+  label          String
+  confidence     Float
+  intensity      Float?
+  secondary      Json          @default("[]")
+  reasonRedacted String?       @map("reason_redacted") @db.Text
+  createdAt      DateTime      @default(now()) @map("created_at")
+  updatedAt      DateTime      @updatedAt @map("updated_at")
+  org            Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  run            AiRun         @relation(fields: [runId], references: [id], onDelete: Cascade)
+  conversation   Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  message        Message?      @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  contact        Contact?      @relation(fields: [contactId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, label, createdAt])
+  @@index([runId])
+  @@index([conversationId, createdAt])
+  @@map("ai_emotion_analyses")
+}
+
+model AiAssistantSuggestion {
+  id                 String                @id @default(uuid())
+  orgId              String                @map("org_id")
+  runId              String                @map("run_id")
+  conversationId     String                @map("conversation_id")
+  triggerMessageId   String?               @map("trigger_message_id")
+  kind               String
+  status             String                @default("pending")
+  contentEncrypted   Bytes?                @map("content_encrypted")
+  contentRedacted    String?               @map("content_redacted") @db.Text
+  contentHash        String?               @map("content_hash")
+  payloadEncrypted   Bytes?                @map("payload_encrypted")
+  confidence         Float?
+  createdAt          DateTime              @default(now()) @map("created_at")
+  updatedAt          DateTime              @updatedAt @map("updated_at")
+  deletedAt          DateTime?             @map("deleted_at")
+  org                Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  run                AiRun                 @relation(fields: [runId], references: [id], onDelete: Cascade)
+  conversation       Conversation          @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  triggerMessage     Message?              @relation("AiSuggestionTriggerMessage", fields: [triggerMessageId], references: [id], onDelete: SetNull)
+  sentMessages       AiSentMessage[]
+  feedback           AiFeedback[]
+  learningCandidates AiLearningCandidate[]
+  actions            AiAction[]
+  handoffs           AiHandoff[]
+
+  @@index([orgId, status, createdAt])
+  @@index([conversationId, createdAt])
+  @@map("ai_assistant_suggestions")
+}
+
+model AiSentMessage {
+  id                String                 @id @default(uuid())
+  orgId             String                 @map("org_id")
+  runId             String                 @map("run_id")
+  conversationId    String                 @map("conversation_id")
+  messageId         String                 @unique @map("message_id")
+  suggestionId      String?                @map("suggestion_id")
+  actionId          String?                @unique @map("action_id")
+  sendMode          String                 @map("send_mode")
+  status            String                 @default("sent")
+  providerMessageId String?                @map("provider_message_id")
+  idempotencyKey    String                 @unique @map("idempotency_key")
+  safetyDecision    Json                   @default("{}") @map("safety_decision")
+  sentAt            DateTime               @default(now()) @map("sent_at")
+  createdAt         DateTime               @default(now()) @map("created_at")
+  updatedAt         DateTime               @updatedAt @map("updated_at")
+  org               Organization           @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  run               AiRun                  @relation(fields: [runId], references: [id], onDelete: Restrict)
+  conversation      Conversation           @relation(fields: [conversationId], references: [id], onDelete: Restrict)
+  message           Message                @relation(fields: [messageId], references: [id], onDelete: Restrict)
+  suggestion        AiAssistantSuggestion? @relation(fields: [suggestionId], references: [id], onDelete: SetNull)
+  action            AiAction?              @relation(fields: [actionId], references: [id], onDelete: SetNull)
+  feedback          AiFeedback[]
+
+  @@index([orgId, status, sentAt])
+  @@index([runId])
+  @@map("ai_sent_messages")
+}
+
+model AiFeedback {
+  id                 String                 @id @default(uuid())
+  orgId              String                 @map("org_id")
+  runId              String                 @map("run_id")
+  suggestionId       String?                @map("suggestion_id")
+  sentMessageId      String?                @map("sent_message_id")
+  actionId           String?                @map("action_id")
+  userId             String?                @map("user_id")
+  type               String
+  reasonCode         String?                @map("reason_code")
+  originalHash       String?                @map("original_hash")
+  finalHash          String?                @map("final_hash")
+  editDistance       Int?                   @map("edit_distance")
+  rating             Int?
+  metadata           Json                   @default("{}")
+  createdAt          DateTime               @default(now()) @map("created_at")
+  updatedAt          DateTime               @updatedAt @map("updated_at")
+  org                Organization           @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  run                AiRun                  @relation(fields: [runId], references: [id], onDelete: Cascade)
+  suggestion         AiAssistantSuggestion? @relation(fields: [suggestionId], references: [id], onDelete: SetNull)
+  sentMessage        AiSentMessage?         @relation(fields: [sentMessageId], references: [id], onDelete: SetNull)
+  action             AiAction?              @relation(fields: [actionId], references: [id], onDelete: SetNull)
+  user               User?                  @relation("AiFeedbackUser", fields: [userId], references: [id], onDelete: SetNull)
+  learningCandidates AiLearningCandidate[]
+
+  @@index([orgId, type, createdAt])
+  @@index([runId])
+  @@map("ai_feedback")
+}
+
+model AiLearningCandidate {
+  id               String                 @id @default(uuid())
+  orgId            String                 @map("org_id")
+  runId            String                 @map("run_id")
+  suggestionId     String?                @map("suggestion_id")
+  feedbackId       String?                @map("feedback_id")
+  kind             String
+  status           String                 @default("pending")
+  payloadEncrypted Bytes?                 @map("payload_encrypted")
+  payloadHash      String                 @map("payload_hash")
+  evidence         Json                   @default("[]")
+  riskTier         String                 @default("low") @map("risk_tier")
+  reviewedAt       DateTime?              @map("reviewed_at")
+  createdAt        DateTime               @default(now()) @map("created_at")
+  updatedAt        DateTime               @updatedAt @map("updated_at")
+  org              Organization           @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  run              AiRun                  @relation(fields: [runId], references: [id], onDelete: Cascade)
+  suggestion       AiAssistantSuggestion? @relation(fields: [suggestionId], references: [id], onDelete: SetNull)
+  feedback         AiFeedback?            @relation(fields: [feedbackId], references: [id], onDelete: SetNull)
+  approvedExample  AiApprovedExample?
+  blockedExample   AiBlockedExample?
+
+  @@index([orgId, status, createdAt])
+  @@index([runId])
+  @@map("ai_learning_candidates")
+}
+
+model AiApprovedExample {
+  id               String              @id @default(uuid())
+  orgId            String              @map("org_id")
+  candidateId      String              @unique @map("candidate_id")
+  approvedByUserId String?             @map("approved_by_user_id")
+  purpose          String
+  inputEncrypted   Bytes?              @map("input_encrypted")
+  inputHash        String              @map("input_hash")
+  outputEncrypted  Bytes?              @map("output_encrypted")
+  outputHash       String              @map("output_hash")
+  reviewRedacted   String?             @map("review_redacted") @db.Text
+  createdAt        DateTime            @default(now()) @map("created_at")
+  updatedAt        DateTime            @updatedAt @map("updated_at")
+  org              Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  candidate        AiLearningCandidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  approvedBy       User?               @relation("AiApprovedExampleBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, purpose, createdAt])
+  @@map("ai_approved_examples")
+}
+
+model AiBlockedExample {
+  id              String              @id @default(uuid())
+  orgId           String              @map("org_id")
+  candidateId     String              @unique @map("candidate_id")
+  blockedByUserId String?             @map("blocked_by_user_id")
+  reasonCode      String              @map("reason_code")
+  inputHash       String?             @map("input_hash")
+  outputHash      String?             @map("output_hash")
+  reviewRedacted  String?             @map("review_redacted") @db.Text
+  createdAt       DateTime            @default(now()) @map("created_at")
+  updatedAt       DateTime            @updatedAt @map("updated_at")
+  org             Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  candidate       AiLearningCandidate @relation(fields: [candidateId], references: [id], onDelete: Cascade)
+  blockedBy       User?               @relation("AiBlockedExampleBy", fields: [blockedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, reasonCode, createdAt])
+  @@map("ai_blocked_examples")
+}
+
+model AiAction {
+  id               String                 @id @default(uuid())
+  orgId            String                 @map("org_id")
+  runId            String                 @map("run_id")
+  conversationId   String?                @map("conversation_id")
+  suggestionId     String?                @map("suggestion_id")
+  type             String
+  status           String                 @default("proposed")
+  riskTier         String                 @default("low") @map("risk_tier")
+  payloadEncrypted Bytes?                 @map("payload_encrypted")
+  payloadHash      String?                @map("payload_hash")
+  previewRedacted  String?                @map("preview_redacted") @db.Text
+  requiresApproval Boolean                @default(true) @map("requires_approval")
+  approvedByUserId String?                @map("approved_by_user_id")
+  approvedAt       DateTime?              @map("approved_at")
+  executedAt       DateTime?              @map("executed_at")
+  createdAt        DateTime               @default(now()) @map("created_at")
+  updatedAt        DateTime               @updatedAt @map("updated_at")
+  org              Organization           @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  run              AiRun                  @relation(fields: [runId], references: [id], onDelete: Cascade)
+  conversation     Conversation?          @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  suggestion       AiAssistantSuggestion? @relation(fields: [suggestionId], references: [id], onDelete: SetNull)
+  approvedBy       User?                  @relation("AiActionApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  sentMessage      AiSentMessage?
+  feedback         AiFeedback[]
+  handoffs         AiHandoff[]
+
+  @@index([orgId, type, status, createdAt])
+  @@index([runId])
+  @@map("ai_actions")
+}
+
+model AiHandoff {
+  id               String                 @id @default(uuid())
+  orgId            String                 @map("org_id")
+  runId            String                 @map("run_id")
+  conversationId   String                 @map("conversation_id")
+  contactId        String?                @map("contact_id")
+  suggestionId     String?                @map("suggestion_id")
+  actionId         String?                @map("action_id")
+  status           String                 @default("open")
+  reasonCode       String                 @map("reason_code")
+  summaryEncrypted Bytes?                 @map("summary_encrypted")
+  summaryRedacted  String?                @map("summary_redacted") @db.Text
+  assignedToUserId String?                @map("assigned_to_user_id")
+  assignedAt       DateTime?              @map("assigned_at")
+  resolvedAt       DateTime?              @map("resolved_at")
+  createdAt        DateTime               @default(now()) @map("created_at")
+  updatedAt        DateTime               @updatedAt @map("updated_at")
+  org              Organization           @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  run              AiRun                  @relation(fields: [runId], references: [id], onDelete: Cascade)
+  conversation     Conversation           @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  contact          Contact?               @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  suggestion       AiAssistantSuggestion? @relation(fields: [suggestionId], references: [id], onDelete: SetNull)
+  action           AiAction?              @relation(fields: [actionId], references: [id], onDelete: SetNull)
+  assignedTo       User?                  @relation("AiHandoffAssignedTo", fields: [assignedToUserId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, status, createdAt])
+  @@index([conversationId, status])
+  @@index([assignedToUserId, status])
+  @@map("ai_handoffs")
+}
+
+model AiEvaluationCase {
+  id                String               @id @default(uuid())
+  orgId             String               @map("org_id")
+  key               String
+  name              String
+  taskType          String               @map("task_type")
+  status            String               @default("draft")
+  promptVersionId   String?              @map("prompt_version_id")
+  inputEncrypted    Bytes                @map("input_encrypted")
+  inputHash         String               @map("input_hash")
+  expectedEncrypted Bytes?               @map("expected_encrypted")
+  expectedHash      String?              @map("expected_hash")
+  rubric            Json                 @default("{}")
+  tags              String[]             @default([])
+  createdByUserId   String?              @map("created_by_user_id")
+  createdAt         DateTime             @default(now()) @map("created_at")
+  updatedAt         DateTime             @updatedAt @map("updated_at")
+  deletedAt         DateTime?            @map("deleted_at")
+  org               Organization         @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  promptVersion     AiPromptVersion?     @relation(fields: [promptVersionId], references: [id], onDelete: SetNull)
+  createdBy         User?                @relation("AiEvaluationCaseCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  results           AiEvaluationResult[]
+
+  @@unique([orgId, key])
+  @@index([orgId, taskType, status, deletedAt])
+  @@map("ai_evaluation_cases")
+}
+
+model AiEvaluationRun {
+  id              String               @id @default(uuid())
+  orgId           String               @map("org_id")
+  name            String
+  status          String               @default("queued")
+  agentId         String?              @map("agent_id")
+  promptVersionId String?              @map("prompt_version_id")
+  modelConfigId   String?              @map("model_config_id")
+  datasetVersion  String?              @map("dataset_version")
+  config          Json                 @default("{}")
+  metrics         Json                 @default("{}")
+  createdByUserId String?              @map("created_by_user_id")
+  startedAt       DateTime?            @map("started_at")
+  completedAt     DateTime?            @map("completed_at")
+  createdAt       DateTime             @default(now()) @map("created_at")
+  updatedAt       DateTime             @updatedAt @map("updated_at")
+  org             Organization         @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  agent           AiAgent?             @relation(fields: [agentId], references: [id], onDelete: SetNull)
+  promptVersion   AiPromptVersion?     @relation(fields: [promptVersionId], references: [id], onDelete: SetNull)
+  modelConfig     AiModelConfig?       @relation(fields: [modelConfigId], references: [id], onDelete: SetNull)
+  createdBy       User?                @relation("AiEvaluationRunCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  results         AiEvaluationResult[]
+
+  @@index([orgId, status, createdAt])
+  @@map("ai_evaluation_runs")
+}
+
+model AiEvaluationResult {
+  id               String           @id @default(uuid())
+  orgId            String           @map("org_id")
+  evaluationRunId  String           @map("evaluation_run_id")
+  evaluationCaseId String           @map("evaluation_case_id")
+  aiRunId          String?          @map("ai_run_id")
+  status           String           @default("pending")
+  score            Float?
+  metrics          Json             @default("{}")
+  errorCode        String?          @map("error_code")
+  createdAt        DateTime         @default(now()) @map("created_at")
+  updatedAt        DateTime         @updatedAt @map("updated_at")
+  org              Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  evaluationRun    AiEvaluationRun  @relation(fields: [evaluationRunId], references: [id], onDelete: Cascade)
+  evaluationCase   AiEvaluationCase @relation(fields: [evaluationCaseId], references: [id], onDelete: Cascade)
+  aiRun            AiRun?           @relation(fields: [aiRunId], references: [id], onDelete: SetNull)
+
+  @@unique([evaluationRunId, evaluationCaseId])
+  @@index([orgId, status])
+  @@map("ai_evaluation_results")
+}
+
+model AiAuditLog {
+  id               String        @id @default(uuid())
+  orgId            String        @map("org_id")
+  runId            String?       @map("run_id")
+  actorUserId      String?       @map("actor_user_id")
+  conversationId   String?       @map("conversation_id")
+  eventType        String        @map("event_type")
+  outcome          String
+  targetType       String?       @map("target_type")
+  targetId         String?       @map("target_id")
+  inputHash        String?       @map("input_hash")
+  outputHash       String?       @map("output_hash")
+  metadata         Json          @default("{}")
+  detailsEncrypted Bytes?        @map("details_encrypted")
+  createdAt        DateTime      @default(now()) @map("created_at")
+  org              Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  run              AiRun?        @relation(fields: [runId], references: [id], onDelete: SetNull)
+  actor            User?         @relation("AiAuditActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  conversation     Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  @@index([orgId, eventType, createdAt])
+  @@index([runId])
+  @@index([targetType, targetId])
+  @@map("ai_audit_logs")
+}
+
+model AiUsageRecord {
+  id                String       @id @default(uuid())
+  orgId             String       @map("org_id")
+  runId             String       @map("run_id")
+  provider          String
+  model             String
+  taskType          String       @map("task_type")
+  inputTokens       Int          @default(0) @map("input_tokens")
+  outputTokens      Int          @default(0) @map("output_tokens")
+  cachedInputTokens Int          @default(0) @map("cached_input_tokens")
+  costMicros        BigInt       @default(0) @map("cost_micros")
+  latencyMs         Int?         @map("latency_ms")
+  providerRequestId String?      @map("provider_request_id")
+  status            String       @default("ok")
+  createdAt         DateTime     @default(now()) @map("created_at")
+  org               Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  run               AiRun        @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, createdAt])
+  @@index([orgId, provider, model, createdAt])
+  @@index([runId])
+  @@map("ai_usage_records")
 }

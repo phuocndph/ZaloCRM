@@ -134,6 +134,8 @@ async function processUpdate(u: TgMessageUpdate): Promise<void> {
       zaloAccountId: true,
       externalThreadId: true,
       threadType: true,
+      isPrivate: true,
+      privateOwnerUserId: true,
       zaloAccount: {
         select: {
           status: true,
@@ -147,6 +149,13 @@ async function processUpdate(u: TgMessageUpdate): Promise<void> {
   });
   if (!conv || !conv.externalThreadId) return;
   if (!conv.zaloAccount.telegramBridge?.enabled) return;
+  // Riêng tư cấp hội thoại 2026-07-09: cầu Telegram là kênh NGOÀI CRM, không xác thực được
+  // danh tính người gõ trong forum → không thể chứng minh họ là chủ hội thoại riêng tư.
+  // Chặn hoàn toàn (yêu cầu 3: ẩn nội dung qua mọi API/realtime).
+  if (conv.isPrivate) {
+    await sendMessage(chatId, '🔒 Cuộc hội thoại này đang ở chế độ riêng tư.', m.message_thread_id);
+    return;
+  }
   // (Phase 3: checkZaloAccess theo Telegram-user↔CRM-user. Phase 2: thành viên group = quyền.)
 
   const threadType: 0 | 1 = conv.threadType === 'group' ? 1 : 0;
@@ -248,6 +257,8 @@ async function processUpdate(u: TgMessageUpdate): Promise<void> {
         message: created,
         privacyMode: conv.zaloAccount.privacyMode,
         ownerUserId: conv.zaloAccount.ownerUserId,
+        isPrivate: conv.isPrivate,
+        privateOwnerUserId: conv.privateOwnerUserId,
       }).catch(() => {});
     } catch (err) {
       if ((err as { code?: string })?.code !== 'P2002') {

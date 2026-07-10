@@ -144,6 +144,11 @@ async function saveOneMessageToMedia(args: {
   });
   if (!message) return { messageId, status: 'error', reason: 'Không tìm thấy tin nhắn' };
 
+  // Riêng tư cấp HỘI THOẠI 2026-07-09: không ai ngoài chủ được rút ảnh/file ra kho chung.
+  if (message.conversation.isPrivate && message.conversation.privateOwnerUserId !== userId) {
+    return { messageId, status: 'blocked', reason: 'Cuộc hội thoại này đang ở chế độ riêng tư.' };
+  }
+
   const nick = message.conversation.zaloAccount;
   const isPrivateNick = nick.privacyMode === 'main';
   const vis = resolveSavedVisibility({
@@ -614,6 +619,11 @@ export async function mediaRoutes(app: FastifyInstance) {
         });
       }
 
+      // PRIVACY GUARD cấp HỘI THOẠI 2026-07-09.
+      if (conversation.isPrivate && conversation.privateOwnerUserId !== userId) {
+        return reply.status(403).send({ error: 'Cuộc hội thoại này đang ở chế độ riêng tư.', code: 'CONVERSATION_PRIVATE' });
+      }
+
       // PRIVACY: nick Riêng tư → chỉ chính chủ gửi được (như chat-attachment).
       if (conversation.zaloAccount.privacyMode === 'main'
         && conversation.zaloAccount.ownerUserId !== userId) {
@@ -729,6 +739,8 @@ export async function mediaRoutes(app: FastifyInstance) {
           message: msg,
           privacyMode: conversation.zaloAccount.privacyMode,
           ownerUserId: conversation.zaloAccount.ownerUserId,
+          isPrivate: conversation.isPrivate,
+          privateOwnerUserId: conversation.privateOwnerUserId,
         });
         return { message: msg };
       } catch (err: any) {
@@ -1306,6 +1318,10 @@ export async function mediaRoutes(app: FastifyInstance) {
       const instance = zaloPool.getInstance(conversation.zaloAccountId);
       if (!instance?.api || instance.status !== 'connected') {
         return reply.status(400).send({ error: 'Nick Zalo chưa kết nối', code: 'NICK_NOT_CONNECTED' });
+      }
+      // PRIVACY GUARD cấp HỘI THOẠI 2026-07-09.
+      if (conversation.isPrivate && conversation.privateOwnerUserId !== userId) {
+        return reply.status(403).send({ error: 'Cuộc hội thoại này đang ở chế độ riêng tư.', code: 'CONVERSATION_PRIVATE' });
       }
       if (conversation.zaloAccount.privacyMode === 'main' && conversation.zaloAccount.ownerUserId !== userId) {
         return reply.status(403).send({ error: 'Nick Riêng tư — chỉ chính chủ gửi.', code: 'PRIVACY_LOCKED' });

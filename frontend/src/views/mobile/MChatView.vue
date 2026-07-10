@@ -17,10 +17,15 @@
     </header>
 
     <div ref="scroller" class="mch-msgs" @scroll.passive="onScroll">
-      <div v-if="loadingMsgs && !messages.length" class="mch-state">Đang tải tin nhắn…</div>
+      <!-- Riêng tư cấp hội thoại 2026-07-09 — BE trả 403, không có tin nhắn nào để hiện.
+           Phải chặn TRƯỚC nhánh "Chưa có tin nhắn" (nếu không sẽ nói sai sự thật). -->
+      <div v-if="conversationPrivateBlocked" class="mch-state mch-state--private">
+        🔒 {{ CONVERSATION_PRIVATE_MESSAGE }}
+      </div>
+      <div v-else-if="loadingMsgs && !messages.length" class="mch-state">Đang tải tin nhắn…</div>
       <div v-else-if="!messages.length" class="mch-state">Chưa có tin nhắn.</div>
 
-      <div v-for="(m, i) in messages" :key="m.id" class="mch-row">
+      <div v-for="(m, i) in (conversationPrivateBlocked ? [] : messages)" :key="m.id" class="mch-row">
         <MessageBubble
           :message="m"
           :reply="(m as any).reply || null"
@@ -41,8 +46,8 @@
       <button class="ghost" @click="sendError = null">Bỏ qua</button>
     </div>
 
-    <!-- Input luôn dính đáy -->
-    <footer class="mch-input">
+    <!-- Input luôn dính đáy — trừ hội thoại riêng tư của người khác (BE cũng chặn gửi). -->
+    <footer v-if="!conversationPrivateBlocked" class="mch-input">
       <button class="mch-tool" aria-label="Gửi ảnh" @click="imageInput?.click()">🖼️</button>
       <EmojiPicker @pick="onEmoji" />
       <textarea
@@ -66,13 +71,14 @@ import { useAuthStore } from '@/stores/auth';
 import { useToast } from '@/composables/use-toast';
 import MessageBubble from '@/components/chat/message-bubble.vue';
 import EmojiPicker from '@/components/chat/EmojiPicker.vue';
+import { CONVERSATION_PRIVATE_MESSAGE } from '@/composables/use-conversation-privacy';
 
 const route = useRoute();
 const router = useRouter();
 const toast = useToast();
 const auth = useAuthStore();
 const {
-  messages, selectedConv, loadingMsgs, sendingMsg,
+  messages, selectedConv, loadingMsgs, sendingMsg, conversationPrivateBlocked,
   selectConversation, sendMessage, fetchMessages, getSocket,
 } = useChat();
 
@@ -219,6 +225,7 @@ watch(convId, async (id) => { if (id) { await selectConversation(id); await scro
 .mch-msgs { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 12px 12px 4px; }
 .mch-row { margin-bottom: 2px; }
 .mch-state { text-align: center; color: var(--smax-grey-700, #5a6478); font-size: 14px; padding: 24px; }
+.mch-state--private { font-style: italic; padding-top: 48px; }
 
 .mch-retry {
   flex-shrink: 0; display: flex; align-items: center; gap: 8px; justify-content: center;

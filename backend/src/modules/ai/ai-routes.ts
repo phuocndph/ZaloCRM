@@ -50,15 +50,31 @@ async function assertConversationReadAccess(request: FastifyRequest, reply: Fast
 async function assertPrivacyAllowsAi(request: FastifyRequest, reply: FastifyReply, conversationId: string): Promise<boolean> {
   const conv = await prisma.conversation.findFirst({
     where: { id: conversationId, orgId: request.user!.orgId },
-    select: { zaloAccount: { select: { privacyMode: true, ownerUserId: true } } },
+    select: {
+      // Riêng tư cấp hội thoại 2026-07-09 — bắt buộc cho canSeeConversationContent.
+      isPrivate: true,
+      privateOwnerUserId: true,
+      zaloAccount: { select: { privacyMode: true, ownerUserId: true } },
+    },
   });
   if (!conv) {
     reply.status(404).send({ error: 'Conversation not found' });
     return false;
   }
-  const { buildPrivacyContext, canSeeConversationContent } = await import('../privacy/redact.js');
+  const {
+    buildPrivacyContext,
+    canSeeConversationContent,
+    isConversationPrivateFor,
+    CONVERSATION_PRIVATE_CODE,
+    CONVERSATION_PRIVATE_MESSAGE,
+  } = await import('../privacy/redact.js');
   const ctx = await buildPrivacyContext(request);
-  if (!canSeeConversationContent(conv as any, ctx)) {
+  // Hội thoại riêng tư → thông điệp riêng (không phải lỗi "nick riêng tư/chưa mở khoá").
+  if (isConversationPrivateFor(conv, ctx.viewerUserId)) {
+    reply.status(403).send({ error: CONVERSATION_PRIVATE_MESSAGE, code: CONVERSATION_PRIVATE_CODE });
+    return false;
+  }
+  if (!canSeeConversationContent(conv, ctx)) {
     reply.status(403).send({
       error: 'Nick này đang bật Riêng tư — chỉ chính chủ đã mở khoá mới dùng được AI trên hội thoại này.',
       code: 'PRIVACY_LOCKED',

@@ -357,8 +357,16 @@
         </div>
       </div>
 
+      <!-- Riêng tư cấp hội thoại 2026-07-09 — BE trả 403, FE không hề có tin nhắn để che.
+           Thay TOÀN BỘ khu vực tin nhắn + composer bằng một câu thông báo (yêu cầu 4). -->
+      <ConversationPrivateNotice
+        v-if="privateBlocked"
+        :conversation-id="conversation.id"
+        @released="$emit('privacy-released', conversation.id)"
+      />
+
       <!-- ════════ Messages ════════ -->
-      <div ref="messagesContainer" class="messages chat-messages-area" :class="{ 'is-virtual-mode': isVirtualConv }">
+      <div v-if="!privateBlocked" ref="messagesContainer" class="messages chat-messages-area" :class="{ 'is-virtual-mode': isVirtualConv }">
         <v-progress-linear v-if="loading" indeterminate color="primary" class="mb-2" />
 
         <template v-for="item in displayItems" :key="item.key">
@@ -512,10 +520,11 @@
       </div>
 
       <!-- Typing indicator -->
-      <TypingIndicator :typers="currentTypers" />
+      <TypingIndicator v-if="!privateBlocked" :typers="currentTypers" />
 
       <!-- AI suggest bar -->
       <AISuggestBar
+        v-if="!privateBlocked"
         :suggestion="aiSuggestion"
         :loading="aiSuggestionLoading"
         :error="aiSuggestionError"
@@ -524,7 +533,7 @@
       />
 
       <!-- ════════ Input area: toolbar trên textarea (Smax-style) ════════ -->
-      <div class="input-area">
+      <div v-if="!privateBlocked" class="input-area">
         <!-- Tag bar Friend-cấp (per-pair sale-nick × KH) — chỉ KH chat 1-1.
              Refactor 2026-06-01: 3 nhóm [Zalo Real] | [Auto] | [Manual per Nick + button].
              Đọc/ghi qua endpoint /api/v1/friends/:id/tags (Tag v2 junction). -->
@@ -925,6 +934,8 @@ import NickAvatarLock from '@/components/privacy/NickAvatarLock.vue';
 // Phase Privacy OTP 2026-05-27 — swap PIN dialog → OTP modal
 import PrivacyUnlockOtpModal from '@/components/privacy/PrivacyUnlockOtpModal.vue';
 import PrivacyViewerDialog from '@/components/privacy/PrivacyViewerDialog.vue';
+// Riêng tư cấp HỘI THOẠI 2026-07-09 — màn chặn thay cho tin nhắn + composer.
+import ConversationPrivateNotice from '@/components/privacy/ConversationPrivateNotice.vue';
 import { useAuthStore as _useAuthStorePriv } from '@/stores/auth';
 
 // Privacy dialog state — anh chốt 2026-05-22 v3
@@ -1057,12 +1068,19 @@ const props = defineProps<{
   replyingTo?: Message | null;
   editingMessage?: Message | null;
   typingUsers?: { userId: string; userName: string }[];
+  /**
+   * Riêng tư cấp hội thoại 2026-07-09 — BE đã trả 403 CONVERSATION_PRIVATE cho lượt fetch
+   * tin nhắn. Cột 3 chỉ hiện thông báo: KHÔNG có tin nhắn nào trong `messages` để che.
+   */
+  privateBlocked?: boolean;
 }>();
 
 const emit = defineEmits<{
   send: [content: string, replyMessageId?: string | null, styles?: Array<{ st: string; start: number; len: number }>, mentions?: Array<{ uid: string; pos: number; len: number }>];
   'toggle-contact-panel': [];
   'ask-ai': [];
+  /** Admin đã gỡ cờ riêng tư (chủ bị khóa/xóa) → cha refetch hội thoại + tin nhắn. */
+  'privacy-released': [conversationId: string];
   'add-reaction': [msgId: string, reaction: string];
   'remove-reaction': [msgId: string, reaction: string];
   'delete-message': [msgId: string];

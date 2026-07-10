@@ -91,6 +91,14 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
       const instance = zaloPool.getInstance(conversation.zaloAccountId);
       if (!instance?.api) return reply.status(400).send({ error: 'Zalo account not connected' });
 
+      // PRIVACY GUARD cấp HỘI THOẠI 2026-07-09: "Chỉ mình tôi xem" → người khác không gửi.
+      if (conversation.isPrivate && conversation.privateOwnerUserId !== ((user as any).userId ?? user.id)) {
+        return reply.status(403).send({
+          error: 'Cuộc hội thoại này đang ở chế độ riêng tư.',
+          code: 'CONVERSATION_PRIVATE',
+        });
+      }
+
       // PRIVACY GUARD 2026-05-22: nick privacy=main → chỉ chính chủ upload được
       if (conversation.zaloAccount.privacyMode === 'main') {
         const senderUserId = (user as any).userId ?? user.id;
@@ -296,6 +304,8 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
             message: m,
             privacyMode: conversation.zaloAccount.privacyMode,
             ownerUserId: conversation.zaloAccount.ownerUserId,
+            isPrivate: conversation.isPrivate,
+            privateOwnerUserId: conversation.privateOwnerUserId,
           });
         }
 

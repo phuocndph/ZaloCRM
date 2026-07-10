@@ -310,6 +310,11 @@ async function bootstrap() {
   // Phase Riêng Tư 2026-05-22 — PIN-gated visual privacy
   const { registerPrivacyRoutes } = await import('./modules/privacy/privacy-routes.js');
   await registerPrivacyRoutes(app);
+  // Riêng tư cấp HỘI THOẠI 2026-07-09 — "Chỉ mình tôi xem" (không cần OTP)
+  const { registerConversationPrivacyRoutes } = await import(
+    './modules/privacy/conversation-privacy-routes.js'
+  );
+  await registerConversationPrivacyRoutes(app);
   await app.register(zaloLabelsRoutes);
   await app.register(zinstantProxyRoutes);
   await app.register(dashboardRoutes);

@@ -11,6 +11,7 @@
  * Anh chốt: metadata (count, score, KPI aggregate) KHÔNG blur, chỉ content.
  */
 import { prisma } from '../../shared/database/prisma-client.js';
+import { logger } from '../../shared/utils/logger.js';
 
 const BLUR_TOKEN = '▒'.repeat(8);
 
@@ -24,18 +25,68 @@ export interface PrivacyContext {
 }
 
 /**
+ * Hình dạng TỐI THIỂU của conversation mà mọi hàm gate cần.
+ *
+ * `isPrivate` + `privateOwnerUserId` là BẮT BUỘC (không optional) — cố ý. Nhờ vậy mọi
+ * `prisma.conversation.findX({ select })` quên nạp 2 cột này sẽ HỎNG BUILD (tsc), thay vì
+ * âm thầm trả `undefined` → falsy → lọt nội dung. Fail-closed từ lúc compile.
+ */
+export interface PrivacyConversation {
+  /** Riêng tư cấp HỘI THOẠI (2026-07-09) — "Chỉ mình tôi xem". */
+  isPrivate: boolean;
+  privateOwnerUserId: string | null;
+  /** Riêng tư cấp NICK (cũ) — main + OTP. */
+  zaloAccount: { privacyMode: string; ownerUserId: string | null };
+}
+
+/** Mã lỗi FE dùng để hiện "Cuộc hội thoại này đang ở chế độ riêng tư." */
+export const CONVERSATION_PRIVATE_CODE = 'CONVERSATION_PRIVATE';
+export const CONVERSATION_PRIVATE_MESSAGE = 'Cuộc hội thoại này đang ở chế độ riêng tư.';
+
+/**
  * Decide: viewer có quyền xem content của 1 conv không?
- * - Sub-nick conv → always show.
- * - Main-nick conv → only owner + unlocked.
+ *
+ * Thứ tự luật (luật hội thoại THẮNG luật nick):
+ *   1. conv.isPrivate → CHỈ privateOwnerUserId, KHÔNG cần OTP, kể cả owner/admin org bị chặn.
+ *   2. Nick 'sub' (Thường) → ai cũng xem.
+ *   3. Nick 'main' (Riêng tư) → chỉ chủ nick + đã mở khóa OTP.
  */
 export function canSeeConversationContent(
-  conv: { zaloAccount: { privacyMode: string; ownerUserId: string } },
+  conv: PrivacyConversation,
   ctx: PrivacyContext,
 ): boolean {
+  // Fail-closed: select thiếu cột → undefined. Không đoán "public", chặn + hét lên log.
+  if (conv.isPrivate === undefined || conv.isPrivate === null) {
+    logger.error(
+      '[privacy] conversation thiếu cột isPrivate trong select — fail-closed (chặn). Bổ sung isPrivate + privateOwnerUserId vào select.',
+    );
+    return false;
+  }
+  if (conv.isPrivate) {
+    return !!ctx.viewerUserId && conv.privateOwnerUserId === ctx.viewerUserId;
+  }
   if (conv.zaloAccount.privacyMode !== 'main') return true;
   const isOwner = conv.zaloAccount.ownerUserId === ctx.viewerUserId;
   return isOwner && ctx.privacyUnlocked;
 }
+
+/**
+ * Riêng tư cấp hội thoại có đang chặn viewer này không? (khác `canSee...` ở chỗ bỏ qua
+ * luật nick). Dùng cho realtime/push/AI: những nơi cần "ẩn hoàn toàn" chứ không "che nội dung".
+ */
+export function isConversationPrivateFor(
+  conv: Pick<PrivacyConversation, 'isPrivate' | 'privateOwnerUserId'>,
+  viewerUserId: string | null,
+): boolean {
+  if (!conv.isPrivate) return false;
+  return !viewerUserId || conv.privateOwnerUserId !== viewerUserId;
+}
+
+/** Prisma `select` chuẩn cho 2 cột riêng tư — dùng để không gõ lặp ~20 chỗ. */
+export const PRIVACY_CONV_SELECT = {
+  isPrivate: true,
+  privateOwnerUserId: true,
+} as const;
 
 /**
  * Redact 1 message — CODEX REVIEW P1 FIX: allowlist response, không spread.
@@ -48,7 +99,7 @@ export function canSeeConversationContent(
  */
 export function redactMessage(
   msg: any,
-  conv: { zaloAccount: { privacyMode: string; ownerUserId: string } },
+  conv: PrivacyConversation,
   ctx: PrivacyContext,
 ): any {
   if (canSeeConversationContent(conv, ctx)) return msg;
@@ -86,14 +137,17 @@ export function redactConversationRow<T extends {
   lastMessageContent?: string | null;
   unreadCount?: number;
 }>(
-  conv: T & { zaloAccount: { privacyMode: string; ownerUserId: string } },
+  conv: T & PrivacyConversation,
   ctx: PrivacyContext,
 ): T & { redacted?: boolean } {
   if (canSeeConversationContent(conv, ctx)) return conv;
   return {
     ...conv,
     lastMessageContent: BLUR_TOKEN,
-    // unreadCount giữ — metadata, không leak content
+    // unreadCount giữ — metadata, không leak content.
+    // NGOẠI LỆ hội thoại riêng tư (yêu cầu 3: "ẩn hoàn toàn"): người khác không được biết
+    // có tin mới → unreadCount về 0. Cờ conversationPrivate để FE hiện đúng câu thông báo.
+    ...(conv.isPrivate ? { unreadCount: 0, conversationPrivate: true } : {}),
     redacted: true,
   } as any;
 }

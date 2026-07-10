@@ -11,6 +11,7 @@ import { usePrivacyStore } from '@/stores/privacy';
 import { useWorkScope } from '@/composables/use-work-scope';
 import { classifyIncoming } from '@/composables/work-scope-logic';
 import { useToast } from '@/composables/use-toast';
+import { isConversationPrivateError } from '@/composables/use-conversation-privacy';
 
 interface ZaloAccount {
   id: string;
@@ -127,6 +128,11 @@ export interface Conversation {
   messages?: ConversationMessage[];
   /** M53 2026-05-30: Virtual conversation cho KH no-Zalo. Tin nhắn lưu nội bộ, KHÔNG gửi qua Zalo SDK. */
   isVirtual?: boolean;
+  /** Riêng tư cấp hội thoại 2026-07-09 — "Chỉ mình tôi xem" (không cần OTP). */
+  isPrivate?: boolean;
+  privateOwnerUserId?: string | null;
+  /** BE gắn khi che row vì hội thoại riêng tư (khác cờ `redacted` của nick 'main'). */
+  conversationPrivate?: boolean;
 }
 
 export interface MessageReactionView {
@@ -312,6 +318,9 @@ export function useChat() {
   // wholesale replace (không merge tin từ conv khác), refresh cùng conv thì merge
   // (giữ tin socket đến trong lúc HTTP fly).
   const messagesConvId = ref<string | null>(null);
+  // Riêng tư cấp hội thoại 2026-07-09 — BE trả 403 CONVERSATION_PRIVATE. FE KHÔNG có nội
+  // dung để che: chỉ hiện thông báo. Reset mỗi lần đổi hội thoại.
+  const conversationPrivateBlocked = ref(false);
   const loadingConvs = ref(false);
   const loadingMsgs = ref(false);
   const sendingMsg = ref(false);
@@ -520,6 +529,8 @@ export function useChat() {
     if (messagesConvId.value !== convId) {
       messages.value = [];
       messagesConvId.value = convId;
+      // Đổi hội thoại → bỏ màn chặn riêng tư của hội thoại trước.
+      conversationPrivateBlocked.value = false;
     }
     // Cache-then-refresh: nếu đã từng load conv này, set list ngay từ cache để
     // user thấy giao diện tin nhắn lập tức; rồi fetch fresh in background.
@@ -566,7 +577,17 @@ export function useChat() {
         messagesCache.set(convId, [...messages.value]);
       }
     } catch (err) {
-      console.error('Failed to fetch messages:', err);
+      // Hội thoại riêng tư của người khác → BE chặn từ tầng dữ liệu (403). Dọn sạch mọi
+      // thứ đang hiện + bật cờ để thread hiện đúng câu thông báo (yêu cầu 4).
+      if (isConversationPrivateError(err)) {
+        if (isConvCurrent(convId)) {
+          messages.value = [];
+          conversationPrivateBlocked.value = true;
+        }
+        messagesCache.delete(convId);
+      } else {
+        console.error('Failed to fetch messages:', err);
+      }
     } finally {
       if (selectedConvId.value === convId) loadingMsgs.value = false;
     }
@@ -1178,6 +1199,8 @@ export function useChat() {
     selectedConvId,
     selectedConv,
     messages,
+    /** Riêng tư cấp hội thoại — BE trả 403, thread hiện thông báo thay vì tin nhắn. */
+    conversationPrivateBlocked,
     loadingConvs,
     loadingMsgs,
     sendingMsg,

@@ -149,6 +149,14 @@
                 class="ci-follow-bell"
                 title="Đang theo dõi khách hàng này"
               >mdi-bell-ring-outline</v-icon>
+              <!-- Riêng tư cấp hội thoại 2026-07-09 — ổ khóa cho biết hội thoại đang bị khóa
+                   riêng. Người ngoài vẫn thấy ổ khóa (để biết hỏi ai), nhưng không thấy nội dung. -->
+              <v-icon
+                v-if="conv.isPrivate"
+                size="13"
+                class="ci-private-lock"
+                :title="isPrivacyOwnerOf(conv) ? 'Chỉ mình tôi xem' : CONVERSATION_PRIVATE_MESSAGE"
+              >mdi-lock-outline</v-icon>
             </div>
             <div class="ci-meta-right">
               <div class="ci-time"><ConvTime :at="conv.lastMessageAt" /></div>
@@ -160,9 +168,12 @@
           </div>
 
           <div class="ci-preview" :class="`tone-${lastMessagePreviewTone(conv) ?? 'normal'}`">
+            <!-- Hội thoại riêng tư của NGƯỜI KHÁC: BE không gửi nội dung về (yêu cầu 3 "ẩn
+                 hoàn toàn"), nên KHÔNG blur bản mờ — hiện thẳng câu thông báo (yêu cầu 4). -->
+            <span v-if="conv.conversationPrivate" class="ci-preview-private">{{ CONVERSATION_PRIVATE_MESSAGE }}</span>
             <!-- Privacy: click blur preview KHÔNG redirect (tránh nhầm khi click chuyển hội thoại).
                  Blur thuần visual, không bắt event riêng. -->
-            <PrivateBlur v-if="privacyVisibility.shouldBlurConv(conv)" :redacted="true" mode="inline" />
+            <PrivateBlur v-else-if="privacyVisibility.shouldBlurConv(conv)" :redacted="true" mode="inline" />
             <template v-else>{{ lastMessagePreview(conv) }}</template>
           </div>
 
@@ -230,9 +241,13 @@
       :is-following="contextMenu.isFollowing"
       :follow-busy="contextMenu.followBusy"
       :can-follow="!!(contextMenu.contactId && contextMenu.nickId)"
+      :is-private="contextMenu.isPrivate"
+      :is-privacy-owner="contextMenu.isPrivacyOwner"
+      :privacy-busy="contextMenu.privacyBusy"
       @move-other="moveConversation(contextMenu.convId, 'other')"
       @move-main="moveConversation(contextMenu.convId, 'main')"
       @toggle-follow="toggleFollowFromMenu"
+      @toggle-privacy="togglePrivacyFromMenu"
       @delete="askDeleteConversation"
     />
 
@@ -290,7 +305,16 @@ import { getAutoTagDef } from '@/constants/auto-tags';
 import PrivateBlur from '@/components/privacy/PrivateBlur.vue';
 import { usePrivacyVisibility } from '@/composables/use-privacy-visibility';
 
+import { useAuthStore } from '@/stores/auth';
+import {
+  CONVERSATION_PRIVATE_MESSAGE,
+  enableConversationPrivacy,
+  disableConversationPrivacy,
+  type ConversationPrivacyStatus,
+} from '@/composables/use-conversation-privacy';
+
 const privacyVisibility = usePrivacyVisibility();
+const auth = useAuthStore();
 
 const props = defineProps<{
   conversations: Conversation[];
@@ -332,6 +356,8 @@ const emit = defineEmits<{
   'compose-opened': [conversationId: string];
   /** Theo dõi (anh chốt 2026-06-15) — toggle follow từ menu → cập nhật chuông cột 2 ngay. */
   'follow-changed': [contactId: string, nickId: string, following: boolean];
+  /** Riêng tư cấp hội thoại 2026-07-09 — bật/tắt "Chỉ mình tôi xem". */
+  'privacy-changed': [conversationId: string, status: ConversationPrivacyStatus];
 }>();
 
 // ── Compose new message ─────────────────────────────────────────────────────
@@ -424,6 +450,8 @@ const contextMenu = reactive({
   show: false, x: 0, y: 0, convId: '',
   // 2026-06-11 — phục vụ item "Theo dõi" (reuse care-session) + "Xóa hội thoại".
   contactId: '', nickId: '', isFollowing: false, followBusy: false,
+  // 2026-07-09 — item "Chỉ mình tôi xem" (riêng tư cấp hội thoại).
+  isPrivate: false, isPrivacyOwner: false, privacyBusy: false,
 });
 
 // Hộp xác nhận xóa hội thoại
@@ -651,6 +679,14 @@ function friendshipPillClass(_conv: Conversation): string {
   return 'pill-success';
 }
 
+/**
+ * Viewer có phải người đã bật "Chỉ mình tôi xem" cho hội thoại này không?
+ * Chỉ dùng cho HIỂN THỊ (nhãn ổ khóa, ẩn/hiện item menu) — BE mới là nơi chặn thật.
+ */
+function isPrivacyOwnerOf(conv: Conversation): boolean {
+  return conv.isPrivate === true && !!auth.user?.id && conv.privateOwnerUserId === auth.user.id;
+}
+
 // ── Context menu ───────────────────────────────────────────────────────────
 function openContextMenu(event: MouseEvent, conv: Conversation) {
   contextMenu.x = event.clientX;
@@ -660,9 +696,33 @@ function openContextMenu(event: MouseEvent, conv: Conversation) {
   contextMenu.nickId = conv.zaloAccount?.id ?? '';
   contextMenu.isFollowing = false;
   contextMenu.followBusy = false;
+  contextMenu.isPrivate = conv.isPrivate === true;
+  contextMenu.isPrivacyOwner = isPrivacyOwnerOf(conv);
+  contextMenu.privacyBusy = false;
   contextMenu.show = true;
   // Lấy trạng thái theo dõi hiện tại (nếu đủ contact+nick) để hiện đúng nhãn.
   void fetchListenStatusForMenu();
+}
+
+/**
+ * Bật/tắt "Chỉ mình tôi xem" cho hội thoại đang chọn.
+ * BE là nguồn sự thật: chỉ người đã bật mới tắt được (403 NOT_PRIVACY_OWNER).
+ */
+async function togglePrivacyFromMenu() {
+  if (contextMenu.privacyBusy || !contextMenu.convId) return;
+  const convId = contextMenu.convId;
+  const turningOff = contextMenu.isPrivate;
+  contextMenu.privacyBusy = true;
+  try {
+    const status = turningOff
+      ? await disableConversationPrivacy(convId)
+      : await enableConversationPrivacy(convId);
+    emit('privacy-changed', convId, status);
+  } catch (err: any) {
+    window.alert(err?.response?.data?.error ?? 'Không đổi được chế độ riêng tư, thử lại sau.');
+  } finally {
+    contextMenu.privacyBusy = false;
+  }
 }
 
 async function moveConversation(convId: string, targetTab: string) {
@@ -1407,6 +1467,9 @@ function parseSentiment(conv: Conversation): AiSentiment | null {
 .group-icon { font-size: 11px; }
 /* Theo dõi (anh chốt 2026-06-15) — chuông sau tên cho khách đang theo dõi */
 .ci-follow-bell { color: #f59e0b; flex-shrink: 0; }
+/* Riêng tư cấp hội thoại — ổ khóa cạnh tên + câu thông báo thay preview. */
+.ci-private-lock { color: #6366f1; flex-shrink: 0; }
+.ci-preview-private { font-style: italic; color: rgba(0, 0, 0, 0.42); }
 /* Meta-right float ra góc phải, không nằm trong flex flow → badge không phá height */
 .ci-meta-right {
   position: absolute; top: 0; right: 0;

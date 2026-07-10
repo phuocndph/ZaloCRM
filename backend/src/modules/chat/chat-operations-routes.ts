@@ -89,10 +89,24 @@ function reactionDisplay(r: string): string {
   return REACTION_DISPLAY[r.toLowerCase()] ?? r;
 }
 
-// Shared conversation lookup — returns 404 reply when missing
-async function getConversation(id: string, orgId: string, reply: FastifyReply) {
+/**
+ * Shared conversation lookup — returns 404 reply when missing.
+ *
+ * Đồng thời là CHỐT CHẶN riêng tư cấp hội thoại cho MỌI thao tác chat (thả cảm xúc, sửa,
+ * thu hồi, ghim, sticker, và nhất là CHUYỂN TIẾP). Bắt buộc phải ở đây vì preHandler
+ * `requireZaloAccess('chat')` có bypass cho owner/admin. Không có chốt này, người khác
+ * chuyển tiếp được tin của hội thoại riêng tư sang hội thoại thường rồi đọc thoải mái.
+ */
+async function getConversation(id: string, orgId: string, reply: FastifyReply, viewerUserId?: string) {
   const conv = await prisma.conversation.findFirst({ where: { id, orgId } });
   if (!conv) { reply.status(404).send({ error: 'Conversation not found' }); return null; }
+  if (conv.isPrivate && conv.privateOwnerUserId !== viewerUserId) {
+    reply.status(403).send({
+      error: 'Cuộc hội thoại này đang ở chế độ riêng tư.',
+      code: 'CONVERSATION_PRIVATE',
+    });
+    return null;
+  }
   return conv;
 }
 
@@ -177,7 +191,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
 
     if (!msgId || !reaction) return reply.status(400).send({ error: 'msgId and reaction required' });
 
-    const conv = await getConversation(id, user.orgId, reply);
+    const conv = await getConversation(id, user.orgId, reply, user.id);
     if (!conv) return;
 
     const refs = await resolveMessageRefs(id, msgId, user.orgId);
@@ -263,7 +277,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
     const { msgId, reaction } = request.body as { msgId: string; reaction: string };
     if (!msgId || !reaction) return reply.status(400).send({ error: 'msgId and reaction required' });
 
-    const conv = await getConversation(id, user.orgId, reply);
+    const conv = await getConversation(id, user.orgId, reply, user.id);
     if (!conv) return;
     const refs = await resolveMessageRefs(id, msgId, user.orgId);
     if (!refs) return reply.status(404).send({ error: 'Message not found' });
@@ -291,7 +305,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
     const user = request.user!;
     const { id } = request.params as { id: string };
 
-    const conv = await getConversation(id, user.orgId, reply);
+    const conv = await getConversation(id, user.orgId, reply, user.id);
     if (!conv) return;
 
     try {
@@ -308,7 +322,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
     const { id, msgId } = request.params as { id: string; msgId: string };
     const { onlyMe = false } = (request.body ?? {}) as { onlyMe?: boolean };
 
-    const conv = await getConversation(id, user.orgId, reply);
+    const conv = await getConversation(id, user.orgId, reply, user.id);
     if (!conv) return;
 
     const refs = await resolveMessageRefs(id, msgId, user.orgId);
@@ -333,7 +347,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
     const user = request.user!;
     const { id, msgId } = request.params as { id: string; msgId: string };
 
-    const conv = await getConversation(id, user.orgId, reply);
+    const conv = await getConversation(id, user.orgId, reply, user.id);
     if (!conv) return;
 
     const refs = await resolveMessageRefs(id, msgId, user.orgId);
@@ -374,7 +388,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
 
     if (!content?.trim()) return reply.status(400).send({ error: 'content required' });
 
-    const conv = await getConversation(id, user.orgId, reply);
+    const conv = await getConversation(id, user.orgId, reply, user.id);
     if (!conv) return;
 
     const refs = await resolveMessageRefs(id, msgId, user.orgId);
@@ -434,7 +448,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: 'msgId and targetConversationIds required' });
     }
 
-    const conv = await getConversation(id, user.orgId, reply);
+    const conv = await getConversation(id, user.orgId, reply, user.id);
     if (!conv) return;
 
     const refs = await resolveMessageRefs(id, msgId, user.orgId);
@@ -442,7 +456,13 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
 
     try {
       const targets = await prisma.conversation.findMany({
-        where: { id: { in: targetConversationIds }, orgId: user.orgId },
+        where: {
+          id: { in: targetConversationIds },
+          orgId: user.orgId,
+          // Riêng tư cấp hội thoại 2026-07-09: không chuyển tiếp VÀO hội thoại riêng tư
+          // của người khác (sẽ ghi tin vào một luồng mình không được xem).
+          OR: [{ isPrivate: false }, { privateOwnerUserId: user.id }],
+        },
         include: { zaloAccount: true },
       });
 
@@ -598,7 +618,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
     const user = request.user!;
     const { id } = request.params as { id: string };
 
-    const conv = await getConversation(id, user.orgId, reply);
+    const conv = await getConversation(id, user.orgId, reply, user.id);
     if (!conv) return;
 
     try {
@@ -620,7 +640,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
     const user = request.user!;
     const { id } = request.params as { id: string };
 
-    const conv = await getConversation(id, user.orgId, reply);
+    const conv = await getConversation(id, user.orgId, reply, user.id);
     if (!conv) return;
 
     try {
@@ -646,7 +666,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
 
     if (!stickerId) return reply.status(400).send({ error: 'stickerId required' });
 
-    const conv = await getConversation(id, user.orgId, reply);
+    const conv = await getConversation(id, user.orgId, reply, user.id);
     if (!conv) return;
 
     try {
@@ -715,7 +735,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
 
     if (!url?.trim()) return reply.status(400).send({ error: 'url required' });
 
-    const conv = await getConversation(id, user.orgId, reply);
+    const conv = await getConversation(id, user.orgId, reply, user.id);
     if (!conv) return;
 
     try {
@@ -765,7 +785,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
 
     if (!contactId?.trim()) return reply.status(400).send({ error: 'contactId required' });
 
-    const conv = await getConversation(id, user.orgId, reply);
+    const conv = await getConversation(id, user.orgId, reply, user.id);
     if (!conv) return;
 
     try {

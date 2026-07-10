@@ -150,7 +150,8 @@ export async function publicApiRoutes(app: FastifyInstance): Promise<void> {
       const { limit = '20' } = request.query as Record<string, string>;
 
       const conversations = await prisma.conversation.findMany({
-        where: { orgId, deletedAt: null },
+        // Riêng tư cấp hội thoại 2026-07-09: ẩn hẳn khỏi Public API (không có danh tính user).
+        where: { orgId, deletedAt: null, isPrivate: false },
         select: {
           id: true, threadType: true, externalThreadId: true,
           lastMessageAt: true, unreadCount: true, isReplied: true,
@@ -173,8 +174,19 @@ export async function publicApiRoutes(app: FastifyInstance): Promise<void> {
       const { id } = request.params as { id: string };
       const { limit = '50' } = request.query as Record<string, string>;
 
-      const conv = await prisma.conversation.findFirst({ where: { id, orgId }, select: { id: true } });
+      const conv = await prisma.conversation.findFirst({
+        where: { id, orgId },
+        select: { id: true, isPrivate: true },
+      });
       if (!conv) return reply.status(404).send({ error: 'Conversation not found' });
+      // Riêng tư cấp hội thoại 2026-07-09: Public API xác thực bằng API key cấp TỔ CHỨC,
+      // không mang danh tính người dùng → không thể là chủ hội thoại. Chặn tuyệt đối.
+      if (conv.isPrivate) {
+        return reply.status(403).send({
+          error: 'Cuộc hội thoại này đang ở chế độ riêng tư.',
+          code: 'CONVERSATION_PRIVATE',
+        });
+      }
 
       const messages = await prisma.message.findMany({
         where: { conversationId: id, isDeleted: false },

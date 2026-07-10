@@ -85,6 +85,7 @@ async function forwardMessage(ev: MessagePersistedEvent): Promise<void> {
           select: {
             id: true,
             threadType: true,
+            isPrivate: true,
             contact: { select: { crmName: true, fullName: true } },
             zaloAccount: {
               select: {
@@ -102,6 +103,10 @@ async function forwardMessage(ev: MessagePersistedEvent): Promise<void> {
     // re-forward về Telegram (sale đã gõ ở Telegram rồi).
     if (message.sentVia === 'bridge' || wasSentByBridge(message.zaloMsgId)) return;
     const conv = message.conversation;
+
+    // Riêng tư cấp hội thoại 2026-07-09: forum Telegram là kênh CHUNG (mọi thành viên group
+    // đọc được) → KHÔNG bao giờ chuyển tiếp nội dung hội thoại đang "Chỉ mình tôi xem".
+    if (conv.isPrivate) return;
 
     if (conv.threadType !== 'user') return; // chỉ chat 1-1 (bỏ nhóm Zalo)
     const cfg = conv.zaloAccount.telegramBridge;

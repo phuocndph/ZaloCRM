@@ -20,7 +20,11 @@ import {
 const BLUR = PRIVACY_BLUR_TOKEN;
 
 // Nick riêng tư ĐÃ XÓA: privacyMode='main', ownerUserId='OWNER', archivedAt đã set.
+// isPrivate=false: hội thoại KHÔNG bật riêng tư cấp hội thoại (2026-07-09) — cột này bắt
+// buộc, thiếu là canSeeConversationContent fail-closed (chặn) chứ không đoán "public".
 const deletedMainNick = {
+  isPrivate: false,
+  privateOwnerUserId: null,
   zaloAccount: { privacyMode: 'main', ownerUserId: 'OWNER', archivedAt: new Date() },
 };
 

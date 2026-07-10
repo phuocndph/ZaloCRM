@@ -103,6 +103,12 @@ export const ACTION_CATEGORY: Record<string, ActivityCategory> = {
   lead_pool_manual_return: 'customer_info', // sale chủ động trả pool — narrative event
   lead_pool_bonus_grant: 'system',
   lead_pool_zalo_lookup: 'system',
+
+  // Riêng tư cấp hội thoại 2026-07-09 — "Chỉ mình tôi xem" (yêu cầu 9: ghi nhật ký
+  // ai / hội thoại nào / thời gian / hành động).
+  conversation_privacy_enable: 'security',
+  conversation_privacy_disable: 'security',
+  conversation_privacy_force_release: 'security', // Admin gỡ khi chủ bị khóa/nghỉ việc
 };
 
 export function categoryOf(action: string): ActivityCategory | null {

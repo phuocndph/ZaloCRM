@@ -146,6 +146,12 @@ export interface NotifyNewInboundArgs {
   zaloAccountId: string;
   privacyMode: string;
   ownerUserId: string | null;
+  /**
+   * Riêng tư cấp HỘI THOẠI (2026-07-09). BẮT BUỘC — anh chốt "ẩn hoàn toàn": người khác
+   * KHÔNG nhận thông báo nào cả (không phải nhận thông báo che nội dung như nick 'main').
+   */
+  conversationIsPrivate: boolean;
+  conversationPrivateOwnerUserId: string | null;
   /** Message đã persist (id, content, contentType, senderName, ...). */
   message: any;
   /** Tên khách hiển thị (ưu tiên) — fallback message.senderName. */
@@ -201,7 +207,15 @@ export async function notifyNewInboundMessage(args: NotifyNewInboundArgs): Promi
 
     const data: Record<string, string> = { conversationId, zaloAccountId };
 
-    const targets = await resolvePushTargetUserIds(zaloAccountId, orgId, args.senderUserId ?? null);
+    let targets = await resolvePushTargetUserIds(zaloAccountId, orgId, args.senderUserId ?? null);
+
+    // Riêng tư cấp HỘI THOẠI — thu hẹp target về ĐÚNG chủ sở hữu. Người khác không nhận
+    // gì cả: không badge, không thông báo che nội dung. Chủ bị xóa (owner=null) → không ai nhận.
+    if (args.conversationIsPrivate) {
+      const owner = args.conversationPrivateOwnerUserId;
+      targets = owner && targets.includes(owner) ? [owner] : [];
+    }
+
     if (targets.length === 0) return;
 
     // Nick main + không phải owner → body đã che; owner (hoặc nick thường) → body thật.

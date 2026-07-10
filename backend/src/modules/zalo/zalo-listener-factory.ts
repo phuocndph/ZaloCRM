@@ -733,6 +733,11 @@ export function attachZaloListener(ctx: ListenerContext): void {
           where: { id: accountId },
           select: { privacyMode: true, ownerUserId: true },
         });
+        // Riêng tư cấp hội thoại 2026-07-09 — fail-closed nếu không đọc được conv.
+        const convPriv = await prisma.conversation.findUnique({
+          where: { id: result.conversationId },
+          select: { isPrivate: true, privateOwnerUserId: true },
+        });
         await emitChatMessage({
           io,
           orgId: result.orgId,
@@ -741,6 +746,8 @@ export function attachZaloListener(ctx: ListenerContext): void {
           message: result.message,
           privacyMode: accInfo?.privacyMode ?? 'sub',
           ownerUserId: accInfo?.ownerUserId ?? null,
+          isPrivate: convPriv?.isPrivate ?? true,
+          privateOwnerUserId: convPriv?.privateOwnerUserId ?? null,
         });
 
         // Push mobile (FCM/APNs) — CHỈ tin KHÁCH gửi đến (inbound). Tin tự gửi/self bỏ qua.
@@ -752,6 +759,10 @@ export function attachZaloListener(ctx: ListenerContext): void {
             zaloAccountId: accountId,
             privacyMode: accInfo?.privacyMode ?? 'sub',
             ownerUserId: accInfo?.ownerUserId ?? null,
+            // Riêng tư cấp hội thoại 2026-07-09 — fail-closed: không đọc được conv thì
+            // coi như riêng tư + không có chủ → không ai nhận thông báo.
+            conversationIsPrivate: convPriv?.isPrivate ?? true,
+            conversationPrivateOwnerUserId: convPriv?.privateOwnerUserId ?? null,
             message: result.message,
             senderName,
           }).catch((err) =>
@@ -943,6 +954,11 @@ export function attachZaloListener(ctx: ListenerContext): void {
             where: { id: accountId },
             select: { privacyMode: true, ownerUserId: true },
           });
+          // Riêng tư cấp hội thoại 2026-07-09 — fail-closed nếu không đọc được conv.
+          const convPriv = await prisma.conversation.findUnique({
+            where: { id: result.conversationId },
+            select: { isPrivate: true, privateOwnerUserId: true },
+          });
           await emitChatMessage({
             io,
             orgId: result.orgId,
@@ -951,6 +967,8 @@ export function attachZaloListener(ctx: ListenerContext): void {
             message: result.message,
             privacyMode: accInfo?.privacyMode ?? 'sub',
             ownerUserId: accInfo?.ownerUserId ?? null,
+            isPrivate: convPriv?.isPrivate ?? true,
+            privateOwnerUserId: convPriv?.privateOwnerUserId ?? null,
           });
         }
       } catch (err) {

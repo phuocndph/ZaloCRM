@@ -21,8 +21,10 @@ import {
 
 const BLUR = PRIVACY_BLUR_TOKEN;
 
-const mainNick = { zaloAccount: { privacyMode: 'main', ownerUserId: 'OWNER' } };
-const subNick = { zaloAccount: { privacyMode: 'sub', ownerUserId: 'OWNER' } };
+// isPrivate=false → hội thoại KHÔNG bật riêng tư cấp hội thoại (2026-07-09). Hai cột này
+// BẮT BUỘC: thiếu là canSeeConversationContent fail-closed (chặn), không đoán "public".
+const mainNick = { isPrivate: false, privateOwnerUserId: null, zaloAccount: { privacyMode: 'main', ownerUserId: 'OWNER' } };
+const subNick = { isPrivate: false, privateOwnerUserId: null, zaloAccount: { privacyMode: 'sub', ownerUserId: 'OWNER' } };
 
 const ctxOwnerUnlocked: PrivacyContext = { viewerUserId: 'OWNER', orgId: 'O1', privacyUnlocked: true };
 const ctxOwnerLocked: PrivacyContext = { viewerUserId: 'OWNER', orgId: 'O1', privacyUnlocked: false };

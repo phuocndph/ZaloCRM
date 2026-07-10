@@ -57,6 +57,7 @@
         @conversation-deleted="onConversationDeleted"
         @compose-opened="onComposeOpened"
         @follow-changed="onFollowChanged"
+        @privacy-changed="onPrivacyChanged"
       >
         <template #filters>
           <ConversationFilterBar
@@ -84,7 +85,9 @@
       :editing-message="editingMessage"
       :typing-users="currentTypers"
       :show-contact-panel="showContactPanel"
+      :private-blocked="conversationPrivateBlocked"
       class="smax-msg-col"
+      @privacy-released="onPrivacyReleased"
       @send="sendMessage"
       @ask-ai="generateAiSuggestion"
       @open-media-tab="onOpenMediaTab"
@@ -160,6 +163,7 @@ import { useZaloAccounts } from '@/composables/use-zalo-accounts';
 import { useWorkScope } from '@/composables/use-work-scope';
 import { shouldAdoptNickScope } from '@/composables/work-scope-logic';
 import { useMobile } from '@/composables/use-mobile';
+import type { ConversationPrivacyStatus } from '@/composables/use-conversation-privacy';
 
 const { isMobile } = useMobile();
 const route = useRoute();
@@ -167,6 +171,7 @@ const router = useRouter();
 
 const {
   conversations, selectedConvId, selectedConv, messages,
+  conversationPrivateBlocked,
   loadingConvs, loadingMsgs, sendingMsg, searchQuery, accountFilter, extraFilters,
   aiSuggestion, aiSuggestionLoading, aiSuggestionError,
   aiSummary, aiSummaryLoading, aiSentiment, aiSentimentLoading,
@@ -278,6 +283,29 @@ function onFollowChanged(_contactId: string, _nickId: string, _following: boolea
   // phiên XONG mới emit → fetch lại ra đúng trạng thái. Tránh lệch khóa c|/t| khi UN-follow
   // (optimistic không biết threadId của phiên nên không xoá được khóa 't|' → chuông treo). 1 GET nhẹ.
   void fetchFollowingPairs();
+}
+
+// ── Riêng tư cấp hội thoại 2026-07-09 — "Chỉ mình tôi xem" ─────────────────────
+/**
+ * Người dùng vừa bật/tắt riêng tư từ menu chuột phải. BE đã trả trạng thái mới nên chỉ
+ * cần vá row tại chỗ (tránh nháy cả cột 2), rồi nạp lại tin nhắn nếu đang mở đúng hội
+ * thoại đó — tắt riêng tư phải làm tin nhắn hiện lại ngay.
+ */
+function onPrivacyChanged(conversationId: string, status: ConversationPrivacyStatus) {
+  const conv = conversations.value.find((c) => c.id === conversationId);
+  if (conv) {
+    conv.isPrivate = status.isPrivate;
+    conv.privateOwnerUserId = status.privateOwnerUserId;
+    // Người bật LUÔN xem được → không bao giờ tự che row của chính mình.
+    conv.conversationPrivate = false;
+  }
+  if (selectedConvId.value === conversationId) void fetchMessages(conversationId);
+}
+
+/** Admin đã gỡ cờ (chủ bị khóa/xóa). Hội thoại trở lại bình thường → nạp lại cả 2 cột. */
+function onPrivacyReleased(conversationId: string) {
+  void fetchConversations();
+  if (selectedConvId.value === conversationId) void fetchMessages(conversationId);
 }
 
 const currentAccount = computed(() => {

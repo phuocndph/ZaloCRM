@@ -971,11 +971,13 @@ export async function chatRoutes(app: FastifyInstance) {
             ? friendMap.get(`${c.zaloAccountId}:${c.externalThreadId}`) || null
             : null,
         };
-        const redactedConv = redactConversationRow(base as any, privacyCtx);
+        // KHÔNG dùng `as any` ở đây — để tsc bắt buộc `base` phải mang isPrivate +
+        // privateOwnerUserId (fail-closed lúc compile, xem redact.ts::PrivacyConversation).
+        const redactedConv = redactConversationRow(base, privacyCtx);
         // Cũng redact preview message (snippet cuối trong messages[0])
         if ((redactedConv as any).messages?.length && (redactedConv as any).redacted) {
           (redactedConv as any).messages = (redactedConv as any).messages.map((m: any) =>
-            redactMessage(m, c as any, privacyCtx),
+            redactMessage(m, c, privacyCtx),
           );
         }
         return redactedConv;
@@ -1081,7 +1083,7 @@ export async function chatRoutes(app: FastifyInstance) {
     const privacyCtx = await buildPrivacyContext(request);
     let outContact: any = conversation.contact;
     let outFriendship: any = friendship;
-    if (!canSeeConversationContent(conversation as any, privacyCtx)) {
+    if (!canSeeConversationContent(conversation, privacyCtx)) {
       if (outContact) outContact = redactContact(outContact, privacyCtx);
       if (outFriendship) {
         outFriendship = redactFriend(
@@ -1271,6 +1273,9 @@ export async function chatRoutes(app: FastifyInstance) {
       where: { id, orgId: user.orgId },
       select: {
         id: true,
+        // Riêng tư cấp hội thoại 2026-07-09 — bắt buộc cho canSeeConversationContent.
+        isPrivate: true,
+        privateOwnerUserId: true,
         // 2026-06-20: displayName+avatar của NICK để hiển thị reaction do sale thả qua CRM
         // theo DANH TÍNH NICK ZALO (anh chốt: không hiện email tài khoản sale CRM).
         zaloAccount: { select: { privacyMode: true, ownerUserId: true, displayName: true, avatarUrl: true } },
@@ -1281,6 +1286,13 @@ export async function chatRoutes(app: FastifyInstance) {
     // Phase Riêng Tư 2026-05-22: redact content nếu conv main-nick + viewer không own + chưa unlock
     const { buildPrivacyContext, redactMessage } = await import('../privacy/redact.js');
     const privacyCtx = await buildPrivacyContext(request);
+
+    // Riêng tư cấp hội thoại (yêu cầu 5): KHÔNG tải nội dung thật về FE rồi che bằng CSS.
+    // Người không phải chủ → 403 ngay, không truy vấn tin nhắn.
+    if (conversation.isPrivate && conversation.privateOwnerUserId !== user.id) {
+      const { CONVERSATION_PRIVATE_CODE, CONVERSATION_PRIVATE_MESSAGE } = await import('../privacy/redact.js');
+      return reply.status(403).send({ error: CONVERSATION_PRIVATE_MESSAGE, code: CONVERSATION_PRIVATE_CODE });
+    }
 
     const [messages, total] = await Promise.all([
       prisma.message.findMany({
@@ -1461,7 +1473,7 @@ export async function chatRoutes(app: FastifyInstance) {
     }
 
     const redacted = ordered.map((m) => {
-      const r = redactMessage(m as any, conversation as any, privacyCtx);
+      const r = redactMessage(m as any, conversation, privacyCtx);
       // PRIVACY 2026-06-11 (audit H1): senderResolved (tên/crmName/alias KH) gán SAU
       // redactMessage → KHÔNG gán cho tin đã redact, nếu không cấp trên vẫn đọc được
       // DANH SÁCH tên KH riêng tư dù nội dung đã mờ.
@@ -1580,6 +1592,8 @@ export async function chatRoutes(app: FastifyInstance) {
           message: safeMessage,
           privacyMode: conversation.zaloAccount.privacyMode,
           ownerUserId: conversation.zaloAccount.ownerUserId,
+          isPrivate: conversation.isPrivate,
+          privateOwnerUserId: conversation.privateOwnerUserId,
           extra: { _virtual: true },
         });
 
@@ -1611,6 +1625,14 @@ export async function chatRoutes(app: FastifyInstance) {
 
     const instance = zaloPool.getInstance(conversation.zaloAccountId);
     if (!instance?.api) return reply.status(400).send({ error: 'Zalo account not connected' });
+
+    // PRIVACY GUARD cấp HỘI THOẠI 2026-07-09: "Chỉ mình tôi xem" → người khác không gửi.
+    if (conversation.isPrivate && conversation.privateOwnerUserId !== ((user as any).userId ?? user.id)) {
+      return reply.status(403).send({
+        error: 'Cuộc hội thoại này đang ở chế độ riêng tư.',
+        code: 'CONVERSATION_PRIVATE',
+      });
+    }
 
     // PRIVACY GUARD 2026-05-22: nick privacy='main' → chỉ chính chủ (owner) gửi được
     // qua UI. Bot/automation đi qua zaloPool trực tiếp (không qua route này) → vẫn OK.
@@ -1815,6 +1837,8 @@ export async function chatRoutes(app: FastifyInstance) {
         message: safeMessage,
         privacyMode: conversation.zaloAccount.privacyMode,
         ownerUserId: conversation.zaloAccount.ownerUserId,
+        isPrivate: conversation.isPrivate,
+        privateOwnerUserId: conversation.privateOwnerUserId,
         // 2026-06-15 IDEMPOTENCY: echoId ở top-level payload (ngoài message) để app
         // khớp tin optimistic kể cả khi message bị redact (nick Riêng tư).
         ...(echoId ? { extra: { echoId } } : {}),
@@ -1872,6 +1896,14 @@ export async function chatRoutes(app: FastifyInstance) {
     // ── Gate 3: nick đã kết nối ────────────────────────────────────────────
     const instance = zaloPool.getInstance(conversation.zaloAccountId);
     if (!instance?.api) return reply.status(400).send({ error: 'Zalo account not connected' });
+
+    // PRIVACY GUARD cấp HỘI THOẠI 2026-07-09: "Chỉ mình tôi xem" → người khác không gửi.
+    if (conversation.isPrivate && conversation.privateOwnerUserId !== ((user as any).userId ?? user.id)) {
+      return reply.status(403).send({
+        error: 'Cuộc hội thoại này đang ở chế độ riêng tư.',
+        code: 'CONVERSATION_PRIVATE',
+      });
+    }
 
     // ── Gate 4: privacy (nick 'main' chỉ chính chủ gửi) ────────────────────
     if (conversation.zaloAccount.privacyMode === 'main') {
@@ -2094,6 +2126,8 @@ export async function chatRoutes(app: FastifyInstance) {
             message: safeMessage,
             privacyMode: conversation.zaloAccount.privacyMode,
             ownerUserId: conversation.zaloAccount.ownerUserId,
+            isPrivate: conversation.isPrivate,
+            privateOwnerUserId: conversation.privateOwnerUserId,
           });
         }
         // D3 (2026-06-13): gửi media qua Khối (gửi tay) → bump usageCount để đo ảnh/file hiệu quả.
@@ -2295,6 +2329,8 @@ export async function chatRoutes(app: FastifyInstance) {
           message: m,
           privacyMode: conversation.zaloAccount.privacyMode,
           ownerUserId: conversation.zaloAccount.ownerUserId,
+          isPrivate: conversation.isPrivate,
+          privateOwnerUserId: conversation.privateOwnerUserId,
         });
       }
 

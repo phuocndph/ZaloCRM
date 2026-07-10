@@ -40,6 +40,12 @@ export interface EmitChatArgs {
   /** privacyMode + ownerUserId của nick (để quyết định redact). */
   privacyMode: string;
   ownerUserId: string | null;
+  /**
+   * Riêng tư cấp HỘI THOẠI (2026-07-09). BẮT BUỘC — không optional, cố ý: mọi call site
+   * quên nạp 2 cột này sẽ hỏng build thay vì âm thầm phát nội dung thật ra room org.
+   */
+  isPrivate: boolean;
+  privateOwnerUserId: string | null;
   /** Field phụ kèm theo event (vd mentions) — optional. */
   extra?: Record<string, unknown>;
 }
@@ -53,6 +59,20 @@ export async function emitChatMessage(args: EmitChatArgs): Promise<void> {
 
   const basePayload = { accountId, conversationId, ...(extra ?? {}) };
   const conv: EmitChatConv = { zaloAccount: { privacyMode, ownerUserId } };
+
+  // ── Riêng tư cấp HỘI THOẠI — THẮNG mọi luật nick, KHÔNG cần phiên OTP ──────────
+  // Anh chốt: "ẩn hoàn toàn". Room org KHÔNG nhận gì cả (kể cả bản mờ) → người khác
+  // không thấy badge chưa đọc nhảy, không biết có tin mới. Chỉ chủ sở hữu nhận bản thật.
+  if (args.isPrivate) {
+    if (args.privateOwnerUserId) {
+      io.to(`user:${args.privateOwnerUserId}`).emit('chat:message', {
+        ...basePayload,
+        message,
+        _privacyMeta: { privacyMode, ownerUserId, conversationPrivate: true },
+      });
+    }
+    return;
+  }
 
   // Nick Thường → emit nguyên bản tới room org (đã chặn cross-tenant).
   if (privacyMode !== 'main') {
@@ -70,7 +90,11 @@ export async function emitChatMessage(args: EmitChatArgs): Promise<void> {
     orgId,
     privacyUnlocked: false,
   };
-  const redacted = redactMessage(message, conv as any, redactCtx);
+  const redacted = redactMessage(
+    message,
+    { ...conv, isPrivate: false, privateOwnerUserId: null },
+    redactCtx,
+  );
   io.to(`org:${orgId}`).emit('chat:message', {
     ...basePayload,
     message: redacted,

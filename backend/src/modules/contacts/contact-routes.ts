@@ -955,6 +955,9 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
         message: { ...welcomeMessage, zaloMsgIdNum: null as string | null },
         privacyMode: myNickPriv?.privacyMode ?? 'sub',
         ownerUserId: myNickPriv?.ownerUserId ?? null,
+        // Hội thoại vừa tạo ngay bên trên → chắc chắn chưa bật riêng tư cấp hội thoại.
+        isPrivate: false,
+        privateOwnerUserId: null,
         extra: { _virtual: true, _aiAssistant: true, _welcome: true },
       });
 
@@ -2735,6 +2738,11 @@ async function sendDuplicateAlertMessage(
           where: { id: myNickId },
           select: { privacyMode: true, ownerUserId: true },
         });
+        // Riêng tư cấp hội thoại 2026-07-09 — fail-closed nếu conv không đọc được.
+        const convPriv = await prisma.conversation.findUnique({
+          where: { id: conversationId },
+          select: { isPrivate: true, privateOwnerUserId: true },
+        });
         await emitChatMessage({
           io,
           orgId,
@@ -2743,6 +2751,8 @@ async function sendDuplicateAlertMessage(
           message: { ...dupMsg, zaloMsgIdNum: null as string | null },
           privacyMode: nickPriv?.privacyMode ?? 'sub',
           ownerUserId: nickPriv?.ownerUserId ?? null,
+          isPrivate: convPriv?.isPrivate ?? true,
+          privateOwnerUserId: convPriv?.privateOwnerUserId ?? null,
           extra: { _virtual: true, _aiAssistant: true, _dupAlert: true },
         });
       } catch (err) {

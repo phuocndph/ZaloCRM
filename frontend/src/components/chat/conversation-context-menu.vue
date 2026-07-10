@@ -60,6 +60,29 @@
           <span class="ctx-item__label">{{ followBusy ? 'Đang xử lý…' : (isFollowing ? 'Bỏ theo dõi' : 'Theo dõi') }}</span>
         </button>
 
+        <!-- Riêng tư cấp hội thoại — "Chỉ mình tôi xem". Chỉ hiện khi hội thoại đang bình
+             thường, hoặc đang riêng tư và CHÍNH MÌNH là người bật (yêu cầu 6). -->
+        <template v-if="canTogglePrivacy">
+          <div class="ctx-divider"></div>
+          <button
+            class="ctx-item"
+            :class="{ 'is-primary': isPrivate }"
+            role="menuitem"
+            :disabled="privacyBusy"
+            @click="onAction('toggle-privacy')"
+          >
+            <svg v-if="!isPrivate" class="ctx-item__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+            </svg>
+            <svg v-else class="ctx-item__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/>
+            </svg>
+            <span class="ctx-item__label">
+              {{ privacyBusy ? 'Đang xử lý…' : (isPrivate ? 'Tắt chế độ riêng tư' : 'Chỉ mình tôi xem') }}
+            </span>
+          </button>
+        </template>
+
         <!-- Xóa đoạn hội thoại (xóa mềm — mở hộp xác nhận ở component cha) -->
         <div class="ctx-divider"></div>
         <button class="ctx-item is-danger" role="menuitem" @click="onAction('delete')">
@@ -89,6 +112,11 @@ const props = defineProps<{
   followBusy: boolean;
   /** false khi thiếu contactId/nickId (vd nhóm chưa map contact) → ẩn item Theo dõi. */
   canFollow: boolean;
+  /** Riêng tư cấp hội thoại — "Chỉ mình tôi xem". */
+  isPrivate?: boolean;
+  /** true khi hội thoại riêng tư này do CHÍNH viewer bật (chỉ người đó tắt được). */
+  isPrivacyOwner?: boolean;
+  privacyBusy?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -96,8 +124,12 @@ const emit = defineEmits<{
   'move-main': [];
   'move-other': [];
   'toggle-follow': [];
+  'toggle-privacy': [];
   delete: [];
 }>();
+
+// Hội thoại riêng tư của người khác → không hiện nút (họ cũng không mở được nội dung).
+const canTogglePrivacy = computed(() => !props.isPrivate || props.isPrivacyOwner === true);
 
 const menuRef = ref<HTMLElement | null>(null);
 const flipUp = ref(false);
@@ -170,14 +202,15 @@ onBeforeUnmount(() => {
 function close() {
   emit('update:modelValue', false);
 }
-function onAction(name: 'move-main' | 'move-other' | 'toggle-follow' | 'delete') {
+function onAction(name: 'move-main' | 'move-other' | 'toggle-follow' | 'toggle-privacy' | 'delete') {
   // toggle-follow KHÔNG đóng menu (sale có thể muốn xem trạng thái đổi); các action
   // khác đóng menu ngay như Zalo native.
   switch (name) {
-    case 'move-main':     emit('move-main');     close(); break;
-    case 'move-other':    emit('move-other');    close(); break;
-    case 'delete':        emit('delete');        close(); break;
-    case 'toggle-follow': emit('toggle-follow');          break;
+    case 'move-main':      emit('move-main');      close(); break;
+    case 'move-other':     emit('move-other');     close(); break;
+    case 'delete':         emit('delete');         close(); break;
+    case 'toggle-privacy': emit('toggle-privacy'); close(); break;
+    case 'toggle-follow':  emit('toggle-follow');           break;
   }
 }
 </script>
