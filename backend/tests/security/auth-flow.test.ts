@@ -11,6 +11,11 @@ import fastifyJwt from '@fastify/jwt';
 import bcrypt from 'bcryptjs';
 import { authRoutes } from '../../src/modules/auth/auth-routes.js';
 import { prisma } from '../../src/shared/database/prisma-client.js';
+import { hasRealDatabase } from '../test-helpers.js';
+
+// Integration test: cần Postgres THẬT (beforeAll xoá/tạo row). Không có DATABASE_URL thật
+// thì bỏ qua thay vì đỏ suite. Đặt DATABASE_URL trỏ DB thật để chạy lại.
+const HAS_DB = hasRealDatabase();
 import { config } from '../../src/config/index.js';
 
 const ORG_ID = 'test-af-org';
@@ -26,6 +31,7 @@ async function buildApp(): Promise<FastifyInstance> {
 }
 
 beforeAll(async () => {
+  if (!HAS_DB) return;
   await prisma.refreshToken.deleteMany({ where: { userId: USER_ID } });
   await prisma.user.deleteMany({ where: { id: USER_ID } });
   await prisma.organization.deleteMany({ where: { id: ORG_ID } });
@@ -43,13 +49,14 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  if (!HAS_DB) return;
   await prisma.refreshToken.deleteMany({ where: { userId: USER_ID } });
   await prisma.user.deleteMany({ where: { id: USER_ID } });
   await prisma.organization.deleteMany({ where: { id: ORG_ID } });
   await prisma.$disconnect();
 });
 
-describe('auth flow (Phase 2)', () => {
+describe.skipIf(!HAS_DB)('auth flow (Phase 2)', () => {
   it('login trả access (typ:access) + refresh', async () => {
     const app = await buildApp();
     const res = await app.inject({

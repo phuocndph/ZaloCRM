@@ -10,16 +10,21 @@ import {
   DANGEROUS_ACTIONS,
 } from '../../src/modules/ai/ai-capabilities.js';
 import { prisma } from '../../src/shared/database/prisma-client.js';
+import { hasRealDatabase } from '../test-helpers.js';
 
 const ORG_ID = 'test-ai-org';
+// Allowlist là hàm thuần → luôn chạy. Chỉ `auditAiAction` cần Postgres thật.
+const HAS_DB = hasRealDatabase();
 
 beforeAll(async () => {
+  if (!HAS_DB) return;
   await prisma.activityLog.deleteMany({ where: { orgId: ORG_ID } });
   await prisma.organization.deleteMany({ where: { id: ORG_ID } });
   await prisma.organization.create({ data: { id: ORG_ID, name: 'AI Org' } });
 });
 
 afterAll(async () => {
+  if (!HAS_DB) return;
   await prisma.activityLog.deleteMany({ where: { orgId: ORG_ID } });
   await prisma.organization.deleteMany({ where: { id: ORG_ID } });
   await prisma.$disconnect();
@@ -41,7 +46,7 @@ describe('ai-capabilities', () => {
     }
   });
 
-  it('auditAiAction ghi ActivityLog actorType=bot', async () => {
+  it.skipIf(!HAS_DB)('auditAiAction ghi ActivityLog actorType=bot', async () => {
     auditAiAction(ORG_ID, 'virtual_chat_reply', { conversationId: 'c1' });
     // Fire-and-forget -> chờ flush.
     await new Promise((r) => setTimeout(r, 200));

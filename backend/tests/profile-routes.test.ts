@@ -8,7 +8,12 @@ import { mockUser, mockZaloOps } from './test-helpers.js';
 
 // ── Hoisted mock state ────────────────────────────────────────────────────────
 const zaloOpsMock = mockZaloOps();
+/** Route last-online đi qua presence-service (cache + privacy gate), không qua zaloOps. */
+const getPresenceMock = vi.fn();
 
+vi.mock('../src/modules/zalo/presence-service.js', () => ({
+  getPresence: (...args: unknown[]) => getPresenceMock(...args),
+}));
 vi.mock('../src/shared/database/prisma-client.js', () => ({
   prisma: {
     zaloAccount: { findFirst: vi.fn() },
@@ -69,18 +74,34 @@ describe('GET /profile', () => {
 });
 
 // ── GET last-online ───────────────────────────────────────────────────────────
+// Route đã đổi (2026): không gọi zaloOps.getLastOnline nữa mà đi qua presence-service
+// (cache 30s + privacy gate show_online_status) và trả FORMAT PHẲNG cho FE.
 describe('GET /profile/last-online/:userId', () => {
-  it('happy path — returns last online timestamp', async () => {
-    const ts = 1700000000000;
-    zaloOpsMock.getLastOnline.mockResolvedValue({ lastOnline: ts });
+  const NOW = 1700000000000;
+
+  it('happy path — trả shape phẳng + tính isOnline', async () => {
+    // lastOnline cách đây 1 phút (< 5 phút) → isOnline = true.
+    const lastOnline = Date.now() - 60_000;
+    getPresenceMock.mockResolvedValue({ lastOnline, showStatus: true, fetchedAt: NOW });
     const res = await buildApp().inject({ method: 'GET', url: `${BASE}/last-online/u1` });
     expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body)).toMatchObject({ lastOnline: { lastOnline: ts } });
-    expect(zaloOpsMock.getLastOnline).toHaveBeenCalledWith('za-1', 'u1');
+    expect(JSON.parse(res.body)).toMatchObject({
+      lastOnline, showStatus: true, isOnline: true, fetchedAt: NOW,
+    });
+    expect(getPresenceMock).toHaveBeenCalledWith('za-1', 'u1');
   });
 
-  it('returns 500 when zaloOps throws', async () => {
-    zaloOpsMock.getLastOnline.mockRejectedValue(new Error('lookup failed'));
+  it('không có presence → lastOnline null, không lộ trạng thái', async () => {
+    getPresenceMock.mockResolvedValue(null);
+    const res = await buildApp().inject({ method: 'GET', url: `${BASE}/last-online/u1` });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({
+      lastOnline: null, showStatus: false, isOnline: false,
+    });
+  });
+
+  it('returns 500 when presence-service throws', async () => {
+    getPresenceMock.mockRejectedValue(new Error('lookup failed'));
     const res = await buildApp().inject({ method: 'GET', url: `${BASE}/last-online/u1` });
     expect(res.statusCode).toBe(500);
   });

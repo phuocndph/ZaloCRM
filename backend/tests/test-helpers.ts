@@ -5,6 +5,25 @@
  */
 import { vi } from 'vitest';
 
+// ── Integration test gate ──────────────────────────────────────────────────
+/**
+ * DATABASE_URL giả mà vitest.config.ts tiêm khi máy KHÔNG có DB thật — chỉ đủ để
+ * `prisma-client` import được (Prisma nối lazy), không kết nối được.
+ */
+const PLACEHOLDER_DATABASE_URL = 'postgresql://test:test@localhost:5432/test';
+
+/**
+ * True khi có Postgres THẬT để chạy integration test (beforeAll xoá/tạo row).
+ *
+ * Test integration phải tự bỏ qua khi thiếu DB, thay vì đỏ suite ở beforeAll — trước đây
+ * 5 file tests/security/* luôn fail trên máy dev không có .env, làm cả suite đỏ và che mất
+ * các lỗi thật. Đặt DATABASE_URL trỏ tới DB thật (vd docker-compose) thì chúng chạy lại.
+ */
+export function hasRealDatabase(): boolean {
+  const url = process.env.DATABASE_URL;
+  return !!url && url !== PLACEHOLDER_DATABASE_URL;
+}
+
 // ── Mock user (JWT decoded) ────────────────────────────────────────────────
 export function mockUser(overrides: Record<string, unknown> = {}) {
   return {
@@ -49,57 +68,81 @@ export function mockIO() {
   const emit = vi.fn();
   const to = vi.fn(() => ({ emit }));
   const inFn = vi.fn(() => ({ fetchSockets: vi.fn(async () => []) }));
-  return { emit, to, in: inFn } as any;
+  // `_toMock` = handle tới emit của room (io.to(...).emit). Expose để test assert được
+  // nội dung event mà không phải lần theo giá trị trả về của `to`.
+  return { emit, to, in: inFn, _toMock: { emit } } as any;
 }
 
 // ── Prisma mock factory ────────────────────────────────────────────────────
-export function mockPrisma() {
+/** Các method Prisma sinh sẵn cho mỗi model được truy cập. */
+const PRISMA_MODEL_METHODS = [
+  'findFirst', 'findUnique', 'findUniqueOrThrow', 'findFirstOrThrow', 'findMany',
+  'count', 'aggregate', 'groupBy',
+  'create', 'createMany', 'update', 'updateMany', 'upsert',
+  'delete', 'deleteMany',
+] as const;
+
+function makeModelMock() {
+  const model: Record<string, ReturnType<typeof vi.fn>> = {};
+  for (const m of PRISMA_MODEL_METHODS) model[m] = vi.fn();
+  return model;
+}
+
+/**
+ * Mock Prisma client cho route test.
+ *
+ * Dùng Proxy TỰ SINH model khi được truy cập lần đầu, thay vì liệt kê tay từng model.
+ * Trước đây danh sách cứng (8 model) → route thêm `prisma.friend.findUnique` là test chết
+ * với "Cannot read properties of undefined (reading 'findUnique')", một lỗi hạ tầng test
+ * chứ không phải lỗi code. Proxy làm mock không bao giờ lỗi thời theo schema.
+ *
+ * Mỗi model được cache sau lần truy cập đầu → `prismaMock.friend.findUnique` trong test và
+ * `prisma.friend.findUnique` trong route là CÙNG một vi.fn(), nên `mockResolvedValue` và
+ * `toHaveBeenCalledWith` hoạt động bình thường.
+ */
+export function mockPrisma(): any {
+  const models = new Map<string, ReturnType<typeof makeModelMock>>();
+  // $-method phải được CACHE: nếu mỗi lần truy cập trả vi.fn() mới thì
+  // `prismaMock.$transaction.mockImplementation(...)` trong test sẽ gắn lên một hàm khác
+  // với hàm mà code thật gọi → mock im lặng không có tác dụng.
+  const specials = new Map<string, ReturnType<typeof vi.fn>>();
+  const proxy: any = new Proxy({} as Record<string, unknown>, {
+    get(_target, prop: string | symbol) {
+      if (typeof prop !== 'string') return undefined;
+      // `await prismaMock` / assert lib dò `then` → phải trả undefined, nếu không Promise
+      // sẽ tưởng đây là thenable và treo.
+      if (prop === 'then' || prop === 'constructor') return undefined;
+      if (prop.startsWith('$')) {
+        if (!specials.has(prop)) {
+          specials.set(
+            prop,
+            prop === '$transaction'
+              // callback-style nhận `tx` (chính proxy này) hoặc array-style.
+              ? vi.fn(async (arg: unknown) =>
+                  typeof arg === 'function' ? (arg as (tx: unknown) => unknown)(proxy) : arg,
+                )
+              : vi.fn(),
+          );
+        }
+        return specials.get(prop);
+      }
+      if (!models.has(prop)) models.set(prop, makeModelMock());
+      return models.get(prop);
+    },
+    has: () => true,
+  });
+  return proxy;
+}
+
+/**
+ * Mock đầy đủ module prisma-client — gồm cả `tenantTransaction` (dùng trong tag-service).
+ * `tenantTransaction(cb)` thật mở transaction + set tenant context; ở test ta chỉ chạy
+ * callback với `tx` do caller cung cấp (mặc định chính prisma mock).
+ */
+export function mockPrismaClientModule(prismaMock: any, tx: any = prismaMock) {
   return {
-    conversation: {
-      findFirst: vi.fn(),
-      findUnique: vi.fn(),
-      findMany: vi.fn(),
-      count: vi.fn(),
-      update: vi.fn(),
-      updateMany: vi.fn(),
-    },
-    message: {
-      findFirst: vi.fn(),
-      findUnique: vi.fn(),
-      findMany: vi.fn(),
-      count: vi.fn(),
-      create: vi.fn(),
-      update: vi.fn(),
-    },
-    messageReaction: {
-      upsert: vi.fn(),
-      count: vi.fn(),
-      deleteMany: vi.fn(),
-    },
-    pinnedConversation: {
-      upsert: vi.fn(),
-      deleteMany: vi.fn(),
-    },
-    zaloAccount: {
-      findUnique: vi.fn(),
-      findFirst: vi.fn(),
-      findMany: vi.fn(),
-    },
-    zaloAccountAccess: {
-      findFirst: vi.fn(),
-      findMany: vi.fn(),
-    },
-    groupPoll: {
-      create: vi.fn(),
-      findFirst: vi.fn(),
-      update: vi.fn(),
-    },
-    contact: {
-      findFirst: vi.fn(),
-      findMany: vi.fn(),
-      create: vi.fn(),
-      update: vi.fn(),
-    },
+    prisma: prismaMock,
+    tenantTransaction: vi.fn(async (cb: (tx: unknown) => unknown) => cb(tx)),
   };
 }
 

@@ -1,20 +1,24 @@
 /**
  * friend-sync-cron.test.ts — Test runFriendSyncCycleNow (direct cycle, no scheduler).
  * Verify: iterate accounts, error in 1 account không break others, no accounts → no-op.
+ *
+ * 2026-07-10: cron gọi `syncAccountFully` (bạn bè + alias + label), không còn
+ * `syncFriendsForAccount`. Kết quả trả về shape mới: { friends:{emittedCount,errors},
+ * aliasesUpdated, labelsUpdated, errors: [] }.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { mockPrisma } from './test-helpers.js';
 
-const prismaMock = {
-  zaloAccount: { findMany: vi.fn() },
-};
-const syncFriendsForAccountMock = vi.fn();
+// mockPrisma() tự sinh model/method → code chạm bảng mới không làm test chết.
+const prismaMock = mockPrisma();
+const syncAccountFullyMock = vi.fn();
 
 vi.mock('../src/shared/database/prisma-client.js', () => ({ prisma: prismaMock }));
 vi.mock('../src/shared/utils/logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 vi.mock('../src/modules/zalo/friend-sync-service.js', () => ({
-  syncFriendsForAccount: syncFriendsForAccountMock,
+  syncAccountFully: syncAccountFullyMock,
 }));
 vi.mock('node-cron', () => ({
   default: {
@@ -24,17 +28,28 @@ vi.mock('node-cron', () => ({
 
 const { runFriendSyncCycleNow } = await import('../src/modules/zalo/friend-sync-cron.js');
 
+/** Kết quả rỗng hợp lệ của syncAccountFully. */
+function okResult(over: Record<string, unknown> = {}) {
+  return {
+    friends: { emittedCount: 0, errors: 0 },
+    aliasesUpdated: 0,
+    labelsUpdated: 0,
+    errors: [],
+    ...over,
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   prismaMock.zaloAccount.findMany.mockReset();
-  syncFriendsForAccountMock.mockReset();
+  syncAccountFullyMock.mockReset();
 });
 
 describe('runFriendSyncCycleNow', () => {
   it('no-op when no connected accounts', async () => {
     prismaMock.zaloAccount.findMany.mockResolvedValue([]);
     await runFriendSyncCycleNow(null);
-    expect(syncFriendsForAccountMock).not.toHaveBeenCalled();
+    expect(syncAccountFullyMock).not.toHaveBeenCalled();
   });
 
   it('iterates each connected account sequentially', async () => {
@@ -42,16 +57,13 @@ describe('runFriendSyncCycleNow', () => {
       { id: 'za-1', orgId: 'org-1', displayName: 'Nick 1' },
       { id: 'za-2', orgId: 'org-1', displayName: 'Nick 2' },
     ]);
-    syncFriendsForAccountMock.mockResolvedValue({
-      liveCount: 0, createdContacts: 0, upsertedFriends: 0,
-      emittedCount: 0, errors: 0, durationMs: 1, skipped: null,
-    });
+    syncAccountFullyMock.mockResolvedValue(okResult());
     await runFriendSyncCycleNow(null);
-    expect(syncFriendsForAccountMock).toHaveBeenCalledTimes(2);
-    expect(syncFriendsForAccountMock).toHaveBeenNthCalledWith(
+    expect(syncAccountFullyMock).toHaveBeenCalledTimes(2);
+    expect(syncAccountFullyMock).toHaveBeenNthCalledWith(
       1, 'za-1', 'org-1', { trigger: 'cron', io: null },
     );
-    expect(syncFriendsForAccountMock).toHaveBeenNthCalledWith(
+    expect(syncAccountFullyMock).toHaveBeenNthCalledWith(
       2, 'za-2', 'org-1', { trigger: 'cron', io: null },
     );
   });
@@ -61,14 +73,11 @@ describe('runFriendSyncCycleNow', () => {
       { id: 'za-bad', orgId: 'org-1', displayName: 'Bad' },
       { id: 'za-good', orgId: 'org-1', displayName: 'Good' },
     ]);
-    syncFriendsForAccountMock
+    syncAccountFullyMock
       .mockRejectedValueOnce(new Error('boom'))
-      .mockResolvedValueOnce({
-        liveCount: 5, createdContacts: 0, upsertedFriends: 5,
-        emittedCount: 1, errors: 0, durationMs: 50, skipped: null,
-      });
+      .mockResolvedValueOnce(okResult({ friends: { emittedCount: 1, errors: 0 } }));
     await runFriendSyncCycleNow(null);
-    expect(syncFriendsForAccountMock).toHaveBeenCalledTimes(2);
+    expect(syncAccountFullyMock).toHaveBeenCalledTimes(2);
   });
 
   it('accumulates emittedCount + errors across accounts', async () => {
@@ -76,32 +85,21 @@ describe('runFriendSyncCycleNow', () => {
       { id: 'za-1', orgId: 'o', displayName: 'A' },
       { id: 'za-2', orgId: 'o', displayName: 'B' },
     ]);
-    syncFriendsForAccountMock
-      .mockResolvedValueOnce({
-        liveCount: 10, createdContacts: 0, upsertedFriends: 10,
-        emittedCount: 3, errors: 1, durationMs: 100, skipped: null,
-      })
-      .mockResolvedValueOnce({
-        liveCount: 5, createdContacts: 1, upsertedFriends: 5,
-        emittedCount: 2, errors: 0, durationMs: 80, skipped: null,
-      });
-    // No throw → just verify total via logger spy not feasible without
-    // refactoring. Smoke: 2 calls completed.
+    syncAccountFullyMock
+      .mockResolvedValueOnce(okResult({ friends: { emittedCount: 3, errors: 1 }, labelsUpdated: 2 }))
+      .mockResolvedValueOnce(okResult({ friends: { emittedCount: 2, errors: 0 }, aliasesUpdated: 1 }));
     await runFriendSyncCycleNow(null);
-    expect(syncFriendsForAccountMock).toHaveBeenCalledTimes(2);
+    expect(syncAccountFullyMock).toHaveBeenCalledTimes(2);
   });
 
-  it('passes IO param through to syncFriendsForAccount', async () => {
+  it('passes IO param through to syncAccountFully', async () => {
     prismaMock.zaloAccount.findMany.mockResolvedValue([
       { id: 'za-io', orgId: 'org-1', displayName: 'Nick' },
     ]);
-    syncFriendsForAccountMock.mockResolvedValue({
-      liveCount: 0, createdContacts: 0, upsertedFriends: 0,
-      emittedCount: 0, errors: 0, durationMs: 1, skipped: null,
-    });
+    syncAccountFullyMock.mockResolvedValue(okResult());
     const fakeIO = { emit: vi.fn() } as any;
     await runFriendSyncCycleNow(fakeIO);
-    expect(syncFriendsForAccountMock).toHaveBeenCalledWith(
+    expect(syncAccountFullyMock).toHaveBeenCalledWith(
       'za-io', 'org-1', { trigger: 'cron', io: fakeIO },
     );
   });

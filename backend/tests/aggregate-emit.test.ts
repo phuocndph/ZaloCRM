@@ -21,7 +21,14 @@ const prismaMock = {
   $transaction: vi.fn(),
 };
 
-vi.mock('../src/shared/database/prisma-client.js', () => ({ prisma: prismaMock }));
+// contact-aggregate mở transaction qua `tenantTransaction`, KHÔNG phải prisma.$transaction.
+// Thiếu export này thì hàm ném "tenantTransaction is not a function", bị try/catch trong
+// applyFriendAggregate nuốt im lặng → không emit gì, và test "SKIPS emit" pass GIẢ.
+// Uỷ quyền về $transaction để 3 test bên dưới giữ nguyên cách dựng `tx`.
+vi.mock('../src/shared/database/prisma-client.js', () => ({
+  prisma: prismaMock,
+  tenantTransaction: (cb: any) => prismaMock.$transaction(cb),
+}));
 vi.mock('../src/shared/utils/logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
@@ -31,6 +38,10 @@ vi.mock('../src/modules/zalo/friend-event-handler.js', () => ({
 }));
 vi.mock('../src/modules/activity/activity-logger.js', () => ({
   logActivity: vi.fn(),
+}));
+// ensureContactCollaborator đụng bảng khác, là best-effort và nằm ngoài phạm vi test emit.
+vi.mock('../src/modules/contacts/contact-scope.js', () => ({
+  ensureContactCollaborator: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock('../src/modules/zalo/zalo-pool.js', () => ({
   zaloPool: { getIO: vi.fn(() => ioMock) },
@@ -75,6 +86,8 @@ describe('applyFriendAggregate — emit friend:updated', () => {
           update: vi.fn(),
         },
         contact: {
+          // Nhánh backfill tên từ stub "Unknown" đọc contact trước khi ghi.
+          findUnique: vi.fn().mockResolvedValue({ fullName: 'KH An', avatarUrl: 'http://a.png' }),
           update: vi.fn(),
         },
       };
@@ -119,7 +132,10 @@ describe('applyFriendAggregate — emit friend:updated', () => {
           }),
           update: vi.fn().mockResolvedValue({}),
         },
-        contact: { update: vi.fn() },
+        contact: {
+          findUnique: vi.fn().mockResolvedValue({ fullName: 'KH An', avatarUrl: 'http://a.png' }),
+          update: vi.fn(),
+        },
       };
       await cb(tx);
     });
@@ -155,7 +171,10 @@ describe('applyFriendAggregate — emit friend:updated', () => {
           }),
           update: vi.fn().mockResolvedValue({}),
         },
-        contact: { update: vi.fn() },
+        contact: {
+          findUnique: vi.fn().mockResolvedValue({ fullName: 'KH An', avatarUrl: 'http://a.png' }),
+          update: vi.fn(),
+        },
       };
       await cb(tx);
     });

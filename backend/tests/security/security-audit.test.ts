@@ -5,6 +5,11 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { prisma } from '../../src/shared/database/prisma-client.js';
+import { hasRealDatabase } from '../test-helpers.js';
+
+// Integration test: cần Postgres THẬT (beforeAll xoá/tạo row). Không có DATABASE_URL thật
+// thì bỏ qua thay vì đỏ suite. Đặt DATABASE_URL trỏ DB thật để chạy lại.
+const HAS_DB = hasRealDatabase();
 import { config } from '../../src/config/index.js';
 import { auditSecurityCritical } from '../../src/modules/auth/security-audit.js';
 import { issueRefreshToken, rotateRefreshToken } from '../../src/modules/auth/refresh-token-service.js';
@@ -13,6 +18,7 @@ const ORG_ID = 'test-aud-org';
 const USER_ID = 'test-aud-user';
 
 beforeAll(async () => {
+  if (!HAS_DB) return;
   await prisma.activityLog.deleteMany({ where: { userId: USER_ID } });
   await prisma.refreshToken.deleteMany({ where: { userId: USER_ID } });
   await prisma.user.deleteMany({ where: { id: USER_ID } });
@@ -24,6 +30,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  if (!HAS_DB) return;
   await prisma.activityLog.deleteMany({ where: { userId: USER_ID } });
   await prisma.refreshToken.deleteMany({ where: { userId: USER_ID } });
   await prisma.user.deleteMany({ where: { id: USER_ID } });
@@ -32,11 +39,12 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  if (!HAS_DB) return;
   await prisma.activityLog.deleteMany({ where: { userId: USER_ID } });
   await prisma.refreshToken.deleteMany({ where: { userId: USER_ID } });
 });
 
-describe('security-audit', () => {
+describe.skipIf(!HAS_DB)('security-audit', () => {
   it('auditSecurityCritical ghi durable row (category security, resolve orgId từ userId)', async () => {
     await auditSecurityCritical({ action: 'password_change', userId: USER_ID });
     const rows = await prisma.activityLog.findMany({ where: { userId: USER_ID, action: 'password_change' } });

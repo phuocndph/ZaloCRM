@@ -9,13 +9,16 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Fastify, { FastifyInstance } from 'fastify';
-import { mockUser } from './test-helpers.js';
+import { mockUser, mockPrisma } from './test-helpers.js';
 
-const prismaMock = {
-  zaloAccount: { findMany: vi.fn(), findFirst: vi.fn() },
-  zaloAccountAccess: { findMany: vi.fn() },
-  friend: { findMany: vi.fn(), count: vi.fn(), groupBy: vi.fn() },
-};
+// mockPrisma() tự sinh model/method → route chạm bảng mới không làm test chết.
+const prismaMock = mockPrisma();
+/** Nick mà viewer được phép xem. Route đọc `scope.accessibleIds`. */
+const getZaloScopeMock = vi.fn();
+/** Đặt phạm vi nick cho 1 test. */
+function setScope(ids: string[]) {
+  getZaloScopeMock.mockResolvedValue({ accessibleIds: ids, displayableIds: ids, ownedIds: ids });
+}
 
 vi.mock('../src/shared/database/prisma-client.js', () => ({ prisma: prismaMock }));
 vi.mock('../src/shared/utils/logger.js', () => ({
@@ -23,6 +26,11 @@ vi.mock('../src/shared/utils/logger.js', () => ({
 }));
 vi.mock('../src/modules/auth/auth-middleware.js', () => ({
   authMiddleware: async (req: any) => { req.user = mockUser(); },
+}));
+// RBAC có bộ test riêng. Cho grant đi qua để test ĐÚNG logic route, nếu không mọi route
+// gắn requireGrant đều trả 403 vì DB mock không có grant thật.
+vi.mock('../src/modules/rbac/rbac-middleware.js', () => ({
+  requireGrant: () => async () => {},
 }));
 vi.mock('../src/modules/zalo/zalo-route-helpers.js', () => ({
   resolveAccount: vi.fn().mockResolvedValue({ id: 'za-1', orgId: 'org-1' }),
@@ -41,6 +49,11 @@ vi.mock('../src/modules/zalo/friend-sync-service.js', () => ({
 vi.mock('../src/modules/zalo/zalo-pool.js', () => ({
   zaloPool: { getIO: vi.fn().mockReturnValue(null) },
 }));
+// Route lấy danh sách nick truy cập được qua getZaloScope (ACL + owned + cascade phòng ban),
+// không còn tự query zaloAccountAccess/zaloAccount. zalo-scope có test riêng.
+vi.mock('../src/modules/zalo/zalo-scope.js', () => ({
+  getZaloScope: (...args: unknown[]) => getZaloScopeMock(...args),
+}));
 
 const { friendRoutes } = await import('../src/modules/zalo/friend-routes.js');
 
@@ -52,8 +65,7 @@ function buildApp(): FastifyInstance {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  prismaMock.zaloAccountAccess.findMany.mockReset();
-  prismaMock.zaloAccount.findMany.mockReset();
+  getZaloScopeMock.mockReset();
   prismaMock.friend.findMany.mockReset();
   prismaMock.friend.count.mockReset();
   prismaMock.friend.groupBy.mockReset();
@@ -61,8 +73,7 @@ beforeEach(() => {
 
 describe('GET /api/v1/friends-db/all-nicks', () => {
   it('returns empty when user has 0 accessible nicks', async () => {
-    prismaMock.zaloAccountAccess.findMany.mockResolvedValue([]);
-    prismaMock.zaloAccount.findMany.mockResolvedValue([]);
+    setScope([]);
     const res = await buildApp().inject({ method: 'GET', url: '/api/v1/friends-db/all-nicks' });
     expect(res.statusCode).toBe(200);
     const body = JSON.parse(res.body);
@@ -72,14 +83,8 @@ describe('GET /api/v1/friends-db/all-nicks', () => {
   });
 
   it('queries Friend filtered by accessible accountIds (union of access + owned)', async () => {
-    prismaMock.zaloAccountAccess.findMany.mockResolvedValue([
-      { zaloAccountId: 'za-A' },
-      { zaloAccountId: 'za-B' },
-    ]);
-    prismaMock.zaloAccount.findMany.mockResolvedValue([
-      { id: 'za-B' }, // overlap with access
-      { id: 'za-C' }, // owned but no access row
-    ]);
+    // getZaloScope đã hợp nhất ACL + owned + cascade phòng ban và khử trùng lặp.
+    setScope(['za-A', 'za-B', 'za-C']);
     prismaMock.friend.findMany.mockResolvedValue([
       { id: 'f1', zaloAccountId: 'za-A', contact: { fullName: 'KH 1' } },
     ]);
@@ -100,8 +105,7 @@ describe('GET /api/v1/friends-db/all-nicks', () => {
   });
 
   it('applies kind filter when provided', async () => {
-    prismaMock.zaloAccountAccess.findMany.mockResolvedValue([{ zaloAccountId: 'za-A' }]);
-    prismaMock.zaloAccount.findMany.mockResolvedValue([]);
+    setScope(['za-A']);
     prismaMock.friend.findMany.mockResolvedValue([]);
     prismaMock.friend.count.mockResolvedValue(0);
     prismaMock.friend.groupBy.mockResolvedValue([]);
@@ -115,8 +119,7 @@ describe('GET /api/v1/friends-db/all-nicks', () => {
   });
 
   it('uses deterministic orderBy chain (lastInboundAt → lastOutboundAt → createdAt → id)', async () => {
-    prismaMock.zaloAccountAccess.findMany.mockResolvedValue([{ zaloAccountId: 'za-A' }]);
-    prismaMock.zaloAccount.findMany.mockResolvedValue([]);
+    setScope(['za-A']);
     prismaMock.friend.findMany.mockResolvedValue([]);
     prismaMock.friend.count.mockResolvedValue(0);
     prismaMock.friend.groupBy.mockResolvedValue([]);
@@ -132,8 +135,7 @@ describe('GET /api/v1/friends-db/all-nicks', () => {
   });
 
   it('respects pagination params (page=2, limit=10)', async () => {
-    prismaMock.zaloAccountAccess.findMany.mockResolvedValue([{ zaloAccountId: 'za-A' }]);
-    prismaMock.zaloAccount.findMany.mockResolvedValue([]);
+    setScope(['za-A']);
     prismaMock.friend.findMany.mockResolvedValue([]);
     prismaMock.friend.count.mockResolvedValue(0);
     prismaMock.friend.groupBy.mockResolvedValue([]);

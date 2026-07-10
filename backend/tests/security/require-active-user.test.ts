@@ -8,6 +8,11 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import fastifyJwt from '@fastify/jwt';
 import { authMiddleware, requireActiveUser } from '../../src/modules/auth/auth-middleware.js';
 import { prisma } from '../../src/shared/database/prisma-client.js';
+import { hasRealDatabase } from '../test-helpers.js';
+
+// Integration test: cần Postgres THẬT (beforeAll xoá/tạo row). Không có DATABASE_URL thật
+// thì bỏ qua thay vì đỏ suite. Đặt DATABASE_URL trỏ DB thật để chạy lại.
+const HAS_DB = hasRealDatabase();
 import { config } from '../../src/config/index.js';
 
 const ORG_ID = 'test-c1-org';
@@ -28,6 +33,7 @@ async function buildApp(): Promise<FastifyInstance> {
 }
 
 beforeAll(async () => {
+  if (!HAS_DB) return;
   await prisma.user.deleteMany({ where: { id: { in: [ACTIVE_ID, LOCKED_ID] } } });
   await prisma.organization.deleteMany({ where: { id: ORG_ID } });
   await prisma.organization.create({ data: { id: ORG_ID, name: 'C1 Org' } });
@@ -36,12 +42,13 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  if (!HAS_DB) return;
   await prisma.user.deleteMany({ where: { id: { in: [ACTIVE_ID, LOCKED_ID] } } });
   await prisma.organization.deleteMany({ where: { id: ORG_ID } });
   await prisma.$disconnect();
 });
 
-describe('requireActiveUser (C1)', () => {
+describe.skipIf(!HAS_DB)('requireActiveUser (C1)', () => {
   it('user active + access token -> 200', async () => {
     const app = await buildApp();
     const res = await app.inject({ method: 'GET', url: '/sensitive', headers: { authorization: `Bearer ${sign(app, ACTIVE_ID)}` } });

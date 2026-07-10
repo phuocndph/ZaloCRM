@@ -8,6 +8,11 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { prisma } from '../../src/shared/database/prisma-client.js';
+import { hasRealDatabase } from '../test-helpers.js';
+
+// Integration test: cần Postgres THẬT (beforeAll xoá/tạo row). Không có DATABASE_URL thật
+// thì bỏ qua thay vì đỏ suite. Đặt DATABASE_URL trỏ DB thật để chạy lại.
+const HAS_DB = hasRealDatabase();
 import { config } from '../../src/config/index.js';
 import {
   issueRefreshToken,
@@ -21,6 +26,7 @@ const ORG_ID = 'test-rt-org';
 const USER_ID = 'test-rt-user';
 
 beforeAll(async () => {
+  if (!HAS_DB) return;
   await prisma.refreshToken.deleteMany({ where: { userId: USER_ID } });
   await prisma.user.deleteMany({ where: { id: USER_ID } });
   await prisma.organization.deleteMany({ where: { id: ORG_ID } });
@@ -38,6 +44,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  if (!HAS_DB) return;
   await prisma.refreshToken.deleteMany({ where: { userId: USER_ID } });
   await prisma.user.deleteMany({ where: { id: USER_ID } });
   await prisma.organization.deleteMany({ where: { id: ORG_ID } });
@@ -45,11 +52,12 @@ afterAll(async () => {
 });
 
 beforeEach(async () => {
+  if (!HAS_DB) return;
   await prisma.refreshToken.deleteMany({ where: { userId: USER_ID } });
   config.refreshGraceMs = 20000; // reset về default mỗi test
 });
 
-describe('refresh-token-service', () => {
+describe.skipIf(!HAS_DB)('refresh-token-service', () => {
   it('issue + rotate (happy): token mới cùng family, token cũ đánh dấu usedAt', async () => {
     const t1 = await issueRefreshToken(USER_ID);
     const t2 = await rotateRefreshToken(t1.token);

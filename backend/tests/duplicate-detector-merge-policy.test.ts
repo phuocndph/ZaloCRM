@@ -13,16 +13,13 @@
  *  ✅ D. 2 contact CÙNG phone (không xung đột globalId) → VẪN merge (giữ tự-gộp SĐT)
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { mockPrisma } from './test-helpers.js';
 
 const mergeContactsMock = vi.fn().mockResolvedValue({});
 
-const prismaMock = {
-  organization: { findMany: vi.fn() },
-  user: { findFirst: vi.fn() },
-  contact: { findMany: vi.fn() },
-  duplicateGroup: { findFirst: vi.fn(), create: vi.fn() },
-  parentCandidate: { findFirst: vi.fn(), create: vi.fn() },
-};
+// mockPrisma() tự sinh model/method → detector chạm bảng mới (vd Friend.zaloGlobalId
+// backfill) không làm test chết vì "Cannot read properties of undefined".
+const prismaMock = mockPrisma();
 
 // withTenant chỉ chạy callback (bỏ tenant context trong test)
 vi.mock('../src/shared/tenant/tenant-context.js', () => ({
@@ -70,6 +67,9 @@ function arrangeContacts(rows: Record<string, unknown>[]): void {
 describe('detectDuplicates — chính sách gộp CHỈ globalId + phone', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Contact thiếu zaloGlobalId → detector tra Friend để bù. Mặc định không có row nào;
+    // test nào cần thì tự override.
+    prismaMock.friend.findMany.mockResolvedValue([]);
   });
 
   it('⛔ A. 2 người TRÙNG TÊN + cùng ngày hoạt động (khác globalId) → KHÔNG auto-merge', async () => {

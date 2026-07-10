@@ -99,11 +99,19 @@ vi.mock('../../src/shared/database/prisma-client.js', () => {
       $transaction: vi.fn(async (fn: (tx: typeof tx) => Promise<unknown>) => fn(tx)),
       __state: state,
     },
+    // tag-service mở transaction qua `tenantTransaction` (set tenant context rồi $transaction).
+    // Test chỉ cần chạy callback với tx giả in-memory.
+    tenantTransaction: vi.fn(async (fn: (tx: typeof tx) => Promise<unknown>) => fn(tx)),
   };
 });
 
 vi.mock('../../src/modules/tags/contact-autotags-dirty.js', () => ({
   markContactAutoTagsDirty: vi.fn(),
+}));
+
+// logActivity ghi activityLog kiểu fire-and-forget, nằm ngoài phạm vi test dual-write.
+vi.mock('../../src/modules/activity/activity-logger.js', () => ({
+  logActivity: vi.fn(),
 }));
 
 import { addFriendTag, addCrmTag } from '../../src/modules/tags/tag-service';

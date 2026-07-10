@@ -53,12 +53,32 @@ beforeEach(() => { vi.clearAllMocks(); });
 
 // ── GET all groups ─────────────────────────────────────────────────────────────
 describe('GET /api/v1/zalo-accounts/:accountId/groups', () => {
-  it('happy path — returns groups list', async () => {
-    zaloOpsMock.getAllGroups.mockResolvedValueOnce([{ groupId: 'g1' }]);
+  // zca-js getAllGroups() trả OBJECT { gridVerMap, gridInfoMap } chứ KHÔNG phải mảng.
+  // Route chuẩn hoá thành [{ id, name, totalMember }] cho FE.
+  it('happy path — chuẩn hoá gridVerMap/gridInfoMap thành mảng', async () => {
+    zaloOpsMock.getAllGroups.mockResolvedValueOnce({
+      gridVerMap: { g1: 7 },
+      gridInfoMap: { g1: { name: 'Nhóm A', totalMember: 3 } },
+    });
     const res = await buildApp().inject({ method: 'GET', url: BASE });
     expect(res.statusCode).toBe(200);
-    expect(JSON.parse(res.body)).toMatchObject({ groups: [{ groupId: 'g1' }] });
+    expect(JSON.parse(res.body)).toMatchObject({
+      groups: [{ id: 'g1', name: 'Nhóm A', totalMember: 3 }],
+    });
     expect(zaloOpsMock.getAllGroups).toHaveBeenCalledWith('za-1');
+  });
+
+  it('thiếu tên trong gridInfoMap → bù bằng getGroupInfo', async () => {
+    zaloOpsMock.getAllGroups.mockResolvedValueOnce({ gridVerMap: { g1: 7 }, gridInfoMap: {} });
+    zaloOpsMock.getGroupInfo.mockResolvedValueOnce({
+      gridInfoMap: { g1: { name: 'Nhóm B', totalMember: 5 } },
+    });
+    const res = await buildApp().inject({ method: 'GET', url: BASE });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({
+      groups: [{ id: 'g1', name: 'Nhóm B', totalMember: 5 }],
+    });
+    expect(zaloOpsMock.getGroupInfo).toHaveBeenCalledWith('za-1', ['g1']);
   });
 });
 

@@ -1,6 +1,10 @@
 /**
  * hmac.test.ts — Phase 5 (Bảo mật xác thực 2026-06-08)
  * Verify util HMAC chung: chữ ký timing-safe, timestamp window (replay), nonce.
+ *
+ * 2026-07-10: bỏ khối test `fb-adapter.verifyWebhook` — Facebook Lead Ads đã chuyển sang
+ * bản Enterprise (commit 24160d73, open-core B6) nên module không còn trong repo này.
+ * Test của nó thuộc về repo _ee; phần util HMAC lõi dưới đây vẫn thuộc Community.
  */
 import { describe, it, expect } from 'vitest';
 import {
@@ -8,7 +12,6 @@ import {
   verifyHmacSignature,
   verifyHmacRequest,
 } from '../../src/shared/security/hmac.js';
-import { verifyWebhook } from '../../src/modules/integrations/facebook-leadads/fb-adapter.js';
 
 const SECRET = 'test-secret';
 const BODY = JSON.stringify({ event: 'order', id: 123 });
@@ -69,15 +72,5 @@ describe('verifyHmacRequest (s2s + replay protection)', () => {
       timestamp: String(now), nonce: 'n3', now,
     });
     expect(r).toMatchObject({ valid: false, reason: 'bad_signature' });
-  });
-});
-
-describe('FB verifyWebhook (refactor dùng util chung)', () => {
-  it("'sha256=<hex>' đúng -> true", () => {
-    const sig = 'sha256=' + computeHmacHex(BODY, SECRET);
-    expect(verifyWebhook(BODY, sig, SECRET)).toBe(true);
-  });
-  it('thiếu prefix sha256= -> false', () => {
-    expect(verifyWebhook(BODY, computeHmacHex(BODY, SECRET), SECRET)).toBe(false);
   });
 });

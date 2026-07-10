@@ -4,17 +4,14 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import Fastify, { FastifyInstance } from 'fastify';
-import { mockUser, mockZaloOps } from './test-helpers.js';
+import { mockUser, mockZaloOps, mockPrisma } from './test-helpers.js';
 
 // ── Hoisted mock state ────────────────────────────────────────────────────────
 const zaloOpsMock = mockZaloOps();
+// mockPrisma() tự sinh model/method → route dùng thêm bảng mới không làm test chết.
+const prismaMock = mockPrisma();
 
-vi.mock('../src/shared/database/prisma-client.js', () => ({
-  prisma: {
-    zaloAccount: { findFirst: vi.fn() },
-    zaloAccountAccess: { findFirst: vi.fn() },
-  },
-}));
+vi.mock('../src/shared/database/prisma-client.js', () => ({ prisma: prismaMock }));
 vi.mock('../src/shared/zalo-operations.js', () => ({
   zaloOps: zaloOpsMock,
   ZaloOpError: class extends Error {
@@ -29,6 +26,11 @@ vi.mock('../src/shared/utils/logger.js', () => ({
 }));
 vi.mock('../src/modules/auth/auth-middleware.js', () => ({
   authMiddleware: async (req: any) => { req.user = mockUser(); },
+}));
+// RBAC có bộ test riêng (tests/rbac-*). Ở đây cho grant đi qua để test ĐÚNG logic route,
+// nếu không mọi route gắn requireGrant đều trả 403 vì không có grant thật trong DB mock.
+vi.mock('../src/modules/rbac/rbac-middleware.js', () => ({
+  requireGrant: () => async () => {},
 }));
 vi.mock('../src/modules/zalo/zalo-route-helpers.js', () => ({
   resolveAccount: vi.fn().mockResolvedValue({ id: 'za-1', orgId: 'org-1' }),
@@ -96,7 +98,8 @@ describe('Friend Queries', () => {
     const res = await buildApp().inject({ method: 'GET', url: `${BASE}/aliases` });
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toMatchObject({ data: [{ alias: 'Bob' }] });
-    expect(zaloOpsMock.getAliasList).toHaveBeenCalledWith('za-1');
+    // Route có phân trang: ?count=N&page=P, mặc định 100/1.
+    expect(zaloOpsMock.getAliasList).toHaveBeenCalledWith('za-1', 100, 1);
   });
 });
 

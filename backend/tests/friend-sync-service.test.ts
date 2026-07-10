@@ -4,24 +4,26 @@
  * empty patch skip, identity update emit.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { mockZaloOps } from './test-helpers.js';
+import { mockZaloOps, mockPrisma } from './test-helpers.js';
 
 const zaloOpsMock = mockZaloOps();
 
-const prismaMock = {
-  contact: {
-    findFirst: vi.fn(),
-    create: vi.fn(),
-  },
-  friend: {
-    findMany: vi.fn(),
-    update: vi.fn(),
-  },
-};
+// mockPrisma() tự sinh model/method → service chạm bảng mới không làm test chết.
+const prismaMock = mockPrisma();
 
 const applyFriendTransitionMock = vi.fn().mockResolvedValue(undefined);
 const logActivityMock = vi.fn().mockResolvedValue(undefined);
+// Contact resolution đã tách ra helper trung tâm (dedup globalId/username/phone +
+// reverse-lookup Friend + stub race-safe). friend-sync KHÔNG còn tự contact.create.
+const resolveOrCreateContactMock = vi.fn();
+const safeContactUpdateMock = vi.fn().mockResolvedValue(undefined);
 
+vi.mock('../src/modules/contacts/resolve-contact.js', () => ({
+  resolveOrCreateContact: (...args: unknown[]) => resolveOrCreateContactMock(...args),
+}));
+vi.mock('../src/shared/database/safe-contact-write.js', () => ({
+  safeContactUpdate: (...args: unknown[]) => safeContactUpdateMock(...args),
+}));
 vi.mock('../src/shared/database/prisma-client.js', () => ({ prisma: prismaMock }));
 vi.mock('../src/shared/zalo-operations.js', () => ({ zaloOps: zaloOpsMock }));
 vi.mock('../src/shared/utils/logger.js', () => ({
@@ -47,10 +49,14 @@ function mockIO() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  prismaMock.contact.findFirst.mockReset();
-  prismaMock.contact.create.mockReset();
+  prismaMock.contact.findUnique.mockReset().mockResolvedValue({ id: 'c1', fullName: 'KH' });
   prismaMock.friend.findMany.mockReset();
   prismaMock.friend.update.mockReset();
+  // Mặc định: Contact đã tồn tại (không tạo mới). Test nào cần thì tự override.
+  resolveOrCreateContactMock
+    .mockReset()
+    .mockResolvedValue({ id: 'c1', orgId: 'org-1', created: false, matchedVia: 'friend' });
+  safeContactUpdateMock.mockReset().mockResolvedValue(undefined);
   applyFriendTransitionMock.mockReset().mockResolvedValue(undefined);
   zaloOpsMock.getAllFriends.mockReset().mockResolvedValue([]);
   zaloOpsMock.getSentFriendRequests.mockReset().mockResolvedValue([]);
@@ -88,9 +94,11 @@ describe('syncFriendsForAccount — SDK fetch errors', () => {
     zaloOpsMock.getSentFriendRequests.mockRejectedValue(new Error('rate_limited'));
     prismaMock.friend.findMany.mockResolvedValue([]);
     const r = await syncFriendsForAccount('za-err', 'org-1', { trigger: 'cron' });
-    // .catch(() => []) absorbs reject → liveCount 0 but no service-level error
+    // B4 fix: lỗi SDK KHÔNG còn bị `.catch(() => [])` nuốt — nó bubble lên outer catch để
+    // tăng `errors` + ghi activity. Nhờ vậy Zalo rate-limit/disconnect không còn hiện ra
+    // dưới dạng "liveCount 0, không lỗi" (im lặng sai).
     expect(r.liveCount).toBe(0);
-    expect(r.errors).toBe(0);
+    expect(r.errors).toBe(1);
   });
 });
 
@@ -157,12 +165,14 @@ describe('syncFriendsForAccount — contact resolution', () => {
       { userId: 'uid-2', zaloName: 'KH Cũ', avatar: '', globalId: '', username: '' },
     ]);
     prismaMock.friend.findMany.mockResolvedValue([]); // no existing friend
-    prismaMock.contact.findFirst.mockResolvedValue({ id: 'c-existing' });
+    resolveOrCreateContactMock.mockResolvedValue({
+      id: 'c-existing', orgId: 'org-1', created: false, matchedVia: 'friend',
+    });
+    prismaMock.contact.findUnique.mockResolvedValue({ id: 'c-existing', fullName: 'KH Cũ' });
     prismaMock.friend.update.mockResolvedValue({
       id: 'f-new', contactId: 'c-existing', zaloAccountId: 'za-x',
     });
     const r = await syncFriendsForAccount('za-x', 'org-1', { trigger: 'cron' });
-    expect(prismaMock.contact.create).not.toHaveBeenCalled();
     expect(r.createdContacts).toBe(0);
     expect(applyFriendTransitionMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -177,22 +187,26 @@ describe('syncFriendsForAccount — contact resolution', () => {
       { userId: 'uid-3', zaloName: 'KH Mới Tạo', avatar: 'avatar.png', globalId: '', username: '' },
     ]);
     prismaMock.friend.findMany.mockResolvedValue([]);
-    prismaMock.contact.findFirst.mockResolvedValue(null);
-    prismaMock.contact.create.mockResolvedValue({ id: 'c-new' });
+    // Helper trung tâm tạo stub và báo created=true → service chỉ việc đếm.
+    resolveOrCreateContactMock.mockResolvedValue({
+      id: 'c-new', orgId: 'org-1', created: true, matchedVia: 'created',
+    });
+    prismaMock.contact.findUnique.mockResolvedValue({ id: 'c-new', fullName: 'KH Mới Tạo' });
     prismaMock.friend.update.mockResolvedValue({
       id: 'f-new', contactId: 'c-new', zaloAccountId: 'za-y',
     });
     const r = await syncFriendsForAccount('za-y', 'org-1', { trigger: 'cron' });
     expect(r.createdContacts).toBe(1);
-    expect(prismaMock.contact.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        zaloUid: 'uid-3',
-        fullName: 'KH Mới Tạo',
-        avatarUrl: 'avatar.png',
-        hasZalo: true,
+    expect(resolveOrCreateContactMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orgId: 'org-1',
+        zaloAccountId: 'za-y',
+        zaloUidInNick: 'uid-3',
+        fallbackFullName: 'KH Mới Tạo',
+        fallbackAvatarUrl: 'avatar.png',
+        enrichViaGetUserInfo: false,
       }),
-      select: { id: true },
-    });
+    );
   });
 });
 
