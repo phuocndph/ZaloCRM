@@ -431,15 +431,22 @@ export function countSteps(t: FollowupTemplate): number {
 export function countSendSteps(t: FollowupTemplate): number {
   return t.steps.filter((s) => s.type === 'send').length;
 }
+/** Số bước "Giao việc Sale" — mỗi bước treo chiến dịch tới khi Sale bấm Hoàn thành. */
+export function countSaleTasks(t: FollowupTemplate): number {
+  return t.steps.filter((s) => s.type === 'sale_task').length;
+}
 
 /** Bản tóm tắt cho lưới thẻ (không kèm steps → payload nhẹ). */
 export function templateSummary(t: FollowupTemplate) {
   return {
     key: t.key, name: t.name, category: t.category, tags: t.tags, version: t.version,
     goal: t.goal, audience: t.audience, shortDescription: t.shortDescription,
+    // CHỈ cộng các bước "Chờ". Bước "Giao việc Sale" treo vô hạn tới khi Sale bấm
+    // Hoàn thành ⇒ thời gian thực tế = estimatedDays + thời gian chờ Sale (không đoán được).
     estimatedDays: estimateDurationDays(t),
     stepCount: countSteps(t),
     sendCount: countSendSteps(t),
+    saleTaskCount: countSaleTasks(t),
   };
 }
 

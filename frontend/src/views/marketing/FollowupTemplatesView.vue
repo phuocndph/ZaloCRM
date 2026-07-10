@@ -50,7 +50,9 @@
         </dl>
 
         <div class="ft-stats">
-          <span>⏱ ~{{ t.estimatedDays }} ngày</span>
+          <span :title="t.saleTaskCount ? 'Chưa tính thời gian chờ Sale hoàn thành công việc' : ''">
+            ⏱ ~{{ t.estimatedDays }} ngày<b v-if="t.saleTaskCount" class="ft-plus"> + chờ Sale</b>
+          </span>
           <span>🔢 {{ t.stepCount }} bước</span>
           <span>✉️ {{ t.sendCount }} tin</span>
         </div>
@@ -67,7 +69,10 @@
         <v-card-title class="ft-dlg-title">
           <div>
             <div class="text-h6">{{ detail.name }}</div>
-            <div class="ft-dlg-sub">{{ detail.category }} · ~{{ detail.estimatedDays }} ngày · {{ detail.stepCount }} bước · {{ detail.sendCount }} tin</div>
+            <div class="ft-dlg-sub">
+              {{ detail.category }} · ~{{ detail.estimatedDays }} ngày<span v-if="detail.saleTaskCount"> + chờ Sale</span>
+              · {{ detail.stepCount }} bước · {{ detail.sendCount }} tin
+            </div>
           </div>
           <v-btn icon="mdi-close" variant="text" size="small" @click="detailOpen = false" />
         </v-card-title>
@@ -119,6 +124,16 @@
               Dừng khi khách có thẻ: {{ (detail.config.stopOnTags || []).join(', ') || '—' }}<span v-if="detail.config.stopOnPurchase">, hoặc đã mua hàng</span>.
             </p>
           </section>
+
+          <section v-if="detail.saleTaskCount" class="ft-sec ft-note">
+            <h4>Về thời gian dự kiến</h4>
+            <p>
+              <b>~{{ detail.estimatedDays }} ngày</b> chỉ tính các bước <b>Chờ</b>.
+              Chiến dịch này có <b>{{ detail.saleTaskCount }}</b> bước <b>Giao việc cho Sale</b> —
+              mỗi bước sẽ <b>tạm dừng vô thời hạn</b> cho tới khi Sale bấm "Hoàn thành".
+              Thời gian thực tế vì thế dài hơn, phụ thuộc tốc độ xử lý của Sale.
+            </p>
+          </section>
         </v-card-text>
 
         <v-card-actions class="ft-dlg-actions">
@@ -143,7 +158,7 @@ import { useToast } from '@/composables/use-toast';
 interface TemplateSummary {
   key: string; name: string; category: string; tags: string[];
   goal: string; audience: string; shortDescription: string;
-  estimatedDays: number; stepCount: number; sendCount: number;
+  estimatedDays: number; stepCount: number; sendCount: number; saleTaskCount: number;
 }
 interface TemplateStep { key: string; type: string; config?: any; explain: string; transition?: string | null }
 interface TemplateDetail extends TemplateSummary {
@@ -306,6 +321,8 @@ onMounted(() => { loadFavorites(); load(); });
 .ft-sec p { font-size: 13.5px; line-height: 1.6; margin: 0; }
 .ft-sec ul { margin: 0; padding-left: 18px; font-size: 13.5px; line-height: 1.7; }
 .ft-guard p { background: rgba(255,145,0,.08); border-radius: 8px; padding: 10px 12px; font-size: 13px; }
+.ft-note p { background: rgba(33,150,243,.07); border-radius: 8px; padding: 10px 12px; font-size: 13px; }
+.ft-plus { color: var(--smax-primary-700, #0b5880); font-weight: 600; }
 
 .ft-flow { display: flex; flex-direction: column; align-items: stretch; }
 .ft-node { display: flex; gap: 10px; background: var(--smax-grey-50, #fafbfc); border: 1px solid var(--smax-grey-200, #ebedf0); border-radius: 10px; padding: 10px 12px; }
