@@ -16,6 +16,7 @@ import { prisma } from '../../shared/database/prisma-client.js';
 import { logger } from '../../shared/utils/logger.js';
 import { sendCampaignMessage, renderTemplate, STUB_MODE } from '../outreach/outreach-service.js';
 import { scheduleAdvance, cancelScheduledJob } from './followup-queue.js';
+import { lintWorkflow, type LintWarning } from './followup-lint.js';
 
 // ── Config types (đọc từ FollowupStep.config Json) ──────────────────────────
 export type WaitUnit = 'hour' | 'day' | 'week';
@@ -35,6 +36,7 @@ const WAIT_UNIT_MS: Record<WaitUnit, number> = {
 };
 
 const MAX_SYNC_STEPS = 100; // chặn vòng lặp vô hạn do condition trỏ vòng.
+const PAUSE_RECHECK_MS = 30 * 60_000; // chiến dịch đang Tạm dừng → 30' kiểm lại 1 lần.
 
 // ── Trạng thái KH dùng cho điều kiện/goal/stop (đọc 1 lần, cập nhật khi gắn/xoá tag) ──
 interface ContactState {
@@ -268,6 +270,21 @@ export async function advanceEnrollment(enrollmentId: string): Promise<void> {
   if (!loaded) { await finalize(enr, 'stopped', 'manual', 'Dừng - workflow không tồn tại'); return; }
   const { wf, map } = loaded;
 
+  // FIX 2026-07-10 — engine TRƯỚC ĐÂY bỏ qua wf.status: chiến dịch bị Lưu trữ / Tạm dừng
+  // vẫn tiếp tục gửi tin Zalo THẬT cho khách. Nay tôn trọng trạng thái:
+  //   archived → dừng hẳn (đây là ngữ nghĩa "xoá mềm" của nút Xoá chiến dịch).
+  //   paused   → KHÔNG gửi, hoãn lại; bật 'active' lại thì tự chạy tiếp.
+  if (wf.status === 'archived') {
+    await finalize(enr, 'stopped', 'manual', 'Dừng - chiến dịch đã được lưu trữ');
+    return;
+  }
+  if (wf.status === 'paused') {
+    await prisma.followupEnrollment.update({ where: { id: enr.id }, data: { status: 'waiting' } });
+    enr.status = 'waiting';
+    await schedule(enr, PAUSE_RECHECK_MS); // ngủ, kiểm lại sau
+    return;
+  }
+
   let state = await loadContactState(enr.contactId, enr.zaloAccountId);
   if (!state) { await finalize(enr, 'stopped', 'manual', 'Dừng - không tìm thấy khách hàng'); return; }
 
@@ -353,7 +370,9 @@ export async function advanceEnrollment(enrollmentId: string): Promise<void> {
           }
         }
         // Gửi thật
-        const text = renderTemplate(s.content ?? '', { name: state.fullName, phone: state.phone });
+        // Fallback tên: renderTemplate thay {{name}} rỗng bằng 'bạn' → mẫu viết "anh/chị {{name}}"
+        // sẽ ra "anh/chị bạn". Truyền sẵn 'anh/chị' để câu chào luôn tự nhiên.
+        const text = renderTemplate(s.content ?? '', { name: state.fullName?.trim() || 'anh/chị', phone: state.phone });
         if (!state.zaloUid) {
           await log(enr, 'message_failed', 'Không gửi được - khách chưa có Zalo UID', { stepKey: step.key, stepType: 'send' });
         } else {
@@ -545,10 +564,18 @@ export async function completeSaleTask(
 // ════════════════════════════════════════════════════════════════════════════
 export interface SimStep { key: string; type: string; label: string; note?: string }
 
-export async function simulateWorkflow(workflowId: string, contactId: string): Promise<{ ok: boolean; error?: string; steps: SimStep[]; endReason: string }> {
+export async function simulateWorkflow(workflowId: string, contactId: string): Promise<{ ok: boolean; error?: string; steps: SimStep[]; endReason: string; warnings?: LintWarning[] }> {
   const loaded = await loadWorkflowSteps(workflowId);
-  if (!loaded) return { ok: false, error: 'workflow_not_found', steps: [], endReason: '' };
+  if (!loaded) return { ok: false, error: 'workflow_not_found', steps: [], endReason: '', warnings: [] };
   const { wf, steps, map } = loaded;
+
+  // Mô phỏng KHÔNG đánh giá Goal (không biết tương lai khách có phản hồi không) → nó mù
+  // với lỗi "Goal kết thúc sớm làm nhánh chết". Chạy lint tĩnh để bù đúng khoảng mù đó.
+  const warnings = lintWorkflow({
+    goalType: wf.goalType, goalTag: wf.goalTag, stopOnPurchase: wf.stopOnPurchase,
+    stopOnTags: wf.stopOnTags, maxMessages: wf.maxMessages,
+    steps: steps.map((s) => ({ key: s.key, type: s.type, config: s.config, nextKey: s.nextKey })),
+  });
   const state = await loadContactState(contactId, '' /* nick chưa biết ở dry-run */);
   const tags = state?.tags ?? [];
   const isFriend = state?.isFriend ?? false;
@@ -593,5 +620,5 @@ export async function simulateWorkflow(workflowId: string, contactId: string): P
     trace.push({ key: step.key, type: 'end', label: 'Kết thúc' });
     endReason = 'Kết thúc workflow'; key = null;
   }
-  return { ok: true, steps: trace, endReason };
+  return { ok: true, steps: trace, endReason, warnings };
 }

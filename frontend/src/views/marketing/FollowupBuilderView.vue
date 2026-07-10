@@ -5,7 +5,7 @@
     <!-- Top bar -->
     <div class="fb-top">
       <v-btn variant="text" icon="mdi-arrow-left" @click="goBack" />
-      <input v-model="wf.name" class="fb-name-input" placeholder="Tên workflow" />
+      <input v-model="wf.name" class="fb-name-input" placeholder="Tên chiến dịch" />
       <span class="fu-status" :class="'st-' + wf.status">{{ statusLabel(wf.status) }}</span>
       <span v-if="wf.version > 1" class="fb-ver">v{{ wf.version }}</span>
       <div class="fb-spacer" />
@@ -26,7 +26,7 @@
       <div class="fb-col fb-settings">
         <h3 class="fb-h3">Cấu hình</h3>
 
-        <label class="fb-label">Loại workflow</label>
+        <label class="fb-label">Loại chiến dịch</label>
         <v-select v-model="wf.type" :items="typeOptions" density="compact" variant="outlined" hide-details />
 
         <label class="fb-label">Mục tiêu (Goal)</label>
@@ -34,7 +34,7 @@
         <v-text-field v-if="wf.goalType === 'has_tag'" v-model="wf.goalTag" label="Tag đạt mục tiêu" density="compact" variant="outlined" hide-details class="mt-2" />
         <v-text-field v-model="wf.goalTagOnReach" label="Gắn tag khi đạt Goal (tuỳ chọn)" density="compact" variant="outlined" hide-details class="mt-2" />
 
-        <label class="fb-label">Workflow kế tiếp (khi đạt Goal)</label>
+        <label class="fb-label">Chiến dịch kế tiếp (khi đạt Goal)</label>
         <v-select v-model="wf.nextWorkflowId" :items="nextWfOptions" density="compact" variant="outlined" hide-details clearable />
 
         <h4 class="fb-h4">Giới hạn gửi</h4>
@@ -138,7 +138,7 @@
               <v-btn v-if="e.status === 'waiting_sale'" size="x-small" variant="text" color="primary" @click="completeTask(e.id)">Xong việc</v-btn>
             </td>
           </tr>
-          <tr v-if="!enrollments.length"><td colspan="6" class="text-center text-grey py-6">Chưa có khách nào trong workflow này.</td></tr>
+          <tr v-if="!enrollments.length"><td colspan="6" class="text-center text-grey py-6">Chưa có khách nào trong chiến dịch này.</td></tr>
         </tbody>
       </v-table>
     </div>
@@ -146,7 +146,7 @@
     <!-- Dry-run dialog -->
     <v-dialog v-model="dryOpen" max-width="560">
       <v-card>
-        <v-card-title>Chạy thử workflow (mô phỏng — không gửi tin)</v-card-title>
+        <v-card-title>Chạy thử chiến dịch (mô phỏng — không gửi tin)</v-card-title>
         <v-card-text>
           <v-autocomplete
             v-model="dryContactId" :items="contactOptions" :loading="contactLoading"
@@ -168,6 +168,17 @@
               <span v-if="st.note" class="fb-dry-note">— {{ st.note }}</span>
             </div>
             <div class="fb-dry-end">▶ {{ dryResult.endReason }}</div>
+          </div>
+
+          <!-- Mô phỏng KHÔNG đánh giá Mục tiêu → bù bằng kiểm tra logic tĩnh. -->
+          <div v-if="dryResult?.warnings?.length" class="mt-4">
+            <v-alert
+              v-for="(w, i) in dryResult.warnings" :key="i"
+              :type="w.level === 'error' ? 'error' : 'warning'"
+              variant="tonal" density="compact" class="mb-2"
+            >
+              <b v-if="w.stepKey">Bước {{ w.stepKey }}: </b>{{ w.message }}
+            </v-alert>
           </div>
         </v-card-text>
         <v-card-actions><v-spacer /><v-btn @click="dryOpen = false">Đóng</v-btn></v-card-actions>
@@ -199,7 +210,9 @@ const typeOptions = [
   { title: 'Giới thiệu doanh nghiệp', value: 'intro' }, { title: 'Follow-up sau báo giá', value: 'after_quote' },
   { title: 'Chăm sóc khách hàng', value: 'care' }, { title: 'Nhắc mua lại', value: 'rebuy' },
   { title: 'Chăm sóc sau bán', value: 'post_sale' }, { title: 'Khuyến mại', value: 'promo' },
-  { title: 'KH lâu không tương tác', value: 'reengage' }, { title: 'Tùy chỉnh', value: 'custom' },
+  { title: 'KH lâu không tương tác', value: 'reengage' },
+  { title: 'Chúc mừng sinh nhật (tự chạy hằng ngày)', value: 'birthday' },
+  { title: 'Tùy chỉnh', value: 'custom' },
 ];
 const goalOptions = [
   { title: 'Không đặt mục tiêu', value: 'none' }, { title: 'Khách phản hồi', value: 'replied' },
@@ -283,7 +296,7 @@ async function load() {
     keyCounter = maxN + 1;
     loadStats(); loadEnrollments();
   } catch {
-    toast.error('Không tải được workflow');
+    toast.error('Không tải được chiến dịch');
   }
 }
 
@@ -309,7 +322,7 @@ async function save() {
     };
     const res = await api.put(`/followup/workflows/${wf.value.id}`, payload);
     if (res.data.workflow?.newVersion) {
-      toast.success('Đã tạo phiên bản mới (workflow cũ vẫn phục vụ KH đang chạy)');
+      toast.success('Đã tạo phiên bản mới (bản cũ vẫn phục vụ KH đang chạy)');
       router.replace({ name: 'CE.FollowupBuilder', params: { id: res.data.workflow.id } });
       wf.value = res.data.workflow;
     } else {
@@ -326,7 +339,7 @@ async function setStatus(status: string) {
   try {
     await api.post(`/followup/workflows/${wf.value.id}/status`, { status });
     wf.value.status = status;
-    toast.success(status === 'active' ? 'Đã kích hoạt workflow' : 'Đã tạm dừng');
+    toast.success(status === 'active' ? 'Đã kích hoạt chiến dịch' : 'Đã tạm dừng');
   } catch { toast.error('Không đổi được trạng thái'); }
 }
 

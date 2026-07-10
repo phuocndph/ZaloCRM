@@ -156,16 +156,6 @@
                 v-if="conv.unreadCount > 0 && conv.id !== selectedId"
                 class="ci-unread-count"
               >{{ conv.unreadCount > 5 ? '5+' : conv.unreadCount }}</div>
-              <!-- Phase 8 — Engagement pattern badge (tooltip teleport to body) -->
-              <span
-                v-if="(conv as any).contact?.engagementPattern && (conv as any).contact?.engagementPattern !== 'noise'"
-                class="engagement-badge"
-                :class="`pattern-${(conv as any).contact?.engagementPattern}`"
-                @mouseenter="onPatternHover($event, (conv as any).contact)"
-                @mouseleave="onPatternLeave"
-              >
-                {{ patternIcon((conv as any).contact?.engagementPattern) }}
-              </span>
             </div>
           </div>
 
@@ -278,25 +268,6 @@
       :initial-query="newMsgInitialQuery"
       @opened="onComposeOpened"
     />
-
-    <!-- Phase 8 — Engagement pattern tooltip (teleport ra body để escape overflow:hidden) -->
-    <Teleport to="body">
-      <div
-        v-if="patternTipVisible && patternTipData"
-        class="engagement-pattern-tip-portal"
-        :style="patternTipStyle"
-        role="tooltip"
-      >
-        <strong class="ept-title">{{ patternIcon(patternTipData.pattern) }} {{ patternLabel(patternTipData.pattern) }}</strong>
-        <span class="ept-meaning">{{ patternMeaning(patternTipData.pattern) }}</span>
-        <span v-if="patternTipData.score != null" class="ept-detail">
-          Điểm {{ patternTipData.score }}/100
-          <template v-if="patternTipData.trend != null">
-            · trend {{ patternTipData.trend > 0 ? '+' : '' }}{{ patternTipData.trend }}%
-          </template>
-        </span>
-      </div>
-    </Teleport>
   </div>
 </template>
 
@@ -1065,99 +1036,6 @@ function parseSentiment(conv: Conversation): AiSentiment | null {
 // formatTime đã chuyển sang composable use-relative-time (formatConvTime) + render
 // qua component con ConvTime (2026-06-11 perf). Không còn định nghĩa ở đây.
 
-// ─── Phase 8 — Engagement pattern badge ──────────────────
-function patternIcon(pattern: string | null | undefined): string {
-  switch (pattern) {
-    case 'hot': return '🔥';
-    case 'champion': return '💎';
-    case 'stable': return '📈';
-    case 'cooling': return '⚠';
-    case 'cold': return '😴';
-    default: return '';
-  }
-}
-
-function patternLabel(pattern: string | null | undefined): string {
-  const labels: Record<string, string> = {
-    hot: 'Đang nóng lên',
-    champion: 'Champion',
-    stable: 'Ổn định',
-    cooling: 'Đang nguội',
-    cold: 'Lạnh',
-  };
-  return pattern ? (labels[pattern] || pattern) : '';
-}
-
-function patternMeaning(pattern: string | null | undefined): string {
-  const meanings: Record<string, string> = {
-    hot: 'Tương tác tăng mạnh tuần này — ưu tiên gọi/chốt sớm.',
-    champion: 'Tương tác đều cao 4 tuần qua — KH chất lượng cao.',
-    stable: 'Tương tác đều ở mức trung bình — nuôi lâu dài.',
-    cooling: 'Tương tác giảm tuần này — cần ping để giữ KH.',
-    cold: 'Gần như không tương tác 4 tuần qua — cân nhắc bỏ qua.',
-  };
-  return pattern ? (meanings[pattern] || '') : '';
-}
-
-// ─── Phase 8 — Teleport tooltip for pattern badge ─────────
-interface PatternTipData {
-  pattern: string;
-  score: number | null;
-  trend: number | null;
-}
-const patternTipVisible = ref(false);
-const patternTipData = ref<PatternTipData | null>(null);
-const patternTipStyle = ref<Record<string, string>>({});
-let patternTipTimer: ReturnType<typeof setTimeout> | null = null;
-
-function onPatternHover(event: MouseEvent, contact: any) {
-  if (!contact?.engagementPattern) return;
-  const target = event.currentTarget as HTMLElement;
-  const rect = target.getBoundingClientRect();
-
-  // Position tooltip ABOVE badge, right-aligned to badge right edge.
-  // 200px wide tooltip; if too close to viewport edge, flip to below.
-  const tipWidth = 220;
-  const tipEstimatedHeight = 80;
-  const margin = 8;
-
-  let top = rect.top - tipEstimatedHeight - margin;
-  // Flip below if too close to top
-  if (top < 8) top = rect.bottom + margin;
-
-  let left = rect.right - tipWidth;
-  // Don't go off left edge
-  if (left < 8) left = 8;
-  // Don't go off right edge
-  if (left + tipWidth > window.innerWidth - 8) {
-    left = window.innerWidth - tipWidth - 8;
-  }
-
-  patternTipStyle.value = {
-    top: `${top}px`,
-    left: `${left}px`,
-    width: `${tipWidth}px`,
-  };
-  patternTipData.value = {
-    pattern: contact.engagementPattern,
-    score: contact.engagementScore ?? null,
-    trend: contact.engagementTrend ?? null,
-  };
-
-  // Slight delay to avoid flashing on quick mouseovers when scrolling list
-  if (patternTipTimer) clearTimeout(patternTipTimer);
-  patternTipTimer = setTimeout(() => {
-    patternTipVisible.value = true;
-  }, 180);
-}
-
-function onPatternLeave() {
-  if (patternTipTimer) {
-    clearTimeout(patternTipTimer);
-    patternTipTimer = null;
-  }
-  patternTipVisible.value = false;
-}
 </script>
 
 <style scoped>
@@ -1475,34 +1353,13 @@ function onPatternLeave() {
 .ci-unread-count {
   min-width: 20px; height: 18px;
   padding: 0 6px;
-  background: #b8bfc9;
+  background: var(--error, #f04438);
   color: white;
   font-size: 10px; font-weight: 700;
   border-radius: 9px;
   display: inline-flex; align-items: center; justify-content: center;
   line-height: 1;
 }
-
-/* Phase 8 — Engagement pattern badge */
-.engagement-badge {
-  font-size: 14px;
-  line-height: 1;
-  width: 22px; height: 22px;
-  display: inline-flex; align-items: center; justify-content: center;
-  border-radius: 50%;
-  cursor: help;
-  position: relative;
-  /* Re-enable pointer events (parent .ci-meta-right có pointer-events:none để
-     click vùng meta vẫn bubble lên conv-item). Badge cần nhận hover cho tooltip. */
-  pointer-events: auto;
-}
-.engagement-badge.pattern-hot { background: #FEF2F2; }
-.engagement-badge.pattern-champion { background: #FFFBEB; }
-.engagement-badge.pattern-stable { background: #EFF6FF; }
-.engagement-badge.pattern-cooling { background: #FFF7ED; }
-.engagement-badge.pattern-cold { background: #F4F4F7; }
-
-/* Teleport tooltip lives in body — use :global to escape scoped CSS */
 
 .ci-avatar {
   width: 41px; height: 41px;
@@ -1800,45 +1657,5 @@ function onPatternLeave() {
   padding: 1px 5px;
   font-size: 10.5px;
   font-family: inherit;
-}
-
-.engagement-pattern-tip-portal {
-  position: fixed;
-  background: #1F2D3D;
-  color: white;
-  padding: 9px 11px;
-  border-radius: 6px;
-  font-size: 11px;
-  line-height: 1.5;
-  text-align: left;
-  z-index: 9999;
-  pointer-events: none;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22), 0 0 0 1px rgba(255,255,255,0.04);
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  letter-spacing: -0.005em;
-  font-family: 'Inter', -apple-system, 'Segoe UI', sans-serif;
-  animation: ept-fade 0.15s ease;
-}
-@keyframes ept-fade {
-  from { opacity: 0; transform: translateY(-3px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-.engagement-pattern-tip-portal .ept-title {
-  font-size: 12px;
-  font-weight: 700;
-  color: white;
-}
-.engagement-pattern-tip-portal .ept-meaning {
-  font-size: 11px;
-  color: rgba(255, 255, 255, 0.86);
-  line-height: 1.45;
-}
-.engagement-pattern-tip-portal .ept-detail {
-  font-size: 10px;
-  color: #FBBF24;
-  font-weight: 600;
-  margin-top: 2px;
 }
 </style>

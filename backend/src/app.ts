@@ -99,6 +99,7 @@ import { startOutreachWorker, stopOutreachWorker, setOutreachIO } from './module
 import { followupRoutes } from './modules/followup/followup-routes.js';
 import { startFollowupWorker, stopFollowupWorker, setFollowupIO } from './modules/followup/followup-queue.js';
 import { pushRoutes } from './modules/push/push-routes.js';
+import { startFollowupBirthdayCron } from './modules/followup/followup-birthday-cron.js';
 import { groupModerationRoutes } from './modules/zalo/group-moderation-routes.js';
 import { friendRoutes } from './modules/zalo/friend-routes.js';
 import { profileRoutes } from './modules/zalo/profile-routes.js';
@@ -401,6 +402,8 @@ async function bootstrap() {
     if (config.nodeEnv !== 'test') startOutreachWorker();
     // Follow-up Workflow worker (🟢 Community) — chạy các bước theo lịch (BullMQ).
     if (config.nodeEnv !== 'test') startFollowupWorker();
+    // Sinh nhật: chỉ hoạt động khi org có chiến dịch type='birthday' đang Kích hoạt (opt-in).
+    if (config.nodeEnv !== 'test') startFollowupBirthdayCron();
     startInteractionCron(); // daily silent_30d detection (02:00 VN)
     // Phase 8 — Engagement heatmap classification (02:30 VN daily)
     const { startEngagementCron } = await import('./modules/engagement/engagement-cron.js');

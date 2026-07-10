@@ -13,7 +13,11 @@ import { authMiddleware } from '../auth/auth-middleware.js';
 import {
   createWorkflow, updateWorkflow, setStatus, listWorkflows, getWorkflow, getStats,
   listEnrollments, getContactFollowup, listActiveWorkflows, type WorkflowInput,
+  previewDelete, archiveWorkflow, deleteWorkflow,
 } from './followup-service.js';
+import {
+  listTemplates, listCategories, getTemplate, templateDetail, templateToWorkflowInput,
+} from './followup-templates.js';
 import {
   enrollContact, stopEnrollment, completeSaleTask, simulateWorkflow,
 } from './followup-engine.js';
@@ -107,6 +111,65 @@ export async function followupRoutes(app: FastifyInstance): Promise<void> {
     const user = request.user as JwtUser;
     return { success: true, workflows: await listActiveWorkflows(user.orgId) };
   });
+
+  // ══════════ Xoá chiến dịch — 2 mức ══════════
+
+  // Xem trước hậu quả (UI dùng để hiện cảnh báo đúng ngữ cảnh).
+  app.get<{ Params: { id: string } }>('/api/v1/followup/workflows/:id/delete-preview', async (request, reply) => {
+    const user = request.user as JwtUser;
+    const res = await previewDelete(request.params.id, user.orgId);
+    if ('error' in res) return reply.status(404).send({ success: false, error: 'not_found' });
+    return { success: true, preview: res };
+  });
+
+  // Lưu trữ: giữ lịch sử, dừng mọi KH đang chạy.
+  app.post<{ Params: { id: string } }>('/api/v1/followup/workflows/:id/archive', async (request, reply) => {
+    const user = request.user as JwtUser;
+    const res = await archiveWorkflow(request.params.id, user.orgId, { actorId: user.id, actorName: await displayName(user.id) });
+    if ('error' in res) return reply.status(404).send({ success: false, error: 'not_found' });
+    return { success: true, ...res };
+  });
+
+  // Xoá vĩnh viễn: CHỈ khi chưa từng có khách nào (server tự chặn, không tin UI).
+  app.delete<{ Params: { id: string } }>('/api/v1/followup/workflows/:id', async (request, reply) => {
+    const user = request.user as JwtUser;
+    const res = await deleteWorkflow(request.params.id, user.orgId);
+    if ('error' in res) {
+      if (res.error === 'not_found') return reply.status(404).send({ success: false, error: 'not_found' });
+      return reply.status(409).send({
+        success: false, error: 'has_enrollments', enrollments: res.enrollments,
+        message: 'Chiến dịch đã có khách hàng tham gia — hãy dùng "Lưu trữ" để giữ lịch sử.',
+      });
+    }
+    return { success: true, ...res };
+  });
+
+  // ══════════ Kho chiến dịch mẫu (template = code, bất biến) ══════════
+
+  app.get('/api/v1/followup/templates', async () => ({
+    success: true, templates: listTemplates(), categories: listCategories(),
+  }));
+
+  app.get<{ Params: { key: string } }>('/api/v1/followup/templates/:key', async (request, reply) => {
+    const t = getTemplate(request.params.key);
+    if (!t) return reply.status(404).send({ success: false, error: 'template_not_found' });
+    return { success: true, template: templateDetail(t) };
+  });
+
+  // Tạo chiến dịch NHÁP từ mẫu → FE mở builder cho user sửa trước khi Kích hoạt.
+  // Chiến dịch là bản SAO độc lập; sửa mẫu về sau không ảnh hưởng nó.
+  app.post<{ Params: { key: string }; Body: { name?: string } }>(
+    '/api/v1/followup/templates/:key/use',
+    async (request, reply) => {
+      const user = request.user as JwtUser;
+      const t = getTemplate(request.params.key);
+      if (!t) return reply.status(404).send({ success: false, error: 'template_not_found' });
+      const input = templateToWorkflowInput(t);
+      if (request.body?.name?.trim()) input.name = request.body.name.trim();
+      const wf = await createWorkflow(user.orgId, { id: user.id, fullName: await displayName(user.id) }, input);
+      return reply.status(201).send({ success: true, workflow: wf, fromTemplate: t.key });
+    },
+  );
 
   // ══════════ Enrollment control ══════════
   app.post<{ Body: { workflowId: string; contactId: string; zaloAccountId: string; onConflict?: 'keep' | 'switch' } }>(

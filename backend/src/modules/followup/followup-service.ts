@@ -7,7 +7,7 @@
 // ════════════════════════════════════════════════════════════════════════════
 
 import { prisma } from '../../shared/database/prisma-client.js';
-import { recountWorkflow } from './followup-engine.js';
+import { recountWorkflow, stopEnrollment } from './followup-engine.js';
 
 const RUNNING_STATES = ['running', 'waiting', 'waiting_sale'];
 
@@ -149,6 +149,104 @@ export async function setStatus(id: string, orgId: string, status: 'draft' | 'ac
   if (!wf) return { error: 'not_found' as const };
   await prisma.followupWorkflow.update({ where: { id }, data: { status } });
   return getWorkflow(id, orgId);
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Xoá chiến dịch — 2 mức.
+//
+// Lý do 2 mức (đã kiểm chứng trong schema): steps/enrollments/logs đều onDelete: Cascade.
+// Xoá cứng một chiến dịch ĐANG/ĐÃ có khách ⇒ xoá luôn timeline chăm sóc của khách thật,
+// không khôi phục được. Nên:
+//   - Có enrollment  → LƯU TRỮ (archive): giữ toàn bộ lịch sử, dừng mọi KH đang chạy.
+//   - Chưa từng có   → XOÁ VĨNH VIỄN được.
+// ════════════════════════════════════════════════════════════════════════════
+
+/** Tất cả version cùng gốc (rootId) của 1 chiến dịch. */
+async function versionIdsOf(id: string, orgId: string): Promise<string[] | null> {
+  const wf = await prisma.followupWorkflow.findFirst({ where: { id, orgId }, select: { id: true, rootId: true } });
+  if (!wf) return null;
+  const rootId = wf.rootId ?? wf.id;
+  const rows = await prisma.followupWorkflow.findMany({
+    where: { orgId, OR: [{ id: rootId }, { rootId }] },
+    select: { id: true },
+  });
+  return rows.map((r) => r.id);
+}
+
+export interface DeletePreview {
+  workflowId: string;
+  name: string;
+  status: string;
+  versions: number;
+  enrollments: number;      // tổng, mọi version
+  activeEnrollments: number; // đang running/waiting/waiting_sale
+  referencedBy: number;      // số chiến dịch khác đang trỏ nextWorkflowId tới nó
+  canPurge: boolean;         // đủ điều kiện xoá vĩnh viễn?
+}
+
+/** Thông tin để UI hiển thị cảnh báo TRƯỚC khi xoá. */
+export async function previewDelete(id: string, orgId: string): Promise<DeletePreview | { error: 'not_found' }> {
+  const ids = await versionIdsOf(id, orgId);
+  if (!ids) return { error: 'not_found' };
+  const wf = await prisma.followupWorkflow.findFirst({ where: { id, orgId }, select: { name: true, status: true } });
+  const [enrollments, activeEnrollments, referencedBy] = await Promise.all([
+    prisma.followupEnrollment.count({ where: { workflowId: { in: ids } } }),
+    prisma.followupEnrollment.count({ where: { workflowId: { in: ids }, status: { in: RUNNING_STATES } } }),
+    prisma.followupWorkflow.count({ where: { orgId, nextWorkflowId: { in: ids }, id: { notIn: ids } } }),
+  ]);
+  return {
+    workflowId: id, name: wf?.name ?? '', status: wf?.status ?? '',
+    versions: ids.length, enrollments, activeEnrollments, referencedBy,
+    canPurge: enrollments === 0,
+  };
+}
+
+/**
+ * LƯU TRỮ: ẩn khỏi danh sách + DỪNG mọi khách đang chạy (huỷ job BullMQ, ghi log).
+ * Giữ nguyên enrollments/logs → tra cứu lịch sử được. Có thể bỏ lưu trữ bằng setStatus.
+ */
+export async function archiveWorkflow(
+  id: string, orgId: string,
+  actor?: { actorId?: string | null; actorName?: string | null },
+): Promise<{ ok: true; stoppedEnrollments: number; versions: number } | { error: 'not_found' }> {
+  const ids = await versionIdsOf(id, orgId);
+  if (!ids) return { error: 'not_found' };
+
+  // Dừng KH đang chạy TRƯỚC (stopEnrollment tự huỷ job BullMQ đã hẹn giờ).
+  const running = await prisma.followupEnrollment.findMany({
+    where: { workflowId: { in: ids }, status: { in: RUNNING_STATES } },
+    select: { id: true },
+  });
+  for (const e of running) {
+    await stopEnrollment(e.id, 'sale_stopped', { actorType: 'sale', ...actor });
+  }
+  // Lưu trữ TẤT CẢ version (nếu chỉ archive bản latest, bản cũ vẫn phục vụ KH).
+  await prisma.followupWorkflow.updateMany({ where: { id: { in: ids } }, data: { status: 'archived' } });
+  return { ok: true, stoppedEnrollments: running.length, versions: ids.length };
+}
+
+/**
+ * XOÁ VĨNH VIỄN — chỉ khi KHÔNG có enrollment nào ở bất kỳ version nào.
+ * Trước khi xoá phải gỡ tham chiếu treo: `nextWorkflowId` là String thường (KHÔNG phải FK),
+ * nên chiến dịch khác vẫn trỏ tới ID đã chết → chuỗi Goal gãy im lặng. Ta set NULL.
+ */
+export async function deleteWorkflow(
+  id: string, orgId: string,
+): Promise<{ ok: true; deletedVersions: number; unlinked: number } | { error: 'not_found' | 'has_enrollments'; enrollments?: number }> {
+  const ids = await versionIdsOf(id, orgId);
+  if (!ids) return { error: 'not_found' };
+
+  const enrollments = await prisma.followupEnrollment.count({ where: { workflowId: { in: ids } } });
+  if (enrollments > 0) return { error: 'has_enrollments', enrollments };
+
+  // Gỡ nextWorkflowId treo ở các chiến dịch KHÁC.
+  const { count: unlinked } = await prisma.followupWorkflow.updateMany({
+    where: { orgId, nextWorkflowId: { in: ids }, id: { notIn: ids } },
+    data: { nextWorkflowId: null },
+  });
+  // Cascade sẽ xoá steps (không có enrollment/log vì đã chặn ở trên).
+  const { count } = await prisma.followupWorkflow.deleteMany({ where: { id: { in: ids }, orgId } });
+  return { ok: true, deletedVersions: count, unlinked };
 }
 
 // ── Read ──────────────────────────────────────────────────────────────────

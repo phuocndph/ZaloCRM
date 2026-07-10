@@ -239,6 +239,8 @@ const routes: RouteRecordRaw[] = [
           { path: 'campaigns/:id', name: 'CE.OutreachProgress', component: () => import('@/views/marketing/OutreachProgressView.vue'), meta: { requiresAuth: true } },
           // Follow-up Workflow — engine chăm sóc/bám đuổi KH nhiều bước.
           { path: 'followup', name: 'CE.Followup', component: () => import('@/views/marketing/FollowupWorkflowsView.vue'), meta: { requiresAuth: true } },
+          // Kho chiến dịch mẫu — đặt TRƯỚC 'followup/:id' để 'templates' không bị nuốt làm :id.
+          { path: 'followup/templates', name: 'CE.FollowupTemplates', component: () => import('@/views/marketing/FollowupTemplatesView.vue'), meta: { requiresAuth: true } },
           { path: 'followup/:id', name: 'CE.FollowupBuilder', component: () => import('@/views/marketing/FollowupBuilderView.vue'), meta: { requiresAuth: true } },
         ],
       } as RouteRecordRaw]

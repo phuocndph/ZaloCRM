@@ -10,13 +10,13 @@
     <template v-else-if="!enrollment">
       <div class="fup-empty">
         <v-icon size="30" color="grey-lighten-1">mdi-timeline-clock-outline</v-icon>
-        <p class="fup-empty-txt">Khách chưa nằm trong workflow nào.</p>
+        <p class="fup-empty-txt">Khách chưa nằm trong chiến dịch nào.</p>
 
         <!-- Không có workflow ACTIVE → nói rõ lý do thay vì để ô chọn trống. -->
         <template v-if="!activeWfs.length">
           <div class="fup-hint">
-            Chưa có workflow nào được <b>Kích hoạt</b>.<br />
-            Vào <b>Marketing → Follow-up</b>, mở 1 workflow rồi bấm <b>Kích hoạt</b>.
+            Chưa có chiến dịch nào được <b>Kích hoạt</b>.<br />
+            Vào <b>Marketing → Follow-up</b>, mở 1 chiến dịch rồi bấm <b>Kích hoạt</b>.
           </div>
           <v-btn color="primary" variant="tonal" size="small" block class="mt-2" :to="{ name: 'CE.Followup' }">
             Mở trang Follow-up
@@ -26,10 +26,10 @@
         <template v-else>
           <v-select
             v-model="pickWf" :items="wfOptions" density="compact" variant="outlined" hide-details
-            label="Chọn workflow" class="fup-pick"
+            label="Chọn chiến dịch" class="fup-pick"
           />
           <v-btn color="primary" size="small" block class="mt-2" :disabled="!pickWf" :loading="enrolling" @click="enroll(false)">
-            Đưa vào workflow
+            Đưa vào chiến dịch
           </v-btn>
         </template>
       </div>
@@ -39,7 +39,7 @@
     <template v-else>
       <div class="fup-card">
         <div class="fup-card-head">
-          <div class="fup-wf-name">{{ workflow?.name || 'Workflow' }}</div>
+          <div class="fup-wf-name">{{ workflow?.name || 'Chiến dịch' }}</div>
           <span class="fup-status" :class="'en-' + enrollment.status">{{ enrollStatusLabel(enrollment.status) }}</span>
         </div>
         <div class="fup-meta">
@@ -52,11 +52,11 @@
           <v-btn size="x-small" color="primary" variant="tonal" @click="completeTask">Hoàn thành</v-btn>
         </div>
         <div class="fup-actions">
-          <v-btn v-if="isActive" size="x-small" color="error" variant="text" @click="stop">Dừng workflow</v-btn>
-          <v-btn v-else size="x-small" color="primary" variant="text" @click="showReenroll = !showReenroll">Đưa vào workflow khác</v-btn>
+          <v-btn v-if="isActive" size="x-small" color="error" variant="text" @click="stop">Dừng chiến dịch</v-btn>
+          <v-btn v-else size="x-small" color="primary" variant="text" @click="showReenroll = !showReenroll">Đưa vào chiến dịch khác</v-btn>
         </div>
         <div v-if="showReenroll && !isActive" class="fup-reenroll">
-          <v-select v-model="pickWf" :items="wfOptions" density="compact" variant="outlined" hide-details label="Chọn workflow" />
+          <v-select v-model="pickWf" :items="wfOptions" density="compact" variant="outlined" hide-details label="Chọn chiến dịch" />
           <v-btn color="primary" size="x-small" block class="mt-2" :disabled="!pickWf" :loading="enrolling" @click="enroll(false)">Bắt đầu</v-btn>
         </div>
       </div>
@@ -78,8 +78,8 @@
     <!-- Conflict dialog: KH đang ở workflow khác -->
     <v-dialog v-model="conflictOpen" max-width="420">
       <v-card>
-        <v-card-title class="text-body-1">Khách đang trong workflow khác</v-card-title>
-        <v-card-text>Khách đang tham gia "<b>{{ conflictName }}</b>". Chuyển sang workflow mới sẽ dừng workflow hiện tại.</v-card-text>
+        <v-card-title class="text-body-1">Khách đang trong chiến dịch khác</v-card-title>
+        <v-card-text>Khách đang tham gia "<b>{{ conflictName }}</b>". Chuyển sang chiến dịch mới sẽ dừng chiến dịch hiện tại.</v-card-text>
         <v-card-actions>
           <v-spacer />
           <v-btn @click="conflictOpen = false">Giữ nguyên</v-btn>
@@ -152,14 +152,14 @@ async function enroll(force: boolean) {
       onConflict: force ? 'switch' : undefined,
     });
     conflictOpen.value = false; showReenroll.value = false; pickWf.value = null;
-    toast.success('Đã đưa khách vào workflow');
+    toast.success('Đã đưa khách vào chiến dịch');
     await load();
   } catch (err: any) {
     if (err?.response?.status === 409) {
       conflictName.value = err.response.data?.conflict?.workflowName ?? '';
       conflictOpen.value = true;
     } else {
-      toast.error(err?.response?.data?.error || 'Không đưa vào workflow được');
+      toast.error(err?.response?.data?.error || 'Không đưa vào chiến dịch được');
     }
   } finally {
     enrolling.value = false;
@@ -168,12 +168,12 @@ async function enroll(force: boolean) {
 
 async function stop() {
   if (!enrollment.value) return;
-  try { await api.post(`/followup/enrollments/${enrollment.value.id}/stop`); toast.success('Đã dừng workflow'); await load(); }
+  try { await api.post(`/followup/enrollments/${enrollment.value.id}/stop`); toast.success('Đã dừng chiến dịch'); await load(); }
   catch { toast.error('Không dừng được'); }
 }
 async function completeTask() {
   if (!enrollment.value) return;
-  try { await api.post(`/followup/enrollments/${enrollment.value.id}/complete-task`); toast.success('Đã tiếp tục workflow'); await load(); }
+  try { await api.post(`/followup/enrollments/${enrollment.value.id}/complete-task`); toast.success('Đã tiếp tục chiến dịch'); await load(); }
   catch { toast.error('Lỗi'); }
 }
 
