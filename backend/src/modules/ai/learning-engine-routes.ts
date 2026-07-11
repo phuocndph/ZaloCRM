@@ -1,0 +1,14 @@
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { requireGrant } from '../rbac/rbac-middleware.js';
+import { AIErrorHandler } from './core/ai-error-handler.js';
+import { LearningEngineError, collectLearningCandidates, learningInsights, listLearningCandidates, transitionLearningCandidate, type LearningCandidateStatus } from './learning-engine-service.js';
+const settingsEdit = requireGrant('settings', 'edit');
+const actor = (request: FastifyRequest) => ({ orgId: request.user!.orgId, userId: request.user!.id, role: request.user!.role });
+async function requireAdmin(request: FastifyRequest, reply: FastifyReply) { if (!['owner', 'admin'].includes(request.user!.role)) return reply.status(403).send({ error: 'Admin access required', code: 'ADMIN_REQUIRED' }); }
+function fail(reply: FastifyReply, error: unknown) { if (error instanceof LearningEngineError) return reply.status(error.statusCode).send({ error: error.message, code: error.code }); const normalized = AIErrorHandler.normalize(error); return reply.status(normalized.statusCode).send({ error: normalized.message, code: normalized.code }); }
+export async function learningEngineRoutes(app: FastifyInstance) {
+  app.post('/api/v1/ai/learning/collect', { preHandler: [settingsEdit, requireAdmin] }, async (request, reply) => { try { const body = request.body as { limit?: number; since?: string }; return await collectLearningCandidates(actor(request), { limit: body.limit, since: body.since ? new Date(body.since) : undefined }); } catch (error) { return fail(reply, error); } });
+  app.get('/api/v1/ai/learning/candidates', { preHandler: [settingsEdit, requireAdmin] }, async (request, reply) => { try { const query = request.query as { status?: string; limit?: string }; return { candidates: await listLearningCandidates(request.user!.orgId, { status: query.status, limit: query.limit ? Number(query.limit) : undefined }) }; } catch (error) { return fail(reply, error); } });
+  app.get('/api/v1/ai/learning/insights', { preHandler: [settingsEdit, requireAdmin] }, async (request, reply) => { try { return await learningInsights(request.user!.orgId); } catch (error) { return fail(reply, error); } });
+  app.post('/api/v1/ai/learning/candidates/:id/transition', { preHandler: [settingsEdit, requireAdmin] }, async (request, reply) => { try { const body = request.body as { status?: LearningCandidateStatus; note?: string }; if (!body.status) return reply.status(400).send({ error: 'status is required' }); return await transitionLearningCandidate(actor(request), (request.params as { id: string }).id, body.status, body.note); } catch (error) { return fail(reply, error); } });
+}

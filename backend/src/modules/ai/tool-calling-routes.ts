@@ -1,0 +1,8 @@
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { requireGrant } from '../rbac/rbac-middleware.js';
+import { buildPrivacyContext } from '../privacy/redact.js';
+import { AIErrorHandler } from './core/ai-error-handler.js';
+import { ContextBuilderError, ToolCallingError, executeToolCall } from './tool-calling-service.js';
+const toolUse = requireGrant('conversation', 'access');
+function fail(reply: FastifyReply, error: unknown) { if (error instanceof ToolCallingError || error instanceof ContextBuilderError) return reply.status(error.statusCode).send({ error: error.message, code: error.code }); const normalized = AIErrorHandler.normalize(error); return reply.status(normalized.statusCode).send({ error: normalized.message, code: normalized.code }); }
+export async function toolCallingRoutes(app: FastifyInstance) { app.post('/api/v1/ai/tools/call', { preHandler: [toolUse] }, async (request, reply) => { try { const body = request.body as { tool?: string; args?: unknown; conversationId?: string; runId?: string; idempotencyKey?: string }; if (!body.tool) return reply.status(400).send({ error: 'tool is required' }); const privacy = body.conversationId ? await buildPrivacyContext(request) : null; return await executeToolCall({ orgId: request.user!.orgId, userId: request.user!.id, role: request.user!.role, privacyUnlocked: privacy?.privacyUnlocked ?? false }, { tool: body.tool, args: body.args, conversationId: body.conversationId, runId: body.runId, idempotencyKey: body.idempotencyKey }); } catch (error) { return fail(reply, error); } }); }

@@ -849,7 +849,10 @@ export async function chatRoutes(app: FastifyInstance) {
             // Primary sort by Zalo Snowflake numeric (match 100% Zalo Web), sentAt fallback
             // cho CRM-sent in-flight messages chưa nhận echo zaloMsgId.
             orderBy: [{ zaloMsgIdNum: { sort: 'desc', nulls: 'last' } }, { sentAt: 'desc' }],
-            select: { id: true, zaloMsgId: true, senderUid: true, senderName: true, content: true, contentType: true, senderType: true, sentAt: true, isDeleted: true, editedAt: true, reactions: { select: { emoji: true, reactorId: true, reactorName: true, reactorSource: true } } },
+            // 2026-07-11 (redesign cột 2): +metadata +repliedByUserId — CHỈ BỔ SUNG field
+            // read-only cho preview "Người trả lời cuối" (👤 Phước / 🤖 AI / 🤖 Bot). Không đổi
+            // logic/permission/realtime; metadata.sender.{kind,name} vốn đã lưu sẵn khi gửi.
+            select: { id: true, zaloMsgId: true, senderUid: true, senderName: true, content: true, contentType: true, senderType: true, sentAt: true, isDeleted: true, editedAt: true, repliedByUserId: true, metadata: true, reactions: { select: { emoji: true, reactorId: true, reactorName: true, reactorSource: true } } },
           },
         },
         orderBy: orderByClause,
@@ -962,11 +965,18 @@ export async function chatRoutes(app: FastifyInstance) {
     const { buildPrivacyContext, redactConversationRow, redactMessage } = await import('../privacy/redact.js');
     const privacyCtx = await buildPrivacyContext(request);
 
+    // Conversation State System 2026-07-10 — nạp trạng thái RIÊNG của viewer (ghim cá nhân,
+    // đánh dấu chưa đọc) trong 1 query batch, gắn vào từng row. Ghim/badge sort ở FE.
+    const { loadStates, emptyState } = await import('./conversation-state-service.js');
+    const userStateMap = await loadStates(user.id, conversations.map((c) => c.id));
+
     return {
       conversations: conversations.map((c) => {
         const base = {
           ...c,
           isPinned: c.pins.length > 0,
+          // userState: ghim cá nhân + chưa đọc thủ công của CHÍNH viewer (không phải người khác).
+          userState: userStateMap.get(c.id) ?? emptyState(c.id),
           friendship: c.contactId && c.externalThreadId
             ? friendMap.get(`${c.zaloAccountId}:${c.externalThreadId}`) || null
             : null,
@@ -1093,10 +1103,15 @@ export async function chatRoutes(app: FastifyInstance) {
       }
     }
 
+    // Conversation State System 2026-07-10 — trạng thái RIÊNG của viewer cho hội thoại này.
+    const { getState } = await import('./conversation-state-service.js');
+    const userState = await getState(user.id, id);
+
     return {
       ...conversation,
       contact: outContact,
       isPinned: conversation.pins.length > 0,
+      userState,
       friendship: outFriendship,
     };
   });
@@ -2355,6 +2370,14 @@ export async function chatRoutes(app: FastifyInstance) {
       where: { id, orgId: user.orgId },
       data: { unreadCount: 0 },
     });
+
+    // Conversation State System 2026-07-10 — mở hội thoại thì tắt luôn cờ "chưa đọc thủ công"
+    // của CHÍNH user này (giống Outlook/Teams). No-op nếu vốn không đánh dấu → không emit thừa.
+    const { clearManualUnreadOnRead, getState, emitStateChange } = await import('./conversation-state-service.js');
+    const cleared = await clearManualUnreadOnRead(user.id, id);
+    if (cleared) {
+      emitStateChange((app as any).io as Server, user.id, await getState(user.id, id));
+    }
 
     return { success: true };
   });

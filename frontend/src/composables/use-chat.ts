@@ -133,6 +133,19 @@ export interface Conversation {
   privateOwnerUserId?: string | null;
   /** BE gắn khi che row vì hội thoại riêng tư (khác cờ `redacted` của nick 'main'). */
   conversationPrivate?: boolean;
+  /** Conversation State System 2026-07-10 — trạng thái RIÊNG của viewer (ghim cá nhân,
+   *  đánh dấu chưa đọc thủ công, …). Khác isPinned (ghim Zalo cấp nick). */
+  userState?: ConversationUserStateView;
+}
+
+/** Trạng thái per-user gắn vào mỗi conversation row (đồng bộ với BE emptyState). */
+export interface ConversationUserStateView {
+  conversationId: string;
+  isPinned: boolean;
+  pinnedAt: string | null;
+  isManualUnread: boolean;
+  manualUnreadAt: string | null;
+  flags: Record<string, unknown>;
 }
 
 export interface MessageReactionView {
@@ -762,6 +775,48 @@ export function useChat() {
     arr.splice(lo, 0, msg);
   }
 
+  /**
+   * Merge một loạt tin (vd context window khi "nhảy tới tin gốc") vào thread hiện tại,
+   * GIỮ đúng thứ tự sort + KHÔNG trùng id. Tin đã có giữ nguyên (không ghi đè trạng thái
+   * realtime như deliveredAt/seenAt). Trả số tin mới thêm.
+   */
+  function mergeMessages(list: Message[]): number {
+    if (!list?.length) return 0;
+    const existing = new Set(messages.value.map((m) => m.id));
+    let added = 0;
+    for (const m of list) {
+      if (existing.has(m.id)) continue;
+      existing.add(m.id);
+      insertMessageSorted(m);
+      added += 1;
+    }
+    if (added > 0 && messagesConvId.value) {
+      messagesCache.set(messagesConvId.value, [...messages.value]);
+    }
+    return added;
+  }
+
+  /**
+   * "Nhảy tới tin gốc" cho tin CHƯA tải (Conversation Content Library 2026-07-11):
+   * tải cửa sổ tin quanh messageId từ backend rồi merge vào thread. KHÔNG tải toàn bộ lịch
+   * sử, KHÔNG phá luồng realtime (chỉ thêm tin cũ còn thiếu). Trả true nếu tin đích đã có mặt.
+   */
+  async function loadMessageContext(conversationId: string, messageId: string): Promise<boolean> {
+    if (messages.value.some((m) => m.id === messageId)) return true;
+    try {
+      const res = await api.get(
+        `/conversations/${conversationId}/messages/${messageId}/context`,
+        { params: { before: 20, after: 20 } },
+      );
+      if (messagesConvId.value !== conversationId) return false; // đã đổi conv giữa chừng
+      const list = (res.data.items as RawMessage[]).map(normalizeMessage);
+      mergeMessages(list);
+      return messages.value.some((m) => m.id === messageId);
+    } catch {
+      return false;
+    }
+  }
+
   async function sendMessageTo(conversationId: string, content: string, replyMessageId?: string | null, styles?: Array<{ st: string; start: number; len: number }>, mentions?: Array<{ uid: string; pos: number; len: number }>) {
     if (!content.trim()) return;
     sendingMsg.value = true;
@@ -1070,6 +1125,14 @@ export function useChat() {
       fetchConversations({ bypassCache: true });
     });
 
+    // Conversation State System 2026-07-10 — trạng thái per-user đổi (ghim cá nhân, đánh
+    // dấu chưa đọc, …). Chỉ tới room user của mình → patch IN-PLACE, KHÔNG refetch, KHÔNG
+    // đụng unreadCount. Đồng bộ giữa các tab/thiết bị của cùng user.
+    socket.on('conversation:state', (state: ConversationUserStateView) => {
+      const conv = conversations.value.find(c => c.id === state.conversationId);
+      if (conv) conv.userState = state;
+    });
+
     // Thông tin nhóm đổi (avatar/tên/sĩ số) — BE (group-info-refresh) bắn khi nhận
     // group_event 'update_avatar'/'update' hoặc cron 6h refresh. Patch conversation
     // IN-PLACE (không refetch cả list) → avatar/tên mới hiện ngay, không cần F5.
@@ -1221,6 +1284,8 @@ export function useChat() {
     saveAiConfig,
     fetchAiUsage,
     fetchMessages,
+    mergeMessages,
+    loadMessageContext,
     selectConversation,
     patchContactProfile,
     sendMessage,

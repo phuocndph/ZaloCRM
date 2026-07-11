@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS "ai_auto_reply_configs_org_scope_ref_unique";

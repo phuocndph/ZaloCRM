@@ -1,0 +1,13 @@
+﻿import generalAssistant from './general-assistant.js';
+import productAdvisor from './product-advisor.js';
+import priceInquiry from './price-inquiry.js';
+import quoteAssistant from './quote-assistant.js';
+import salesObjection from './sales-objection.js';
+import complaintHandling from './complaint-handling.js';
+import warrantySupport from './warranty-support.js';
+import shippingSupport from './shipping-support.js';
+import followUp from './follow-up.js';
+import paymentReminder from './payment-reminder.js';
+import afterSalesCare from './after-sales-care.js';
+import humanHandoff from './human-handoff.js';
+export const DEFAULT_SKILL_CATALOG = [generalAssistant, productAdvisor, priceInquiry, quoteAssistant, salesObjection, complaintHandling, warrantySupport, shippingSupport, followUp, paymentReminder, afterSalesCare, humanHandoff];

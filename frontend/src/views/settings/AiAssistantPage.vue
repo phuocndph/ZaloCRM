@@ -14,6 +14,15 @@
       <div v-if="loading" class="loading-pill">⏳ Đang tải...</div>
     </header>
 
+    <AiAdminCenterPanel />
+
+    <PromptManagerPanel />
+
+    <KnowledgeBasePanel />
+
+    <FeedbackManagerPanel />
+
+    <h2 v-if="config" class="legacy-title">Cau hinh Tro ly AI hien tai</h2>
     <div v-if="config" class="ai-page-body">
       <!-- Toggle bật/tắt -->
       <div class="toggle-card">
@@ -117,6 +126,10 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
 import { api } from '@/api/index';
+import PromptManagerPanel from '@/components/ai/PromptManagerPanel.vue';
+import AiAdminCenterPanel from '@/components/ai/AiAdminCenterPanel.vue';
+import KnowledgeBasePanel from '@/components/ai/KnowledgeBasePanel.vue';
+import FeedbackManagerPanel from '@/components/ai/FeedbackManagerPanel.vue';
 
 interface AiAssistantConfig {
   aiAssistantEnabled: boolean;
@@ -235,6 +248,7 @@ onMounted(load);
   font-size: 12px;
   color: #64748b;
 }
+.legacy-title { font-size: 14px; margin: 22px 0 10px; color: #475569; }
 .ai-page-body {
   display: flex;
   flex-direction: column;

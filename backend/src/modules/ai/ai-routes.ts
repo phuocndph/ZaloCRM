@@ -17,6 +17,23 @@ import {
 import { listProviderModels, invalidateModelCache } from './providers/list-models.js';
 import { logger } from '../../shared/utils/logger.js';
 import { prisma } from '../../shared/database/prisma-client.js';
+import { aiCoreRoutes } from './ai-core-routes.js';
+import { promptManagerRoutes } from './prompt-manager-routes.js';
+import { conversationContextRoutes } from './conversation-context-routes.js';
+import { conversationMemoryRoutes } from './conversation-memory-routes.js';
+import { knowledgeBaseRoutes } from './knowledge-base-routes.js';
+import { intentEngineRoutes } from './intent-engine-routes.js';
+import { emotionEngineRoutes } from './emotion-engine-routes.js';
+import { skillFrameworkRoutes } from './skill-framework-routes.js';
+import { replyGeneratorRoutes } from './reply-generator-routes.js';
+import { policySafetyRoutes } from './policy-safety-routes.js';
+import { feedbackSystemRoutes } from './feedback-system-routes.js';
+import { learningEngineRoutes } from './learning-engine-routes.js';
+import { evaluationEngineRoutes } from './evaluation-engine-routes.js';
+import { toolCallingRoutes } from './tool-calling-routes.js';
+import { autoReplyRoutes } from './auto-reply-routes.js';
+import { aiFollowupRoutes } from './ai-followup-routes.js';
+import { adminCenterRoutes } from './admin-center-routes.js';
 
 async function assertConversationReadAccess(request: FastifyRequest, reply: FastifyReply, conversationId: string) {
   const user = request.user!;
@@ -99,6 +116,23 @@ function sendHandledError(reply: FastifyReply, err: unknown, fallback: string) {
 
 export async function aiRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authMiddleware);
+  await aiCoreRoutes(app);
+  await promptManagerRoutes(app);
+  await conversationContextRoutes(app);
+  await conversationMemoryRoutes(app);
+  await knowledgeBaseRoutes(app);
+  await intentEngineRoutes(app);
+  await emotionEngineRoutes(app);
+  await skillFrameworkRoutes(app);
+  await replyGeneratorRoutes(app);
+  await policySafetyRoutes(app);
+  await feedbackSystemRoutes(app);
+  await learningEngineRoutes(app);
+  await evaluationEngineRoutes(app);
+  await toolCallingRoutes(app);
+  await autoReplyRoutes(app);
+  await aiFollowupRoutes(app);
+  await adminCenterRoutes(app);
 
   /* Danh sách provider (cả 5) + baseUrl + trạng thái key per-org. */
   app.get('/api/v1/ai/providers', async (request: FastifyRequest, reply: FastifyReply) => {

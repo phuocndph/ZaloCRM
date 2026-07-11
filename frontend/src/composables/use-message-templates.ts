@@ -8,18 +8,31 @@ export interface RichPayload {
   styles?: Array<{ st: string; start: number; len: number }>;
 }
 
+export interface TemplateAttachment {
+  kind: 'image' | 'file';
+  assetId?: string;
+  url: string;
+  name?: string;
+  mime?: string;
+  size?: number;
+  thumb?: string;
+}
+
 export interface MessageTemplate {
   id: string;
   name: string;
   shortcut?: string | null;
   content: string;
   contentRich?: RichPayload | null;
+  attachments?: TemplateAttachment[];
+  blocks?: unknown;
   category?: string | null;
   folderId?: string | null;
   visibility?: 'public' | 'private';
   tagIds?: string[];
   isPersonal?: boolean;
   isMine?: boolean;
+  usageCount?: number;
   manualSendCount?: number;
   createdAt?: string;
   updatedAt?: string;

@@ -315,6 +315,18 @@ async function bootstrap() {
     './modules/privacy/conversation-privacy-routes.js'
   );
   await registerConversationPrivacyRoutes(app);
+  // Conversation State System 2026-07-10 — trạng thái hội thoại per-user (ghim cá nhân,
+  // đánh dấu chưa đọc, …). Realtime chỉ bắn vào room user:${userId}.
+  const { registerConversationStateRoutes } = await import(
+    './modules/chat/conversation-state-routes.js'
+  );
+  await registerConversationStateRoutes(app);
+  // Conversation Content Library 2026-07-11 — ghim tin nhắn, tin đã ghim, tìm trong hội
+  // thoại, tab Ảnh/Video · File · Link, context "nhảy tới tin gốc". Read-only trừ pin/unpin.
+  const { registerConversationContentRoutes } = await import(
+    './modules/chat/conversation-content-routes.js'
+  );
+  await registerConversationContentRoutes(app);
   await app.register(zaloLabelsRoutes);
   await app.register(zinstantProxyRoutes);
   await app.register(dashboardRoutes);
@@ -356,6 +368,15 @@ async function bootstrap() {
 
   // Open-core: extension route registrations (no-op in Community edition).
   await ee?.registerExtensionRoutes?.(app);
+
+  // Mẫu tin nhắn CRUD (core, 2026-07-11) — CHỈ đăng ký khi KHÔNG có bundle _ee (bản
+  // enterprise đã tự có /automation/templates trong _ee/automation → tránh trùng route).
+  if (!ee) {
+    const { registerMessageTemplateRoutes } = await import(
+      './modules/chat/message-template-routes.js'
+    );
+    await registerMessageTemplateRoutes(app);
+  }
 
   // Liveness/readiness probe — also checks DB connectivity
   app.get('/health', async () => {

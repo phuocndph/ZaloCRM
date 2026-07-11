@@ -1,0 +1,9 @@
+﻿import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { requireGrant } from '../rbac/rbac-middleware.js';
+import { buildPrivacyContext } from '../privacy/redact.js';
+import { buildConversationContext, ContextBuilderError } from './conversation-context-builder-service.js';
+import { checkReplyPolicy } from './policy-safety-checker-service.js';
+import { AIErrorHandler } from './core/ai-error-handler.js';
+const settingsEdit = requireGrant('settings', 'edit');
+async function requireAdmin(request: FastifyRequest, reply: FastifyReply) { if (!['owner', 'admin'].includes(request.user!.role)) return reply.status(403).send({ error: 'Admin access required', code: 'ADMIN_REQUIRED' }); }
+export async function policySafetyRoutes(app: FastifyInstance) { app.post('/api/v1/ai/policy/conversations/:conversationId/check', { preHandler: [settingsEdit, requireAdmin] }, async (request, reply) => { try { const privacy = await buildPrivacyContext(request); const context = await buildConversationContext({ orgId: request.user!.orgId, userId: request.user!.id, role: request.user!.role, privacyUnlocked: privacy.privacyUnlocked }, (request.params as { conversationId: string }).conversationId, { maxTokens: 1200 }); const body = request.body as { replyText?: string; sources?: Array<Record<string, any>>; intent?: string; skillKey?: string; requestedActions?: string[] }; return checkReplyPolicy({ replyText: body.replyText ?? '', context, sources: body.sources ?? [], intent: body.intent, skillKey: body.skillKey, requestedActions: body.requestedActions }); } catch (error) { if (error instanceof ContextBuilderError) return reply.status(error.statusCode).send({ error: error.message, code: error.code }); const normalized = AIErrorHandler.normalize(error); return reply.status(normalized.statusCode).send({ error: normalized.message, code: normalized.code }); } }); }

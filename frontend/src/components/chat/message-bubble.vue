@@ -724,6 +724,10 @@ const isBareMedia = computed(() => {
   if (isReminderMessage(m)) return false;
   const ct = m.contentType;
   if (ct === 'sticker' || ct === 'video' || ct === 'gif') return true;
+  // Card hệ thống (cuộc gọi / danh thiếp / QR / poll / location / link…) tự vẽ card
+  // riêng — KHÔNG bọc trong bong bóng màu để tránh "card trong bubble" (UI refresh 2026-07-10).
+  if (isCallMessage.value) return true;
+  if (isSpecialType(ct)) return true;
   if (getImageUrl(m) && !getFileInfo(m) && !isSpecialType(ct) && !isCallMessage.value) return true;
   return false;
 });
@@ -997,6 +1001,11 @@ async function openFile(href: string, name?: string) {
 .msg-avatar {
   flex-shrink: 0;
 }
+/* Responsive PWA/mobile — bubble rộng hơn để tận dụng màn hẹp, không vỡ layout. */
+@media (max-width: 640px) {
+  .bubble-wrapper { max-width: 84%; }
+  .message-bubble { font-size: 14.5px; padding: 8px 12px; }
+}
 /* Spacer thay avatar cho tin giữa/cuối cụm — giữ bong bóng thẳng lề. */
 .msg-avatar-spacer {
   width: 32px;
@@ -1005,13 +1014,15 @@ async function openFile(href: string, name?: string) {
 .msg-avatar-clickable { cursor: pointer; transition: transform 0.1s ease; }
 .msg-avatar-clickable:hover { transform: scale(1.06); }
 .bubble-wrapper {
-  max-width: 68%;
+  /* Tin ngắn co theo nội dung, tin dài chặn ở 560px để không quá rộng trên màn to. */
+  max-width: min(68%, 560px);
+  width: fit-content;
   position: relative;
-  /* Mặc định sát; chỉ chừa chỗ overlap reaction KHI CÓ reaction. */
-  margin-bottom: 2px;
+  margin-bottom: 0;
 }
+.msg-row.self .bubble-wrapper { margin-left: auto; }
 .bubble-wrapper.has-reaction {
-  margin-bottom: 14px;
+  margin-bottom: 12px;
 }
 /* bubble-anchor: positioning context cho reaction-display absolute.
    Wrap bubble + reaction để bottom: tính từ BUBBLE bottom, không phải wrapper
@@ -1046,62 +1057,70 @@ async function openFile(href: string, name?: string) {
 }
 
 .message-bubble {
-  padding: 9px 14px;
-  border-radius: 18px;
+  padding: 8px 13px;
+  border-radius: 16px;
   font-size: 14px;
   line-height: 1.5;
   word-wrap: break-word;
   word-break: break-word;
   position: relative;
-  box-shadow: 0 1px 1.5px rgba(15, 23, 42, 0.05);
+  box-shadow: var(--chat-bubble-shadow);
+  /* Animation xuất hiện nhẹ — tin mới fade + trượt lên, không gây "nhảy" layout. */
+  animation: bubble-in 0.18s ease-out;
 }
-/* INBOUND bubble — GIỮ NGUYÊN trắng như cũ (Anh chốt lại 2026-06-03:
-   chỉ nền tím PHẦN TÊN người gửi, không nhuộm cả bubble) */
-/* Phase 2 (Messenger-style): tin NHẬN trắng, KHÔNG viền, đổ bóng nhẹ. */
+@keyframes bubble-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .message-bubble { animation: none; }
+}
+/* Tin NHẬN (khách): nền trắng + hairline viền để tách nền trang, bo góc mềm. */
 .message-bubble.is-other {
-  background: var(--smax-bg, #ffffff);
-  color: var(--smax-text, #212121);
-  border-radius: 6px 18px 18px 18px;
-  border: none;
-  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+  background: var(--chat-bubble-in, #ffffff);
+  color: var(--chat-bubble-in-text, #1f2733);
+  border-radius: 4px 16px 16px 16px;
+  border: 1px solid var(--chat-bubble-in-border, #e7ebf0);
+  box-shadow: var(--chat-bubble-shadow);
 }
-/* Tin GỬI: xanh thương hiệu đậm, chữ trắng. */
+/* Tin GỬI (nhân viên): xanh RẤT nhạt + chữ đậm — dịu mắt, KHÔNG dùng primary đậm. */
 .message-bubble.is-self {
-  background: var(--smax-primary, #1786be);
-  color: #ffffff;
-  border-radius: 18px 18px 6px 18px;
-  box-shadow: 0 1px 2px rgba(23, 134, 190, 0.25);
+  background: var(--chat-bubble-out, #d7e9fb);
+  color: var(--chat-bubble-out-text, #14304a);
+  border-radius: 16px 16px 4px 16px;
+  box-shadow: var(--chat-bubble-shadow);
 }
+.message-bubble.is-self:hover { background: var(--chat-bubble-out-hover, #cfe4fb); }
 
-/* ── Phase 2: phần tử con TRONG tin gửi (nền xanh) phải sang tông trắng ──
-   Tránh chữ xanh/đậm trên nền xanh bị "vô hình". */
-.message-bubble.is-self .bubble-time { color: rgba(255, 255, 255, 0.8); }
-.message-bubble.is-self .edited-badge { color: rgba(255, 255, 255, 0.7); }
-.message-bubble.is-self .media-caption { color: #ffffff; }
+/* ── Phần tử con TRONG tin gửi (nền xanh nhạt) — chữ đậm/accent thay vì trắng ──
+   Trước đây nền xanh đậm nên ép trắng; giờ nền nhạt → tông đậm để đọc rõ. */
+.message-bubble.is-self .bubble-time { color: var(--chat-time, #8a94a6); }
+.message-bubble.is-self .edited-badge { color: var(--chat-meta, #6b7688); }
+.message-bubble.is-self .media-caption { color: var(--chat-bubble-out-text, #14304a); }
 .message-bubble.is-self :deep(.link),
 .message-bubble.is-self :deep(.phone-link) {
-  color: #ffffff;
-  border-bottom-color: rgba(255, 255, 255, 0.6);
+  color: var(--chat-bubble-out-accent, #0b5880);
+  border-bottom-color: rgba(11, 88, 128, 0.45);
 }
 .message-bubble.is-self :deep(.mention) {
-  background: rgba(255, 255, 255, 0.22);
-  color: #ffffff;
+  background: rgba(23, 134, 190, 0.14);
+  color: var(--chat-bubble-out-accent, #0b5880);
 }
-/* Thẻ trả lời trong tin gửi — nền/viền/chữ tông trắng mờ. */
+/* Thẻ trả lời trong tin gửi — tông xanh accent trên nền nhạt. */
 .message-bubble.is-self .reply-card {
-  background: rgba(255, 255, 255, 0.16);
-  border-left-color: rgba(255, 255, 255, 0.65);
+  background: rgba(23, 134, 190, 0.08);
+  border-left-color: var(--chat-bubble-out-accent, #0b5880);
 }
-.message-bubble.is-self .reply-header { color: rgba(255, 255, 255, 0.95); }
-.message-bubble.is-self .reply-text { color: #ffffff; opacity: 0.9; }
+.message-bubble.is-self .reply-header { color: var(--chat-bubble-out-accent, #0b5880); }
+.message-bubble.is-self .reply-text { color: var(--chat-bubble-out-text, #14304a); opacity: 0.85; }
 /* Thẻ file trong tin gửi. */
 .message-bubble.is-self .file-card {
-  background: rgba(255, 255, 255, 0.15);
-  border-color: rgba(255, 255, 255, 0.28);
+  background: rgba(23, 134, 190, 0.07);
+  border-color: rgba(23, 134, 190, 0.22);
 }
 .message-bubble.is-self .file-card :deep(.v-icon),
 .message-bubble.is-self .file-card .text-body-2,
-.message-bubble.is-self .file-card .text-caption { color: #ffffff !important; }
+.message-bubble.is-self .file-card .text-caption { color: var(--chat-bubble-out-text, #14304a) !important; }
 
 /* Phase 2: bong bóng "trần" cho media đứng một mình — ảnh/sticker/video render sạch.
    Đặt SAU is-self/is-other để thắng cascade. */
@@ -1183,8 +1202,8 @@ async function openFile(href: string, name?: string) {
 
 .bubble-time {
   font-size: 11px;
-  color: var(--smax-grey-700, #5a6478);
-  margin-top: 3px;
+  color: var(--chat-time, #8a94a6);
+  margin-top: 2px;
   padding: 0 2px;
 }
 .bubble-time.text-end { text-align: right; }

@@ -73,8 +73,10 @@
 
     <!-- COL 3: message thread (giữ nguyên — handles header/messages/input bên trong) -->
     <MessageThread
+      ref="messageThreadRef"
       :conversation="selectedConv"
       :messages="messages"
+      :pinned-ids="pinnedIds"
       :loading="loadingMsgs"
       :sending="sendingMsg"
       :ai-suggestion="aiSuggestion"
@@ -105,8 +107,38 @@
       @refresh-thread="selectedConvId && fetchMessages(selectedConvId)"
       @switch-conversation="onSwitchToNickConv"
       @profile-synced="patchContactProfile"
+      @open-content-panel="onOpenContentPanel"
+      @pin-message="onPinMessage"
+      @unpin-message="onUnpinMessage"
     />
 
+    <!-- COL 4b: Panel NỘI DUNG hội thoại (Content Library 2026-07-11) — tin đã ghim / tìm /
+         ảnh · file · link. Độc lập với panel thông tin KH (chạy được cả hội thoại không contact). -->
+    <aside v-if="showContentPanel && selectedConv" class="smax-content-col">
+      <div class="ccp-col-head">
+        <span class="ccp-col-title">Nội dung hội thoại</span>
+        <button class="ccp-col-close" title="Đóng" @click="showContentPanel = false">×</button>
+      </div>
+      <ConversationContentPanel
+        ref="contentPanelRef"
+        :conversation-id="selectedConv.id"
+        :initial-tab="contentPanelInitialTab"
+        class="ccp-col-body"
+        @jump="onJumpToMessage"
+        @pinned-ids="(ids: string[]) => (pinnedIds = ids)"
+      />
+    </aside>
+
+    <button v-if="selectedConv" class="copilot-toggle" :class="{ active: showCopilot }" title="Mở AI Copilot" @click="showCopilot = !showCopilot">✦ AI Copilot</button>
+    <AiCopilotPanel
+      :open="showCopilot"
+      :conversation-id="selectedConvId"
+      :private-blocked="conversationPrivateBlocked"
+      :customer-stage="selectedConv?.contact?.status || selectedConv?.contact?.statusRef?.name"
+      @close="showCopilot = false"
+      @action="onCopilotAction"
+      @feedback="onCopilotFeedback"
+    />
     <!-- Folder management modal (overlay) -->
     <FolderManagePopup
       v-model="showFolderManagePopup"
@@ -151,10 +183,13 @@ import { useToast } from '@/composables/use-toast';
 import ConversationList from '@/components/chat/ConversationList.vue';
 import MessageThread from '@/components/chat/MessageThread.vue';
 import ChatContactPanel from '@/components/chat/ChatContactPanel.vue';
+import ConversationContentPanel from '@/components/chat/ConversationContentPanel.vue';
 import ConversationFilterSidebar from '@/components/chat/ConversationFilterSidebar.vue';
 import ConversationFilterBar from '@/components/chat/ConversationFilterBar.vue';
 import FolderManagePopup from '@/components/chat/FolderManagePopup.vue';
-import { useChat } from '@/composables/use-chat';
+import AiCopilotPanel from '@/components/chat/AiCopilotPanel.vue';
+import { useChat, type Message } from '@/composables/use-chat';
+import { useConversationContent } from '@/composables/use-conversation-content';
 import { useInboxFilters } from '@/composables/use-inbox-filters';
 import { useAuthStore } from '@/stores/auth';
 import { usePrivacyStore } from '@/stores/privacy';
@@ -181,6 +216,7 @@ const {
   typingConvIds, realtimeOffline,
   outOfScopeCounts, clearOutOfScopeBadge,
   patchContactProfile,
+  loadMessageContext,
 } = useChat();
 
 const {
@@ -594,6 +630,9 @@ async function onSwitchToNickConv(convId: string) {
 
 // Auto-show panel khi chọn conv có contact
 const showContactPanel = ref(true);
+const showCopilot = ref(false);
+function onCopilotAction(action: string) { toast.push(action === 'followup' ? 'Copilot đã đề xuất đặt Follow-up — hãy xác nhận trong panel chăm sóc.' : action === 'note' ? 'Copilot đã đề xuất thêm ghi chú — hãy xác nhận trong hồ sơ khách.' : 'Copilot đề xuất chuyển nhân viên — chưa có thay đổi nào được thực hiện.'); }
+async function onCopilotFeedback(kind: string, payload: Record<string, unknown> = {}) { if (!selectedConvId.value) return; try { await api.post('/ai/feedback/conversations/' + selectedConvId.value, { type: kind, ...payload }); toast.push(kind === 'good' ? 'Đã ghi nhận đánh giá tốt.' : kind === 'edited' ? 'Đã ghi nhận câu trả lời đã chọn/chỉnh sửa.' : 'Đã ghi nhận phản hồi.', kind === 'good' ? 'success' : 'warning'); } catch (error: any) { toast.error(error?.response?.data?.error || 'Không thể lưu phản hồi AI.'); } }
 
 // 2026-06-12 (anh chốt): nút "Chèn từ kho" ở composer cột 3 → mở cột 4 sang tab Media.
 // Panel render bằng v-if nên nếu đang ẩn phải bật + chờ nextTick rồi mới gọi setMainTab.
@@ -604,6 +643,70 @@ async function onOpenMediaTab() {
     await nextTick();
   }
   contactPanelRef.value?.setMainTab('media');
+}
+
+// ════════ Conversation Content Library 2026-07-11 ════════
+// Ghim tin nhắn, tin đã ghim, tìm trong hội thoại, tab Ảnh/File/Link, "nhảy tới tin gốc".
+const contentApi = useConversationContent();
+const messageThreadRef = ref<{ scrollToMessage: (id: string) => boolean } | null>(null);
+const contentPanelRef = ref<{ openTab: (t: string) => void; reloadPinned: () => void } | null>(null);
+const showContentPanel = ref(false);
+const contentPanelInitialTab = ref<'pinned' | 'search' | 'media' | 'files' | 'links'>('search');
+const pinnedIds = ref<string[]>([]);
+
+async function loadPinnedIds(convId: string) {
+  try {
+    const list = await contentApi.listPinned(convId);
+    pinnedIds.value = list.filter((p) => p.message).map((p) => p.message!.id);
+  } catch {
+    pinnedIds.value = [];
+  }
+}
+
+async function onOpenContentPanel(tab: string) {
+  contentPanelInitialTab.value = (tab as typeof contentPanelInitialTab.value) || 'search';
+  if (!showContentPanel.value) {
+    showContentPanel.value = true;
+    await nextTick();
+  }
+  contentPanelRef.value?.openTab(contentPanelInitialTab.value);
+}
+
+async function onPinMessage(msg: Message) {
+  if (!selectedConvId.value) return;
+  if (!pinnedIds.value.includes(msg.id)) pinnedIds.value = [...pinnedIds.value, msg.id]; // optimistic
+  try {
+    await contentApi.pin(selectedConvId.value, msg.id);
+    toast.push('Đã ghim tin nhắn');
+    contentPanelRef.value?.reloadPinned();
+  } catch {
+    pinnedIds.value = pinnedIds.value.filter((id) => id !== msg.id);
+    toast.push('Ghim thất bại');
+  }
+}
+
+async function onUnpinMessage(msg: Message) {
+  if (!selectedConvId.value) return;
+  pinnedIds.value = pinnedIds.value.filter((id) => id !== msg.id); // optimistic
+  try {
+    await contentApi.unpin(selectedConvId.value, msg.id);
+    toast.push('Đã bỏ ghim');
+    contentPanelRef.value?.reloadPinned();
+  } catch {
+    pinnedIds.value = [...pinnedIds.value, msg.id];
+    toast.push('Bỏ ghim thất bại');
+  }
+}
+
+// "Xem trong hội thoại": tin đã tải → cuộn ngay; chưa tải → nạp cửa sổ context rồi cuộn.
+async function onJumpToMessage(messageId: string) {
+  const convId = selectedConvId.value;
+  if (!convId) return;
+  if (messageThreadRef.value?.scrollToMessage(messageId)) return;
+  const found = await loadMessageContext(convId, messageId);
+  if (!found) { toast.push('Tin nhắn không còn tồn tại'); return; }
+  await nextTick();
+  requestAnimationFrame(() => messageThreadRef.value?.scrollToMessage(messageId));
 }
 
 // ════════ URL routing: /chat/:convId — deep-link hội thoại ════════
@@ -645,6 +748,13 @@ watch(
   },
   { immediate: false },
 );
+
+// Content Library 2026-07-11 — đổi hội thoại: nạp lại danh sách tin đã ghim (cho badge menu),
+// reset panel nội dung về trạng thái sạch (không giữ kết quả tìm của hội thoại cũ).
+watch(selectedConvId, (id) => {
+  pinnedIds.value = [];
+  if (id) void loadPinnedIds(id);
+});
 
 // Phase 2026-05-30 — Mở chat từ lead Facebook (/chat?compose=SĐT). Truyền xuống
 // ConversationList để tự mở "Tin nhắn mới" + điền sẵn SĐT → dialog tự lookup Zalo + tạo hội thoại.
@@ -695,6 +805,17 @@ onMounted(async () => {
     const _socket = getSocket();
     if (_socket) {
       _socket.emit('org:join', { orgId: authStore.user?.orgId });
+      // Content Library 2026-07-11 — ghim/bỏ ghim tin nhắn đồng bộ realtime (chỉ metadata).
+      _socket.on('conversation:pin', (p: { conversationId?: string; messageId?: string }) => {
+        if (!p?.conversationId || p.conversationId !== selectedConvId.value || !p.messageId) return;
+        if (!pinnedIds.value.includes(p.messageId)) pinnedIds.value = [...pinnedIds.value, p.messageId];
+        contentPanelRef.value?.reloadPinned();
+      });
+      _socket.on('conversation:unpin', (p: { conversationId?: string; messageId?: string }) => {
+        if (!p?.conversationId || p.conversationId !== selectedConvId.value || !p.messageId) return;
+        pinnedIds.value = pinnedIds.value.filter((id) => id !== p.messageId);
+        contentPanelRef.value?.reloadPinned();
+      });
       _socket.on('friend:updated', (p: {
         contactId?: string;
         zaloUidInNick?: string;
@@ -800,6 +921,39 @@ watch(searchQuery, () => {
   border-right: 1px solid var(--smax-grey-200);
   background: var(--smax-bg);
 }
+
+/* Content Library 2026-07-11 — drawer NỘI DUNG hội thoại: phủ mép phải, KHÔNG đụng grid
+   :has() phức tạp (giữ layout 4 cột nguyên vẹn). Trên mobile phủ toàn màn. */
+.smax-content-col {
+  position: fixed;
+  top: var(--smax-topnav-h, 52px);
+  right: 0;
+  bottom: 0;
+  width: 360px;
+  max-width: 92vw;
+  background: var(--smax-bg, #fff);
+  border-left: 1px solid var(--smax-grey-200, #ebedf0);
+  box-shadow: -6px 0 24px rgba(15, 23, 42, 0.12);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  animation: ccp-slide-in 0.2s ease-out;
+}
+@keyframes ccp-slide-in { from { transform: translateX(16px); opacity: 0; } to { transform: none; opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .smax-content-col { animation: none; } }
+.ccp-col-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px; border-bottom: 1px solid var(--smax-grey-200, #ebedf0);
+  flex-shrink: 0;
+}
+.ccp-col-title { font-size: 14px; font-weight: 700; color: var(--smax-text); }
+.ccp-col-close {
+  width: 30px; height: 30px; border: none; background: transparent; border-radius: 7px;
+  font-size: 22px; line-height: 1; color: var(--chat-meta, #6b7688); cursor: pointer;
+}
+.ccp-col-close:hover { background: var(--smax-grey-100, #f5f6fa); color: var(--smax-text); }
+.ccp-col-body { flex: 1; min-height: 0; }
+@media (max-width: 640px) { .smax-content-col { width: 100vw; max-width: 100vw; } }
 
 /* work-scope 2026-06-15 — 1 DÒNG "N tin ở M nick khác" ở đầu cột 2 (anh chốt: gọn) */
 .out-of-scope-bar {
@@ -924,4 +1078,4 @@ watch(searchQuery, () => {
   .smax-chat-grid > :nth-child(4) { display: none; }
 }
 
-</style>
+.copilot-toggle{position:fixed;right:18px;bottom:20px;z-index:1190;border:1px solid #2563eb;background:#fff;color:#1d4ed8;border-radius:999px;padding:9px 13px;font-size:12px;font-weight:700;box-shadow:0 6px 18px #1e40af22;cursor:pointer}.copilot-toggle.active{right:390px;background:#2563eb;color:#fff}@media(max-width:900px){.copilot-toggle.active{right:18px;bottom:calc(min(70dvh,620px) + 12px)}}</style>

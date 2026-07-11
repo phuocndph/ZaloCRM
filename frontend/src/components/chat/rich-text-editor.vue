@@ -771,19 +771,20 @@ onBeforeUnmount(() => { editor.value?.destroy(); });
 
 <style scoped>
 .rich-text-editor {
-  border: 1.5px solid var(--smax-grey-200, #ebedf0);
-  border-radius: 9px;
+  border: 1.5px solid var(--smax-grey-300, #d4d8de);
+  border-radius: 11px;
   background: var(--smax-bg, #fff);
-  transition: border-color 0.2s, box-shadow 0.2s;
+  transition: border-color 0.16s, box-shadow 0.16s;
   position: relative;
   /* Anh chốt 2026-05-22 (issue 1): overflow:hidden để border-radius CLIP content
      (toolbar bg) theo bo viền → 2 góc trên không bị "đứt nét" khi focus. */
   overflow: hidden;
 }
+.rich-text-editor:hover:not(.focused) { border-color: var(--smax-grey-700, #5a6478); }
 .rich-text-editor.focused,
 .rich-text-editor:focus-within {
-  border-color: var(--smax-primary, #2962ff);
-  box-shadow: 0 0 0 3px rgba(33, 150, 243, 0.10);
+  border-color: var(--smax-primary, #1786be);
+  box-shadow: 0 0 0 3px rgba(23, 134, 190, 0.14);
 }
 
 .editor-toolbar {

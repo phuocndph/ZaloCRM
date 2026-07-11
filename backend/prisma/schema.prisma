@@ -81,7 +81,10 @@ model Organization {
   aiEvaluationResults         AiEvaluationResult[]
   aiAuditLogs                 AiAuditLog[]
   aiUsageRecords              AiUsageRecord[]
+  aiAutoReplyConfigs          AiAutoReplyConfig[]
+  aiAutoReplyLogs             AiAutoReplyLog[]
   pinnedConversations         PinnedConversation[]
+  conversationUserStates      ConversationUserState[]
   groupPolls                  GroupPoll[]
   // 2026-06-21 (E1 quét group) — roster member + lịch sử lần quét cấp org.
   groupMembers                GroupMember[]
@@ -344,6 +347,7 @@ model User {
   createdMediaAlbums           MediaAlbum[]                 @relation("MediaAlbumCreatedBy")
   // Riêng tư cấp hội thoại 2026-07-09 — các hội thoại user này đang bật "Chỉ mình tôi xem".
   privateConversations         Conversation[]               @relation("ConversationPrivateOwner")
+  conversationStates           ConversationUserState[]
   aiAgentsCreated              AiAgent[]                    @relation("AiAgentCreatedBy")
   aiPersonasCreated            AiPersona[]                  @relation("AiPersonaCreatedBy")
   aiSkillsCreated              AiSkill[]                    @relation("AiSkillCreatedBy")
@@ -352,6 +356,7 @@ model User {
   aiPromptVersionsApproved     AiPromptVersion[]            @relation("AiPromptVersionApprovedBy")
   aiModelConfigsCreated        AiModelConfig[]              @relation("AiModelConfigCreatedBy")
   aiKnowledgeSourcesCreated    AiKnowledgeSource[]          @relation("AiKnowledgeSourceCreatedBy")
+  aiKnowledgeSourcesApproved   AiKnowledgeSource[]          @relation("AiKnowledgeSourceApprovedBy")
   aiKnowledgeDocumentsCreated  AiKnowledgeDocument[]        @relation("AiKnowledgeDocumentCreatedBy")
   aiKnowledgeDocumentsApproved AiKnowledgeDocument[]        @relation("AiKnowledgeDocumentApprovedBy")
   aiRunsRequested              AiRun[]                      @relation("AiRunRequestedBy")
@@ -753,6 +758,7 @@ model Contact {
   aiCustomerMemories   AiCustomerMemory[]
   aiIntentAnalyses     AiIntentAnalysis[]
   aiEmotionAnalyses    AiEmotionAnalysis[]
+  aiFeedback           AiFeedback[]
   aiHandoffs           AiHandoff[]
 
   // Phase Tag Taxonomy v2 2026-05-31 (M57) — junction TagContact (Big-Bang Refactor).
@@ -861,12 +867,16 @@ model Conversation {
   aiSummaries            AiConversationSummary[]
   aiIntentAnalyses       AiIntentAnalysis[]
   aiEmotionAnalyses      AiEmotionAnalysis[]
+  aiFeedback             AiFeedback[]
   aiAssistantSuggestions AiAssistantSuggestion[]
   aiSentMessages         AiSentMessage[]
   aiActions              AiAction[]
   aiHandoffs             AiHandoff[]
   aiAuditLogs            AiAuditLog[]
+  aiAutoReplyLogs        AiAutoReplyLog[]
   pins                   PinnedConversation[]
+  messagePins            MessagePin[]
+  userStates             ConversationUserState[]
   // 2026-06-18 — Cầu Telegram: 1 hội thoại = 1 forum topic (định tuyến reply).
   telegramTopic          TelegramTopicMap?
 
@@ -952,15 +962,18 @@ model Message {
   clientEchoId        String?   @map("client_echo_id")
   createdAt           DateTime  @default(now()) @map("created_at")
 
-  conversation         Conversation            @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  repliedBy            User?                   @relation("RepliedMessages", fields: [repliedByUserId], references: [id])
-  reactions            MessageReaction[]
-  aiTriggeredRuns      AiRun[]                 @relation("AiRunTriggerMessage")
-  aiSummaryBoundaries  AiConversationSummary[] @relation("AiSummaryThroughMessage")
-  aiIntentAnalyses     AiIntentAnalysis[]
-  aiEmotionAnalyses    AiEmotionAnalysis[]
-  aiSuggestionTriggers AiAssistantSuggestion[] @relation("AiSuggestionTriggerMessage")
-  aiSentMessage        AiSentMessage?
+  conversation                       Conversation            @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  repliedBy                          User?                   @relation("RepliedMessages", fields: [repliedByUserId], references: [id])
+  reactions                          MessageReaction[]
+  messagePins                        MessagePin[]
+  aiTriggeredRuns                    AiRun[]                 @relation("AiRunTriggerMessage")
+  aiSummaryBoundaries                AiConversationSummary[] @relation("AiSummaryThroughMessage")
+  aiIntentAnalyses                   AiIntentAnalysis[]
+  aiEmotionAnalyses                  AiEmotionAnalysis[]
+  aiFeedbackCustomerMessages         AiFeedback[]            @relation("AiFeedbackCustomerMessage")
+  aiFeedbackFollowupCustomerMessages AiFeedback[]            @relation("AiFeedbackFollowupCustomerMessage")
+  aiSuggestionTriggers               AiAssistantSuggestion[] @relation("AiSuggestionTriggerMessage")
+  aiSentMessage                      AiSentMessage?
 
   @@unique([conversationId, zaloMsgId])
   // BE-3 idempotency — 1 echoId duy nhất / conversation. Multiple NULL cho phép (tin cũ).
@@ -1691,6 +1704,12 @@ model MessageTemplate {
   shortcut         String?
   content          String // plain text — LUÔN = contentRich.text (derive ở route), dùng search + chèn chat
   contentRich      Json?     @map("content_rich") // { text: string, styles: [{st,start,len}] } — định dạng Zalo
+  // Mẫu đa phương tiện (2026-07-11): đính kèm ảnh/file gửi kèm text khi chọn mẫu.
+  // Shape: [{ kind:'image'|'file', url, name?, mime?, size?, thumb? }]. Rỗng = mẫu chỉ text.
+  attachments      Json      @default("[]")
+  // Mẫu NHIỀU BƯỚC (block-based, 2026-07-11): chuỗi tin có thứ tự (text/image/album/file/delay).
+  // NULL = mẫu 1 bước cũ (derive từ content + attachments khi chọn → tương thích ngược).
+  blocks           Json?
   category         String? // phân loại chức năng (FAQ/Chào/Chốt) — song song tagIds dự án
   tagIds           String[]  @default([]) @map("tag_ids") // 4 tag dự án + free-form
   usageCount       Int       @default(0) @map("usage_count")
@@ -1842,6 +1861,59 @@ model PinnedConversation {
 
   @@unique([zaloAccountId, conversationId])
   @@map("pinned_conversations")
+}
+
+// Conversation State System (per-user, 2026-07-10).
+// Stores private CRM UI state for each user and conversation. It does not touch Zalo sync state.
+model ConversationUserState {
+  id             String @id @default(uuid())
+  orgId          String @map("org_id")
+  userId         String @map("user_id")
+  conversationId String @map("conversation_id")
+
+  isPinned Boolean   @default(false) @map("is_pinned")
+  pinnedAt DateTime? @map("pinned_at")
+
+  isManualUnread Boolean   @default(false) @map("is_manual_unread")
+  manualUnreadAt DateTime? @map("manual_unread_at")
+
+  flags Json @default("{}")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  org          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, conversationId])
+  @@index([userId, isPinned, pinnedAt])
+  @@index([userId, isManualUnread])
+  @@index([conversationId])
+  @@map("conversation_user_states")
+}
+
+// Pinned messages inside a conversation (Conversation Content Library, 2026-07-11).
+// This is shared by everyone who can view the conversation. Soft-unpin keeps history.
+model MessagePin {
+  id               String    @id @default(uuid())
+  orgId            String    @map("org_id")
+  conversationId   String    @map("conversation_id")
+  messageId        String    @map("message_id")
+  pinnedByUserId   String    @map("pinned_by_user_id")
+  pinnedAt         DateTime  @default(now()) @map("pinned_at")
+  unpinnedByUserId String?   @map("unpinned_by_user_id")
+  unpinnedAt       DateTime? @map("unpinned_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  message      Message      @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, messageId])
+  @@index([conversationId, unpinnedAt, pinnedAt])
+  @@index([messageId])
+  @@map("message_pins")
 }
 
 // Group poll (ported from openzca group poll)
@@ -4481,6 +4553,47 @@ model PushSubscription {
 }
 
 // AI Assistant database foundation.
+model AiAutoReplyConfig {
+  id              String       @id @default(uuid())
+  orgId           String       @map("org_id")
+  scope           String       @default("workspace")
+  scopeRefId      String?      @map("scope_ref_id")
+  enabled         Boolean      @default(false)
+  mode            String       @default("disabled")
+  emergencyStop   Boolean      @default(false) @map("emergency_stop")
+  config          Json         @default("{}")
+  createdByUserId String?      @map("created_by_user_id")
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @updatedAt @map("updated_at")
+  deletedAt       DateTime?    @map("deleted_at")
+  org             Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, scope, scopeRefId, deletedAt])
+  @@index([orgId, emergencyStop])
+  @@map("ai_auto_reply_configs")
+}
+
+model AiAutoReplyLog {
+  id              String       @id @default(uuid())
+  orgId           String       @map("org_id")
+  conversationId  String       @map("conversation_id")
+  configId        String?      @map("config_id")
+  status          String
+  decisionReasons Json         @default("[]") @map("decision_reasons")
+  replyHash       String?      @map("reply_hash")
+  confidence      Int?
+  mode            String
+  metadata        Json         @default("{}")
+  createdAt       DateTime     @default(now()) @map("created_at")
+  updatedAt       DateTime     @updatedAt @map("updated_at")
+  org             Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  conversation    Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, status, createdAt])
+  @@index([conversationId, createdAt])
+  @@map("ai_auto_reply_logs")
+}
+
 model AiAgent {
   id              String            @id @default(uuid())
   orgId           String            @map("org_id")
@@ -4547,6 +4660,7 @@ model AiSkill {
   org             Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
   createdBy       User?          @relation("AiSkillCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   agentLinks      AiAgentSkill[]
+  prompts         AiPrompt[]
 
   @@unique([orgId, key])
   @@index([orgId, deletedAt])
@@ -4578,16 +4692,20 @@ model AiPrompt {
   key             String
   name            String
   taskType        String            @map("task_type")
+  scope           String            @default("system")
+  skillId         String?           @map("skill_id")
   createdByUserId String?           @map("created_by_user_id")
   createdAt       DateTime          @default(now()) @map("created_at")
   updatedAt       DateTime          @updatedAt @map("updated_at")
   deletedAt       DateTime?         @map("deleted_at")
   org             Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
   createdBy       User?             @relation("AiPromptCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  skill           AiSkill?          @relation(fields: [skillId], references: [id], onDelete: SetNull)
   versions        AiPromptVersion[]
 
   @@unique([orgId, key])
   @@index([orgId, taskType, deletedAt])
+  @@index([orgId, scope, skillId, deletedAt])
   @@map("ai_prompts")
 }
 
@@ -4602,6 +4720,7 @@ model AiPromptVersion {
   previewRedacted  String?            @map("preview_redacted") @db.Text
   inputSchema      Json?              @map("input_schema")
   outputSchema     Json?              @map("output_schema")
+  changeNote       String?            @map("change_note") @db.Text
   createdByUserId  String?            @map("created_by_user_id")
   approvedByUserId String?            @map("approved_by_user_id")
   approvedAt       DateTime?          @map("approved_at")
@@ -4646,23 +4765,35 @@ model AiModelConfig {
 }
 
 model AiKnowledgeSource {
-  id              String                @id @default(uuid())
-  orgId           String                @map("org_id")
-  name            String
-  type            String
-  config          Json                  @default("{}")
-  credentialRef   String?               @map("credential_ref")
-  status          String                @default("draft")
-  lastSyncedAt    DateTime?             @map("last_synced_at")
-  createdByUserId String?               @map("created_by_user_id")
-  createdAt       DateTime              @default(now()) @map("created_at")
-  updatedAt       DateTime              @updatedAt @map("updated_at")
-  deletedAt       DateTime?             @map("deleted_at")
-  org             Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  createdBy       User?                 @relation("AiKnowledgeSourceCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
-  documents       AiKnowledgeDocument[]
+  id               String                @id @default(uuid())
+  orgId            String                @map("org_id")
+  name             String
+  type             String // product | price_list | policy | faq | website | article | pdf | word | excel | manual | consultation_script | complaint_process
+  config           Json                  @default("{}")
+  credentialRef    String?               @map("credential_ref")
+  status           String                @default("draft") // draft | published | archived | failed
+  version          Int                   @default(1)
+  effectiveFrom    DateTime?             @map("effective_from")
+  effectiveTo      DateTime?             @map("effective_to")
+  priority         Int                   @default(0)
+  tags             String[]              @default([])
+  scope            Json                  @default("{\"visibility\":\"org\"}")
+  lastSyncedAt     DateTime?             @map("last_synced_at")
+  lastIndexedAt    DateTime?             @map("last_indexed_at")
+  createdByUserId  String?               @map("created_by_user_id")
+  approvedByUserId String?               @map("approved_by_user_id")
+  approvedAt       DateTime?             @map("approved_at")
+  createdAt        DateTime              @default(now()) @map("created_at")
+  updatedAt        DateTime              @updatedAt @map("updated_at")
+  deletedAt        DateTime?             @map("deleted_at")
+  org              Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy        User?                 @relation("AiKnowledgeSourceCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  approvedBy       User?                 @relation("AiKnowledgeSourceApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  documents        AiKnowledgeDocument[]
 
   @@index([orgId, type, status, deletedAt])
+  @@index([orgId, status, effectiveFrom, effectiveTo, deletedAt])
+  @@index([tags], type: Gin)
   @@map("ai_knowledge_sources")
 }
 
@@ -4672,10 +4803,18 @@ model AiKnowledgeDocument {
   sourceId         String             @map("source_id")
   externalId       String?            @map("external_id")
   title            String
-  status           String             @default("pending")
+  status           String             @default("draft") // draft | published | indexing | failed | archived
   contentRef       String?            @map("content_ref")
   contentHash      String?            @map("content_hash")
   version          Int                @default(1)
+  mimeType         String?            @map("mime_type")
+  language         String?            @default("vi")
+  effectiveFrom    DateTime?          @map("effective_from")
+  effectiveTo      DateTime?          @map("effective_to")
+  priority         Int                @default(0)
+  tags             String[]           @default([])
+  scope            Json               @default("{}")
+  lastIndexedAt    DateTime?          @map("last_indexed_at")
   metadata         Json               @default("{}")
   createdByUserId  String?            @map("created_by_user_id")
   approvedByUserId String?            @map("approved_by_user_id")
@@ -4691,6 +4830,9 @@ model AiKnowledgeDocument {
 
   @@unique([sourceId, externalId, version])
   @@index([orgId, status, deletedAt])
+  @@index([orgId, status, effectiveFrom, effectiveTo, deletedAt])
+  @@index([sourceId, contentHash])
+  @@index([tags], type: Gin)
   @@map("ai_knowledge_documents")
 }
 
@@ -4705,6 +4847,8 @@ model AiKnowledgeChunk {
   tokenCount       Int?                @map("token_count")
   embedding        Float[]             @default([])
   embeddingModel   String?             @map("embedding_model")
+  embeddingVersion String?             @map("embedding_version")
+  keywords         String[]            @default([])
   metadata         Json                @default("{}")
   createdAt        DateTime            @default(now()) @map("created_at")
   updatedAt        DateTime            @updatedAt @map("updated_at")
@@ -4715,6 +4859,7 @@ model AiKnowledgeChunk {
   @@unique([documentId, chunkIndex])
   @@index([orgId, deletedAt])
   @@index([contentHash])
+  @@index([keywords], type: Gin)
   @@map("ai_knowledge_chunks")
 }
 
@@ -4804,6 +4949,9 @@ model AiCustomerMemory {
   confidence       Float?
   approvedByUserId String?      @map("approved_by_user_id")
   approvedAt       DateTime?    @map("approved_at")
+  expiresAt        DateTime?    @map("expires_at")
+  lastReinforcedAt DateTime?    @map("last_reinforced_at")
+  supersededById   String?      @map("superseded_by_id")
   createdAt        DateTime     @default(now()) @map("created_at")
   updatedAt        DateTime     @updatedAt @map("updated_at")
   deletedAt        DateTime?    @map("deleted_at")
@@ -4814,6 +4962,8 @@ model AiCustomerMemory {
 
   @@index([orgId, status, deletedAt])
   @@index([contactId, key, status])
+  @@index([contactId, key, deletedAt, expiresAt])
+  @@index([expiresAt])
   @@map("ai_customer_memories")
 }
 
@@ -4929,39 +5079,57 @@ model AiSentMessage {
 }
 
 model AiFeedback {
-  id                 String                 @id @default(uuid())
-  orgId              String                 @map("org_id")
-  runId              String                 @map("run_id")
-  suggestionId       String?                @map("suggestion_id")
-  sentMessageId      String?                @map("sent_message_id")
-  actionId           String?                @map("action_id")
-  userId             String?                @map("user_id")
-  type               String
-  reasonCode         String?                @map("reason_code")
-  originalHash       String?                @map("original_hash")
-  finalHash          String?                @map("final_hash")
-  editDistance       Int?                   @map("edit_distance")
-  rating             Int?
-  metadata           Json                   @default("{}")
-  createdAt          DateTime               @default(now()) @map("created_at")
-  updatedAt          DateTime               @updatedAt @map("updated_at")
-  org                Organization           @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  run                AiRun                  @relation(fields: [runId], references: [id], onDelete: Cascade)
-  suggestion         AiAssistantSuggestion? @relation(fields: [suggestionId], references: [id], onDelete: SetNull)
-  sentMessage        AiSentMessage?         @relation(fields: [sentMessageId], references: [id], onDelete: SetNull)
-  action             AiAction?              @relation(fields: [actionId], references: [id], onDelete: SetNull)
-  user               User?                  @relation("AiFeedbackUser", fields: [userId], references: [id], onDelete: SetNull)
-  learningCandidates AiLearningCandidate[]
+  id                        String                 @id @default(uuid())
+  orgId                     String                 @map("org_id")
+  runId                     String?                @map("run_id")
+  conversationId            String?                @map("conversation_id")
+  contactId                 String?                @map("contact_id")
+  customerMessageId         String?                @map("customer_message_id")
+  followupCustomerMessageId String?                @map("followup_customer_message_id")
+  suggestionId              String?                @map("suggestion_id")
+  sentMessageId             String?                @map("sent_message_id")
+  actionId                  String?                @map("action_id")
+  userId                    String?                @map("user_id")
+  type                      String
+  selectionStatus           String                 @default("skipped") @map("selection_status")
+  reasonCode                String?                @map("reason_code")
+  originalHash              String?                @map("original_hash")
+  finalHash                 String?                @map("final_hash")
+  proposedEncrypted         Bytes?                 @map("proposed_encrypted")
+  finalEncrypted            Bytes?                 @map("final_encrypted")
+  contextManifest           Json                   @default("{}") @map("context_manifest")
+  knowledgeRefs             Json                   @default("[]") @map("knowledge_refs")
+  outcome                   Json                   @default("{}")
+  quoteGenerated            Boolean                @default(false) @map("quote_generated")
+  orderGenerated            Boolean                @default(false) @map("order_generated")
+  editDistance              Int?                   @map("edit_distance")
+  rating                    Int?
+  metadata                  Json                   @default("{}")
+  createdAt                 DateTime               @default(now()) @map("created_at")
+  updatedAt                 DateTime               @updatedAt @map("updated_at")
+  org                       Organization           @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  run                       AiRun?                 @relation(fields: [runId], references: [id], onDelete: SetNull)
+  conversation              Conversation?          @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  contact                   Contact?               @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  customerMessage           Message?               @relation("AiFeedbackCustomerMessage", fields: [customerMessageId], references: [id], onDelete: SetNull)
+  followupCustomerMessage   Message?               @relation("AiFeedbackFollowupCustomerMessage", fields: [followupCustomerMessageId], references: [id], onDelete: SetNull)
+  suggestion                AiAssistantSuggestion? @relation(fields: [suggestionId], references: [id], onDelete: SetNull)
+  sentMessage               AiSentMessage?         @relation(fields: [sentMessageId], references: [id], onDelete: SetNull)
+  action                    AiAction?              @relation(fields: [actionId], references: [id], onDelete: SetNull)
+  user                      User?                  @relation("AiFeedbackUser", fields: [userId], references: [id], onDelete: SetNull)
+  learningCandidates        AiLearningCandidate[]
 
   @@index([orgId, type, createdAt])
   @@index([runId])
+  @@index([conversationId, createdAt])
+  @@index([contactId, createdAt])
   @@map("ai_feedback")
 }
 
 model AiLearningCandidate {
   id               String                 @id @default(uuid())
   orgId            String                 @map("org_id")
-  runId            String                 @map("run_id")
+  runId            String?                @map("run_id")
   suggestionId     String?                @map("suggestion_id")
   feedbackId       String?                @map("feedback_id")
   kind             String
@@ -4974,7 +5142,7 @@ model AiLearningCandidate {
   createdAt        DateTime               @default(now()) @map("created_at")
   updatedAt        DateTime               @updatedAt @map("updated_at")
   org              Organization           @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  run              AiRun                  @relation(fields: [runId], references: [id], onDelete: Cascade)
+  run              AiRun?                 @relation(fields: [runId], references: [id], onDelete: SetNull)
   suggestion       AiAssistantSuggestion? @relation(fields: [suggestionId], references: [id], onDelete: SetNull)
   feedback         AiFeedback?            @relation(fields: [feedbackId], references: [id], onDelete: SetNull)
   approvedExample  AiApprovedExample?

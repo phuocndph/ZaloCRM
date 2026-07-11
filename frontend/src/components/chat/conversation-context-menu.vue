@@ -16,6 +16,38 @@
         role="menu"
         @click.stop
       >
+        <!-- Conversation State 2026-07-10 — hành động cá nhân lên ĐẦU menu (UX Outlook/Teams):
+             Ghim (cá nhân) + Đánh dấu chưa đọc. Khác ghim Zalo (đồng bộ app), khác chưa đọc thật. -->
+        <button
+          class="ctx-item"
+          :class="{ 'is-primary': isPersonalPinned }"
+          role="menuitem"
+          :disabled="stateBusy"
+          @click="onAction('toggle-personal-pin')"
+        >
+          <svg class="ctx-item__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M9 4v6l-2 4h10l-2-4V4"/><path d="M12 14v7"/><path d="M8 4h8"/>
+          </svg>
+          <span class="ctx-item__label">
+            {{ stateBusy ? 'Đang xử lý…' : (isPersonalPinned ? 'Bỏ ghim' : 'Ghim hội thoại') }}
+          </span>
+        </button>
+        <button
+          class="ctx-item"
+          :class="{ 'is-primary': isManualUnread }"
+          role="menuitem"
+          :disabled="stateBusy"
+          @click="onAction('toggle-manual-unread')"
+        >
+          <svg class="ctx-item__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 4h16v16H4z"/><path d="M22 6l-10 7L2 6"/>
+          </svg>
+          <span class="ctx-item__label">
+            {{ stateBusy ? 'Đang xử lý…' : (isManualUnread ? 'Đánh dấu đã đọc' : 'Đánh dấu chưa đọc') }}
+          </span>
+        </button>
+        <div class="ctx-divider"></div>
+
         <!-- Chuyển tab: từ Ưu tiên → Cá nhân, hoặc từ Cá nhân/Chính → Ưu tiên.
              activeTab='other' nghĩa là đang ở tab Ưu tiên. -->
         <button
@@ -117,6 +149,10 @@ const props = defineProps<{
   /** true khi hội thoại riêng tư này do CHÍNH viewer bật (chỉ người đó tắt được). */
   isPrivacyOwner?: boolean;
   privacyBusy?: boolean;
+  /** Conversation State 2026-07-10 — ghim cá nhân + đánh dấu chưa đọc thủ công. */
+  isPersonalPinned?: boolean;
+  isManualUnread?: boolean;
+  stateBusy?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -125,6 +161,8 @@ const emit = defineEmits<{
   'move-other': [];
   'toggle-follow': [];
   'toggle-privacy': [];
+  'toggle-personal-pin': [];
+  'toggle-manual-unread': [];
   delete: [];
 }>();
 
@@ -202,15 +240,20 @@ onBeforeUnmount(() => {
 function close() {
   emit('update:modelValue', false);
 }
-function onAction(name: 'move-main' | 'move-other' | 'toggle-follow' | 'toggle-privacy' | 'delete') {
+function onAction(
+  name: 'move-main' | 'move-other' | 'toggle-follow' | 'toggle-privacy'
+      | 'toggle-personal-pin' | 'toggle-manual-unread' | 'delete',
+) {
   // toggle-follow KHÔNG đóng menu (sale có thể muốn xem trạng thái đổi); các action
   // khác đóng menu ngay như Zalo native.
   switch (name) {
-    case 'move-main':      emit('move-main');      close(); break;
-    case 'move-other':     emit('move-other');     close(); break;
-    case 'delete':         emit('delete');         close(); break;
-    case 'toggle-privacy': emit('toggle-privacy'); close(); break;
-    case 'toggle-follow':  emit('toggle-follow');           break;
+    case 'move-main':           emit('move-main');           close(); break;
+    case 'move-other':          emit('move-other');          close(); break;
+    case 'delete':              emit('delete');              close(); break;
+    case 'toggle-privacy':      emit('toggle-privacy');      close(); break;
+    case 'toggle-personal-pin': emit('toggle-personal-pin'); close(); break;
+    case 'toggle-manual-unread':emit('toggle-manual-unread');close(); break;
+    case 'toggle-follow':       emit('toggle-follow');                break;
   }
 }
 </script>

@@ -50,6 +50,31 @@
           <span class="ctx-item__label">Sao chép</span>
         </button>
 
+        <!-- Ghim / Bỏ ghim tin nhắn (Conversation Content Library 2026-07-11).
+             Ghim mọi loại nội dung (text/ảnh/video/file/link); ẩn ở tin đã thu hồi/xóa. -->
+        <button
+          v-if="canPin && !isPinned"
+          class="ctx-item"
+          role="menuitem"
+          @click="onAction('pin')"
+        >
+          <svg class="ctx-item__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="12" y1="17" x2="12" y2="22"/><path d="M5 17h14l-1.5-3.5V7a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v6.5L5 17z"/>
+          </svg>
+          <span class="ctx-item__label">Ghim tin nhắn</span>
+        </button>
+        <button
+          v-if="canPin && isPinned"
+          class="ctx-item"
+          role="menuitem"
+          @click="onAction('unpin')"
+        >
+          <svg class="ctx-item__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="2" y1="2" x2="22" y2="22"/><line x1="12" y1="17" x2="12" y2="22"/><path d="M7 7v6.5L5 17h9"/>
+          </svg>
+          <span class="ctx-item__label">Bỏ ghim</span>
+        </button>
+
         <!-- Chuyển tiếp -->
         <button class="ctx-item" role="menuitem" @click="onAction('forward')">
           <svg class="ctx-item__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -126,6 +151,8 @@ const props = defineProps<{
   isSelf: boolean;
   position: { x: number; y: number };
   modelValue: boolean;
+  // Conversation Content Library 2026-07-11 — trạng thái ghim của tin (do MessageThread truyền).
+  isPinned?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -139,12 +166,21 @@ const emit = defineEmits<{
   'save-media': [visibility: 'private' | 'public'];
   'favorite-media': [];
   'download-media': [];
+  pin: [];
+  unpin: [];
 }>();
 
 // Tin có media (ảnh/video/tệp) → hiện "Lưu vào Media". Phase Media Library 2026-06-11.
 const isMediaMessage = computed(() =>
   ['image', 'video', 'file'].includes(props.message?.contentType ?? ''),
 );
+
+// Ghim được: mọi tin còn nội dung (không thu hồi/xóa). Loại card hệ thống thuần trạng thái.
+const canPin = computed(() => {
+  const m = props.message;
+  if (!m || m.isDeleted) return false;
+  return true;
+});
 
 // Submenu "Lưu vào Media" (Riêng tư / Công khai) — mở khi hover.
 const saveSubOpen = ref(false);
@@ -234,7 +270,7 @@ onBeforeUnmount(() => {
 function close() {
   emit('update:modelValue', false);
 }
-function onAction(name: 'reply' | 'edit' | 'forward' | 'undo' | 'delete' | 'favorite-media' | 'download-media') {
+function onAction(name: 'reply' | 'edit' | 'forward' | 'undo' | 'delete' | 'favorite-media' | 'download-media' | 'pin' | 'unpin') {
   // Switch để TS narrow đúng từng emit signature (union không inferr được)
   switch (name) {
     case 'reply':          emit('reply');          break;
@@ -244,6 +280,8 @@ function onAction(name: 'reply' | 'edit' | 'forward' | 'undo' | 'delete' | 'favo
     case 'delete':         emit('delete');         break;
     case 'favorite-media': emit('favorite-media'); break;
     case 'download-media': emit('download-media'); break;
+    case 'pin':            emit('pin');            break;
+    case 'unpin':          emit('unpin');          break;
   }
   close();
 }

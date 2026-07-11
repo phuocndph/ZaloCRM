@@ -27,6 +27,23 @@
   --smax-bubble-self: #d7ecf7;
   --smax-group-bg: #ffeae3;
 
+  /* ════════ Chat frame palette (UI/UX refresh 2026-07-10) ════════
+     Lấy cảm hứng Zalo/Slack: nền dịu, bong bóng nhân viên xanh RẤT nhạt
+     (không dùng primary đậm), timestamp/metadata xám trung tính, divider mờ.
+     Mục tiêu: giảm mỏi mắt khi dùng liên tục nhiều giờ. */
+  --chat-page-bg: #f0f2f5;              /* nền vùng tin nhắn */
+  --chat-bubble-in: #ffffff;            /* bong bóng khách */
+  --chat-bubble-in-border: #e7ebf0;     /* hairline tách nền */
+  --chat-bubble-in-text: #1f2733;
+  --chat-bubble-out: #d7e9fb;           /* bong bóng nhân viên — xanh nhạt */
+  --chat-bubble-out-hover: #cfe4fb;
+  --chat-bubble-out-text: #14304a;      /* chữ đậm, contrast AA trên nền nhạt */
+  --chat-bubble-out-accent: #0b5880;    /* link/mention/accent trong tin gửi */
+  --chat-time: #8a94a6;                 /* timestamp — xám nhẹ */
+  --chat-meta: #6b7688;                 /* metadata — trung tính */
+  --chat-divider: rgba(15, 23, 42, 0.06);
+  --chat-bubble-shadow: 0 1px 1px rgba(15, 23, 42, 0.05);
+
   /* Gender */
   --smax-female: #e91e63;
   --smax-male: #1e88e5;

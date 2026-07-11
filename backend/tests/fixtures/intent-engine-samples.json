@@ -1,0 +1,14 @@
+﻿[
+  { "text": "Shop ơi, mẫu này giá bao nhiêu vậy?", "primary_intent": "price_inquiry" },
+  { "text": "Cho mình xin báo giá 10 cái model X", "primary_intent": "quote_request" },
+  { "text": "so sanh ban pro va ban thuong giup minh", "primary_intent": "product_comparison" },
+  { "text": "ship về Đà Nẵng mất bao lâu", "primary_intent": "shipping_inquiry" },
+  { "text": "bảo hành máy bao lâu ạ", "primary_intent": "warranty_inquiry" },
+  { "text": "Có km hay bớt giá không?", "primary_intent": "discount_request" },
+  { "text": "Mình chốt đơn 2 cái nhé", "primary_intent": "order_intent" },
+  { "text": "Tôi khiếu nại vì hàng giao quá tệ", "primary_intent": "complaint" },
+  { "text": "Tôi muốn đổi trả và hoàn tiền đơn AB-1234", "primary_intent": "return_or_refund" },
+  { "text": "Cho gặp nhân viên tư vấn thật", "primary_intent": "human_request" },
+  { "text": "khong quan tam, dung nhan nua", "primary_intent": "not_interested" },
+  { "text": "asdjkl qwe zzz", "primary_intent": "unknown" }
+]

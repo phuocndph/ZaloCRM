@@ -76,3 +76,41 @@ export const TEMPLATE_VARIABLES: TemplateVariable[] = [
 export const TEMPLATE_VAR_EXAMPLES: Record<string, string> = Object.fromEntries(
   TEMPLATE_VARIABLES.map((v) => [v.code, v.example]),
 );
+
+/** Ngữ cảnh render biến — giá trị thật của KH/sale đang chat. */
+export interface TemplateVarContext {
+  fullName?: string | null;
+  gender?: string | null;
+  crmAlias?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  saleFullName?: string | null;
+}
+
+/**
+ * Render biến cá nhân hoá trong 1 đoạn TEXT (plain). Dùng chung cho preview mẫu nhiều bước.
+ * KHỚP bộ biến của quick-template-popup (8 biến chính). Biến không có giá trị → chuỗi rỗng.
+ */
+export function renderTemplateText(text: string, ctx: TemplateVarContext): string {
+  const gender = ctx.gender;
+  const genderStr = gender === 'female' ? 'Chị' : gender === 'male' ? 'Anh' : 'Anh/Chị';
+  const nameRaw = (ctx.fullName ?? '').trim();
+  const nameWords = nameRaw ? nameRaw.split(/\s+/) : [];
+  const saleRaw = (ctx.saleFullName ?? '').trim();
+  const crmFull = ((ctx.crmAlias ?? '').trim()) || nameRaw;
+  const crmWords = crmFull ? crmFull.split(/\s+/) : [];
+  const repl: Record<string, string> = {
+    '{gender}': genderStr,
+    '{name}': nameWords.length ? nameWords[nameWords.length - 1] : '',
+    '{name_full}': nameRaw,
+    '{name_first}': nameWords[0] ?? '',
+    '{crm_full}': crmFull,
+    '{crm_first}': crmWords[0] ?? '',
+    '{crm_last}': crmWords[crmWords.length - 1] ?? '',
+    '{sale}': saleRaw ? (saleRaw.split(/\s+/).pop() ?? 'em') : 'em',
+    '{sale_full}': saleRaw || 'em',
+    '{phone}': (ctx.phone ?? '').trim(),
+    '{email}': (ctx.email ?? '').trim(),
+  };
+  return text.replace(/\{(gender|name_full|name_first|name|crm_full|crm_first|crm_last|sale_full|sale|phone|email)\}/g, (m) => repl[m] ?? m);
+}

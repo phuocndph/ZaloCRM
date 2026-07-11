@@ -36,7 +36,7 @@
           <Avatar
             :src="headerAvatarSrc"
             :name="headerName"
-            :size="46"
+            :size="40"
             :gender="contactGender"
             :is-group="conversation.threadType === 'group'"
             :gradient-seed="conversation.id"
@@ -303,6 +303,14 @@
                Function fireWebhook() + state webhookLoading vẫn giữ trong file
                để bật lại sau bằng cách un-comment block button trên. -->
 
+          <!-- Nội dung hội thoại: Tìm / Tin đã ghim / Ảnh · File · Link (Content Library 2026-07-11) -->
+          <button class="icon-btn" title="Tìm trong hội thoại" @click="$emit('open-content-panel', 'search')">
+            <SearchIcon :size="16" :stroke-width="2" />
+          </button>
+          <button class="icon-btn" title="Tin đã ghim / Ảnh · File · Link" @click="$emit('open-content-panel', 'pinned')">
+            <ArchiveIcon :size="16" :stroke-width="2" />
+          </button>
+
           <!-- More dropdown: gộp Lịch sử / Tìm / Note -->
           <v-menu>
             <template #activator="{ props: act }">
@@ -532,6 +540,17 @@
         @refresh="$emit('ask-ai')"
       />
 
+      <!-- Xem trước chuỗi tin nhiều bước — chọn mẫu có ảnh/nhiều bước → hiện ở đây, KHÔNG tự gửi. -->
+      <TemplateComposerPreview
+        v-if="!privateBlocked && showComposerPreview"
+        :conversation-id="conversation.id"
+        :initial-blocks="previewBlocks"
+        :can-send="privacyVisibility.canSendInConv(conversation) && !isArchivedNick"
+        class="composer-preview-wrap"
+        @cancel="onPreviewCancel"
+        @done="onPreviewDone"
+      />
+
       <!-- ════════ Input area: toolbar trên textarea (Smax-style) ════════ -->
       <div v-if="!privateBlocked" class="input-area">
         <!-- Tag bar Friend-cấp (per-pair sale-nick × KH) — chỉ KH chat 1-1.
@@ -591,6 +610,9 @@
           <button class="icon-tool" title="Template tin nhắn (gõ /)" @click="openTemplatePopup">
             <ZapIcon :size="18" :stroke-width="1.5" />
           </button>
+          <button class="icon-tool" :title="inputText.trim() ? 'Lưu nội dung đang gõ thành mẫu / Quản lý mẫu' : 'Quản lý mẫu tin nhắn'" @click="openTemplateManager">
+            <BookmarkPlusIcon :size="18" :stroke-width="1.5" />
+          </button>
           <!-- M14 (2026-06-02) — Chèn Khối "Gửi tin nhắn" từ Automation Blocks vào composer.
                Ẩn ở group thread (memory feedback_crm_filter_1to1_not_group: Block 1-1 only).
                Disable khi composer bị Privacy lock hoặc đang edit message để tránh ghi đè text edit. -->
@@ -635,6 +657,7 @@
               :visible="showTemplatePopup"
               :query="templateQuery"
               :templates="templates"
+              :folders="templateFolders"
               :contact="conversation.contact ? { ...conversation.contact, crmAlias: conversation.friendship?.aliasInNick ?? null } : null"
               :sale-full-name="_authStore.user?.fullName ?? null"
               :anchor-el="editorWrapRef"
@@ -739,6 +762,13 @@
         <!-- 2026-06-12: popover "Chèn ảnh từ Kho" đã GỠ — nút giờ mở tab Media ở cột 4
              (emit 'open-media-tab' → ChatView switch ChatContactPanel sang tab Media). -->
 
+        <!-- Trình quản lý Mẫu tin nhắn (2026-07-11) — CRUD + thư mục + chèn biến + đính kèm. -->
+        <TemplateManagerDialog
+          v-model="showTemplateManager"
+          :initial-content="templateManagerDraft"
+          @saved="reloadTemplates"
+        />
+
         <!-- Hidden file inputs cho upload ảnh / file -->
         <input
           ref="imageInputRef"
@@ -763,6 +793,7 @@
       v-model="showContextMenu"
       :message="contextMsg"
       :is-self="contextMsg?.senderType === 'self'"
+      :is-pinned="!!contextMsg && pinnedSet.has(contextMsg.id)"
       :position="contextPos"
       @reply="onReply"
       @edit="onEdit"
@@ -772,6 +803,8 @@
       @save-media="onSaveToMedia"
       @favorite-media="onFavoriteFromChat"
       @download-media="onDownloadMedia"
+      @pin="onPinMessage"
+      @unpin="onUnpinMessage"
       @copy="() => {}"
     />
 
@@ -922,6 +955,10 @@ import ZaloBrandIcon from '@/components/icons/ZaloBrandIcon.vue';
 import Avatar from '@/components/ui/Avatar.vue';
 import EmojiPicker from '@/components/chat/EmojiPicker.vue';
 import QuickTemplatePopup from '@/components/chat/quick-template-popup.vue';
+import TemplateManagerDialog from '@/components/chat/TemplateManagerDialog.vue';
+import TemplateComposerPreview from '@/components/chat/TemplateComposerPreview.vue';
+import { templateToBlocks, isSimpleTextTemplate, type TemplateBlock } from '@/composables/use-template-blocks';
+import { renderTemplateText, type TemplateVarContext } from '@/constants/template-variables';
 import BlockPreviewDialog from '@ee/automation/chat-blocks/BlockPreviewDialog.vue';
 // M14 (2026-06-02) — Popup chọn "Khối tin nhắn" từ Automation Blocks
 import BlockPickerPopup from '@ee/automation/chat-blocks/BlockPickerPopup.vue';
@@ -997,6 +1034,9 @@ import {
   Flag as FlagIcon,
   Send as SendIcon,
   Download as DownloadIcon,
+  Search as SearchIcon,
+  Archive as ArchiveIcon,
+  BookmarkPlus as BookmarkPlusIcon,
 } from 'lucide-vue-next';
 
 // Reaction detail popup state — anh chốt 2026-05-22: click reaction box → popup
@@ -1049,11 +1089,16 @@ import { useFriendSocket } from '@/composables/use-friend-socket';
 import { groupAvatarStore } from '@/composables/use-group-avatar-cache';
 import { registerPendingTags, clearPendingTags } from '@/composables/use-pending-mutations';
 
+interface TemplateAttachmentItem { kind: 'image' | 'file'; assetId?: string; url: string; name?: string; mime?: string; size?: number; thumb?: string }
 interface TemplateItem {
   id: string; name: string; shortcut?: string | null; content: string; category: string | null; isPersonal: boolean;
   contentRich?: { text: string; styles?: Array<{ st: string; start: number; len: number }> } | null;
+  folderId?: string | null;
   tagIds?: string[];
+  attachments?: TemplateAttachmentItem[];
+  blocks?: unknown;
 }
+interface TemplateFolderItem { id: string; name: string }
 
 const props = defineProps<{
   conversation: Conversation | null;
@@ -1073,7 +1118,11 @@ const props = defineProps<{
    * tin nhắn. Cột 3 chỉ hiện thông báo: KHÔNG có tin nhắn nào trong `messages` để che.
    */
   privateBlocked?: boolean;
+  /** Conversation Content Library 2026-07-11 — id các tin đang được ghim (badge + menu state). */
+  pinnedIds?: string[];
 }>();
+
+const pinnedSet = computed(() => new Set(props.pinnedIds ?? []));
 
 const emit = defineEmits<{
   send: [content: string, replyMessageId?: string | null, styles?: Array<{ st: string; start: number; len: number }>, mentions?: Array<{ uid: string; pos: number; len: number }>];
@@ -1100,6 +1149,10 @@ const emit = defineEmits<{
   // Fix 2026-06-16: dialog xem info Zalo trả avatar/tên mới từ SDK → báo ChatView patch
   // conversation state (header + list cập nhật ngay, không chờ F5).
   'profile-synced': [payload: { uid: string; avatarUrl: string | null; displayName: string | null; gender: number | null }];
+  // Conversation Content Library 2026-07-11 — ghim/bỏ ghim tin + mở panel nội dung hội thoại.
+  'pin-message': [msg: Message];
+  'unpin-message': [msg: Message];
+  'open-content-panel': [tab: string];
 }>();
 
 const toast = useToast();
@@ -2572,6 +2625,27 @@ function onToggleReaction(msg: Message, emoji: string) {
     emit('add-reaction', msg.id, emoji);
   }
 }
+function onPinMessage() { if (contextMsg.value) emit('pin-message', contextMsg.value); }
+function onUnpinMessage() { if (contextMsg.value) emit('unpin-message', contextMsg.value); }
+
+/**
+ * Cuộn tới + highlight 1 tin theo id (Content Library "Xem trong hội thoại"). Dùng chung
+ * cơ chế DOM với jumpToReply. Trả false nếu tin chưa render (cha lo tải context rồi gọi lại).
+ */
+function scrollToMessage(messageId: string): boolean {
+  const el = document.querySelector(`[data-msg-id="${messageId}"]`) as HTMLElement | null;
+  if (!el) return false;
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  const wrap = el.closest('.msg-bubble-wrap, .msg-album-wrap') as HTMLElement | null;
+  if (wrap) {
+    wrap.classList.add('msg-jump-highlight');
+    if (jumpHighlightTimer) clearTimeout(jumpHighlightTimer);
+    jumpHighlightTimer = setTimeout(() => { wrap.classList.remove('msg-jump-highlight'); jumpHighlightTimer = null; }, 2000);
+  }
+  return true;
+}
+defineExpose({ scrollToMessage });
+
 function onReply() { if (contextMsg.value) emit('set-reply-to', contextMsg.value); }
 function onEdit() {
   if (contextMsg.value) {
@@ -2726,14 +2800,43 @@ function onCancelReplyEdit() {
 const showTemplatePopup = ref(false);
 const templateQuery = ref('');
 const templates = ref<TemplateItem[]>([]);
+const templateFolders = ref<TemplateFolderItem[]>([]);
 
 async function loadTemplates() {
   try {
-    const res = await api.get<{ templates: TemplateItem[] }>('/automation/templates');
-    templates.value = res.data.templates;
+    const [t, f] = await Promise.all([
+      api.get<{ templates: TemplateItem[] }>('/automation/templates'),
+      api.get<{ folders: TemplateFolderItem[] }>('/automation/template-folders').catch(() => ({ data: { folders: [] } })),
+    ]);
+    templates.value = t.data.templates;
+    templateFolders.value = f.data.folders ?? [];
   } catch { /* non-critical */ }
 }
 onMounted(() => { loadTemplates(); });
+// Cho phép trình quản lý mẫu (dialog) yêu cầu nạp lại sau khi tạo/sửa/xoá.
+function reloadTemplates() { void loadTemplates(); }
+
+// Trình quản lý mẫu — mở từ toolbar; nếu đang gõ dở thì prefill "Lưu thành mẫu".
+const showTemplateManager = ref(false);
+const templateManagerDraft = ref('');
+function openTemplateManager() {
+  templateManagerDraft.value = inputText.value.trim();
+  showTemplateManager.value = true;
+}
+
+// ── Xem trước chuỗi tin nhiều bước (2026-07-11) — chọn mẫu KHÔNG gửi, mở preview để gửi tuần tự.
+const showComposerPreview = ref(false);
+const previewBlocks = ref<TemplateBlock[]>([]);
+const templateVarCtx = computed<TemplateVarContext>(() => ({
+  fullName: props.conversation?.contact?.fullName ?? null,
+  gender: (props.conversation?.contact as any)?.gender ?? null,
+  crmAlias: props.conversation?.friendship?.aliasInNick ?? null,
+  phone: props.conversation?.contact?.phone ?? null,
+  email: (props.conversation?.contact as any)?.email ?? null,
+  saleFullName: _authStore.user?.fullName ?? null,
+}));
+function onPreviewCancel() { showComposerPreview.value = false; previewBlocks.value = []; }
+function onPreviewDone() { showComposerPreview.value = false; previewBlocks.value = []; }
 
 // Listener cho tab CRM (cột 4) — widget "AI Next Action" → emit insert-suggestion
 // qua window event để giảm prop drilling. Cùng pattern với 'zalo-labels-synced'.
@@ -2816,21 +2919,47 @@ function onComposerNavKey(event: KeyboardEvent): boolean {
 
 // Chèn mẫu: giữ định dạng đậm/màu qua applyRichPayload (biến đã render + re-anchor offset ở popup).
 // Thay nội dung ô bằng (text trước "/") + mẫu. KHÔNG auto-send — sale tự Enter.
-function onTemplateSelect(payload: { text: string; styles?: Array<{ st: string; start: number; len: number }> }, templateId: string) {
-  const pos = slashTriggerPos.value;
-  const before = pos >= 0 ? inputText.value.slice(0, pos) : '';
-  const merged = before + payload.text;
-  // Dịch styles theo độ dài phần "before" (mẫu được nối sau before).
-  const shift = before.length;
-  const mergedStyles = (payload.styles ?? []).map((s) => ({ ...s, start: s.start + shift }));
-  // Nạp vào editor giữ định dạng. applyRichPayload setContent toàn bộ ô.
-  (editorRef.value as any)?.applyRichPayload?.({ text: merged, styles: mergedStyles }, { focus: true });
-  inputText.value = merged;
+function onTemplateSelect(
+  payload: { text: string; styles?: Array<{ st: string; start: number; len: number }> },
+  templateId: string,
+  _attachments: TemplateAttachmentItem[] = [],
+) {
   showTemplatePopup.value = false;
   slashTriggerPos.value = -1;
   templateQuery.value = '';
   // Track use (non-blocking)
   api.post(`/automation/templates/${templateId}/track-use`).catch(() => {});
+
+  // Dựng danh sách BLOCK từ mẫu (tương thích ngược: content+attachments → text + image_album).
+  const tpl = templates.value.find((t) => t.id === templateId);
+  const blocks = templateToBlocks({
+    content: tpl?.content ?? payload.text,
+    contentRich: tpl?.contentRich ?? { text: payload.text, styles: payload.styles },
+    attachments: (tpl?.attachments ?? []) as any,
+    blocks: (tpl as any)?.blocks,
+  });
+
+  // ── SỬA LỖI GỐC (2026-07-11): CHỌN MẪU KHÔNG GỬI GÌ ──────────────────────────
+  // Mẫu ĐƠN GIẢN (đúng 1 block text, không đính kèm) → chèn thẳng ô soạn (text không tự
+  // gửi, sale bấm Gửi như thường). Mẫu có ẢNH/FILE hoặc NHIỀU BƯỚC → mở PREVIEW để xem/
+  // sửa/sắp xếp rồi mới "Gửi toàn bộ". TUYỆT ĐỐI không gọi API gửi lúc chọn mẫu.
+  if (isSimpleTextTemplate(blocks)) {
+    const pos = slashTriggerPos.value;
+    const before = pos >= 0 ? inputText.value.slice(0, pos) : '';
+    const merged = before + payload.text;
+    const shift = before.length;
+    const mergedStyles = (payload.styles ?? []).map((s) => ({ ...s, start: s.start + shift }));
+    (editorRef.value as any)?.applyRichPayload?.({ text: merged, styles: mergedStyles }, { focus: true });
+    inputText.value = merged;
+    return;
+  }
+
+  // Render biến cá nhân hoá cho từng block text (plain — preview sửa dạng text thường).
+  for (const b of blocks) {
+    if (b.type === 'text' && b.content) b.content = renderTemplateText(b.content, templateVarCtx.value);
+  }
+  previewBlocks.value = blocks;
+  showComposerPreview.value = true;
 }
 
 // ── M14 (2026-06-02): Chèn Khối tin nhắn (Automation Blocks) vào composer ──
@@ -3019,7 +3148,7 @@ watch(() => props.editingMessage?.id, async (id) => {
 .message-thread {
   display: flex; flex-direction: column;
   height: 100%;
-  background: var(--smax-grey-100);
+  background: var(--chat-page-bg, #f0f2f5);
   overflow: hidden;
   position: relative;
 }
@@ -3196,9 +3325,10 @@ watch(() => props.editingMessage?.id, async (id) => {
 .chat-header {
   position: relative;
   background: var(--smax-bg);
-  padding: 10px 17px;
+  padding: 7px 16px;
   border-bottom: 1px solid var(--smax-grey-200);
-  display: flex; align-items: flex-start; gap: 13px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+  display: flex; align-items: flex-start; gap: 11px;
   flex-shrink: 0;
 }
 .chat-header > .ch-avatar-wrap { align-self: center; }
@@ -3271,6 +3401,12 @@ watch(() => props.editingMessage?.id, async (id) => {
   .ch-row-2 :deep(.nick-avatar-lock) { display: none; }
   .nick-name { max-width: 100px; }
   .btn-action { padding: 5px 7px; }
+}
+/* Responsive PWA/mobile — nén padding vùng tin + header cho màn hẹp. */
+@media (max-width: 640px) {
+  .messages { padding: 10px 12px; }
+  .chat-header { padding: 6px 10px; gap: 9px; }
+  .input-area { padding: 6px 9px 8px; }
 }
 
 /* Row 1: Tên KH + Gender icon — luôn 1 dòng */
@@ -3778,20 +3914,33 @@ watch(() => props.editingMessage?.id, async (id) => {
      từ msg content (URL dài, code block) cũng KHÔNG được scroll ngang.
      Chat UI must NEVER scroll horizontally (anh chốt). */
   overflow-x: hidden;
-  padding: 14px 26px;
-  /* Gap nền nhỏ (trong cụm ~4px). Khoảng giữa các cụm do .group-end lo. */
-  display: flex; flex-direction: column; gap: 4px;
+  padding: 12px 24px;
+  /* Nhịp spacing đồng đều: trong cụm 3px, giữa cụm do .group-end lo (tổng ~11px).
+     Hiển thị nhiều tin hơn/màn nhưng vẫn thoáng, đều. */
+  display: flex; flex-direction: column; gap: 3px;
+  scroll-behavior: smooth;
 }
+/* Scrollbar mảnh, tông xám nhạt — bớt thô so với mặc định. */
+.messages::-webkit-scrollbar { width: 9px; }
+.messages::-webkit-scrollbar-thumb {
+  background: rgba(15, 23, 42, 0.14);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+.messages::-webkit-scrollbar-thumb:hover { background: rgba(15, 23, 42, 0.24); background-clip: content-box; }
 /* Tin CUỐI mỗi cụm chừa thêm khoảng cách → tách cụm rõ (~11px tổng). */
-.msg-bubble-wrap.group-end { margin-bottom: 7px; }
+.msg-bubble-wrap.group-end { margin-bottom: 8px; }
 .msg-divider {
   align-self: center;
-  margin: 10px 0 6px;
-  padding: 2px 12px;
+  display: flex; align-items: center;
+  margin: 12px 0 8px;
+  padding: 2px 10px;
   border-radius: 999px;
-  background: rgba(15, 23, 42, 0.05);
-  color: var(--smax-grey-700);
+  background: transparent;
+  color: var(--chat-meta, #6b7688);
   font-size: 11px; font-weight: 500;
+  letter-spacing: 0.2px;
 }
 /* E07 Image lightbox — anh chốt 2026-05-21: nút ‹ › + arrow keys, KHÔNG loop. */
 .lightbox-wrap {
@@ -3835,8 +3984,8 @@ watch(() => props.editingMessage?.id, async (id) => {
 .msg-divider::before,
 .msg-divider::after {
   content: ''; display: inline-block;
-  width: 60px; height: 1px;
-  background: var(--smax-grey-300);
+  width: 44px; height: 1px;
+  background: var(--chat-divider, rgba(15, 23, 42, 0.06));
   vertical-align: middle; margin: 0 9px;
 }
 
@@ -3960,6 +4109,7 @@ watch(() => props.editingMessage?.id, async (id) => {
   flex: 1 1 auto;
   min-height: 0;
 }
+.composer-preview-wrap { margin: 0 13px 6px; flex-shrink: 0; }
 .input-toolbar-top {
   display: flex;
   align-items: center;
@@ -4068,7 +4218,7 @@ watch(() => props.editingMessage?.id, async (id) => {
 }
 
 .send-btn {
-  background: var(--smax-primary);
+  background: linear-gradient(135deg, var(--smax-primary, #1786be), var(--smax-primary-hover, #0f6fa0));
   color: white;
   width: 40px; height: 40px;
   border-radius: 50%;
@@ -4077,9 +4227,14 @@ watch(() => props.editingMessage?.id, async (id) => {
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
   margin-bottom: 1px;
+  box-shadow: 0 2px 6px rgba(23, 134, 190, 0.28);
+  transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease;
 }
-.send-btn:hover:not(:disabled) { background: var(--smax-primary-hover); }
-.send-btn:disabled { opacity: 0.4; cursor: not-allowed; background: var(--smax-grey-300); }
+.send-btn:hover:not(:disabled) { transform: scale(1.06); box-shadow: 0 3px 10px rgba(23, 134, 190, 0.36); }
+.send-btn:active:not(:disabled) { transform: scale(0.96); }
+.send-btn:focus-visible { outline: 2px solid var(--smax-primary-soft, #bbdefb); outline-offset: 2px; }
+/* Rỗng nội dung → nút chìm (phẳng, xám); có nội dung → nút nổi gradient. */
+.send-btn:disabled { opacity: 1; cursor: not-allowed; background: var(--smax-grey-300); box-shadow: none; }
 
 /* EmojiPicker trigger — emoji icon next to send button */
 .input-row :deep(.emoji-trigger) {

@@ -78,7 +78,15 @@
     </div>
 
     <!-- ════════ Conv items ════════ -->
-    <div ref="scrollContainer" class="conv-scroll">
+    <div
+      ref="scrollContainer"
+      class="conv-scroll"
+      tabindex="0"
+      role="listbox"
+      aria-label="Danh sách hội thoại"
+      @keydown.down.prevent="moveSelection(1)"
+      @keydown.up.prevent="moveSelection(-1)"
+    >
       <div v-if="loading && conversations.length === 0" class="loading">Đang tải…</div>
 
       <!-- Phase A perf fix v2 (2026-05-21) — Re-thêm TransitionGroup nhưng với
@@ -87,13 +95,17 @@
            Trong cùng tab, key giữ nguyên → reorder (tin mới đến) animate mượt. -->
       <TransitionGroup :key="activeTabKey || 'default'" name="conv-list" tag="div" class="conv-list-inner">
       <div
-        v-for="conv in conversations"
+        v-for="conv in displayConversations"
         :key="conv.id"
         :ref="(el) => registerRow(conv.id, el as HTMLElement | null)"
         class="conv-item"
+        role="option"
+        :aria-selected="conv.id === selectedId"
+        :title="displayName(conv)"
         :class="{
           active: conv.id === selectedId,
-          unread: conv.unreadCount > 0 && conv.id !== selectedId,
+          unread: (conv.unreadCount > 0 || isManualUnreadConv(conv)) && conv.id !== selectedId,
+          'is-personal-pinned': isPersonalPinnedConv(conv),
           'is-group': conv.threadType === 'group',
           'is-virtual': conv.isVirtual,
         }"
@@ -104,13 +116,13 @@
           <Avatar
             :src="avatarSrcOf(conv)"
             :name="displayName(conv)"
-            :size="41"
+            :size="44"
             :is-group="conv.threadType === 'group'"
             :platform="conv.threadType === 'user' ? 'zalo' : null"
             :gradient-seed="conv.id"
           />
-          <!-- Mini nick avatar — góc dưới-trái cho biết conv thuộc nick Zalo nào.
-               Anh chốt 2026-05-28: tránh phải click vào conv mới biết nick. -->
+          <!-- Nhiều nick Zalo → badge nhỏ góc dưới-phải cho biết conv thuộc nick nào.
+               KHÔNG che avatar (yêu cầu). -->
           <img
             v-if="conv.zaloAccount?.avatarUrl"
             :src="conv.zaloAccount.avatarUrl"
@@ -123,108 +135,122 @@
             class="ci-nick-mini ci-nick-mini--initial"
             :title="`Nick: ${conv.zaloAccount.displayName}`"
           >{{ (conv.zaloAccount.displayName || '?').charAt(0).toUpperCase() }}</span>
-
-          <!-- M55 2026-05-30: Badge cùng chăm — góc trên-phải avatar KH.
-               Chỉ hiện khi có >=2 sale chăm KH này (avoid noise khi chỉ 1 sale).
-               Tooltip = list collaborators. Click conv để vào panel chi tiết. -->
-          <span
-            v-if="cungChamCount(conv) >= 2"
-            class="ci-cung-cham-badge"
-            :title="cungChamTooltip(conv)"
-          >🤝 {{ cungChamCount(conv) }}</span>
         </div>
 
-
         <div class="ci-body">
-          <div class="ci-name-row">
+          <!-- ── Hàng 1: Tên + priority + private · giờ + badge chưa đọc ── -->
+          <div class="ci-row ci-row-top">
             <div class="ci-name">
-              <span v-if="conv.threadType === 'group'" class="group-icon">👥</span>
-              <span v-if="conv.isVirtual" class="virtual-chip" title="Chat nội bộ — KH chưa có Zalo, tin nhắn KHÔNG gửi đi">🔒</span>
-              {{ displayName(conv) }}
-              <!-- Theo dõi (anh chốt 2026-06-15): khách đang trong "theo dõi" → chuông ngay sau tên.
-                   Icon hệ thống mdi (đồng bộ), không emoji. -->
+              <v-icon
+                v-if="isPersonalPinnedConv(conv)"
+                size="12"
+                class="ci-icon ci-pin"
+                title="Đã ghim (cá nhân)"
+              >mdi-pin</v-icon>
+              <span v-if="conv.threadType === 'group'" class="ci-icon ci-group" title="Nhóm">👥</span>
+              <span class="ci-name-text">{{ displayName(conv) }}</span>
+              <!-- Priority tinh tế cạnh tên -->
+              <span v-if="priorityFlags(conv).hot" class="ci-icon ci-hot" title="Khách HOT">🔥</span>
+              <span v-if="priorityFlags(conv).vip" class="ci-icon ci-vip" title="Khách VIP">⭐</span>
+              <v-icon
+                v-if="conv.isVirtual"
+                size="12" class="ci-icon ci-virtual"
+                title="Chat nội bộ — KH chưa có Zalo, tin nhắn KHÔNG gửi đi"
+              >mdi-note-text-outline</v-icon>
               <v-icon
                 v-if="isFollowingConv(conv)"
-                size="13"
-                class="ci-follow-bell"
+                size="12" class="ci-icon ci-follow"
                 title="Đang theo dõi khách hàng này"
               >mdi-bell-ring-outline</v-icon>
-              <!-- Riêng tư cấp hội thoại 2026-07-09 — ổ khóa cho biết hội thoại đang bị khóa
-                   riêng. Người ngoài vẫn thấy ổ khóa (để biết hỏi ai), nhưng không thấy nội dung. -->
               <v-icon
                 v-if="conv.isPrivate"
-                size="13"
-                class="ci-private-lock"
+                size="12" class="ci-icon ci-lock"
                 :title="isPrivacyOwnerOf(conv) ? 'Chỉ mình tôi xem' : CONVERSATION_PRIVATE_MESSAGE"
               >mdi-lock-outline</v-icon>
             </div>
-            <div class="ci-meta-right">
-              <div class="ci-time"><ConvTime :at="conv.lastMessageAt" /></div>
-              <div
+            <div class="ci-top-right">
+              <span class="ci-time"><ConvTime :at="conv.lastMessageAt" /></span>
+              <span
                 v-if="conv.unreadCount > 0 && conv.id !== selectedId"
-                class="ci-unread-count"
-              >{{ conv.unreadCount > 5 ? '5+' : conv.unreadCount }}</div>
+                class="ci-unread"
+              >{{ conv.unreadCount > 5 ? '5+' : conv.unreadCount }}</span>
+              <span
+                v-else-if="isManualUnreadConv(conv) && conv.id !== selectedId"
+                class="ci-unread-dot"
+                title="Đã đánh dấu chưa đọc"
+              ></span>
             </div>
           </div>
 
-          <div class="ci-preview" :class="`tone-${lastMessagePreviewTone(conv) ?? 'normal'}`">
-            <!-- Hội thoại riêng tư của NGƯỜI KHÁC: BE không gửi nội dung về (yêu cầu 3 "ẩn
-                 hoàn toàn"), nên KHÔNG blur bản mờ — hiện thẳng câu thông báo (yêu cầu 4). -->
-            <span v-if="conv.conversationPrivate" class="ci-preview-private">{{ CONVERSATION_PRIVATE_MESSAGE }}</span>
-            <!-- Privacy: click blur preview KHÔNG redirect (tránh nhầm khi click chuyển hội thoại).
-                 Blur thuần visual, không bắt event riêng. -->
-            <PrivateBlur v-else-if="privacyVisibility.shouldBlurConv(conv)" :redacted="true" mode="inline" />
-            <template v-else>{{ lastMessagePreview(conv) }}</template>
+          <!-- ── Hàng 2 (metadata "ai"): phụ trách + người trả lời cuối · chip ── -->
+          <div v-if="assigneeName(conv) || lastReplierLabel(conv) || displayTags(conv).length" class="ci-row ci-row-meta">
+            <div class="ci-who">
+              <!-- NGƯỜI PHỤ TRÁCH — chủ sở hữu KH (khác người trả lời) -->
+              <span
+                v-if="assigneeName(conv)"
+                class="ci-owner"
+                :title="cungChamCount(conv) >= 2 ? cungChamTooltip(conv) : `Phụ trách: ${assigneeName(conv)}`"
+              >
+                <v-icon size="11" class="ci-who-ic">mdi-account-outline</v-icon>Phụ trách: <b>{{ shortName(assigneeName(conv)) }}</b><span v-if="cungChamCount(conv) >= 2" class="ci-owner-more"> +{{ cungChamCount(conv) - 1 }}</span>
+              </span>
+              <!-- NGƯỜI TRẢ LỜI CUỐI — ai vừa xử lý KH -->
+              <span
+                v-if="lastReplierLabel(conv)"
+                class="ci-replier"
+                :class="lastReplierLabel(conv)!.cls"
+                :title="`Người trả lời cuối: ${lastReplierLabel(conv)!.name}`"
+              >
+                <v-icon size="11" class="ci-who-ic">{{ lastReplierLabel(conv)!.mdi }}</v-icon>{{ lastReplierLabel(conv)!.name }}
+              </span>
+            </div>
+            <div class="ci-chips">
+              <span
+                v-for="tag in displayTags(conv).slice(0, 2)"
+                :key="tag.key"
+                class="ci-chip"
+                :class="{ 'is-zalo': tag.isZalo }"
+                :style="{ '--chip-color': tag.color }"
+                :title="tag.name"
+              >
+                <ZaloBrandIcon v-if="tag.isZalo" :size="10" /><span v-else-if="tag.emoji" class="ci-chip-emoji">{{ tag.emoji }}</span><span class="ci-chip-text">{{ tag.name }}</span>
+              </span>
+            </div>
           </div>
 
-          <!-- Tag row luôn render (kể cả rỗng) để giữ layout cố định.
-               Merge Contact.tags + Friend.crmTagsPerNick (Zalo-mirrored 🔵 X).
-               Show 3 tag đầu + "+N" chip click xem rest qua v-menu. -->
-          <div class="ci-tag-row">
-            <span
-              v-for="tag in displayTags(conv).slice(0, 3)"
-              :key="tag.key"
-              class="tag-mini"
-              :class="{ 'tag-zalo': tag.isZalo, 'tag-crm': !tag.isZalo, 'tag-auto': tag.isAuto }"
-              :style="{ '--tag-color': tag.color }"
-            >
-              <ZaloBrandIcon v-if="tag.isZalo" :size="11" /><span v-else-if="tag.emoji" class="tag-mini-emoji">{{ tag.emoji }}</span>{{ tag.name }}
-            </span>
-
-            <v-menu
-              v-if="displayTags(conv).length > 3"
-              :close-on-content-click="false"
-              location="top start"
-              open-on-hover
-            >
-              <template #activator="{ props: actProps }">
-                <span
-                  v-bind="actProps"
-                  class="tag-overflow"
-                  :title="`Còn ${displayTags(conv).length - 3} tag khác`"
-                  @click.stop
-                >+{{ displayTags(conv).length - 3 }}</span>
+          <!-- ── Hàng 3: NỘI DUNG tin cuối — nổi bật, full-width (thứ cần đọc nhất) ── -->
+          <div class="ci-row ci-row-content">
+            <div class="ci-preview" :class="`tone-${lastMessagePreviewTone(conv) ?? 'normal'}`">
+              <template v-if="conv.conversationPrivate">
+                <span class="ci-preview-private">{{ CONVERSATION_PRIVATE_MESSAGE }}</span>
               </template>
-              <div class="tag-overflow-popup">
-                <span
-                  v-for="tag in displayTags(conv).slice(3)"
-                  :key="tag.key"
-                  class="tag-popup-pill"
-                  :class="{ 'tag-zalo': tag.isZalo, 'tag-crm': !tag.isZalo, 'tag-auto': tag.isAuto }"
-                  :style="{ '--tag-color': tag.color }"
-                >
-                  <ZaloBrandIcon v-if="tag.isZalo" :size="11" /><span v-else-if="tag.emoji" class="tag-mini-emoji">{{ tag.emoji }}</span>{{ tag.name }}
-                </span>
-              </div>
-            </v-menu>
-
-            <span v-if="friendshipStatus(conv)" :class="['status-pill', friendshipPillClass(conv)]">
-              {{ friendshipStatus(conv) }}
-            </span>
+              <template v-else-if="privacyVisibility.shouldBlurConv(conv)">
+                <PrivateBlur :redacted="true" mode="inline" />
+              </template>
+              <template v-else>{{ lastMessagePreview(conv) }}</template>
+            </div>
           </div>
         </div>
 
-        <AiSentimentBadge v-if="parseSentiment(conv)" :sentiment="parseSentiment(conv)" class="sentiment" />
+        <!-- Quick-action: chỉ hiện khi hover (yêu cầu). Đè lên vùng phải. -->
+        <div class="ci-actions" @click.stop>
+          <button
+            class="ci-act"
+            :class="{ 'is-on': isPersonalPinnedConv(conv) }"
+            :title="isPersonalPinnedConv(conv) ? 'Bỏ ghim' : 'Ghim'"
+            @click="quickTogglePin(conv)"
+          ><v-icon size="16">{{ isPersonalPinnedConv(conv) ? 'mdi-pin-off-outline' : 'mdi-pin-outline' }}</v-icon></button>
+          <button
+            class="ci-act"
+            :class="{ 'is-on': isManualUnreadConv(conv) }"
+            :title="isManualUnreadConv(conv) ? 'Đánh dấu đã đọc' : 'Đánh dấu chưa đọc'"
+            @click="quickToggleUnread(conv)"
+          ><v-icon size="16">{{ isManualUnreadConv(conv) ? 'mdi-email-open-outline' : 'mdi-email-outline' }}</v-icon></button>
+          <button
+            class="ci-act"
+            title="Thao tác khác"
+            @click="openContextMenu($event, conv)"
+          ><v-icon size="16">mdi-dots-vertical</v-icon></button>
+        </div>
       </div>
       </TransitionGroup>
 
@@ -244,10 +270,15 @@
       :is-private="contextMenu.isPrivate"
       :is-privacy-owner="contextMenu.isPrivacyOwner"
       :privacy-busy="contextMenu.privacyBusy"
+      :is-personal-pinned="contextMenu.isPersonalPinned"
+      :is-manual-unread="contextMenu.isManualUnread"
+      :state-busy="contextMenu.stateBusy"
       @move-other="moveConversation(contextMenu.convId, 'other')"
       @move-main="moveConversation(contextMenu.convId, 'main')"
       @toggle-follow="toggleFollowFromMenu"
       @toggle-privacy="togglePrivacyFromMenu"
+      @toggle-personal-pin="togglePersonalPinFromMenu"
+      @toggle-manual-unread="toggleManualUnreadFromMenu"
       @delete="askDeleteConversation"
     />
 
@@ -288,11 +319,10 @@
 
 <script setup lang="ts">
 import { ref, reactive, watch, onMounted, computed, nextTick } from 'vue';
-import type { Conversation, AiSentiment } from '@/composables/use-chat';
+import type { Conversation } from '@/composables/use-chat';
 import { api } from '@/api/index';
 // Icon chrome — Lucide line (anh chốt 2026-06-08, bỏ ký tự thô).
 import { ChevronUp as ChevronUpIcon, X as XIcon } from 'lucide-vue-next';
-import AiSentimentBadge from '@/components/ai/ai-sentiment-badge.vue';
 import Avatar from '@/components/ui/Avatar.vue';
 import NewMessageDialog from '@/components/chat/NewMessageDialog.vue';
 import ConversationContextMenu from '@/components/chat/conversation-context-menu.vue';
@@ -312,6 +342,8 @@ import {
   disableConversationPrivacy,
   type ConversationPrivacyStatus,
 } from '@/composables/use-conversation-privacy';
+import { setPersonalPin, setManualUnread } from '@/composables/use-conversation-state';
+import type { ConversationUserStateView } from '@/composables/use-chat';
 
 const privacyVisibility = usePrivacyVisibility();
 const auth = useAuthStore();
@@ -452,6 +484,8 @@ const contextMenu = reactive({
   contactId: '', nickId: '', isFollowing: false, followBusy: false,
   // 2026-07-09 — item "Chỉ mình tôi xem" (riêng tư cấp hội thoại).
   isPrivate: false, isPrivacyOwner: false, privacyBusy: false,
+  // 2026-07-10 — Conversation State: ghim cá nhân + đánh dấu chưa đọc thủ công.
+  isPersonalPinned: false, isManualUnread: false, stateBusy: false,
 });
 
 // Hộp xác nhận xóa hội thoại
@@ -667,16 +701,73 @@ function avatarSrcOf(conv: Conversation): string | null {
   return conv.contact?.avatarUrl || null;
 }
 
-function friendshipStatus(conv: Conversation): string | null {
-  // Best-effort heuristic until we expose friendshipKind on conversation payload.
-  // Mockup chip values: ✓ Bạn bè / 📤 Đã gửi mời / 💬 Đang nhắn (lạ).
-  if (!conv.contact?.zaloUid) return null;
-  // Treat groups as no chip
-  if (conv.threadType === 'group') return null;
+// ── Redesign cột 2 (2026-07-11) — Hàng 2: người trả lời cuối + phụ trách + priority ──
+
+/**
+ * Nhãn NGƯỜI TRẢ LỜI CUỐI cho Hàng 2 (yêu cầu bắt buộc, CRM nhiều nhân viên).
+ *   • Khách gửi cuối (inbound) → null → Hàng 2 chỉ hiện nội dung.
+ *   • Nhân viên/AI/Bot gửi cuối → { icon, name } đứng trước nội dung.
+ * Nguồn: message.metadata.sender {kind,name} (đã lưu sẵn khi gửi) + repliedBy fallback.
+ */
+/**
+ * Rút gọn tên đầy đủ → tên gọi ngắn (không IN HOA). "NGUYEN DUC PHUOC" → "Phuoc",
+ * "Nguyễn Đức Phước" → "Phước". Lấy từ cuối (tên riêng kiểu VN); nếu quá ngắn lấy 2 từ.
+ */
+function shortName(full: string | null | undefined): string {
+  const s = (full || '').trim();
+  if (!s) return '';
+  const parts = s.split(/\s+/);
+  const tc = (w: string) => (w.length <= 1 ? w.toUpperCase() : w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+  const last = parts[parts.length - 1];
+  if (last.length <= 2 && parts.length >= 2) return `${tc(parts[parts.length - 2])} ${tc(last)}`;
+  return tc(last);
+}
+
+/**
+ * NGƯỜI TRẢ LỜI CUỐI (Hàng 2). Khách gửi cuối → null (Hàng nội dung tự đủ nghĩa).
+ * NV/AI/Bot gửi cuối → { name ngắn, icon mdi, cls }. Màu TRUNG TÍNH (không xanh chói).
+ */
+function lastReplierLabel(conv: Conversation): { name: string; mdi: string; cls: string } | null {
+  const msg = conv.messages?.[0];
+  if (!msg || msg.senderType !== 'self') return null;
+  const sender = (msg as { metadata?: { sender?: { kind?: string; name?: string } } }).metadata?.sender;
+  const kind = sender?.kind;
+  if (kind === 'bot_ai') return { name: 'AI', mdi: 'mdi-robot-outline', cls: 'is-bot' };
+  if (kind === 'bot_automation' || kind === 'bot_system') return { name: 'Bot', mdi: 'mdi-robot-outline', cls: 'is-bot' };
+  const raw = sender?.name || (msg as { repliedBy?: { fullName?: string | null } }).repliedBy?.fullName || '';
+  return { name: shortName(raw) || 'NV', mdi: 'mdi-message-reply-text-outline', cls: 'is-staff' };
+}
+
+/**
+ * Tên NGƯỜI PHỤ TRÁCH (owner chính) — suy từ dữ liệu đã có: contact.assignedUserId khớp
+ * trong contactAccess, hoặc role 'primary'. Không có API mới. null nếu không xác định.
+ */
+function assigneeName(conv: Conversation): string | null {
+  const c = conv.contact as {
+    assignedUserId?: string | null;
+    contactAccess?: Array<{ role: string; user: { id: string; fullName: string | null; email: string | null } | null }>;
+  } | null | undefined;
+  if (!c) return null;
+  const list = c.contactAccess ?? [];
+  if (c.assignedUserId) {
+    const hit = list.find((a) => a.user?.id === c.assignedUserId);
+    if (hit?.user) return hit.user.fullName || hit.user.email || null;
+  }
+  const primary = list.find((a) => a.role === 'primary');
+  if (primary?.user) return primary.user.fullName || primary.user.email || null;
   return null;
 }
-function friendshipPillClass(_conv: Conversation): string {
-  return 'pill-success';
+
+/** Cờ ưu tiên VIP / HOT — suy từ tag (tên chứa 'vip'/'hot'). Icon nhỏ cạnh tên. */
+function priorityFlags(conv: Conversation): { vip: boolean; hot: boolean } {
+  let vip = false, hot = false;
+  for (const t of displayTags(conv)) {
+    const n = (t.name || '').toLowerCase();
+    if (!vip && n.includes('vip')) vip = true;
+    if (!hot && (n.includes('hot') || n.includes('nóng'))) hot = true;
+    if (vip && hot) break;
+  }
+  return { vip, hot };
 }
 
 /**
@@ -685,6 +776,47 @@ function friendshipPillClass(_conv: Conversation): string {
  */
 function isPrivacyOwnerOf(conv: Conversation): boolean {
   return conv.isPrivate === true && !!auth.user?.id && conv.privateOwnerUserId === auth.user.id;
+}
+
+// ── Conversation State (per-user) 2026-07-10 ─────────────────────────────────
+function isPersonalPinnedConv(conv: Conversation): boolean {
+  return conv.userState?.isPinned === true;
+}
+function isManualUnreadConv(conv: Conversation): boolean {
+  return conv.userState?.isManualUnread === true;
+}
+
+/**
+ * Danh sách hiển thị: HỘI THOẠI GHIM CÁ NHÂN lên đầu (sort theo pinnedAt mới→cũ), phần
+ * còn lại giữ nguyên thứ tự BE trả (recent / unread-first). Ghim thường ít nên sort ở FE
+ * là đủ; đây cũng là cách list vốn hoạt động (BE không sort ghim). Không mutate props.
+ */
+const displayConversations = computed(() => {
+  const pinned: Conversation[] = [];
+  const rest: Conversation[] = [];
+  for (const c of props.conversations) {
+    (isPersonalPinnedConv(c) ? pinned : rest).push(c);
+  }
+  pinned.sort((a, b) => {
+    const ta = a.userState?.pinnedAt ? Date.parse(a.userState.pinnedAt) : 0;
+    const tb = b.userState?.pinnedAt ? Date.parse(b.userState.pinnedAt) : 0;
+    return tb - ta;
+  });
+  return [...pinned, ...rest];
+});
+
+/** Keyboard nav (↑/↓) — chuyển chọn hội thoại kế tiếp/trước trong danh sách hiển thị. */
+function moveSelection(delta: number) {
+  const list = displayConversations.value;
+  if (!list.length) return;
+  const cur = list.findIndex((c) => c.id === props.selectedId);
+  let next = cur < 0 ? (delta > 0 ? 0 : list.length - 1) : cur + delta;
+  next = Math.max(0, Math.min(list.length - 1, next));
+  const target = list[next];
+  if (target && target.id !== props.selectedId) {
+    emit('select', target.id);
+    nextTick(() => rowRefs.get(target.id)?.scrollIntoView({ block: 'nearest' }));
+  }
 }
 
 // ── Context menu ───────────────────────────────────────────────────────────
@@ -699,9 +831,78 @@ function openContextMenu(event: MouseEvent, conv: Conversation) {
   contextMenu.isPrivate = conv.isPrivate === true;
   contextMenu.isPrivacyOwner = isPrivacyOwnerOf(conv);
   contextMenu.privacyBusy = false;
+  contextMenu.isPersonalPinned = isPersonalPinnedConv(conv);
+  contextMenu.isManualUnread = isManualUnreadConv(conv);
+  contextMenu.stateBusy = false;
   contextMenu.show = true;
   // Lấy trạng thái theo dõi hiện tại (nếu đủ contact+nick) để hiện đúng nhãn.
   void fetchListenStatusForMenu();
+}
+
+/**
+ * Cập nhật userState của 1 conv IN-PLACE (optimistic sau khi API trả về). Socket
+ * 'conversation:state' cũng echo lại value này (idempotent) — đồng bộ tab khác.
+ */
+function applyStateToConv(convId: string, state: ConversationUserStateView) {
+  const conv = props.conversations.find((c) => c.id === convId);
+  if (conv) conv.userState = state;
+}
+
+// ── Quick-action khi hover (2026-07-11) — thao tác trực tiếp trên 1 conv, không mở menu ──
+const quickBusy = ref<Set<string>>(new Set());
+async function quickTogglePin(conv: Conversation) {
+  if (quickBusy.value.has(conv.id)) return;
+  quickBusy.value.add(conv.id);
+  try {
+    applyStateToConv(conv.id, await setPersonalPin(conv.id, !isPersonalPinnedConv(conv)));
+  } catch (err: any) {
+    window.alert(err?.response?.data?.error ?? 'Không đổi được ghim, thử lại sau.');
+  } finally {
+    quickBusy.value.delete(conv.id);
+  }
+}
+async function quickToggleUnread(conv: Conversation) {
+  if (quickBusy.value.has(conv.id)) return;
+  quickBusy.value.add(conv.id);
+  try {
+    applyStateToConv(conv.id, await setManualUnread(conv.id, !isManualUnreadConv(conv)));
+  } catch (err: any) {
+    window.alert(err?.response?.data?.error ?? 'Không đổi được đánh dấu, thử lại sau.');
+  } finally {
+    quickBusy.value.delete(conv.id);
+  }
+}
+
+/** Ghim / bỏ ghim CÁ NHÂN (khác ghim Zalo). BE là nguồn sự thật. */
+async function togglePersonalPinFromMenu() {
+  if (contextMenu.stateBusy || !contextMenu.convId) return;
+  const convId = contextMenu.convId;
+  const next = !contextMenu.isPersonalPinned;
+  contextMenu.stateBusy = true;
+  try {
+    const state = await setPersonalPin(convId, next);
+    applyStateToConv(convId, state);
+  } catch (err: any) {
+    window.alert(err?.response?.data?.error ?? 'Không đổi được ghim, thử lại sau.');
+  } finally {
+    contextMenu.stateBusy = false;
+  }
+}
+
+/** Đánh dấu / bỏ đánh dấu CHƯA ĐỌC thủ công. Không đụng chưa đọc thật. */
+async function toggleManualUnreadFromMenu() {
+  if (contextMenu.stateBusy || !contextMenu.convId) return;
+  const convId = contextMenu.convId;
+  const next = !contextMenu.isManualUnread;
+  contextMenu.stateBusy = true;
+  try {
+    const state = await setManualUnread(convId, next);
+    applyStateToConv(convId, state);
+  } catch (err: any) {
+    window.alert(err?.response?.data?.error ?? 'Không đổi được đánh dấu, thử lại sau.');
+  } finally {
+    contextMenu.stateBusy = false;
+  }
 }
 
 /**
@@ -942,7 +1143,9 @@ function computeLastMessagePreview(conv: Conversation): PreviewResult {
   // E04 Tin thu hồi — anh chốt icon 🔂 (proposal 2026-05-21), tone muted
   if (msg.isDeleted) return { text: '🔂 Tin nhắn đã thu hồi', tone: 'muted' };
 
-  const prefix = msg.senderType === 'self' ? 'Bạn: ' : '';
+  // 2026-07-11 redesign: BỎ prefix "Bạn:" — CRM nhiều nhân viên, Hàng 2 hiện NHÃN người
+  // trả lời cuối riêng (👤 Phước / 🤖 AI / 🤖 Bot) qua lastReplierLabel(). Preview chỉ còn nội dung.
+  const prefix = '';
   const isInbound = msg.senderType !== 'self';
 
   // Parse JSON content (nếu có) để extract title / action
@@ -1081,16 +1284,6 @@ function safeParseLocal(s: string): Record<string, unknown> | null {
 }
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n) + '…' : s;
-}
-
-function parseSentiment(conv: Conversation): AiSentiment | null {
-  const raw = (conv.contact as { metadata?: { aiSentiment?: AiSentiment | string } } | null)?.metadata?.aiSentiment;
-  if (!raw) return null;
-  try {
-    return typeof raw === 'string' ? JSON.parse(raw) : raw;
-  } catch {
-    return null;
-  }
 }
 
 // formatTime đã chuyển sang composable use-relative-time (formatConvTime) + render
@@ -1299,20 +1492,37 @@ function parseSentiment(conv: Conversation): AiSentiment | null {
   color: var(--smax-grey-700); font-size: 12px; font-style: italic;
 }
 
+/* ══════════════════════════════════════════════════════════════════════════
+   CONVERSATION LIST — DESIGN SYSTEM (redesign 2026-07-11)
+   Token dùng lại toàn hệ thống. Bảng màu Zalo: trắng · xanh rất nhạt · xám nhẹ.
+   ══════════════════════════════════════════════════════════════════════════ */
+.conv-list {
+  --cl-accent: #0068ff;            /* xanh Zalo — accent DUY NHẤT */
+  --cl-accent-soft: #e8f2ff;       /* nền chọn/hover xanh rất nhạt */
+  --cl-ink: #1c2733;               /* tên khách — đậm nhất (cấp 1) */
+  --cl-ink-content: #3d4a5c;       /* NỘI DUNG tin cuối — đậm, nổi bật (cấp 2) */
+  --cl-ink-2: #55657a;             /* phụ — xám trung tính */
+  --cl-ink-3: #8a97a8;             /* metadata/giờ/phụ trách — xám nhạt (cấp cuối) */
+  --cl-line: #eef1f5;              /* đường kẻ rất mờ */
+  --cl-hover: #f5f7fa;             /* hover xám cực nhẹ */
+  --cl-danger: #f5334f;            /* badge chưa đọc */
+  --cl-radius: 10px;
+  --cl-item-h: 66px;               /* chuẩn chiều cao item (3 hàng gọn) */
+  --cl-pad-x: 10px;
+}
 .conv-item {
-  padding: 11px 13px;
-  display: flex; gap: 11px;
-  align-items: flex-start;
+  padding: 7px var(--cl-pad-x);
+  display: flex; gap: 10px;
+  align-items: center;
   cursor: pointer;
-  border-bottom: 1px solid var(--smax-grey-100);
+  border-bottom: 1px solid var(--cl-line);
   position: relative;
   user-select: none;
-  /* Cố định chiều cao mỗi item — name + preview + tag row reserved */
-  min-height: 78px;
+  min-height: var(--cl-item-h);
   box-sizing: border-box;
+  transition: background 0.12s ease;
 }
-/* Avatar dịch xuống nhẹ để canh giữa với name + preview (bỏ qua tag row) */
-.conv-item :deep(.smax-av) { margin-top: 2px; flex-shrink: 0; }
+.conv-item :deep(.smax-av) { flex-shrink: 0; }
 
 /* Wrapper để position mini avatar nick Zalo overlay góc dưới-trái */
 .ci-avatar-wrap {
@@ -1362,32 +1572,30 @@ function parseSentiment(conv: Conversation): AiSentiment | null {
   background: linear-gradient(135deg, #2962ff, #6366f1);
 }
 .conv-item.active .ci-nick-mini { border-color: var(--smax-primary-soft, #e3f2fd); }
-.conv-item:hover { background: var(--smax-grey-50); }
-.conv-item.unread .ci-name { font-weight: 700; }
-/* Active: nền xanh nhạt đồng nhất + bo góc + viền xanh nhẹ */
+/* HOVER — chỉ đổi nền nhẹ */
+.conv-item:hover { background: var(--cl-hover); }
+/* UNREAD — tên đậm + preview đậm hơn nhẹ (không đổi màu chói) */
+.conv-item.unread .ci-name-text { font-weight: 700; color: var(--cl-ink); }
+.conv-item.unread .ci-preview { color: var(--cl-ink); font-weight: 600; }
+/* SELECTED — thanh accent trái + nền xanh rất nhạt + shadow nhẹ, KHÔNG margin (hết nhảy) */
 .conv-item.active,
 .conv-item.is-group.active {
-  background: var(--smax-primary-soft) !important;
-  border-radius: 12px;
-  margin: 2px 6px;
-  border-bottom-color: transparent !important;
-  box-shadow: inset 0 0 0 1.5px #64b5f6 !important;
+  background: var(--cl-accent-soft);
+  box-shadow: inset 3px 0 0 0 var(--cl-accent);
+  border-bottom-color: transparent;
 }
-.conv-item.active:hover,
-.conv-item.is-group.active:hover {
-  background: var(--smax-primary-soft) !important;
-}
+.conv-item.active:hover { background: var(--cl-accent-soft); }
+/* PINNED — nền trắng, chỉ icon ghim nhỏ báo hiệu (không tô màu cả dòng) */
+.conv-item.is-personal-pinned { background: transparent; }
+.conv-item.is-personal-pinned:hover { background: var(--cl-hover); }
 
 /* M53 2026-05-30: Virtual conversation — nền cam nhạt + chip 🔒 */
-.conv-item.is-virtual {
-  background: #fff7ed;
-  border-left: 3px solid #fb923c;
-  padding-left: calc(var(--ci-padding-x, 9px) - 3px);
-}
-.conv-item.is-virtual:hover { background: #ffedd5; }
+/* Virtual conv — không tô nền cam cả dòng nữa; icon 📝 ở Hàng 1 đã đủ báo (giảm nhiễu màu). */
+.conv-item.is-virtual { background: transparent; }
+.conv-item.is-virtual:hover { background: var(--cl-hover); }
 .conv-item.is-virtual.active {
-  background: #ffedd5 !important;
-  box-shadow: inset 0 0 0 1.5px #f97316 !important;
+  background: var(--cl-accent-soft);
+  box-shadow: inset 3px 0 0 0 #f97316;
 }
 .virtual-chip {
   display: inline-flex;
@@ -1402,23 +1610,6 @@ function parseSentiment(conv: Conversation): AiSentiment | null {
   margin-right: 4px;
   line-height: 16px;
   height: 16px;
-}
-
-/* Unread count badge — pill xám mờ dưới timestamp */
-.ci-meta-right {
-  display: flex; flex-direction: column;
-  align-items: flex-end; gap: 4px;
-  flex-shrink: 0;
-}
-.ci-unread-count {
-  min-width: 20px; height: 18px;
-  padding: 0 6px;
-  background: var(--error, #f04438);
-  color: white;
-  font-size: 10px; font-weight: 700;
-  border-radius: 9px;
-  display: inline-flex; align-items: center; justify-content: center;
-  line-height: 1;
 }
 
 .ci-avatar {
@@ -1441,106 +1632,162 @@ function parseSentiment(conv: Conversation): AiSentiment | null {
   display: flex; align-items: center; justify-content: center;
 }
 
+/* ── Thân item: 2 hàng gọn ── */
 .ci-body {
   flex: 1; min-width: 0;
   display: flex; flex-direction: column;
-  position: relative;
+  gap: 2px;
 }
-.ci-name-row {
-  display: flex; align-items: center;
-  height: 20px;
-  /* Giảm 50% padding-right (64px → 38px) để tăng width tên KH.
-     Time format ngắn: "DD/MM" (5 ký tự) hoặc "MM/YYYY" (7 ký tự) ~28px. */
-  padding-right: 38px;
-}
+.ci-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+
+/* Hàng 1: tên + priority + private · giờ + badge */
 .ci-name {
-  font-size: 14px;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  flex: 1; min-width: 0;
   display: inline-flex; align-items: center; gap: 4px;
-  min-width: 0; flex: 1;
-  line-height: 20px;
+  line-height: 18px;
 }
-.ci-name > * { flex-shrink: 0; }
-.ci-name :first-child + * { /* tên thật sự — cho phép shrink */
+/* CẤP 1 — Tên khách: đậm nhất, nổi nhất */
+.ci-name-text {
+  font-size: 14.5px; font-weight: 600; color: var(--cl-ink);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  min-width: 0;
 }
-.group-icon { font-size: 11px; }
-/* Theo dõi (anh chốt 2026-06-15) — chuông sau tên cho khách đang theo dõi */
-.ci-follow-bell { color: #f59e0b; flex-shrink: 0; }
-/* Riêng tư cấp hội thoại — ổ khóa cạnh tên + câu thông báo thay preview. */
-.ci-private-lock { color: #6366f1; flex-shrink: 0; }
-.ci-preview-private { font-style: italic; color: rgba(0, 0, 0, 0.42); }
-/* Meta-right float ra góc phải, không nằm trong flex flow → badge không phá height */
-.ci-meta-right {
-  position: absolute; top: 0; right: 0;
-  display: flex; flex-direction: column;
-  align-items: flex-end;
-  gap: 3px;
-  pointer-events: none;
-}
-.ci-time {
-  font-size: 11px; color: var(--smax-grey-700);
-  line-height: 1;
-}
-.ci-preview {
-  font-size: 12px; color: var(--smax-grey-700);
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  margin-top: 2px;
-  height: 16px; line-height: 16px;
-  padding-right: 30px; /* chừa chỗ cho unread badge float trên */
-}
-/* Tone preview cho cuộc gọi & recall (proposal E04, E17, E18) */
-.ci-preview.tone-danger {
-  color: #dc2626; /* đỏ — KH gọi đến NHỠ chưa bắt, cần alert */
-  font-weight: 600;
-}
-.ci-preview.tone-muted {
-  color: var(--smax-grey-500); /* xám — sale gọi ko trả lời / tin recall */
-  font-style: italic;
-}
-/* Tag row luôn reserve khoảng nhỏ — kể cả khi không có tag */
-.ci-tag-row {
-  display: flex; gap: 4px; margin-top: 3px; align-items: center;
-  flex-wrap: nowrap; overflow: hidden;
-  height: 16px;
-}
-.tag-mini {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  padding: 1px 7px;
-  border-radius: 4px;
-  font-size: 10px;
-  font-weight: 600;
+/* Icon phụ cạnh tên — tinh tế, KHÔNG lấn tên */
+.ci-icon { flex-shrink: 0; line-height: 1; }
+.ci-pin { color: var(--cl-ink-3); transform: rotate(40deg); }
+.ci-group, .ci-hot, .ci-vip { font-size: 11px; }
+.ci-virtual { color: #f97316; }
+.ci-follow { color: #f59e0b; }
+.ci-lock { color: var(--cl-ink-3); }   /* riêng tư = xám, KHÔNG đỏ */
+
+.ci-top-right {
   flex-shrink: 0;
-  max-width: 100px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  border: 1px solid;
+  display: inline-flex; align-items: center; gap: 6px;
 }
-/* Monochromatic chip — bg/border/text derive từ --tag-color via color-mix.
- * Zalo-managed: icon + clean name. CRM: chỉ name. */
-.tag-mini.tag-zalo {
-  --tag-color: #0068FF;
-  background: color-mix(in srgb, var(--tag-color) 12%, white);
-  border-color: color-mix(in srgb, var(--tag-color) 70%, white);
-  color: color-mix(in srgb, var(--tag-color) 75%, black);
+.ci-time { font-size: 11px; color: var(--cl-ink-3); line-height: 1; white-space: nowrap; }
+/* Badge chưa đọc — nhỏ gọn, tròn, đỏ Zalo. "5+" khi >5 */
+.ci-unread {
+  min-width: 17px; height: 17px;
+  padding: 0 5px;
+  background: var(--cl-danger); color: #fff;
+  font-size: 10px; font-weight: 700; line-height: 1;
+  border-radius: 999px;
+  display: inline-flex; align-items: center; justify-content: center;
 }
-/* KHÔNG có "Zalo" text badge trong conv list — .ci-tag-row có overflow:hidden +
- * height:16px sẽ clip badge. Icon brand Zalo đứng trước tên đã đủ phân biệt. */
-.tag-mini.tag-crm {
-  --tag-color: #546E7A;
-  background: color-mix(in srgb, var(--tag-color) 10%, white);
-  border-color: color-mix(in srgb, var(--tag-color) 60%, white);
-  color: color-mix(in srgb, var(--tag-color) 80%, black);
+/* Chưa đọc THỦ CÔNG (không có chưa đọc thật) — chấm xanh accent */
+.ci-unread-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--cl-accent); flex-shrink: 0;
 }
-/* Auto-tag (Friend.autoTags) — viền nét đứt để phân biệt với tag manual. */
-.tag-mini.tag-auto {
-  border-style: dashed;
+
+/* ── HÀNG 2 (metadata "ai") — phụ trách + người trả lời. Cấp THẤP: nhỏ, xám nhạt,
+   KHÔNG hút mắt khỏi tên/nội dung. ── */
+.ci-row-meta { gap: 8px; }
+.ci-who {
+  flex: 1; min-width: 0;
+  display: inline-flex; align-items: center; gap: 10px;
+  font-size: 11.5px; color: var(--cl-ink-3);
+  line-height: 15px; overflow: hidden; white-space: nowrap;
 }
-/* Emoji prefix (auto-tag icon / tag v2 emoji) — căn line giống ZaloBrandIcon. */
-.tag-mini-emoji { font-size: 10px; line-height: 1; flex-shrink: 0; }
+.ci-who-ic { flex-shrink: 0; margin-right: 2px; opacity: 0.75; }
+/* Phụ trách (chủ KH) */
+.ci-owner {
+  display: inline-flex; align-items: center; flex-shrink: 1; min-width: 0;
+  max-width: 58%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ci-owner b { font-weight: 600; color: var(--cl-ink-2); margin-left: 2px; }
+.ci-owner-more { color: var(--cl-ink-3); font-weight: 600; }
+/* Người trả lời cuối — trung tính (KHÔNG xanh chói), phân biệt bằng icon 💬 */
+.ci-replier {
+  display: inline-flex; align-items: center; flex-shrink: 0;
+  font-weight: 600; color: var(--cl-ink-2);
+  max-width: 42%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ci-replier.is-bot { color: #8b5cf6; }   /* AI/Bot: tím nhạt để phân biệt người thật */
+.ci-chips { flex-shrink: 0; display: inline-flex; align-items: center; gap: 5px; }
+
+/* ── HÀNG 3 — NỘI DUNG tin cuối. Cấp 2 (chỉ sau tên): to, đậm, dễ đọc, full-width. ── */
+.ci-row-content { line-height: 18px; }
+.ci-preview {
+  flex: 1; min-width: 0;
+  font-size: 14px; color: var(--cl-ink-content);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  line-height: 18px;
+}
+.ci-preview.tone-danger { color: var(--cl-danger); font-weight: 600; }
+.ci-preview.tone-muted { color: var(--cl-ink-3); font-style: italic; }
+.ci-preview-private { font-style: italic; color: var(--cl-ink-3); }
+
+/* Chip trạng thái/tag — nhỏ, tinh tế, tối đa 2 */
+.ci-chip {
+  display: inline-flex; align-items: center; gap: 3px;
+  max-width: 92px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 10px; font-weight: 600; line-height: 15px;
+  background: color-mix(in srgb, var(--chip-color, #64748b) 12%, white);
+  color: color-mix(in srgb, var(--chip-color, #64748b) 80%, black);
+  white-space: nowrap; overflow: hidden;
+}
+.ci-chip-text { overflow: hidden; text-overflow: ellipsis; }
+.ci-chip-emoji { font-size: 10px; line-height: 1; flex-shrink: 0; }
+/* ── Quick-action hover — chỉ hiện khi hover/focus, đè vùng phải ── */
+.ci-actions {
+  position: absolute;
+  top: 50%; right: 8px;
+  transform: translateY(-50%);
+  display: flex; gap: 2px;
+  padding: 2px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--cl-hover) 60%, white);
+  box-shadow: 0 1px 4px rgba(16, 24, 40, 0.12);
+  opacity: 0; visibility: hidden;
+  transition: opacity 0.12s ease;
+}
+.conv-item:hover .ci-actions,
+.conv-item:focus-within .ci-actions { opacity: 1; visibility: visible; }
+.conv-item.active .ci-actions { background: color-mix(in srgb, var(--cl-accent-soft) 70%, white); }
+.ci-act {
+  width: 26px; height: 26px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: none; background: transparent; border-radius: 6px;
+  color: var(--cl-ink-2); cursor: pointer;
+  transition: background 0.1s, color 0.1s;
+}
+.ci-act:hover { background: var(--cl-accent-soft); color: var(--cl-accent); }
+.ci-act.is-on { color: var(--cl-accent); }
+
+/* Nick Zalo mini — góc dưới-phải, nhỏ, KHÔNG che avatar */
+.ci-nick-mini { bottom: -1px; left: auto; right: -3px; width: 16px; height: 16px; }
+.ci-nick-mini--initial { font-size: 8px; }
+
+/* ── Accessibility: focus keyboard rõ ràng ── */
+.conv-scroll:focus-visible { outline: none; }
+.conv-item:focus-visible {
+  outline: 2px solid var(--cl-accent);
+  outline-offset: -2px;
+}
+
+/* ── Responsive ── */
+/* Tablet: giữ compact. Mobile/PWA: tap-target lớn hơn, ẩn chip cho gọn. */
+@media (max-width: 768px) {
+  .conv-list { --cl-item-h: 72px; --cl-pad-x: 12px; }
+  .conv-item { padding-top: 9px; padding-bottom: 9px; }
+  .ci-name-text { font-size: 15.5px; }
+  .ci-preview { font-size: 14.5px; }
+  /* Mobile không hover → quick-action ẩn (dùng long-press/chuột phải); chỉ 1 chip cho gọn */
+  .ci-actions { display: none; }
+  .ci-chips .ci-chip { display: none; }
+  .ci-chips .ci-chip:first-child { display: inline-flex; }
+}
+@media (hover: none) {
+  /* Thiết bị cảm ứng: luôn ẩn quick-action (không có hover thật) */
+  .ci-actions { display: none; }
+}
+/* Tôn trọng người dùng tắt animation */
+@media (prefers-reduced-motion: reduce) {
+  .conv-item, .ci-actions, .ci-act { transition: none; }
+}
 /* Overflow "+N" chip — hover/click hiện popup các tag còn lại */
 .tag-overflow {
   display: inline-flex;

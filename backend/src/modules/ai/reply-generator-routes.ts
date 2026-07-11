@@ -1,0 +1,6 @@
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { buildPrivacyContext } from '../privacy/redact.js';
+import { AIErrorHandler } from './core/ai-error-handler.js';
+import { ContextBuilderError, ReplyGeneratorError, SkillFrameworkError, generateConversationReply } from './reply-generator-service.js';
+function fail(reply: FastifyReply, error: unknown) { if (error instanceof ReplyGeneratorError || error instanceof ContextBuilderError || error instanceof SkillFrameworkError) return reply.status(error.statusCode).send({ error: error.message, code: error.code }); const normalized = AIErrorHandler.normalize(error); return reply.status(normalized.statusCode).send({ error: normalized.message, code: normalized.code }); }
+export async function replyGeneratorRoutes(app: FastifyInstance) { app.post('/api/v1/ai/replies/conversations/:conversationId/generate', {}, async (request, reply) => { try { const privacy = await buildPrivacyContext(request); return await generateConversationReply({ orgId: request.user!.orgId, userId: request.user!.id, role: request.user!.role, privacyUnlocked: privacy.privacyUnlocked }, (request.params as { conversationId: string }).conversationId, request.body as any); } catch (error) { return fail(reply, error); } }); }

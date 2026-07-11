@@ -10,11 +10,12 @@
           <v-icon size="14">mdi-message-flash-outline</v-icon>
           Mẫu tin nhắn <span class="qtp-count">{{ filtered.length }}</span>
         </div>
-        <div class="qtp-tagbar">
-          <button class="qtp-tag" :class="{ active: !tagFilter }" @click="tagFilter = ''">Tất cả</button>
-          <button v-for="tag in PROJECT_TAGS" :key="tag" class="qtp-tag"
-            :class="{ active: tagFilter === tag }" @click="tagFilter = tagFilter === tag ? '' : tag">
-            {{ shortTag(tag) }}
+        <!-- Bộ lọc: thư mục thật (từ dữ liệu) thay cho tag dự án hard-code (2026-07-11). -->
+        <div v-if="folderChips.length" class="qtp-tagbar">
+          <button class="qtp-tag" :class="{ active: !folderFilter }" @click="folderFilter = ''">Tất cả</button>
+          <button v-for="f in folderChips" :key="f.id" class="qtp-tag"
+            :class="{ active: folderFilter === f.id }" @click="folderFilter = folderFilter === f.id ? '' : f.id">
+            {{ f.name }}
           </button>
         </div>
       </div>
@@ -43,7 +44,10 @@
             </span>
             <span class="qtp-item-sub">{{ plainOf(tpl) }}</span>
           </span>
-          <span v-if="(tpl.tagIds || []).length" class="qtp-item-tag">{{ shortTag(tpl.tagIds![0]) }}</span>
+          <span v-if="tpl.attachments && tpl.attachments.length" class="qtp-item-att" :title="`${tpl.attachments.length} đính kèm`">
+            <v-icon size="12">mdi-paperclip</v-icon>{{ tpl.attachments.length }}
+          </span>
+          <span v-if="folderName(tpl.folderId)" class="qtp-item-tag">{{ folderName(tpl.folderId) }}</span>
         </button>
         <div v-if="!filtered.length" class="qtp-empty">Không tìm thấy mẫu nào</div>
       </div>
@@ -58,6 +62,7 @@
 import { computed, ref, watch, nextTick, onBeforeUnmount } from 'vue';
 
 interface RichPayload { text: string; styles?: Array<{ st: string; start: number; len: number }> }
+interface TemplateAttachment { kind: 'image' | 'file'; url: string; name?: string; thumb?: string }
 interface Template {
   id: string;
   name: string;
@@ -65,32 +70,41 @@ interface Template {
   content: string;
   contentRich?: RichPayload | null;
   category: string | null;
+  folderId?: string | null;
   tagIds?: string[];
+  attachments?: TemplateAttachment[];
   isPersonal: boolean;
 }
+interface FolderChip { id: string; name: string }
 // crmAlias = tên gợi nhớ PER-NICK (Friend.aliasInNick của cặp KH × nick đang chat).
 // Dùng cho {crm_*}. Trống → fallback fullName (khớp BE render-template.ts).
-interface ContactCtx { fullName?: string | null; gender?: string | null; crmAlias?: string | null }
-
-const PROJECT_TAGS = ['Emerald Garden View', 'Emerald Boulevard', 'Emerald River Park', 'Monrei Sài Gòn'];
+// phone/email (2026-07-11) → cho biến {phone}/{email} render đúng (trước đây chèn nguyên văn).
+interface ContactCtx { fullName?: string | null; gender?: string | null; crmAlias?: string | null; phone?: string | null; email?: string | null }
 
 const props = defineProps<{
   visible: boolean;
   query: string;
   templates: Template[];
+  folders?: FolderChip[];
   contact?: ContactCtx | null;
   saleFullName?: string | null;
   anchorEl?: HTMLElement | null; // ô nhập — popup neo ngay trên, Teleport ra body để không bị cha cắt
 }>();
 
 const emit = defineEmits<{
-  // Trả rich payload {text, styles} (giữ đậm/màu) + id để track-use.
-  select: [payload: RichPayload, templateId: string];
+  // Trả rich payload {text, styles} (giữ đậm/màu) + id để track-use + đính kèm (gửi kèm).
+  select: [payload: RichPayload, templateId: string, attachments: TemplateAttachment[]];
   close: [];
 }>();
 
 const selectedIndex = ref(0);
-const tagFilter = ref('');
+const folderFilter = ref('');
+
+const folderChips = computed<FolderChip[]>(() => props.folders ?? []);
+function folderName(id: string | null | undefined): string {
+  if (!id) return '';
+  return folderChips.value.find((f) => f.id === id)?.name ?? '';
+}
 
 // ── Định vị popup (fixed) ngay TRÊN ô nhập. Teleport ra body nên tự tính toạ độ
 // từ anchor (.editor-wrap) để thoát overflow:hidden của .input-area. ──
@@ -136,8 +150,6 @@ onBeforeUnmount(() => {
   }
 });
 
-function shortTag(tag: string): string { return tag.replace(/^Emerald\s+/, '').replace('Sài Gòn', 'SG'); }
-
 // Chuẩn hóa query gõ tắt (giống normalizeShortcut backend) để so prefix với shortcut.
 function normQuery(q: string): string {
   return q.trim().replace(/^\/+/, '')
@@ -148,7 +160,7 @@ function normQuery(q: string): string {
 
 const filtered = computed(() => {
   let list = props.templates;
-  if (tagFilter.value) list = list.filter((t) => (t.tagIds || []).includes(tagFilter.value));
+  if (folderFilter.value) list = list.filter((t) => t.folderId === folderFilter.value);
   const q = (props.query || '').toLowerCase().trim();
   if (q) {
     const qs = normQuery(props.query);
@@ -195,7 +207,8 @@ function renderRich(tpl: Template): RichPayload {
   const gender = props.contact?.gender;
   const genderStr = gender === 'female' ? 'Chị' : gender === 'male' ? 'Anh' : 'Anh/Chị';
   const nameRaw = (props.contact?.fullName ?? '').trim();
-  const nameLast = nameRaw ? (nameRaw.split(/\s+/).pop() ?? '') : '';
+  const nameWords = nameRaw ? nameRaw.split(/\s+/) : [];
+  const nameLast = nameWords.length ? (nameWords[nameWords.length - 1] ?? '') : '';
   const saleRaw = (props.saleFullName ?? '').trim();
   const saleLast = saleRaw ? (saleRaw.split(/\s+/).pop() ?? 'em') : 'em';
   const crmFull = ((props.contact?.crmAlias ?? '').trim()) || nameRaw; // trống → fallback fullName
@@ -205,11 +218,14 @@ function renderRich(tpl: Template): RichPayload {
     '{gender}': genderStr,
     '{name}': nameLast,
     '{name_full}': nameRaw,
+    '{name_first}': nameWords[0] ?? '',
     '{crm_full}': crmFull,
     '{crm_first}': crmWords[0] ?? '',
     '{crm_last}': crmWords[crmWords.length - 1] ?? '',
     '{sale}': saleLast,
     '{sale_full}': saleRaw || 'em',
+    '{phone}': (props.contact?.phone ?? '').trim(),
+    '{email}': (props.contact?.email ?? '').trim(),
   };
 
   const styles = (src.styles ?? []).map((s) => ({ ...s }));
@@ -217,7 +233,7 @@ function renderRich(tpl: Template): RichPayload {
 
   // Tìm tất cả vị trí token, xử lý từ TRÁI sang PHẢI, mỗi lần thay 1 token + dịch styles sau nó.
   // token DÀI trước token NGẮN ({name_full} trước {name}) để regex không khớp nhầm phần đầu.
-  const tokenRe = /\{(gender|name_full|name|crm_full|crm_first|crm_last|sale_full|sale)\}/;
+  const tokenRe = /\{(gender|name_full|name_first|name|crm_full|crm_first|crm_last|sale_full|sale|phone|email)\}/;
   let guard = 0;
   while (guard++ < 200) {
     const m = tokenRe.exec(text);
@@ -252,7 +268,7 @@ const previewText = computed(() => {
 });
 
 function selectTemplate(tpl: Template) {
-  emit('select', renderRich(tpl), tpl.id);
+  emit('select', renderRich(tpl), tpl.id, tpl.attachments ?? []);
 }
 
 function onKey(e: KeyboardEvent) {
@@ -320,6 +336,7 @@ defineExpose({ onKey });
 .qtp-item-sc { font-size: 11px; font-weight: 600; color: #0f6ea3; background: #eef6fb; padding: 1px 5px; border-radius: 5px; margin-left: 5px; font-family: ui-monospace, monospace; }
 .qtp-item-sub { font-size: 11.5px; color: #6b7280; line-height: 1.3; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .qtp-item-tag { flex-shrink: 0; font-size: 10px; padding: 2px 7px; border-radius: 6px; background: #eef2f7; color: #4b5563; font-weight: 500; white-space: nowrap; }
+.qtp-item-att { flex-shrink: 0; display: inline-flex; align-items: center; gap: 2px; font-size: 10px; padding: 2px 6px; border-radius: 6px; background: #e6f3fb; color: #0f6ea3; font-weight: 600; }
 .qtp-empty { padding: 18px; text-align: center; color: #9ca3af; font-size: 12.5px; font-style: italic; }
 
 /* Footer hint */

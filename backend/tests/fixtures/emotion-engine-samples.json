@@ -1,0 +1,12 @@
+﻿[
+  { "messages": ["Shop còn hàng không?", "Mình rất quan tâm mẫu này"], "emotion": "interested" },
+  { "messages": ["Cảm ơn shop", "Mình nhận hàng rồi, rất hài lòng"], "emotion": "satisfied" },
+  { "messages": ["Thông tin giá mỗi nơi một kiểu", "Mình chưa hiểu, giải thích giúp được không?"], "emotion": "confused" },
+  { "messages": ["Để mình cân nhắc thêm", "Mai mình trả lời nhé"], "emotion": "hesitant" },
+  { "messages": ["Mình cần gấp trong hôm nay", "Không biết có kịp giao không"], "emotion": "urgent" },
+  { "messages": ["Hàng khác mô tả quá", "Thật vọng, không hài lòng"], "emotion": "disappointed" },
+  { "messages": ["Tôi đợi lâu rồi chưa ai phản hồi", "Sao đến giờ vẫn chưa xử lý?"], "emotion": "annoyed" },
+  { "messages": ["Tôi rất tức vì chờ ba ngày", "Giải quyết ngay cho tôi"], "emotion": "angry" },
+  { "messages": ["Không quan tâm nữa", "Đừng nhắn thêm nhé"], "emotion": "not_interested" },
+  { "messages": ["Cho hỏi sản phẩm này còn không?"], "emotion": "neutral" }
+]
