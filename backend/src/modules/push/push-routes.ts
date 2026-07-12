@@ -13,6 +13,25 @@ import { authMiddleware } from '../auth/auth-middleware.js';
 import { getVapidPublicKey } from './web-push-service.js';
 
 type JwtUser = { id: string; email: string; role: string; orgId: string };
+function normalizePushSubscription(body: { endpoint?: string; p256dh?: string; auth?: string }) {
+  const endpoint = typeof body.endpoint === 'string' ? body.endpoint.trim() : '';
+  const p256dh = typeof body.p256dh === 'string' ? body.p256dh.trim() : '';
+  const auth = typeof body.auth === 'string' ? body.auth.trim() : '';
+  if (!endpoint || !p256dh || !auth) return { ok: false as const, error: 'Thiếu endpoint/p256dh/auth' };
+  if (endpoint.length > 2048 || p256dh.length > 512 || auth.length > 512) {
+    return { ok: false as const, error: 'Push Subscription vượt giới hạn cho phép' };
+  }
+  try {
+    const url = new URL(endpoint);
+    const isLocalHttp = url.protocol === 'http:' && /^(localhost|127\.0\.0\.1|\[::1\])$/i.test(url.hostname);
+    if (url.protocol !== 'https:' && !isLocalHttp) {
+      return { ok: false as const, error: 'Push endpoint phải dùng HTTPS' };
+    }
+  } catch {
+    return { ok: false as const, error: 'Push endpoint không hợp lệ' };
+  }
+  return { ok: true as const, endpoint, p256dh, auth };
+}
 
 export async function pushRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', authMiddleware);
@@ -32,21 +51,22 @@ export async function pushRoutes(app: FastifyInstance): Promise<void> {
     async (request, reply) => {
       const user = request.user as JwtUser;
       const b = request.body ?? {};
-      if (!b.endpoint || !b.p256dh || !b.auth) {
-        return reply.status(400).send({ success: false, error: 'Thiếu endpoint/p256dh/auth' });
+      const normalized = normalizePushSubscription(b);
+      if (!normalized.ok) {
+        return reply.status(400).send({ success: false, error: normalized.error });
       }
       // Upsert: cùng endpoint đăng ký lại (đổi user, hoặc bật lại sau khi tắt) → cập nhật,
       // đồng thời gỡ cờ revoked để nhận tin trở lại.
       const sub = await prisma.pushSubscription.upsert({
-        where: { endpoint: b.endpoint },
+        where: { endpoint: normalized.endpoint },
         create: {
           userId: user.id, orgId: user.orgId,
-          endpoint: b.endpoint, p256dh: b.p256dh, auth: b.auth,
+          endpoint: normalized.endpoint, p256dh: normalized.p256dh, auth: normalized.auth,
           userAgent: b.userAgent ?? null, deviceName: b.deviceName ?? null,
         },
         update: {
           userId: user.id, orgId: user.orgId,
-          p256dh: b.p256dh, auth: b.auth,
+          p256dh: normalized.p256dh, auth: normalized.auth,
           userAgent: b.userAgent ?? null, deviceName: b.deviceName ?? null,
           revokedAt: null, lastSeenAt: new Date(),
         },

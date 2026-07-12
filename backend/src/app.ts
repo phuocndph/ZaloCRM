@@ -149,8 +149,14 @@ async function bootstrap() {
 
   // ── Plugins ──────────────────────────────────────────────────────────────
 
+  // CORS origin: ALLOWED_ORIGINS đặt → chỉ cho các origin đó (khoá chặt); bỏ trống → `true`
+  // = REFLECT request origin (an toàn vì auth bằng bearer token, không cookie) để realtime chạy
+  // khi mở qua IP LAN / domain khác localhost. Dùng CHUNG cho HTTP CORS và Socket.IO.
+  // Trước đây ghim cứng APP_URL (localhost:3080) → điện thoại qua IP LAN bị chặn handshake.
+  const corsOrigin = config.allowedOrigins.length ? config.allowedOrigins : true;
+
   await app.register(cors, {
-    origin: config.isProduction ? config.appUrl : true,
+    origin: corsOrigin,
     credentials: true,
   });
 
@@ -259,7 +265,7 @@ async function bootstrap() {
 
   const io = new Server(app.server, {
     cors: {
-      origin: config.isProduction ? config.appUrl : '*',
+      origin: corsOrigin, // CHUNG với HTTP CORS — reflect/allowlist (xem corsOrigin ở trên)
       credentials: true,
     },
   });

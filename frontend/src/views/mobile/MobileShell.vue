@@ -106,8 +106,8 @@ onUnmounted(() => destroySocket());
 @keyframes ms-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
 
 /* Body giữa banner và tab bar — view con (MConversationsView/MChatView) fill 100% */
-.ms-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.ms-body > * { flex: 1; min-height: 0; }
+.ms-body { flex: 1; min-height: 0; min-width: 0; width: 100%; overflow: hidden; display: flex; flex-direction: column; overscroll-behavior: none; touch-action: pan-y; }
+.ms-body > * { flex: 1; min-height: 0; min-width: 0; max-width: 100%; }
 
 /* ── Bottom navigation (design system) ── */
 .ms-tabbar {

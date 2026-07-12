@@ -98,7 +98,7 @@ onMounted(() => push.refresh());
 .mst-head { flex-shrink: 0; display: flex; align-items: center; gap: var(--m-sp-1); padding: 0 var(--m-sp-2); padding-top: env(safe-area-inset-top, 0px); min-height: calc(var(--m-header-h) + env(safe-area-inset-top, 0px)); background: var(--m-surface); border-bottom: 1px solid var(--m-border); }
 .mst-head h1 { font-size: var(--m-fs-lg); font-weight: var(--m-fw-bold); color: var(--m-text); margin: 0; }
 .mst-back { color: var(--m-brand); }
-.mst-body { flex: 1; overflow-y: auto; padding: var(--m-sp-4); padding-bottom: calc(var(--m-sp-4) + env(safe-area-inset-bottom, 0px)); }
+.mst-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; touch-action: pan-y; -webkit-overflow-scrolling: touch; padding: var(--m-sp-4); padding-bottom: calc(var(--m-sp-4) + env(safe-area-inset-bottom, 0px)); }
 .mst-user { display: flex; align-items: center; gap: var(--m-sp-3); background: var(--m-surface); border-radius: var(--m-r-lg); padding: var(--m-sp-4); box-shadow: var(--m-e1); }
 .mst-avatar { width: 52px; height: 52px; border-radius: var(--m-r-full); background: linear-gradient(135deg, #8fb7ff, #1f6fd6); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 21px; font-weight: var(--m-fw-bold); }
 .mst-name { font-weight: var(--m-fw-bold); color: var(--m-text); }

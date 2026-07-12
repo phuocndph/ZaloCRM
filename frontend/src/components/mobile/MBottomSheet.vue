@@ -6,9 +6,11 @@
   <Teleport to="body">
     <transition name="mbs">
       <div v-if="modelValue" class="mbs" @click.self="close">
-        <div class="mbs-panel" :style="{ transform: `translateY(${dragY}px)` }" @touchstart.passive="onStart" @touchmove="onMove" @touchend="onEnd">
-          <div class="mbs-grip"><span /></div>
-          <div v-if="title" class="mbs-title">{{ title }}</div>
+        <div class="mbs-panel" :style="{ transform: `translateY(${dragY}px)` }">
+          <div class="mbs-head" @touchstart.passive="onStart" @touchmove="onMove" @touchend="onEnd">
+            <div class="mbs-grip"><span /></div>
+            <div v-if="title" class="mbs-title">{{ title }}</div>
+          </div>
           <div class="mbs-body"><slot /></div>
         </div>
       </div>
@@ -23,7 +25,7 @@ const props = defineProps<{ modelValue: boolean; title?: string }>();
 const emit = defineEmits<{ 'update:modelValue': [v: boolean] }>();
 
 const dragY = ref(0);
-let startY = 0; let dragging = false;
+let startY = 0; let startX = 0; let dragging = false;
 
 watch(() => props.modelValue, (v) => {
   dragY.value = 0;
@@ -36,8 +38,8 @@ onUnmounted(() => {
   if (props.modelValue) document.body.style.overflow = '';
 });
 function close() { emit('update:modelValue', false); }
-function onStart(e: TouchEvent) { dragging = true; startY = e.touches[0].clientY; }
-function onMove(e: TouchEvent) { if (!dragging) return; const dy = e.touches[0].clientY - startY; if (dy > 0) { dragY.value = dy; e.preventDefault(); } }
+function onStart(e: TouchEvent) { dragging = true; startY = e.touches[0].clientY; startX = e.touches[0].clientX; }
+function onMove(e: TouchEvent) { if (!dragging) return; const touch = e.touches[0]; const dx = touch.clientX - startX; const dy = touch.clientY - startY; if (Math.abs(dx) > Math.abs(dy)) { dragging = false; dragY.value = 0; return; } if (dy > 0) { dragY.value = dy; e.preventDefault(); } }
 function onEnd() { if (!dragging) return; dragging = false; if (dragY.value > 90) close(); else dragY.value = 0; }
 </script>
 
@@ -48,10 +50,11 @@ function onEnd() { if (!dragging) return; dragging = false; if (dragY.value > 90
   border-radius: var(--m-r-xl, 22px) var(--m-r-xl, 22px) 0 0;
   padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 8px);
   box-shadow: var(--m-e3);
-  max-height: 82dvh; overflow-y: auto;
+  max-height: 82dvh; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; touch-action: pan-y;
   transition: transform 0.08s linear;
 }
-.mbs-grip { display: flex; justify-content: center; padding: 9px 0 4px; touch-action: none; }
+.mbs-head { touch-action: none; }
+.mbs-grip { display: flex; justify-content: center; padding: 9px 0 4px; }
 .mbs-grip span { width: 40px; height: 4px; border-radius: 999px; background: var(--m-border-strong, #d6dce3); }
 .mbs-title { text-align: center; font-size: var(--m-fs-sm, 13px); font-weight: var(--m-fw-semibold, 600); color: var(--m-text-2, #5b6675); padding: 2px 0 8px; }
 .mbs-body { padding: 4px 0 8px; }

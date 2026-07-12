@@ -100,7 +100,7 @@ watch(id, () => { if (id.value) void load(); });
 
 <style scoped>
 .mad { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--m-bg); }
-.mad-body { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding-bottom: calc(var(--m-sp-6) + env(safe-area-inset-bottom, 0px)); }
+.mad-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; touch-action: pan-y; -webkit-overflow-scrolling: touch; padding-bottom: calc(var(--m-sp-6) + env(safe-area-inset-bottom, 0px)); }
 .mad-hero { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: var(--m-sp-6) var(--m-sp-4) var(--m-sp-4); background: var(--m-surface); }
 .mad-when { display: inline-flex; align-items: center; gap: 6px; font-size: var(--m-fs-md); font-weight: var(--m-fw-semibold); color: var(--m-brand-strong); }
 .mad-title { font-size: var(--m-fs-lg); font-weight: var(--m-fw-bold); color: var(--m-text); text-align: center; }

@@ -947,7 +947,7 @@ watch(convId, async (id) => { if (id) { hasOlderMessages.value = true; unseenCou
 </script>
 
 <style scoped>
-.mch-wrap { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--m-surface-sunken); padding-bottom: v-bind('keyboardOffset + 'px''); }
+.mch-wrap { display: flex; flex-direction: column; width: 100%; max-width: 100vw; height: 100%; min-height: 0; min-width: 0; overflow: hidden; overflow-x: clip; overscroll-behavior: none; touch-action: pan-y; background: var(--m-surface-sunken); padding-bottom: v-bind('keyboardOffset + 'px''); }
 .mch-head {
   flex-shrink: 0; display: flex; align-items: center; gap: var(--m-sp-2);
   padding: 0 var(--m-sp-2); padding-top: env(safe-area-inset-top, 0px); min-height: calc(var(--m-header-h) + env(safe-area-inset-top, 0px));
@@ -966,12 +966,12 @@ watch(convId, async (id) => { if (id) { hasOlderMessages.value = true; unseenCou
 .mch-name { font-size: var(--m-fs-md); font-weight: var(--m-fw-bold); color: var(--m-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mch-nick { font-size: var(--m-fs-2xs); color: var(--m-text-3); }
 
-.mch-msgs { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: var(--m-sp-3) var(--m-sp-3) var(--m-sp-1); }
+.mch-msgs { flex: 1; width: 100%; max-width: 100%; min-width: 0; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior-x: none; overscroll-behavior-y: contain; touch-action: pan-y; -webkit-overflow-scrolling: touch; scrollbar-width: none; contain: layout paint; padding: var(--m-sp-3) var(--m-sp-3) var(--m-sp-1); }
 .mch-history-status { margin: 2px auto 8px; color: var(--m-text-3); font-size: var(--m-fs-xs); text-align: center; }
 .mch-history-status--err { color: var(--m-danger); }
 .mch-history-retry { border: 0; background: transparent; color: var(--m-brand); font-weight: var(--m-fw-semibold); font-size: var(--m-fs-xs); text-decoration: underline; cursor: pointer; }
 .mch-day { width: fit-content; margin: 10px auto 8px; padding: 3px 9px; border-radius: 999px; background: var(--m-surface-2); color: var(--m-text-3); font-size: var(--m-fs-xs); }
-.mch-row { margin-bottom: 2px; animation: m-rise var(--m-dur-fast) var(--m-ease) both; border-radius: var(--m-r-md); }
+.mch-row { margin-bottom: 2px; border-radius: var(--m-r-md); contain: layout paint; }
 .mch-jump-highlight { outline: 2px solid var(--m-brand); outline-offset: 3px; background: var(--m-brand-soft); transition: background 0.3s ease; }
 /* P1 — ảnh trong bubble không kéo full quá lớn; bo góc, cắt gọn. Album grid do MessageBubble lo. */
 .mch-msgs :deep(.chat-image) { max-height: 62vh; max-width: 100%; object-fit: cover; border-radius: 14px; }
@@ -1029,7 +1029,7 @@ watch(convId, async (id) => { if (id) { hasOlderMessages.value = true; unseenCou
 .mch-searchbar-nav { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
 .mch-search-count { font-size: var(--m-fs-xs); font-weight: var(--m-fw-semibold); color: var(--m-text-2); min-width: 34px; text-align: center; font-variant-numeric: tabular-nums; }
 .mch-search-panel { flex: 1; min-height: 0; background: rgba(0,0,0,.35); overflow: hidden; }
-.mch-search-panel-inner { background: var(--m-surface); max-height: 62dvh; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.mch-search-panel-inner { background: var(--m-surface); max-height: 62dvh; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; touch-action: pan-y; -webkit-overflow-scrolling: touch; }
 .mch-kw-mark { background: #ffd54a; color: #1a1a1a; border-radius: 3px; padding: 0 1px; }
 .mch-library-item { display: flex; align-items: center; gap: var(--m-sp-3); width: 100%; min-height: 74px; border: 0; border-top: 1px solid var(--m-border); padding: 10px var(--m-sp-4); background: none; color: var(--m-text); text-align: left; }
 .mch-library-item:active { background: var(--m-surface-2); }
@@ -1071,7 +1071,7 @@ watch(convId, async (id) => { if (id) { hasOlderMessages.value = true; unseenCou
 .mch-es-tabs { display: flex; gap: var(--m-sp-2); padding: 0 var(--m-sp-4) var(--m-sp-2); }
 .mch-es-tabs button { flex: 1; border: 0; background: var(--m-surface-2); color: var(--m-text-2); border-radius: var(--m-r-full); padding: 8px 0; font-size: var(--m-fs-sm); font-weight: var(--m-fw-semibold); cursor: pointer; }
 .mch-es-tabs button.on { background: var(--m-brand); color: var(--m-brand-ink); }
-.mch-emoji-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px; padding: 4px var(--m-sp-3) var(--m-sp-3); max-height: 44dvh; overflow-y: auto; }
+.mch-emoji-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px; padding: 4px var(--m-sp-3) var(--m-sp-3); max-height: 44dvh; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; touch-action: pan-y; -webkit-overflow-scrolling: touch; }
 .mch-emoji-cell { border: 0; background: none; font-size: 27px; line-height: 1; padding: 7px 0; border-radius: var(--m-r-sm); cursor: pointer; }
 .mch-emoji-cell:active { background: var(--m-surface-2); transform: scale(0.9); }
 .mch-sticker-tab { padding: var(--m-sp-3) var(--m-sp-4) var(--m-sp-4); }
@@ -1082,8 +1082,10 @@ watch(convId, async (id) => { if (id) { hasOlderMessages.value = true; unseenCou
 .mch-media-picker-sheet { min-height: min(620px, calc(82dvh - 54px)); }
 .mch-media-picker-sheet :deep(.mp-pop) { position: static; inset: auto; bottom: auto; z-index: auto; height: 100%; }
 .mch-media-picker-sheet :deep(.mp-card) { height: min(620px, calc(82dvh - 54px)); max-height: none; border: 0; border-radius: 0; padding: 8px var(--m-sp-3) calc(var(--m-safe-bottom) + 10px); box-shadow: none; background: var(--m-surface); }
-.mch-media-picker-sheet :deep(.mp-grid), .mch-media-picker-sheet :deep(.mp-list) { min-height: 0; flex: 1; }
-.mch-attachment-queue { display: flex; width: 100%; gap: 6px; overflow-x: auto; padding: 2px 0; }
+.mch-media-picker-sheet :deep(.mp-filter-btn), .mch-media-picker-sheet :deep(.mp-x), .mch-media-picker-sheet :deep(.mp-send-album), .mch-media-picker-sheet :deep(.mp-fitem) { min-height: var(--m-touch); }
+.mch-media-picker-sheet :deep(.seg span) { min-height: 36px; display: inline-flex; align-items: center; }
+.mch-media-picker-sheet :deep(.mp-grid), .mch-media-picker-sheet :deep(.mp-list) { min-height: 0; flex: 1; overscroll-behavior: contain; touch-action: pan-y; -webkit-overflow-scrolling: touch; }
+.mch-attachment-queue { display: flex; width: 100%; max-width: 100%; gap: 6px; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; touch-action: pan-x; padding: 2px 0; }
 .mch-attachment-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 180px; padding: 5px 8px; border-radius: 999px; background: var(--m-surface-2); color: var(--m-text-2); font-size: var(--m-fs-xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mch-attachment-chip button { border: 0; background: none; color: var(--m-text-3); padding: 0; }
 .mch-replybar { display: flex; width: 100%; align-items: center; gap: var(--m-sp-2); padding: 6px var(--m-sp-1) 0 var(--m-sp-2); border-left: 3px solid var(--m-brand); }

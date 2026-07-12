@@ -35,6 +35,37 @@ function deviceName(): string {
   return 'Thiết bị khác';
 }
 
+function pushErrorMessage(err: unknown, fallback: string): string {
+  const anyErr = err as any;
+  const serverError = anyErr?.response?.data?.error;
+  if (serverError) return serverError;
+  const name = anyErr?.name;
+  if (name === 'NotAllowedError') {
+    return 'Trình duyệt đã từ chối quyền thông báo. Hãy bật lại trong Cài đặt.';
+  }
+  if (name === 'InvalidStateError') {
+    return 'Service Worker chưa sẵn sàng. Hãy tải lại app rồi thử lại.';
+  }
+  if (name === 'AbortError' || name === 'NetworkError') {
+    return 'Không kết nối được dịch vụ push. Kiểm tra HTTPS/mạng rồi thử lại.';
+  }
+  return fallback;
+}
+
+async function syncSubscriptionToServer(sub: PushSubscription): Promise<void> {
+  const json = sub.toJSON() as { endpoint?: string; keys?: { p256dh?: string; auth?: string } };
+  if (!json.endpoint || !json.keys?.p256dh || !json.keys?.auth) {
+    throw new Error('Trình duyệt trả về Push Subscription không hợp lệ.');
+  }
+  await api.post('/push/subscriptions', {
+    endpoint: json.endpoint,
+    p256dh: json.keys.p256dh,
+    auth: json.keys.auth,
+    userAgent: navigator.userAgent,
+    deviceName: deviceName(),
+  });
+}
+
 export function useWebPush() {
   const supported = ref(
     typeof window !== 'undefined' &&
@@ -82,26 +113,22 @@ export function useWebPush() {
       if (!key) return { ok: false, error: 'Máy chủ chưa cấu hình VAPID key.' };
 
       const reg = await navigator.serviceWorker.ready;
-      // Đã có subscription cũ với key khác → huỷ trước, tránh gửi thất bại về sau.
       const existing = await reg.pushManager.getSubscription();
-      if (existing) await existing.unsubscribe().catch(() => {});
+      if (existing) {
+        await syncSubscriptionToServer(existing);
+        enabled.value = true;
+        return { ok: true };
+      }
 
       const sub = await reg.pushManager.subscribe({
         userVisibleOnly: true,
         applicationServerKey: urlBase64ToUint8Array(key) as BufferSource,
       });
-      const json = sub.toJSON() as { endpoint?: string; keys?: { p256dh?: string; auth?: string } };
-      await api.post('/push/subscriptions', {
-        endpoint: json.endpoint,
-        p256dh: json.keys?.p256dh,
-        auth: json.keys?.auth,
-        userAgent: navigator.userAgent,
-        deviceName: deviceName(),
-      });
+      await syncSubscriptionToServer(sub);
       enabled.value = true;
       return { ok: true };
     } catch (err: any) {
-      return { ok: false, error: err?.response?.data?.error || 'Không bật được thông báo' };
+      return { ok: false, error: pushErrorMessage(err, 'Không bật được thông báo') };
     } finally {
       busy.value = false;
     }

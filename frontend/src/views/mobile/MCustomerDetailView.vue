@@ -109,7 +109,7 @@ watch(id, () => { if (id.value) void load(); });
 
 <style scoped>
 .mcd { display: flex; flex-direction: column; height: 100%; min-height: 0; background: var(--m-bg); }
-.mcd-body { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding-bottom: calc(var(--m-sp-6) + env(safe-area-inset-bottom, 0px)); }
+.mcd-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; touch-action: pan-y; -webkit-overflow-scrolling: touch; padding-bottom: calc(var(--m-sp-6) + env(safe-area-inset-bottom, 0px)); }
 
 .mcd-hero { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: var(--m-sp-6) var(--m-sp-4) var(--m-sp-4); background: var(--m-surface); }
 .mcd-avatar { width: 84px; height: 84px; border-radius: var(--m-r-full); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 34px; font-weight: var(--m-fw-bold); }

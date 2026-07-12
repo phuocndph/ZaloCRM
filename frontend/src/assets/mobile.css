@@ -145,10 +145,35 @@
    PRIMITIVES — class dùng chung cho mọi màn mobile (đặt trong .m-scope)
    ════════════════════════════════════════════════════════════════════════════ */
 .m-scope {
+  width: 100%;
+  max-width: 100vw;
+  min-width: 0;
+  overflow-x: hidden;
+  overscroll-behavior-x: none;
+  touch-action: pan-y;
   font-family: var(--m-font);
   color: var(--m-text);
   -webkit-tap-highlight-color: transparent;
   -webkit-text-size-adjust: 100%;
+}
+
+.m-scope *, .m-scope *::before, .m-scope *::after {
+  box-sizing: border-box;
+}
+
+.mc-scroll,
+.m-scroll {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
+  overscroll-behavior-x: none;
+  overscroll-behavior-y: contain;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  transform: translateZ(0);
+  backface-visibility: hidden;
 }
 
 /* Header dùng chung: cao cố định, safe-area, blur nhẹ */
@@ -214,4 +239,4 @@
 @keyframes m-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
 /* Scrollbar mảnh (Android/desktop PWA) */
-.m-scroll::-webkit-scrollbar { width: 0; height: 0; }
+.m-scroll::-webkit-scrollbar, .mc-scroll::-webkit-scrollbar { width: 0; height: 0; }

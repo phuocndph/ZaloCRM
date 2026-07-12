@@ -14,7 +14,7 @@
 
     <div
       ref="scroller" class="map-list m-scroll"
-      @touchstart.passive="onTouchStart" @touchmove.passive="onTouchMove" @touchend="onTouchEnd"
+      @touchstart.passive="onTouchStart" @touchmove="onTouchMove" @touchend="onTouchEnd"
     >
       <div v-if="pullY > 0" class="map-pull" :style="{ height: pullY + 'px' }">
         {{ pullY > PULL_THRESHOLD ? 'Thả để tải lại' : 'Kéo xuống để tải lại' }}
@@ -95,9 +95,22 @@ function open(a: MAppointment) { router.push({ name: 'M.AppointmentDetail', para
 const scroller = ref<HTMLElement | null>(null);
 const PULL_THRESHOLD = 64;
 const pullY = ref(0);
-let startY = 0; let pulling = false;
-function onTouchStart(e: TouchEvent) { const el = scroller.value; pulling = !!el && el.scrollTop <= 0; startY = e.touches[0].clientY; }
-function onTouchMove(e: TouchEvent) { if (!pulling) return; const dy = e.touches[0].clientY - startY; pullY.value = dy > 0 ? Math.min(dy * 0.5, 90) : 0; }
+let startY = 0;
+let startX = 0; let pulling = false;
+function onTouchStart(e: TouchEvent) { const el = scroller.value; pulling = !!el && el.scrollTop <= 0; startY = e.touches[0].clientY; startX = e.touches[0].clientX; }
+function onTouchMove(e: TouchEvent) {
+  if (!pulling) return;
+  const touch = e.touches[0];
+  const dx = touch.clientX - startX;
+  const dy = touch.clientY - startY;
+  if (Math.abs(dx) > Math.abs(dy)) {
+    pulling = false;
+    pullY.value = 0;
+    return;
+  }
+  pullY.value = dy > 0 ? Math.min(dy * 0.5, 90) : 0;
+  if (pullY.value > 0) e.preventDefault();
+}
 async function onTouchEnd() { if (pullY.value > PULL_THRESHOLD) await load(); pullY.value = 0; pulling = false; }
 
 onMounted(() => {
@@ -120,7 +133,6 @@ onMounted(() => {
 .map-card {
   display: flex; gap: var(--m-sp-3); width: 100%; text-align: left;
   padding: 11px var(--m-sp-4); border: 0; background: none; cursor: pointer; align-items: center; min-height: 74px;
-  animation: m-rise var(--m-dur-base) var(--m-ease) both;
 }
 .map-card + .map-card { box-shadow: inset 0 1px 0 var(--m-border); }
 .map-card:active { background: var(--m-surface-2); }

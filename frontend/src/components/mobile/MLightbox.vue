@@ -47,11 +47,12 @@ const dragY = ref(0);
 const panX = ref(0);
 const panY = ref(0);
 let startY = 0;
+let startX = 0;
 let lastX = 0;
 let lastY = 0;
 let dragging = false;
 
-const imgStyle = computed(() => ({ transform: zoomed.value ? 'translate(' + panX.value + 'px, ' + panY.value + 'px) scale(2)' : 'scale(1)' }));
+const imgStyle = computed(() => ({ transform: zoomed.value ? 'translate(' + panX.value + 'px, ' + panY.value + 'px) scale(2)' : 'scale(1)', transition: zoomed.value ? 'none' : undefined }));
 const dragOpacity = computed(() => (dragY.value > 0 ? Math.max(0.3, 1 - dragY.value / 320) : 1));
 
 watch(() => props.open, (v) => { if (v) { loading.value = true; errored.value = false; zoomed.value = false; dragY.value = 0; panX.value = 0; panY.value = 0; } });
@@ -60,9 +61,9 @@ function close() { emit('close'); }
 function toggleZoom() { zoomed.value = !zoomed.value; if (!zoomed.value) { panX.value = 0; panY.value = 0; } }
 
 // Vuốt XUỐNG để đóng (chỉ khi CHƯA zoom).
-function onTouchStart(e: TouchEvent) { dragging = true; startY = e.touches[0].clientY; lastX = e.touches[0].clientX; lastY = e.touches[0].clientY; }
+function onTouchStart(e: TouchEvent) { if (e.touches.length > 1) { dragging = false; return; } dragging = true; startY = e.touches[0].clientY; startX = e.touches[0].clientX; lastX = e.touches[0].clientX; lastY = e.touches[0].clientY; }
 function onTouchMove(e: TouchEvent) {
-  if (!dragging) return;
+  if (!dragging || e.touches.length > 1) return;
   const touch = e.touches[0];
   if (zoomed.value) {
     panX.value += touch.clientX - lastX;
@@ -72,7 +73,9 @@ function onTouchMove(e: TouchEvent) {
     e.preventDefault();
     return;
   }
+  const dx = touch.clientX - startX;
   const dy = touch.clientY - startY;
+  if (Math.abs(dx) > Math.abs(dy)) return;
   if (dy > 0) { dragY.value = dy; e.preventDefault(); }
 }
 function onTouchEnd() {
@@ -92,7 +95,7 @@ function onTouchEnd() {
 }
 .mlb-btn { width: 44px; height: 44px; display: inline-flex; align-items: center; justify-content: center; border: 0; background: rgba(255,255,255,0.14); color: #fff; border-radius: 999px; text-decoration: none; }
 .mlb-btn:active { background: rgba(255,255,255,0.28); }
-.mlb-stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; transition: transform 0.05s linear; overflow: hidden; }
+.mlb-stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; transition: transform 0.05s linear; overflow: hidden; touch-action: none; overscroll-behavior: none; }
 .mlb-skel { width: 60vw; height: 40vh; border-radius: 12px; }
 .mlb-img { max-width: 100vw; max-height: 100dvh; object-fit: contain; transition: transform var(--m-dur-base, 220ms) var(--m-ease, ease); }
 .mlb-err { display: flex; flex-direction: column; align-items: center; gap: 10px; color: #9aa7b4; font-size: 14px; }

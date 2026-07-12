@@ -48,6 +48,16 @@ export const config = {
   uploadDir: envValue('UPLOAD_DIR') || '/var/lib/zalo-crm/files',
   appUrl: envValue('APP_URL') || 'http://localhost:3000',
 
+  /* --- CORS / realtime origins (2026-07-12) ---
+   * App phục vụ FE + API + Socket.IO CÙNG 1 host. Trước đây ghim cứng origin = APP_URL
+   * (vd http://localhost:3080) → mở trên điện thoại qua IP LAN (http://192.168.x.x:3080)
+   * hay domain khác thì Socket.IO so Origin ≠ APP_URL → CHẶN handshake → mất realtime.
+   * Auth dùng BEARER TOKEN (localStorage), KHÔNG dùng cookie → reflect origin an toàn
+   * (site lạ không đọc được token, không có cookie ambient để lạm dụng).
+   * ALLOWED_ORIGINS: danh sách origin (phẩy) muốn KHÓA chặt; bỏ trống = reflect mọi origin. */
+  allowedOrigins: (envValue('ALLOWED_ORIGINS') || '')
+    .split(',').map((s) => s.trim()).filter(Boolean),
+
   /* --- Storage driver selection (2026-06-20) ---
    * local — lưu file lên ổ đĩa VPS (UPLOAD_DIR), serve qua route tĩnh /files.
    *         Mặc định: chạy ngay, không cần cấu hình R2.
