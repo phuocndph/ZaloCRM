@@ -8,9 +8,10 @@
     transition="scale-transition"
   >
     <template #activator="{ props: actProps }">
-      <button v-bind="actProps" class="icon-tool" title="Gửi sticker">
+      <button v-bind="actProps" class="icon-tool sticker-trigger" title="Gửi sticker">
         <!-- Anh chốt 2026-05-22: Lucide Smile đồng bộ với 7 nút Lucide khác trong toolbar -->
-        <SmileIcon :size="18" :stroke-width="1.5" />
+        <SmileIcon :size="props.iconSize" :stroke-width="1.5" />
+        <span v-if="props.triggerLabel">{{ props.triggerLabel }}</span>
       </button>
     </template>
 
@@ -88,6 +89,14 @@ interface StickerItem {
 const emit = defineEmits<{
   select: [sticker: StickerItem];
 }>();
+
+const props = withDefaults(defineProps<{
+  triggerLabel?: string;
+  iconSize?: number;
+}>(), {
+  triggerLabel: '',
+  iconSize: 18,
+});
 
 const open = ref(false);
 const searchInput = ref('');
@@ -263,3 +272,4 @@ watch(open, watchOpen);
   to { background-position: -100% 0; }
 }
 </style>
+

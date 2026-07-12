@@ -327,6 +327,10 @@ export function useChat() {
   const conversations = ref<Conversation[]>([]);
   const selectedConvId = ref<string | null>(null);
   const messages = ref<Message[]>([]);
+  // Pagination state is deliberately per composable instance. The primary
+  // fetch always starts from the newest page; older pages are merged only on
+  // an explicit request from a view that can preserve its scroll position.
+  const messagePages = new Map<string, number>();
   // Track conv mà messages.value đang chứa — để fetchMessages biết switch conv thì
   // wholesale replace (không merge tin từ conv khác), refresh cùng conv thì merge
   // (giữ tin socket đến trong lúc HTTP fly).
@@ -537,6 +541,7 @@ export function useChat() {
   }
 
   async function fetchMessages(convId: string) {
+    messagePages.set(convId, 1);
     // Switch conv → wholesale reset messages.value để không mix tin từ conv cũ.
     // Nếu cùng conv (refresh) → giữ messages hiện tại cho merge logic phía dưới.
     if (messagesConvId.value !== convId) {
@@ -603,6 +608,45 @@ export function useChat() {
       }
     } finally {
       if (selectedConvId.value === convId) loadingMsgs.value = false;
+    }
+  }
+
+  async function loadOlderMessages(convId: string): Promise<{ added: number; hasMore: boolean }> {
+    if (!isConvCurrent(convId) || conversationPrivateBlocked.value) {
+      return { added: 0, hasMore: false };
+    }
+
+    const nextPage = (messagePages.get(convId) ?? 1) + 1;
+    try {
+      const res = await api.get(`/conversations/${convId}/messages`, {
+        params: { page: nextPage, limit: 100 },
+      });
+      const list = (res.data.messages as RawMessage[]).map(normalizeMessage);
+      const total = Number(res.data.total ?? 0);
+      const hasMore = nextPage * 100 < total;
+
+      // A late response must never add messages to a conversation that the
+      // user has already left. De-duplicate against socket and prior pages.
+      if (!isConvCurrent(convId)) return { added: 0, hasMore: false };
+      const existingIds = new Set(messages.value.map((message) => message.id));
+      const older = list.filter((message) => !existingIds.has(message.id));
+      if (older.length > 0) {
+        messages.value = [...older, ...messages.value].sort(compareMessages);
+        messagesCache.set(convId, [...messages.value]);
+      }
+      messagePages.set(convId, nextPage);
+      return { added: older.length, hasMore };
+    } catch (err) {
+      if (isConversationPrivateError(err)) {
+        if (isConvCurrent(convId)) {
+          messages.value = [];
+          conversationPrivateBlocked.value = true;
+        }
+        messagesCache.delete(convId);
+      } else {
+        console.error('Failed to load older messages:', err);
+      }
+      return { added: 0, hasMore: false };
     }
   }
 
@@ -1284,6 +1328,7 @@ export function useChat() {
     saveAiConfig,
     fetchAiUsage,
     fetchMessages,
+    loadOlderMessages,
     mergeMessages,
     loadMessageContext,
     selectConversation,

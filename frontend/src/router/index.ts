@@ -59,6 +59,14 @@ const routes: RouteRecordRaw[] = [
     children: [
       { path: '', name: 'M.Conversations', component: () => import('@/views/mobile/MConversationsView.vue'), meta: { requiresAuth: true, resource: 'conversation' } },
       { path: 'c/:convId', name: 'M.Chat', component: () => import('@/views/mobile/MChatView.vue'), meta: { requiresAuth: true, resource: 'conversation' } },
+      // Khách hàng mobile (2026-07-12) — tái dùng API /contacts (quyền contact ở backend).
+      { path: 'customers', name: 'M.Customers', component: () => import('@/views/mobile/MCustomersView.vue'), meta: { requiresAuth: true, resource: 'contact' } },
+      { path: 'customers/:id', name: 'M.CustomerDetail', component: () => import('@/views/mobile/MCustomerDetailView.vue'), meta: { requiresAuth: true, resource: 'contact' } },
+      // Lịch hẹn mobile (2026-07-12) — tái dùng /appointments.
+      { path: 'appointments', name: 'M.Appointments', component: () => import('@/views/mobile/MAppointmentsView.vue'), meta: { requiresAuth: true, resource: 'appointment' } },
+      { path: 'appointments/:id', name: 'M.AppointmentDetail', component: () => import('@/views/mobile/MAppointmentDetailView.vue'), meta: { requiresAuth: true, resource: 'appointment' } },
+      // Tổng quan mobile — tái dùng /dashboard/action-hub/me.
+      { path: 'overview', name: 'M.Overview', component: () => import('@/views/mobile/MOverviewView.vue'), meta: { requiresAuth: true } },
       { path: 'settings', name: 'M.Settings', component: () => import('@/views/mobile/MSettingsView.vue'), meta: { requiresAuth: true } },
     ],
   },

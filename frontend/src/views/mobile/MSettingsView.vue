@@ -3,7 +3,9 @@
 <template>
   <div class="mst-wrap">
     <header class="mst-head">
-      <button class="mst-back" aria-label="Quay lại" @click="router.push({ name: 'M.Conversations' })">‹</button>
+      <button class="m-iconbtn mst-back" aria-label="Quay lại" @click="router.push({ name: 'M.Conversations' })">
+        <ChevronLeftIcon :size="26" :stroke-width="2.2" />
+      </button>
       <h1>Cài đặt</h1>
     </header>
 
@@ -21,7 +23,7 @@
 
         <div v-if="!push.supported.value" class="mst-note">
           Thiết bị này chưa hỗ trợ thông báo đẩy.
-          <br />Trên <b>iPhone</b>: mở Safari → Chia sẻ → <b>Thêm vào màn hình chính</b>, rồi mở app từ đó.
+          <br />Trên <b>iPhone</b>: mở Safari -> Chia sẻ -> <b>Thêm vào màn hình chính</b>, rồi mở app từ đó.
           <br />Ngoài ra cần truy cập qua <b>HTTPS</b> (hoặc localhost).
         </div>
 
@@ -29,7 +31,7 @@
           <label class="mst-row">
             <span>
               Nhận thông báo tin nhắn mới
-              <small v-if="push.permission.value === 'denied'">Bạn đã chặn quyền — mở Cài đặt trình duyệt để bật lại</small>
+              <small v-if="push.permission.value === 'denied'">Bạn đã chặn quyền - mở Cài đặt trình duyệt để bật lại</small>
             </span>
             <input
               type="checkbox" :checked="push.enabled.value"
@@ -59,6 +61,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
+import { ChevronLeft as ChevronLeftIcon } from 'lucide-vue-next';
 import { useAuthStore } from '@/stores/auth';
 import { useWebPush } from '@/composables/use-web-push';
 
@@ -91,22 +94,22 @@ onMounted(() => push.refresh());
 </script>
 
 <style scoped>
-.mst-wrap { display: flex; flex-direction: column; height: 100%; background: var(--smax-grey-100, #f5f6fa); }
-.mst-head { flex-shrink: 0; display: flex; align-items: center; gap: 6px; padding: 8px 12px; background: var(--smax-bg, #fff); border-bottom: 1px solid var(--smax-grey-200, #ebedf0); }
-.mst-head h1 { font-size: 18px; margin: 0; }
-.mst-back { border: 0; background: none; font-size: 30px; line-height: 1; padding: 0 8px 4px; color: var(--smax-primary, #1786be); }
-.mst-body { flex: 1; overflow-y: auto; padding: 14px; }
-.mst-user { display: flex; align-items: center; gap: 12px; background: var(--smax-bg, #fff); border-radius: 14px; padding: 14px; }
-.mst-avatar { width: 48px; height: 48px; border-radius: 50%; background: linear-gradient(135deg, #90caf9, #1976d2); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 20px; font-weight: 700; }
-.mst-name { font-weight: 700; }
-.mst-email { font-size: 12.5px; color: var(--smax-grey-700, #5a6478); }
-.mst-group { margin-top: 16px; background: var(--smax-bg, #fff); border-radius: 14px; padding: 6px 14px 10px; }
-.mst-group h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--smax-grey-700, #5a6478); margin: 12px 0 6px; }
-.mst-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 0; border-top: 1px solid var(--smax-grey-100, #f5f6fa); font-size: 15px; }
-.mst-row small { display: block; font-size: 11.5px; color: #b45309; margin-top: 2px; }
-.mst-row input { width: 22px; height: 22px; }
-.mst-note { font-size: 13px; line-height: 1.6; color: var(--smax-grey-700, #5a6478); background: rgba(33,150,243,.07); border-radius: 10px; padding: 10px 12px; margin: 8px 0; }
-.mst-link { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 13px 0; font-size: 15px; border-top: 1px solid var(--smax-grey-100, #f5f6fa); }
-.mst-link.danger { color: #dc2626; font-weight: 600; }
-.mst-msg { margin-top: 14px; text-align: center; font-size: 13px; color: var(--smax-grey-700, #5a6478); }
+.mst-wrap { display: flex; flex-direction: column; height: 100%; background: var(--m-bg); }
+.mst-head { flex-shrink: 0; display: flex; align-items: center; gap: var(--m-sp-1); padding: 0 var(--m-sp-2); padding-top: env(safe-area-inset-top, 0px); min-height: calc(var(--m-header-h) + env(safe-area-inset-top, 0px)); background: var(--m-surface); border-bottom: 1px solid var(--m-border); }
+.mst-head h1 { font-size: var(--m-fs-lg); font-weight: var(--m-fw-bold); color: var(--m-text); margin: 0; }
+.mst-back { color: var(--m-brand); }
+.mst-body { flex: 1; overflow-y: auto; padding: var(--m-sp-4); padding-bottom: calc(var(--m-sp-4) + env(safe-area-inset-bottom, 0px)); }
+.mst-user { display: flex; align-items: center; gap: var(--m-sp-3); background: var(--m-surface); border-radius: var(--m-r-lg); padding: var(--m-sp-4); box-shadow: var(--m-e1); }
+.mst-avatar { width: 52px; height: 52px; border-radius: var(--m-r-full); background: linear-gradient(135deg, #8fb7ff, #1f6fd6); color: #fff; display: flex; align-items: center; justify-content: center; font-size: 21px; font-weight: var(--m-fw-bold); }
+.mst-name { font-weight: var(--m-fw-bold); color: var(--m-text); }
+.mst-email { font-size: var(--m-fs-xs); color: var(--m-text-2); }
+.mst-group { margin-top: var(--m-sp-4); background: var(--m-surface); border-radius: var(--m-r-lg); padding: 4px var(--m-sp-4) var(--m-sp-2); box-shadow: var(--m-e1); }
+.mst-group h2 { font-size: var(--m-fs-xs); font-weight: var(--m-fw-semibold); text-transform: uppercase; letter-spacing: .04em; color: var(--m-text-3); margin: var(--m-sp-3) 0 6px; }
+.mst-row { display: flex; align-items: center; justify-content: space-between; gap: var(--m-sp-3); min-height: var(--m-touch); padding: 10px 0; border-top: 1px solid var(--m-border); font-size: var(--m-fs-md); color: var(--m-text); }
+.mst-row small { display: block; font-size: var(--m-fs-2xs); color: var(--m-warning); margin-top: 2px; }
+.mst-row input { width: 22px; height: 22px; accent-color: var(--m-brand); }
+.mst-note { font-size: var(--m-fs-sm); line-height: 1.6; color: var(--m-text-2); background: var(--m-info-soft); border-radius: var(--m-r-md); padding: var(--m-sp-3); margin: var(--m-sp-2) 0; }
+.mst-link { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 0; min-height: var(--m-touch); font-size: var(--m-fs-md); color: var(--m-text); border-top: 1px solid var(--m-border); }
+.mst-link.danger { color: var(--m-danger); font-weight: var(--m-fw-semibold); }
+.mst-msg { margin-top: var(--m-sp-4); text-align: center; font-size: var(--m-fs-sm); color: var(--m-text-2); }
 </style>

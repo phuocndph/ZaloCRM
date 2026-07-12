@@ -14,6 +14,7 @@ import { useRoute } from 'vue-router';
 import DefaultLayout from '@/layouts/DefaultLayout.vue';
 import AuthLayout from '@/layouts/AuthLayout.vue';
 import MobileLayout from '@/layouts/MobileLayout.vue';
+import BlankLayout from '@/layouts/BlankLayout.vue';
 import ConfirmHost from '@/components/ui/ConfirmHost.vue';
 import { useMobile } from '@/composables/use-mobile';
 import { useAuthStore } from '@/stores/auth';
@@ -27,6 +28,9 @@ const privacy = usePrivacyStore();
 const layout = computed(() => {
   const name = (route.meta?.layout as string) || 'default';
   if (name === 'auth') return AuthLayout;
+  // Route /m tự quản chrome (MobileShell: header + bottom-nav + safe-area) → không bọc
+  // MobileLayout/DefaultLayout để tránh 2 lớp header/nav (2026-07-11, hướng "dùng bộ /m").
+  if (route.path === '/m' || route.path.startsWith('/m/')) return BlankLayout;
   return isMobile.value ? MobileLayout : DefaultLayout;
 });
 

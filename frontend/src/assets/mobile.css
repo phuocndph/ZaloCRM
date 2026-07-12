@@ -1,0 +1,217 @@
+/* ════════════════════════════════════════════════════════════════════════════
+   ZaloCRM — Mobile Design System (PR1, 2026-07-11)
+   Token ngữ nghĩa cho PWA Mobile (/m). Tách khỏi desktop (--smax-*) để tối ưu
+   trải nghiệm 1 tay + nền tối. Dark-mode-ready: đổi theo prefers-color-scheme
+   HOẶC [data-theme] trên <html> (toggle thủ công thắng system).
+
+   Quy ước: mọi token mobile prefix `--m-`. Component mobile CHỈ dùng token này,
+   KHÔNG hardcode màu/px rời rạc → nhịp điệu nhất quán, đổi theme 1 chỗ.
+   ════════════════════════════════════════════════════════════════════════════ */
+
+:root {
+  /* ── Brand (giữ nhận diện teal ZaloCRM, tinh chỉnh cho mobile) ── */
+  --m-brand: #1786be;
+  --m-brand-strong: #0f6fa0;
+  --m-brand-soft: #e6f2f9;
+  --m-brand-ink: #ffffff;          /* chữ trên nền brand */
+
+  /* ── Surface & text (light) ── */
+  --m-bg: #f2f4f7;                 /* nền app (sau card) */
+  --m-surface: #ffffff;            /* card / header / bottom bar */
+  --m-surface-2: #f7f9fb;          /* input, chip nền, hàng nhấn */
+  --m-surface-sunken: #eef1f5;     /* vùng lõm (chat background) */
+  --m-text: #131a24;              /* tiêu đề */
+  --m-text-2: #5b6675;            /* phụ */
+  --m-text-3: #8a95a4;            /* mờ (timestamp, meta) — vẫn ≥ AA trên surface */
+  --m-border: #e7ebf0;
+  --m-border-strong: #d6dce3;
+  --m-overlay: rgba(17, 24, 39, 0.45);   /* nền mờ sau bottom sheet/dialog */
+
+  /* ── Semantic ── */
+  --m-danger: #e5484d;   --m-danger-soft: #fdecec;
+  --m-success: #30a46c;  --m-success-soft: #e7f6ee;
+  --m-warning: #f5a524;  --m-warning-soft: #fdf3e1;
+  --m-info: #3b82f6;     --m-info-soft: #e8f1fe;
+  --m-vip: #b5892a;      --m-vip-soft: #fbf1d8;         /* khách VIP — vàng đồng */
+  --m-badge: #e5484d;    --m-badge-ink: #ffffff;         /* badge chưa đọc */
+  --m-online: #30a46c;
+
+  /* ── Bubble chat (đồng bộ desktop refresh, nhưng token riêng mobile) ── */
+  --m-bubble-in: #ffffff;
+  --m-bubble-in-border: #e7ebf0;
+  --m-bubble-out: #d7e9fb;
+  --m-bubble-out-text: #14304a;
+
+  /* ── Typography — thang cố định (base 16 iOS no-zoom cho input) ── */
+  --m-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --m-fs-2xs: 11px;
+  --m-fs-xs: 12px;
+  --m-fs-sm: 13px;
+  --m-fs-md: 15px;      /* body list */
+  --m-fs-lg: 17px;      /* tiêu đề màn / tên trong chat */
+  --m-fs-xl: 22px;      /* tiêu đề lớn (Tin nhắn) */
+  --m-fs-input: 16px;   /* iOS không auto-zoom khi ≥16 */
+  --m-fw-regular: 400;
+  --m-fw-medium: 500;
+  --m-fw-semibold: 600;
+  --m-fw-bold: 700;
+  --m-lh-tight: 1.25;
+  --m-lh-base: 1.45;
+
+  /* ── Spacing (base 4) ── */
+  --m-sp-1: 4px;  --m-sp-2: 8px;  --m-sp-3: 12px; --m-sp-4: 16px;
+  --m-sp-5: 20px; --m-sp-6: 24px; --m-sp-8: 32px;
+
+  /* ── Radius ── */
+  --m-r-sm: 8px; --m-r-md: 12px; --m-r-lg: 16px; --m-r-xl: 22px; --m-r-full: 999px;
+
+  /* ── Elevation (mobile: bóng nhẹ, khuếch tán — không "nặng") ── */
+  --m-e1: 0 1px 2px rgba(17, 24, 39, 0.06);
+  --m-e2: 0 2px 8px rgba(17, 24, 39, 0.08);
+  --m-e3: 0 8px 28px rgba(17, 24, 39, 0.16);
+  --m-e-up: 0 -2px 12px rgba(17, 24, 39, 0.06);   /* bottom bar / input đáy */
+
+  /* ── Motion — spring-ish, ngắn để cảm giác "nhanh" ── */
+  --m-dur-fast: 140ms;
+  --m-dur-base: 220ms;
+  --m-dur-slow: 320ms;
+  --m-ease: cubic-bezier(0.22, 1, 0.36, 1);        /* ease-out mượt (đích đến nhanh) */
+  --m-ease-in: cubic-bezier(0.4, 0, 1, 1);
+
+  /* ── Touch & layout ── */
+  --m-touch: 44px;                 /* target tối thiểu Apple HIG */
+  --m-header-h: 52px;
+  /* Fallback 0px BẮT BUỘC: nếu thiếu, một số trình duyệt coi giá trị biến là invalid khi
+     dùng trong shorthand → hỏng cả padding. Có 0px → luôn hợp lệ (trình duyệt / không notch). */
+  --m-safe-top: env(safe-area-inset-top, 0px);
+  --m-safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* ════════ DARK MODE ════════
+   Ưu tiên: [data-theme] thủ công > prefers-color-scheme hệ thống.
+   Chuẩn bị kiến trúc — bật bằng cách set <html data-theme="dark"> (hoặc để system). */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --m-brand: #3aa6dc;
+    --m-brand-strong: #2b8fc4;
+    --m-brand-soft: #14303e;
+    --m-brand-ink: #041019;
+
+    --m-bg: #0d1117;
+    --m-surface: #161b22;
+    --m-surface-2: #1c232c;
+    --m-surface-sunken: #0a0e13;
+    --m-text: #e6edf3;
+    --m-text-2: #9aa7b4;
+    --m-text-3: #6e7b89;
+    --m-border: #262d36;
+    --m-border-strong: #333b45;
+    --m-overlay: rgba(0, 0, 0, 0.6);
+
+    --m-danger-soft: #3a1d1f;
+    --m-success-soft: #14301f;
+    --m-warning-soft: #3a2c14;
+    --m-info-soft: #16233a;
+    --m-vip-soft: #33280f;
+
+    --m-bubble-in: #21262d;
+    --m-bubble-in-border: #2b323b;
+    --m-bubble-out: #163758;
+    --m-bubble-out-text: #d6e9fb;
+
+    --m-e1: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --m-e2: 0 2px 8px rgba(0, 0, 0, 0.5);
+    --m-e3: 0 8px 28px rgba(0, 0, 0, 0.6);
+    --m-e-up: 0 -2px 12px rgba(0, 0, 0, 0.4);
+  }
+}
+/* Toggle thủ công (thắng system) */
+:root[data-theme='dark'] {
+  --m-brand: #3aa6dc; --m-brand-strong: #2b8fc4; --m-brand-soft: #14303e; --m-brand-ink: #041019;
+  --m-bg: #0d1117; --m-surface: #161b22; --m-surface-2: #1c232c; --m-surface-sunken: #0a0e13;
+  --m-text: #e6edf3; --m-text-2: #9aa7b4; --m-text-3: #6e7b89;
+  --m-border: #262d36; --m-border-strong: #333b45; --m-overlay: rgba(0,0,0,0.6);
+  --m-danger-soft: #3a1d1f; --m-success-soft: #14301f; --m-warning-soft: #3a2c14; --m-info-soft: #16233a; --m-vip-soft: #33280f;
+  --m-bubble-in: #21262d; --m-bubble-in-border: #2b323b; --m-bubble-out: #163758; --m-bubble-out-text: #d6e9fb;
+  --m-e1: 0 1px 2px rgba(0,0,0,0.4); --m-e2: 0 2px 8px rgba(0,0,0,0.5); --m-e3: 0 8px 28px rgba(0,0,0,0.6); --m-e-up: 0 -2px 12px rgba(0,0,0,0.4);
+}
+
+/* ════════ Reduced motion ════════ */
+@media (prefers-reduced-motion: reduce) {
+  :root { --m-dur-fast: 0ms; --m-dur-base: 0ms; --m-dur-slow: 0ms; }
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   PRIMITIVES — class dùng chung cho mọi màn mobile (đặt trong .m-scope)
+   ════════════════════════════════════════════════════════════════════════════ */
+.m-scope {
+  font-family: var(--m-font);
+  color: var(--m-text);
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* Header dùng chung: cao cố định, safe-area, blur nhẹ */
+.m-header {
+  display: flex; align-items: center; gap: var(--m-sp-3);
+  min-height: var(--m-header-h);
+  padding: 0 var(--m-sp-3);
+  padding-top: var(--m-safe-top);
+  background: color-mix(in srgb, var(--m-surface) 88%, transparent);
+  backdrop-filter: saturate(1.4) blur(12px);
+  -webkit-backdrop-filter: saturate(1.4) blur(12px);
+  border-bottom: 1px solid var(--m-border);
+  position: sticky; top: 0; z-index: 20;
+}
+.m-header__title { font-size: var(--m-fs-lg); font-weight: var(--m-fw-bold); color: var(--m-text); }
+
+/* Nút icon tròn — touch ≥ 44px, ripple-ish active */
+.m-iconbtn {
+  width: var(--m-touch); height: var(--m-touch);
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0; background: transparent; color: var(--m-text-2);
+  border-radius: var(--m-r-full); cursor: pointer; flex-shrink: 0;
+  transition: background var(--m-dur-fast) var(--m-ease), transform var(--m-dur-fast) var(--m-ease);
+}
+.m-iconbtn:active { background: var(--m-surface-2); transform: scale(0.92); }
+.m-iconbtn:focus-visible { outline: 2px solid var(--m-brand); outline-offset: 2px; }
+
+/* Chip meta (giai đoạn, nguồn, trạng thái…) */
+.m-chip {
+  display: inline-flex; align-items: center; gap: 3px;
+  height: 20px; padding: 0 8px;
+  font-size: var(--m-fs-2xs); font-weight: var(--m-fw-semibold);
+  border-radius: var(--m-r-full); white-space: nowrap;
+  background: var(--m-surface-2); color: var(--m-text-2);
+  line-height: 1;
+}
+.m-chip--brand { background: var(--m-brand-soft); color: var(--m-brand-strong); }
+.m-chip--vip { background: var(--m-vip-soft); color: var(--m-vip); }
+.m-chip--danger { background: var(--m-danger-soft); color: var(--m-danger); }
+.m-chip--success { background: var(--m-success-soft); color: var(--m-success); }
+.m-chip--info { background: var(--m-info-soft); color: var(--m-info); }
+.m-chip--warning { background: var(--m-warning-soft); color: #b9770f; }
+
+/* Badge số chưa đọc */
+.m-badge {
+  min-width: 20px; height: 20px; padding: 0 6px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: var(--m-fs-2xs); font-weight: var(--m-fw-bold);
+  background: var(--m-badge); color: var(--m-badge-ink);
+  border-radius: var(--m-r-full); line-height: 1;
+}
+
+/* Skeleton shimmer */
+.m-skel {
+  background: linear-gradient(90deg, var(--m-surface-2) 25%, var(--m-border) 37%, var(--m-surface-2) 63%);
+  background-size: 400% 100%;
+  animation: m-shimmer 1.3s ease infinite;
+  border-radius: var(--m-r-sm);
+}
+@keyframes m-shimmer { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
+
+/* Fade+rise khi màn/hàng xuất hiện */
+@keyframes m-rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+/* Scrollbar mảnh (Android/desktop PWA) */
+.m-scroll::-webkit-scrollbar { width: 0; height: 0; }
