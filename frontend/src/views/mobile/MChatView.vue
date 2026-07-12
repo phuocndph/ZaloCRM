@@ -16,18 +16,30 @@
         <div class="mch-name">{{ title }}</div>
         <div v-if="nickName" class="mch-nick">qua {{ nickName }}</div>
       </div>
-      <button v-if="selectedConv?.contact" class="m-iconbtn mch-pinned" aria-label="Ghi ch&#250; n&#7897;i b&#7897;" @click="showNotes = true"><StickyNoteIcon :size="20" :stroke-width="1.9" /></button>
-      <button v-if="selectedConv?.contact" class="m-iconbtn mch-pinned" aria-label="T&#7841;o l&#7883;ch h&#7865;n" @click="showAppointmentEditor = true"><CalendarClockIcon :size="20" :stroke-width="1.9" /></button>
-      <button class="m-iconbtn mch-pinned" aria-label="T&#236;m trong h&#7897;i tho&#7841;i" @click="openContentSearch">
+      <!-- Header gọn: chỉ Tìm + ⋮ (More). Ghi chú / Lịch hẹn / Nội dung / Ghim gom vào menu. -->
+      <button class="m-iconbtn mch-pinned" aria-label="Tìm trong hội thoại" @click="openContentSearch">
         <SearchIcon :size="20" :stroke-width="1.9" />
       </button>
-      <button class="m-iconbtn mch-pinned" aria-label="N&#7897;i dung &#273;&#227; chia s&#7867;" @click="openContentLibrary">
-        <FolderOpenIcon :size="20" :stroke-width="1.9" />
-      </button>
-      <button class="m-iconbtn mch-pinned" aria-label="Tin đã ghim" @click="openPinned">
-        <PinIcon :size="20" :stroke-width="1.9" />
+      <button class="m-iconbtn mch-pinned" aria-label="Thêm" @click="showHeaderMenu = true">
+        <MoreVerticalIcon :size="20" :stroke-width="1.9" />
       </button>
     </header>
+
+    <!-- Menu header (gom hành động phụ) -->
+    <MBottomSheet v-model="showHeaderMenu" title="Hội thoại">
+      <button class="mch-act-item" @click="openContentLibrary(); showHeaderMenu = false">
+        <FolderOpenIcon :size="20" :stroke-width="1.9" /><span>Nội dung đã chia sẻ</span>
+      </button>
+      <button class="mch-act-item" @click="openPinned(); showHeaderMenu = false">
+        <PinIcon :size="20" :stroke-width="1.9" /><span>Tin đã ghim</span>
+      </button>
+      <button v-if="selectedConv?.contact" class="mch-act-item" @click="showNotes = true; showHeaderMenu = false">
+        <StickyNoteIcon :size="20" :stroke-width="1.9" /><span>Ghi chú nội bộ</span>
+      </button>
+      <button v-if="selectedConv?.contact" class="mch-act-item" @click="showAppointmentEditor = true; showHeaderMenu = false">
+        <CalendarClockIcon :size="20" :stroke-width="1.9" /><span>Tạo lịch hẹn</span>
+      </button>
+    </MBottomSheet>
 
     <div ref="scroller" class="mch-msgs" @scroll.passive="onScroll">
       <div v-if="loadingOlder" class="mch-history-status">Đang tải tin cũ...</div>
@@ -58,7 +70,7 @@
           :is-group="selectedConv?.threadType === 'group'"
           :is-group-start="isGroupStart(i)"
           :is-group-end="isGroupEnd(i)"
-          :sender-avatar-url="avatarUrl"
+          :sender-avatar-url="resolveSenderAvatar(m)"
           :current-user-id="currentUserId"
           @preview-image="onPreviewImage"
           @preview-video="onPreviewVideo"
@@ -74,8 +86,8 @@
         <button v-for="e in QUICK_EMOJIS" :key="e" class="mch-react-btn" @click="onReact(e)">{{ e }}</button>
       </div>
       <button v-if="actionReactionDetails.length" class="mch-act-item" @click="openReactionDetails">
-        <span class="mch-reaction-summary">{{ actionReactionDetails.length }} c&#7843;m x&#250;c</span>
-        <span>Xem chi ti&#7871;t</span>
+        <span class="mch-reaction-summary">{{ actionReactionDetails.length }} cảm xúc</span>
+        <span>Xem chi tiết</span>
       </button>
       <button class="mch-act-item" @click="onReply">
         <ReplyIcon :size="20" :stroke-width="1.9" /><span>Trả lời</span>
@@ -116,14 +128,14 @@
       <div class="mch-forward-foot"><span>Đã chọn {{ forwardTargetIds.size }}</span><button :disabled="forwardTargetIds.size === 0 || forwarding" @click="submitForward">{{ forwarding ? 'Đang chuyển...' : 'Chuyển tiếp' }}</button></div>
     </MBottomSheet>
 
-    <MBottomSheet v-model="showContentLibrary" title="N&#7897;i dung &#273;&#227; chia s&#7867;">
+    <MBottomSheet v-model="showContentLibrary" title="Nội dung đã chia sẻ">
       <div class="mch-content-tabs">
-        <button :class="{ on: contentLibraryTab === 'media' }" @click="setContentLibraryTab('media')">&#7842;nh/Video</button>
-        <button :class="{ on: contentLibraryTab === 'files' }" @click="setContentLibraryTab('files')">T&#7879;p</button>
-        <button :class="{ on: contentLibraryTab === 'links' }" @click="setContentLibraryTab('links')">Li&#234;n k&#7871;t</button>
+        <button :class="{ on: contentLibraryTab === 'media' }" @click="setContentLibraryTab('media')">Ảnh/Video</button>
+        <button :class="{ on: contentLibraryTab === 'files' }" @click="setContentLibraryTab('files')">Tệp</button>
+        <button :class="{ on: contentLibraryTab === 'links' }" @click="setContentLibraryTab('links')">Liên kết</button>
       </div>
       <div v-if="contentLibraryLoading" class="mch-sheet-state">Đang tải...</div>
-      <div v-else-if="!contentLibraryItems.length" class="mch-sheet-state">Ch&#432;a c&#243; n&#7897;i dung ph&#249; h&#7907;p.</div>
+      <div v-else-if="!contentLibraryItems.length" class="mch-sheet-state">Chưa có nội dung phù hợp.</div>
       <button v-for="message in contentLibraryItems" :key="message.id" class="mch-library-item" @click="openContentLibraryMessage(message)">
         <img v-if="contentLibraryTab === 'media' && contentLibraryThumbnail(message)" class="mch-library-thumb" :src="contentLibraryThumbnail(message)" alt="" />
         <span v-else class="mch-library-icon" aria-hidden="true">
@@ -140,21 +152,51 @@
       </button>
     </MBottomSheet>
 
-    <MBottomSheet v-model="showContentSearch" title="T&#236;m trong h&#7897;i tho&#7841;i">
-      <div class="mch-content-search"><SearchIcon :size="18" :stroke-width="2" /><input v-model="contentSearchQuery" type="search" placeholder="Nh&#7853;p n&#7897;i dung c&#7847;n t&#236;m" @input="scheduleContentSearch" /></div>
-      <div v-if="contentSearchLoading" class="mch-sheet-state">Đang tìm...</div>
-      <div v-else-if="contentSearchQuery.trim() && !contentSearchResults.length" class="mch-sheet-state">Kh&#244;ng t&#236;m th&#7845;y tin nh&#7855;n ph&#249; h&#7907;p.</div>
-      <button v-for="message in contentSearchResults" :key="message.id" class="mch-content-result" @click="jumpToSearchResult(message.id)">
-        <span class="mch-content-result-name">{{ message.senderName || 'Tin nhắn' }} - {{ dateLabel(message.sentAt) }}</span>
-        <span class="mch-content-result-text">{{ replyPreview(message.content) }}</span>
-      </button>
-    </MBottomSheet>
+    <!-- Tìm trong hội thoại kiểu Zalo: thanh trên đầu + đếm 1/N + nút ↑/↓ nhảy giữa các kết quả. -->
+    <Teleport to="body">
+      <div v-if="showContentSearch" class="mch-searchbar-wrap">
+        <div class="mch-searchbar">
+          <button class="m-iconbtn" aria-label="Đóng tìm kiếm" @click="closeContentSearch"><ChevronLeftIcon :size="24" :stroke-width="2.2" /></button>
+          <div class="mch-searchbar-input">
+            <SearchIcon :size="17" :stroke-width="2" />
+            <input
+              v-model="contentSearchQuery" type="search" enterkeyhint="next"
+              placeholder="Tìm tin nhắn"
+              @input="scheduleContentSearch"
+              @keydown.enter.prevent="onSearchEnter"
+            />
+            <button v-if="contentSearchQuery" class="mch-searchbar-clear" aria-label="Xóa" @click="clearSearch"><XIcon :size="16" :stroke-width="2.4" /></button>
+          </div>
+          <div v-if="contentSearchResults.length" class="mch-searchbar-nav">
+            <span class="mch-search-count">{{ searchActiveIndex + 1 }}/{{ contentSearchResults.length }}</span>
+            <button class="m-iconbtn" aria-label="Kết quả trước" @click="prevMatch"><ChevronUpIcon :size="22" :stroke-width="2.2" /></button>
+            <button class="m-iconbtn" aria-label="Kết quả sau" @click="nextMatch"><ChevronDownIcon :size="22" :stroke-width="2.2" /></button>
+          </div>
+        </div>
+        <!-- Danh sách kết quả (ẩn sau khi nhảy tới 1 tin để thấy khung chat). -->
+        <div v-if="showSearchList" class="mch-search-panel" @click.self="showSearchList = false">
+          <div class="mch-search-panel-inner">
+            <div v-if="contentSearchLoading" class="mch-sheet-state">Đang tìm...</div>
+            <div v-else-if="contentSearchQuery.trim() && !contentSearchResults.length" class="mch-sheet-state">Không tìm thấy tin nhắn phù hợp.</div>
+            <div v-else-if="!contentSearchQuery.trim()" class="mch-sheet-state">Nhập từ khóa để tìm trong hội thoại này.</div>
+            <button
+              v-for="(message, idx) in contentSearchResults" :key="message.id"
+              class="mch-content-result" :class="{ on: idx === searchActiveIndex }"
+              @click="selectMatch(idx)"
+            >
+              <span class="mch-content-result-name">{{ message.senderName || 'Tin nhắn' }} - {{ dateLabel(message.sentAt) }}</span>
+              <span class="mch-content-result-text" v-html="highlightSnippet(message.content)"></span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
 
-    <MBottomSheet v-model="showReactionDetails" title="C&#7843;m x&#250;c">
-      <div v-if="!actionReactionDetails.length" class="mch-sheet-state">Ch&#432;a c&#243; c&#7843;m x&#250;c.</div>
+    <MBottomSheet v-model="showReactionDetails" title="Cảm xúc">
+      <div v-if="!actionReactionDetails.length" class="mch-sheet-state">Chưa có cảm xúc.</div>
       <div v-for="detail in actionReactionDetails" :key="`${detail.reactorId}-${detail.emoji}`" class="mch-reaction-detail">
         <span class="mch-reaction-emoji">{{ detail.emoji }}</span>
-        <span class="mch-reaction-name">{{ detail.reactorName || 'Ng&#432;&#7901;i d&#249;ng' }}</span>
+        <span class="mch-reaction-name">{{ detail.reactorName || 'Người dùng' }}</span>
       </div>
     </MBottomSheet>
 
@@ -167,16 +209,16 @@
       </button>
     </MBottomSheet>
 
-    <MBottomSheet v-model="showNotes" title="Ghi ch&#250; n&#7897;i b&#7897;"><NotesSection :contact-id="selectedConv?.contact?.id ?? null" :contact-name="selectedConv?.contact?.fullName ?? null" /></MBottomSheet>
+    <MBottomSheet v-model="showNotes" title="Ghi chú nội bộ"><NotesSection :contact-id="selectedConv?.contact?.id ?? null" :contact-name="selectedConv?.contact?.fullName ?? null" /></MBottomSheet>
 
     <AppointmentEditor
       v-model="showAppointmentEditor"
       :prefill-contact="selectedConv?.contact ? { id: selectedConv.contact.id, fullName: selectedConv.contact.fullName, phone: selectedConv.contact.phone, zaloUid: selectedConv.contact.zaloUid ?? null, zaloUsername: (selectedConv.contact as any).zaloUsername ?? null } : null"
       :current-user-id="currentUserId"
-      @created="toast.push('&#272;&#227; t&#7841;o l&#7883;ch h&#7865;n')"
+      @created="toast.push('Đã tạo lịch hẹn')"
     />
 
-    <MBottomSheet v-model="showTemplatePicker" title="M&#7843;u tin nh&#7855;n"><div v-if="templatesLoading" class="mch-sheet-state">&#272;ang t&#7843;i m&#7843;u?</div><div v-else-if="!templates.length" class="mch-sheet-state">Ch&#432;a c&#243; m&#7843;u tin nh&#7855;n.</div><button v-for="template in templates" :key="template.id" class="mch-content-result" @click="selectTemplate(template)"><span class="mch-content-result-name">{{ template.name }}</span><span class="mch-content-result-text">{{ replyPreview(template.content) }}</span></button></MBottomSheet>
+    <MBottomSheet v-model="showTemplatePicker" title="Mảu tin nhắn"><div v-if="templatesLoading" class="mch-sheet-state">Đang tải mảu?</div><div v-else-if="!templates.length" class="mch-sheet-state">Chưa có mảu tin nhắn.</div><button v-for="template in templates" :key="template.id" class="mch-content-result" @click="selectTemplate(template)"><span class="mch-content-result-name">{{ template.name }}</span><span class="mch-content-result-text">{{ replyPreview(template.content) }}</span></button></MBottomSheet>
     <TemplateComposerPreview v-if="showTemplatePreview" :conversation-id="convId" :initial-blocks="templateBlocks" :can-send="!conversationPrivateBlocked" @cancel="showTemplatePreview = false" @done="showTemplatePreview = false" />
 
     <MBottomSheet v-model="showComposerTools" title="Thêm chức năng">
@@ -186,12 +228,25 @@
         <button @click="fileInput?.click(); showComposerTools = false"><PaperclipIcon :size="23" /><span>Tệp</span></button>
         <button @click="showMediaPicker = true; showComposerTools = false"><FolderOpenIcon :size="23" /><span>Kho Media</span></button>
         <button @click="openTemplatePicker(); showComposerTools = false"><BookOpenIcon :size="23" /><span>Mẫu tin</span></button>
-        <StickerPicker trigger-label="Sticker" :icon-size="23" @select="onSendSticker; showComposerTools = false" />
         <button @click="showCopilot = true; showComposerTools = false"><SparklesIcon :size="23" /><span>Trả lời AI</span></button>
       </div>
     </MBottomSheet>
 
     <MBottomSheet v-model="showMediaPicker" title="Kho Media"><div class="mch-media-picker-sheet"><MediaPickerPopover :conversation-id="convId" @close="showMediaPicker = false" @sent="onMediaSent" /></div></MBottomSheet>
+
+    <!-- Gộp Emoji + Sticker vào 1 sheet (1 nút trên thanh soạn). -->
+    <MBottomSheet v-model="showEmojiSticker" title="Biểu cảm">
+      <div class="mch-es-tabs">
+        <button :class="{ on: emojiStickerTab === 'emoji' }" @click="emojiStickerTab = 'emoji'">Emoji</button>
+        <button :class="{ on: emojiStickerTab === 'sticker' }" @click="emojiStickerTab = 'sticker'">Sticker</button>
+      </div>
+      <div v-if="emojiStickerTab === 'emoji'" class="mch-emoji-grid">
+        <button v-for="e in EMOJI_LIST" :key="e" class="mch-emoji-cell" @click="onEmoji(e)">{{ e }}</button>
+      </div>
+      <div v-else class="mch-sticker-tab">
+        <StickerPicker inline @select="(s) => { onSendSticker(s); showEmojiSticker = false; }" />
+      </div>
+    </MBottomSheet>
 
     <AiCopilotPanel :open="showCopilot" :conversation-id="convId" :private-blocked="conversationPrivateBlocked" @close="showCopilot = false" />
 
@@ -227,7 +282,10 @@
           ref="textarea" v-model="text" rows="1" placeholder="Nhập tin nhắn..."
           @keydown.enter.exact.prevent="send" @input="onComposerInput"
         />
-        <EmojiPicker @pick="onEmoji" />
+        <!-- 1 nút gộp Emoji + Sticker (luôn hiện, kể cả khi đang gõ). -->
+        <button type="button" class="m-iconbtn mch-emoji-btn" aria-label="Emoji và Sticker" @click="showEmojiSticker = true">
+          <SmileIcon :size="23" :stroke-width="1.9" />
+        </button>
         <button class="mch-send" :class="{ ready: (text.trim() || pendingFiles.length) && !sendingMsg }" :disabled="(!text.trim() && !pendingFiles.length) || sendingMsg" aria-label="Gửi" @click="send">
           <LoaderIcon v-if="sendingMsg" :size="20" :stroke-width="2.4" class="mch-spin" />
           <SendIcon v-else :size="20" :stroke-width="2" />
@@ -247,14 +305,14 @@ import { api } from '@/api/index';
 import { useChat } from '@/composables/use-chat';
 import { useAuthStore } from '@/stores/auth';
 import { useToast } from '@/composables/use-toast';
+import { groupAvatarStore } from '@/composables/use-group-avatar-cache';
 import {
   ChevronLeft as ChevronLeftIcon, Image as ImageIcon, Send as SendIcon, Loader2 as LoaderIcon, Reply as ReplyIcon, Paperclip as PaperclipIcon, Camera as CameraIcon, CalendarClock as CalendarClockIcon, StickyNote as StickyNoteIcon, Sparkles as SparklesIcon, BookOpen as BookOpenIcon, Plus as PlusIcon,
-  X as XIcon, Copy as CopyIcon, Download as DownloadIcon, RotateCcw as RotateCcwIcon, Trash2 as Trash2Icon, Pin as PinIcon, PinOff as PinOffIcon, Forward as ForwardIcon, Search as SearchIcon, FolderOpen as FolderOpenIcon, Link as LinkIcon,
+  X as XIcon, Copy as CopyIcon, Download as DownloadIcon, RotateCcw as RotateCcwIcon, Trash2 as Trash2Icon, Pin as PinIcon, PinOff as PinOffIcon, Forward as ForwardIcon, Search as SearchIcon, FolderOpen as FolderOpenIcon, Link as LinkIcon, MoreVertical as MoreVerticalIcon, Smile as SmileIcon, ChevronUp as ChevronUpIcon, ChevronDown as ChevronDownIcon,
 } from 'lucide-vue-next';
 import MessageBubble from '@/components/chat/message-bubble.vue';
 import MLightbox from '@/components/mobile/MLightbox.vue';
 import MBottomSheet from '@/components/mobile/MBottomSheet.vue';
-import EmojiPicker from '@/components/chat/EmojiPicker.vue';
 import TypingIndicator from '@/components/chat/typing-indicator.vue';
 import AppointmentEditor from '@/components/appointments/AppointmentEditor.vue';
 import NotesSection from '@/components/chat/NotesSection.vue';
@@ -309,14 +367,32 @@ const avatarUrl = computed(() => (selectedConv.value?.contact as any)?.avatarUrl
 const nickName = computed(() => (selectedConv.value as any)?.zaloAccount?.displayName ?? '');
 const initial = computed(() => (title.value || '?').charAt(0).toUpperCase());
 
-// Gom cụm tin liên tiếp cùng người gửi (giống desktop) để bớt lặp avatar/giờ.
-function isGroupStart(i: number) {
-  const prev = messages.value[i - 1];
-  return !prev || prev.senderType !== messages.value[i].senderType;
+const isGroupThread = computed(() => selectedConv.value?.threadType === 'group');
+
+// Cùng NGƯỜI gửi? Trong NHÓM phải so senderUid (nhiều người cùng senderType='contact');
+// nếu chỉ so senderType thì các người khác nhau bị gom 1 cụm → mất avatar/tên (bug "không
+// biết ai nhắn"). Chat 1-1 giữ so theo senderType như cũ.
+function sameSender(a: any, b: any): boolean {
+  if (!a || !b) return false;
+  if (a.senderType !== b.senderType) return false;
+  if (isGroupThread.value && a.senderType !== 'self') return (a.senderUid || '') === (b.senderUid || '');
+  return true;
 }
-function isGroupEnd(i: number) {
-  const next = messages.value[i + 1];
-  return !next || next.senderType !== messages.value[i].senderType;
+function isGroupStart(i: number) { return !sameSender(messages.value[i - 1], messages.value[i]); }
+function isGroupEnd(i: number) { return !sameSender(messages.value[i + 1], messages.value[i]); }
+
+// Avatar theo TỪNG người gửi (giống desktop): self→null; nhóm→cache theo senderUid; 1-1→avatar KH.
+function resolveSenderAvatar(m: any): string | null {
+  if (!m || m.senderType === 'self') return null;
+  if (isGroupThread.value) return (m.senderUid && groupAvatarStore.get(m.senderUid)) || null;
+  return avatarUrl.value;
+}
+// Nạp avatar nhóm theo lô cho các UID đang hiển thị (đúng nick hội thoại để không đốt quota).
+function primeGroupAvatars() {
+  if (!isGroupThread.value) return;
+  const accountId = (selectedConv.value as any)?.zaloAccount?.id as string | undefined;
+  const uids = Array.from(new Set(messages.value.filter((m: any) => m.senderType !== 'self' && m.senderUid).map((m: any) => m.senderUid as string)));
+  if (uids.length) void groupAvatarStore.fetchBatch(uids, accountId);
 }
 
 function goBack() { router.push({ name: 'M.Conversations' }); }
@@ -450,7 +526,11 @@ const pinnedIds = ref(new Set<string>());
 const pinnedItems = ref<any[]>([]);
 const pinnedLoading = ref(false);
 const showPinned = ref(false);
+const showHeaderMenu = ref(false);
 const showForward = ref(false);
+const showEmojiSticker = ref(false);
+const emojiStickerTab = ref<'emoji' | 'sticker'>('emoji');
+const EMOJI_LIST = ['😀','😁','😂','🤣','😊','😍','😘','😎','🤗','🤔','😐','😴','😌','😜','🤤','😒','😔','🙃','😏','😢','😭','😤','😡','🥵','😱','😳','🤯','😬','🥰','😇','🙂','😉','👍','👎','👌','✌️','🤝','🙏','👏','💪','🔥','❤️','💯','✅','🎉','⭐','☕','🌸'];
 const forwardQuery = ref('');
 const forwardTargetIds = ref(new Set<string>());
 const forwardLoading = ref(false);
@@ -464,6 +544,8 @@ const contentLibraryLoading = ref(false);
 const contentSearchQuery = ref('');
 const contentSearchResults = ref<any[]>([]);
 const contentSearchLoading = ref(false);
+const searchActiveIndex = ref(-1);   // vị trí kết quả đang xem (kiểu Zalo 1/N)
+const showSearchList = ref(true);    // hiện danh sách kết quả; ẩn khi đã nhảy tới 1 tin
 let contentSearchTimer: ReturnType<typeof setTimeout> | undefined;
 const QUICK_EMOJIS = ['❤️', '👍', '😆', '😮', '😢', '😡'];
 const showActions = ref(false);
@@ -556,29 +638,115 @@ function contentLibraryUrlLabel(message: any) {
 
 function openContentSearch() {
   showContentSearch.value = true;
+  showSearchList.value = true;
   contentSearchQuery.value = '';
   contentSearchResults.value = [];
-  window.setTimeout(() => document.querySelector<HTMLInputElement>('.mch-content-search input')?.focus(), 100);
+  searchActiveIndex.value = -1;
+  window.setTimeout(() => document.querySelector<HTMLInputElement>('.mch-searchbar-input input')?.focus(), 100);
+}
+function closeContentSearch() {
+  showContentSearch.value = false;
+  clearKeywordHighlight();
+}
+function clearSearch() {
+  contentSearchQuery.value = '';
+  contentSearchResults.value = [];
+  searchActiveIndex.value = -1;
+  showSearchList.value = true;
+  clearKeywordHighlight();
+  window.setTimeout(() => document.querySelector<HTMLInputElement>('.mch-searchbar-input input')?.focus(), 30);
 }
 function scheduleContentSearch() {
   clearTimeout(contentSearchTimer);
   const query = contentSearchQuery.value.trim();
-  if (!query) { contentSearchResults.value = []; contentSearchLoading.value = false; return; }
+  showSearchList.value = true;
+  if (!query) { contentSearchResults.value = []; searchActiveIndex.value = -1; contentSearchLoading.value = false; clearKeywordHighlight(); return; }
   contentSearchTimer = setTimeout(() => { void runContentSearch(query); }, 280);
 }
 async function runContentSearch(query: string) {
   if (!convId.value || query !== contentSearchQuery.value.trim()) return;
   contentSearchLoading.value = true;
   try {
-    const page = await searchConversationContent(convId.value, { q: query, type: 'all', limit: 30 });
-    if (query === contentSearchQuery.value.trim()) contentSearchResults.value = page.items;
+    // Chỉ tìm TIN TEXT (như Zalo) — không trả tin ảnh/file/link (tránh hiện JSON thô).
+    const page = await searchConversationContent(convId.value, { q: query, type: 'text', limit: 50 });
+    if (query === contentSearchQuery.value.trim()) {
+      contentSearchResults.value = page.items;
+      searchActiveIndex.value = page.items.length ? 0 : -1;
+    }
   } catch {
-    if (query === contentSearchQuery.value.trim()) contentSearchResults.value = [];
+    if (query === contentSearchQuery.value.trim()) { contentSearchResults.value = []; searchActiveIndex.value = -1; }
   } finally {
     if (query === contentSearchQuery.value.trim()) contentSearchLoading.value = false;
   }
 }
-function jumpToSearchResult(messageId: string) { showContentSearch.value = false; void jumpToReply(messageId); }
+// Enter = nhảy tới kết quả kế (giống ↓). Nếu chưa nhảy lần nào thì tới kết quả đầu.
+function onSearchEnter() {
+  if (!contentSearchResults.value.length) return;
+  if (!showSearchList.value) { nextMatch(); return; }
+  selectMatch(searchActiveIndex.value >= 0 ? searchActiveIndex.value : 0);
+}
+function selectMatch(idx: number) {
+  if (idx < 0 || idx >= contentSearchResults.value.length) return;
+  searchActiveIndex.value = idx;
+  void goToMatch();
+}
+function nextMatch() {
+  const n = contentSearchResults.value.length;
+  if (!n) return;
+  searchActiveIndex.value = (searchActiveIndex.value + 1 + n) % n;
+  void goToMatch();
+}
+function prevMatch() {
+  const n = contentSearchResults.value.length;
+  if (!n) return;
+  searchActiveIndex.value = (searchActiveIndex.value - 1 + n) % n;
+  void goToMatch();
+}
+async function goToMatch() {
+  const msg = contentSearchResults.value[searchActiveIndex.value];
+  if (!msg) return;
+  showSearchList.value = false;             // thu gọn để thấy khung chat
+  await jumpToReply(msg.id);
+  applyKeywordHighlight(contentSearchQuery.value.trim());
+}
+
+// ---- Highlight từ khóa (dùng CSS Custom Highlight API — không đụng DOM tin nhắn) ----
+function clearKeywordHighlight() {
+  try { (window as any).CSS?.highlights?.delete('mch-kw'); } catch { /* noop */ }
+}
+function applyKeywordHighlight(term: string) {
+  const CSSg: any = (window as any).CSS;
+  if (!term || !CSSg?.highlights || typeof (window as any).Highlight === 'undefined') return;
+  clearKeywordHighlight();
+  const root = scroller.value;
+  if (!root) return;
+  const needle = term.toLowerCase();
+  const hl = new (window as any).Highlight();
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let node: Node | null;
+  while ((node = walker.nextNode())) {
+    const text = node.nodeValue || '';
+    const hay = text.toLowerCase();
+    let from = 0; let at: number;
+    while ((at = hay.indexOf(needle, from)) !== -1) {
+      const range = document.createRange();
+      range.setStart(node, at);
+      range.setEnd(node, at + needle.length);
+      hl.add(range);
+      from = at + needle.length;
+    }
+  }
+  CSSg.highlights.set('mch-kw', hl);
+}
+function highlightSnippet(value: string | null) {
+  const raw = replyPreview(value);
+  const term = contentSearchQuery.value.trim();
+  const escaped = raw.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] as string));
+  if (!term) return escaped;
+  const safeTerm = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c] as string));
+  try { return escaped.replace(new RegExp(safeTerm, 'gi'), (m) => `<mark class="mch-kw-mark">${m}</mark>`); }
+  catch { return escaped; }
+}
 const actionMediaUrl = computed(() => {
   const m = actionMsg.value;
   if (!m || m.redacted) return null;
@@ -745,6 +913,7 @@ onMounted(async () => {
   registerSocketListeners(getSocket());
   void refreshPinned();
   restoreDraft(convId.value);
+  primeGroupAvatars();
   await scrollBottom();
   startPresence();
   window.addEventListener('chat:insert-suggestion', onCopilotInsert as EventListener);
@@ -762,17 +931,19 @@ onUnmounted(() => {
   stopPresence();
   clearReplyTo();
   clearTimeout(contentSearchTimer);
+  clearKeywordHighlight();
   window.removeEventListener('chat:insert-suggestion', onCopilotInsert as EventListener);
   window.visualViewport?.removeEventListener('resize', syncViewport);
   window.visualViewport?.removeEventListener('scroll', syncViewport);
 });
 
 watch(() => messages.value.length, (next, previous) => {
+  primeGroupAvatars();
   if (!previous || nearBottom.value) void scrollBottom(true);
   else if (next > previous) unseenCount.value += next - previous;
 });
 watch(text, saveDraft);
-watch(convId, async (id) => { if (id) { hasOlderMessages.value = true; unseenCount.value = 0; await selectConversation(id); void refreshPinned(); restoreDraft(id); await scrollBottom(); startPresence(); } });
+watch(convId, async (id) => { if (id) { hasOlderMessages.value = true; unseenCount.value = 0; await selectConversation(id); void refreshPinned(); restoreDraft(id); primeGroupAvatars(); await scrollBottom(); startPresence(); } });
 </script>
 
 <style scoped>
@@ -842,6 +1013,24 @@ watch(convId, async (id) => { if (id) { hasOlderMessages.value = true; unseenCou
 .mch-content-result:active { background: var(--m-surface-2); }
 .mch-content-result-name { color: var(--m-text-3); font-size: var(--m-fs-xs); }
 .mch-content-result-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--m-fs-sm); }
+.mch-content-result.on { background: var(--m-brand-soft); }
+
+/* Thanh tìm kiếm kiểu Zalo (overlay trên đầu) */
+.mch-searchbar-wrap { position: fixed; top: 0; left: 0; right: 0; z-index: 3500; display: flex; flex-direction: column; }
+.mch-searchbar {
+  display: flex; align-items: center; gap: 6px;
+  padding: calc(env(safe-area-inset-top, 0px) + 6px) 8px 6px;
+  background: var(--m-surface); border-bottom: 1px solid var(--m-border);
+  box-shadow: 0 2px 10px rgba(0,0,0,.08);
+}
+.mch-searchbar-input { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; padding: 0 10px; min-height: 40px; border-radius: var(--m-r-full); background: var(--m-surface-2); color: var(--m-text-3); }
+.mch-searchbar-input input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--m-text); font: inherit; }
+.mch-searchbar-clear { display: inline-flex; align-items: center; justify-content: center; border: 0; background: none; color: var(--m-text-3); padding: 2px; cursor: pointer; }
+.mch-searchbar-nav { display: flex; align-items: center; gap: 2px; flex-shrink: 0; }
+.mch-search-count { font-size: var(--m-fs-xs); font-weight: var(--m-fw-semibold); color: var(--m-text-2); min-width: 34px; text-align: center; font-variant-numeric: tabular-nums; }
+.mch-search-panel { flex: 1; min-height: 0; background: rgba(0,0,0,.35); overflow: hidden; }
+.mch-search-panel-inner { background: var(--m-surface); max-height: 62dvh; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.mch-kw-mark { background: #ffd54a; color: #1a1a1a; border-radius: 3px; padding: 0 1px; }
 .mch-library-item { display: flex; align-items: center; gap: var(--m-sp-3); width: 100%; min-height: 74px; border: 0; border-top: 1px solid var(--m-border); padding: 10px var(--m-sp-4); background: none; color: var(--m-text); text-align: left; }
 .mch-library-item:active { background: var(--m-surface-2); }
 .mch-library-thumb, .mch-library-icon { width: 54px; height: 54px; flex: 0 0 54px; border-radius: var(--m-r-md); }
@@ -876,6 +1065,16 @@ watch(convId, async (id) => { if (id) { hasOlderMessages.value = true; unseenCou
   background: var(--m-surface); border-top: 1px solid var(--m-border); box-shadow: var(--m-e-up);
 }
 .mch-composer-row { display: flex; width: 100%; align-items: flex-end; gap: var(--m-sp-1); }
+.mch-emoji-btn { color: var(--m-text-2); flex-shrink: 0; }
+
+/* Sheet gộp Emoji + Sticker */
+.mch-es-tabs { display: flex; gap: var(--m-sp-2); padding: 0 var(--m-sp-4) var(--m-sp-2); }
+.mch-es-tabs button { flex: 1; border: 0; background: var(--m-surface-2); color: var(--m-text-2); border-radius: var(--m-r-full); padding: 8px 0; font-size: var(--m-fs-sm); font-weight: var(--m-fw-semibold); cursor: pointer; }
+.mch-es-tabs button.on { background: var(--m-brand); color: var(--m-brand-ink); }
+.mch-emoji-grid { display: grid; grid-template-columns: repeat(8, 1fr); gap: 2px; padding: 4px var(--m-sp-3) var(--m-sp-3); max-height: 44dvh; overflow-y: auto; }
+.mch-emoji-cell { border: 0; background: none; font-size: 27px; line-height: 1; padding: 7px 0; border-radius: var(--m-r-sm); cursor: pointer; }
+.mch-emoji-cell:active { background: var(--m-surface-2); transform: scale(0.9); }
+.mch-sticker-tab { padding: var(--m-sp-3) var(--m-sp-4) var(--m-sp-4); }
 .mch-tool-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; padding: 8px var(--m-sp-4) 16px; }
 .mch-tool-grid button, .mch-tool-grid :deep(.sticker-trigger) { width: 100%; min-height: 68px; border: 0; border-radius: var(--m-r-lg); background: var(--m-surface-2); color: var(--m-text); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 5px; font: inherit; font-size: var(--m-fs-xs); }
 .mch-tool-grid :deep(.sticker-trigger) { padding: 0; box-shadow: none; }
@@ -912,5 +1111,10 @@ watch(convId, async (id) => { if (id) { hasOlderMessages.value = true; unseenCou
 .mch-send:disabled { cursor: default; }
 .mch-spin { animation: mch-rot 0.7s linear infinite; }
 @keyframes mch-rot { to { transform: rotate(360deg); } }
+</style>
+
+<!-- Không scoped: ::highlight() tô từ khóa trong khung chat (CSS Custom Highlight API). -->
+<style>
+::highlight(mch-kw) { background-color: #ffd54a; color: #1a1a1a; }
 </style>
 

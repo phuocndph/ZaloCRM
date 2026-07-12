@@ -815,11 +815,14 @@ const videoSize = computed(() => {
 
 function extractMediaUrl(_kind: string, content: string | null): string | null {
   if (!content) return null;
-  if (content.startsWith('http')) return content;
+  // Chấp nhận cả URL tương đối `/files/...` (driver local sau commit media tương đối) —
+  // đồng bộ với getImageUrl/getVideoUrl. Trước đây ép startsWith('http') làm voice/gif
+  // trả null → "Tin thoại (không tải được)".
+  if (content.startsWith('http') || content.startsWith('/')) return content;
   const p = safeParse(content);
   if (!p) return null;
   const url = (p.hdUrl as string) || (p.href as string) || (p.url as string) || (p.normalUrl as string) || '';
-  return typeof url === 'string' && url.startsWith('http') ? url : null;
+  return typeof url === 'string' && (url.startsWith('http') || url.startsWith('/')) ? url : null;
 }
 
 // E08 — anh chốt 2026-05-21: video play TRONG popup modal, KHÔNG mở tab mới.

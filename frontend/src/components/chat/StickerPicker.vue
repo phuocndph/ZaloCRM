@@ -1,21 +1,8 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2026 Nguyễn Tiến Lộc -->
 <template>
-  <v-menu
-    v-model="open"
-    :close-on-content-click="false"
-    location="top start"
-    transition="scale-transition"
-  >
-    <template #activator="{ props: actProps }">
-      <button v-bind="actProps" class="icon-tool sticker-trigger" title="Gửi sticker">
-        <!-- Anh chốt 2026-05-22: Lucide Smile đồng bộ với 7 nút Lucide khác trong toolbar -->
-        <SmileIcon :size="props.iconSize" :stroke-width="1.5" />
-        <span v-if="props.triggerLabel">{{ props.triggerLabel }}</span>
-      </button>
-    </template>
-
-    <div class="sticker-picker">
+  <!-- inline: render thẳng bảng sticker (dùng cho bottom sheet mobile). -->
+  <div v-if="props.inline" class="sticker-picker sticker-picker--inline">
       <!-- Search bar -->
       <div class="sp-search">
         <v-icon size="14" class="mr-1">mdi-magnify</v-icon>
@@ -68,6 +55,70 @@
         <div v-if="!loading && stickers.length === 0" class="sp-empty">Không tìm thấy sticker</div>
       </div>
     </div>
+
+  <!-- Bản popup (desktop toolbar): trigger + v-menu. -->
+  <v-menu
+    v-else
+    v-model="open"
+    :close-on-content-click="false"
+    location="top start"
+    transition="scale-transition"
+  >
+    <template #activator="{ props: actProps }">
+      <button v-bind="actProps" class="icon-tool sticker-trigger" title="Gửi sticker">
+        <!-- Anh chốt 2026-05-22: Lucide Smile đồng bộ với 7 nút Lucide khác trong toolbar -->
+        <SmileIcon :size="props.iconSize" :stroke-width="1.5" />
+        <span v-if="props.triggerLabel">{{ props.triggerLabel }}</span>
+      </button>
+    </template>
+
+    <div class="sticker-picker">
+      <div class="sp-search">
+        <v-icon size="14" class="mr-1">mdi-magnify</v-icon>
+        <input
+          v-model="searchInput"
+          name="sticker-search-menu"
+          autocomplete="off"
+          placeholder="Tìm sticker (vd: vui, buồn, yêu...)"
+          @keydown.enter="onSearch"
+        />
+        <button v-if="searchInput" class="sp-clear" @click="searchInput = ''; onSearch()">×</button>
+      </div>
+      <div class="sp-chips">
+        <button
+          v-for="kw in quickKeywords"
+          :key="kw"
+          class="sp-chip"
+          :class="{ active: currentKeyword === kw }"
+          @click="searchInput = kw; onSearch()"
+        >{{ kw }}</button>
+      </div>
+      <div class="sp-grid">
+        <div v-if="loading" class="sp-loading">
+          <v-progress-circular size="20" width="2" indeterminate />
+        </div>
+        <button
+          v-for="s in stickers"
+          v-else
+          :key="s.id"
+          class="sp-item"
+          :title="`Sticker ${s.id}`"
+          @click="onSelect(s)"
+        >
+          <div
+            v-if="s.spriteUrl && s.totalFrames > 1"
+            class="sp-anim"
+            :style="{
+              backgroundImage: `url(${s.spriteUrl})`,
+              backgroundSize: `${64 * s.totalFrames}px 64px`,
+              animation: `sticker-play ${s.duration * s.totalFrames}ms steps(${s.totalFrames}) infinite`,
+            }"
+          ></div>
+          <img v-else :src="s.staticUrl" alt="sticker" />
+        </button>
+        <div v-if="!loading && stickers.length === 0" class="sp-empty">Không tìm thấy sticker</div>
+      </div>
+    </div>
   </v-menu>
 </template>
 
@@ -93,9 +144,11 @@ const emit = defineEmits<{
 const props = withDefaults(defineProps<{
   triggerLabel?: string;
   iconSize?: number;
+  inline?: boolean;
 }>(), {
   triggerLabel: '',
   iconSize: 18,
+  inline: false,
 });
 
 const open = ref(false);
@@ -141,8 +194,11 @@ function watchOpen() {
   }
 }
 // Watch via simple effect — Vue's watch import overhead avoided since we toggle ourselves
-import { watch } from 'vue';
+import { watch, onMounted } from 'vue';
 watch(open, watchOpen);
+
+// Inline (bottom sheet): load ngay khi gắn vì không có sự kiện mở menu.
+onMounted(() => { if (props.inline) void loadStickers('vui'); });
 </script>
 
 <style scoped>
@@ -177,6 +233,15 @@ watch(open, watchOpen);
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
   padding: 8px;
 }
+/* Inline (bottom sheet mobile): tràn ngang, không nền/khung riêng. */
+.sticker-picker--inline {
+  width: 100%;
+  background: transparent;
+  box-shadow: none;
+  border-radius: 0;
+  padding: 0;
+}
+.sticker-picker--inline .sp-grid { max-height: 42dvh; }
 .sp-search {
   display: flex;
   align-items: center;
