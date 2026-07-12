@@ -23,11 +23,12 @@ import fastifyMultipart from '@fastify/multipart';
 import fastifyFormbody from '@fastify/formbody';
 import { Server } from 'socket.io';
 import path from 'node:path';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, createReadStream } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { Prisma } from '@prisma/client';
 import { config } from './config/index.js';
+import { ensureBrowserAudio, REMUX_AUDIO_EXTS } from './shared/media/audio-remux.js';
 import { prisma } from './shared/database/prisma-client.js';
 import { logger } from './shared/utils/logger.js';
 import { authRoutes } from './modules/auth/auth-routes.js';
@@ -210,6 +211,39 @@ async function bootstrap() {
       cacheControl: true,
       maxAge: '365d',
       immutable: true,
+    });
+
+    // Voice Zalo (.aac ADTS thô / .amr): trình duyệt phát kém (0:00, không phát). Chặn TRƯỚC
+    // static, remux sang .m4a (cache đĩa, lossless) rồi phục vụ audio/mp4. onRequest gửi reply
+    // và return → static wildcard không chạy. File thiếu/remux lỗi → bỏ qua cho static tự 404.
+    app.addHook('onRequest', async (request, reply) => {
+      if (request.method !== 'GET' && request.method !== 'HEAD') return;
+      const urlPath = request.url.split('?')[0];
+      if (!urlPath.startsWith('/files/')) return;
+      const ext = urlPath.split('.').pop()?.toLowerCase() ?? '';
+      if (!REMUX_AUDIO_EXTS.has(ext)) return;
+      let rel: string;
+      try { rel = decodeURIComponent(urlPath.slice('/files/'.length)); } catch { return; }
+      if (rel.includes('..')) return; // chặn path traversal
+      const srcAbs = path.join(config.uploadDir, rel);
+      const playable = await ensureBrowserAudio(srcAbs);
+      if (!playable) return; // để static xử lý (404 / phục vụ file gốc)
+      reply
+        .header('Content-Type', 'audio/mp4')
+        .header('Cache-Control', 'public, max-age=31536000, immutable')
+        .header('Access-Control-Allow-Origin', config.appUrl);
+      if (request.method === 'HEAD') return reply.send();
+      return reply.send(createReadStream(playable));
+    });
+
+    // MIME chuẩn cho các audio phục vụ trực tiếp (mp3/m4a/ogg/wav) — .aac/.amr đã remux ở trên.
+    const AUDIO_MIME: Record<string, string> = {
+      m4a: 'audio/mp4', mp3: 'audio/mpeg', ogg: 'audio/ogg', oga: 'audio/ogg', wav: 'audio/wav',
+    };
+    app.addHook('onSend', async (request, reply) => {
+      if (!request.url.startsWith('/files/')) return;
+      const ext = request.url.split('?')[0].split('.').pop()?.toLowerCase() ?? '';
+      if (AUDIO_MIME[ext]) reply.header('Content-Type', AUDIO_MIME[ext]);
     });
   }
 
