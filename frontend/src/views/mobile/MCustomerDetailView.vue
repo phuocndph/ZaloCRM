@@ -86,7 +86,15 @@ const statusStyle = computed(() => {
 });
 
 function fmtDate(iso: string) { return new Date(iso).toLocaleString('vi-VN', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }); }
-function goBack() { router.push({ name: 'M.Customers' }); }
+function goBack() {
+  const from = route.query.from;
+  const convId = typeof route.query.convId === 'string' ? route.query.convId : '';
+  if (from === 'chat' && convId) {
+    router.push({ name: 'M.Chat', params: { convId } });
+    return;
+  }
+  router.push({ name: 'M.Customers' });
+}
 const conversationId = computed(() => {
   const c = contact.value as any;
   return c?.conversationId || c?.latestConversationId || c?.conversation?.id || null;

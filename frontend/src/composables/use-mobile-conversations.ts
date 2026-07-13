@@ -41,6 +41,8 @@ export function useMobileConversations() {
   const total = ref(0);
   const search = ref('');
   const unreadOnly = ref(false);
+  const unrepliedOnly = ref(false);
+  const tagFilter = ref('');
   const error = ref<string | null>(null);
 
   const hasMore = computed(() => items.value.length < total.value);
@@ -62,6 +64,9 @@ export function useMobileConversations() {
   function params(p: number) {
     const q: Record<string, string> = { page: String(p), limit: String(PAGE_SIZE) };
     if (search.value.trim()) q.search = search.value.trim();
+    if (unreadOnly.value) q.unread = 'true';
+    if (unrepliedOnly.value) q.unreplied = 'true';
+    if (tagFilter.value) q.tags = tagFilter.value;
     return q;
   }
 
@@ -175,7 +180,7 @@ export function useMobileConversations() {
   }
 
   return {
-    items, displayItems, loading, loadingMore, total, search, unreadOnly, error,
+    items, displayItems, loading, loadingMore, total, search, unreadOnly, unrepliedOnly, tagFilter, error,
     hasMore, totalUnread, isUnread,
     load, loadMore, applyIncoming, markRead, setPinned, setManualUnread,
   };

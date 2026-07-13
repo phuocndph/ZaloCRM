@@ -770,6 +770,9 @@ function buildChat() {
           conv = convDetail.data;
         } else {
           if (convDetail.data.contact) conv.contact = convDetail.data.contact;
+          if (convDetail.data.groupMemberAvatars !== undefined) {
+            conv.groupMemberAvatars = convDetail.data.groupMemberAvatars;
+          }
           // friendship per-pair (counter, leadScore, status RIÊNG cặp nick×KH).
           // KHÔNG fallback contact aggregate vì các trường này khác semantics.
           // 2026-06-11 FIX (Bug auto-tag biến mất khi click): endpoint detail trả friendship

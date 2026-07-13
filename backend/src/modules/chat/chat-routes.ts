@@ -1132,6 +1132,34 @@ export async function chatRoutes(app: FastifyInstance) {
       friendship = f;
     }
 
+    let groupMemberAvatars: Array<{ uid: string; name: string | null; avatarUrl: string }> = [];
+    if (conversation.threadType === 'group' && conversation.externalThreadId) {
+      const rows = await prisma.groupMember.findMany({
+        where: {
+          zaloAccountId: conversation.zaloAccountId,
+          groupId: conversation.externalThreadId,
+          avatarUrl: { not: null },
+        },
+        select: {
+          memberUid: true,
+          displayName: true,
+          zaloName: true,
+          avatarUrl: true,
+          lastSeenAt: true,
+        },
+        orderBy: { lastSeenAt: 'desc' },
+        take: 8,
+      });
+      for (const row of rows) {
+        if (!row.avatarUrl || groupMemberAvatars.some((item) => item.uid === row.memberUid)) continue;
+        groupMemberAvatars.push({
+          uid: row.memberUid,
+          name: row.displayName || row.zaloName || null,
+          avatarUrl: row.avatarUrl,
+        });
+        if (groupMemberAvatars.length >= 4) break;
+      }
+    }
     // PRIVACY 2026-06-11 — redact PII contact + alias friend nếu nick main & viewer
     // không phải chính chủ đã unlock (audit C4: trước đây trả full PII).
     const { buildPrivacyContext, canSeeConversationContent, redactContact, redactFriend } =
@@ -1159,6 +1187,7 @@ export async function chatRoutes(app: FastifyInstance) {
       isPinned: conversation.pins.length > 0,
       userState,
       friendship: outFriendship,
+      groupMemberAvatars,
     };
   });
 

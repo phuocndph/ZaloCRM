@@ -1,43 +1,58 @@
-<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+﻿<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2026 Nguyễn Tiến Lộc -->
 <!-- Màn chat mobile. Tái dùng useChat (API + socket + optimistic send) và
      message-bubble.vue (render ảnh/sticker/reply/thu hồi) — không viết lại renderer. -->
 <template>
   <div class="mch-wrap">
     <header class="mch-head">
-      <button class="m-iconbtn mch-back" aria-label="Quay lại" @click="goBack">
+      <button class="m-iconbtn mch-back" aria-label="Quay l?i" @click="goBack">
         <ChevronLeftIcon :size="26" :stroke-width="2.2" />
       </button>
-      <div class="mch-avatar">
-        <img v-if="avatarUrl" :src="avatarUrl" alt="" />
-        <span v-else>{{ initial }}</span>
-      </div>
+      <Avatar
+        class="mch-avatar"
+        :src="avatarUrl"
+        :name="title"
+        :size="38"
+        :is-group="isGroupThread"
+        :group-members-count="selectedConv?.groupMembersCount ?? null"
+        :group-member-avatars="selectedConv?.groupMemberAvatars || []"
+        :gradient-seed="selectedConv?.id || title"
+        role="button"
+        tabindex="0"
+        :title="isGroupThread ? title : 'Th�ng tin kh�ch h�ng'"
+        @click="openCustomerProfile"
+        @keydown.enter.prevent="openCustomerProfile"
+      />
       <div class="mch-info">
         <div class="mch-name">{{ title }}</div>
         <div v-if="nickName" class="mch-nick">qua {{ nickName }}</div>
       </div>
-      <!-- Header gọn: chỉ Tìm + ⋮ (More). Ghi chú / Lịch hẹn / Nội dung / Ghim gom vào menu. -->
-      <button class="m-iconbtn mch-pinned" aria-label="Tìm trong hội thoại" @click="openContentSearch">
+      <button class="m-iconbtn mch-pinned" aria-label="T�m trong h?i tho?i" @click="openContentSearch">
         <SearchIcon :size="20" :stroke-width="1.9" />
       </button>
-      <button class="m-iconbtn mch-pinned" aria-label="Thêm" @click="showHeaderMenu = true">
+      <button class="m-iconbtn mch-pinned" aria-label="Th�m" @click="showHeaderMenu = true">
         <MoreVerticalIcon :size="20" :stroke-width="1.9" />
       </button>
     </header>
 
-    <!-- Menu header (gom hành động phụ) -->
-    <MBottomSheet v-model="showHeaderMenu" title="Hội thoại">
+    <MBottomSheet v-model="showHeaderMenu" title="H?i tho?i">
       <button class="mch-act-item" @click="openContentLibrary(); showHeaderMenu = false">
-        <FolderOpenIcon :size="20" :stroke-width="1.9" /><span>Nội dung đã chia sẻ</span>
+        <FolderOpenIcon :size="20" :stroke-width="1.9" /><span>N?i dung d� chia s?</span>
       </button>
       <button class="mch-act-item" @click="openPinned(); showHeaderMenu = false">
-        <PinIcon :size="20" :stroke-width="1.9" /><span>Tin đã ghim</span>
+        <PinIcon :size="20" :stroke-width="1.9" /><span>Tin d� ghim</span>
+      </button>
+      <button v-if="selectedConv?.contact" class="mch-act-item" @click="openCustomerProfile(); showHeaderMenu = false">
+        <UserIcon :size="20" :stroke-width="1.9" /><span>Th�ng tin kh�ch h�ng</span>
+      </button>
+      <button v-if="selectedConv?.friendship?.id" class="mch-act-item" @click="showTags = true; showHeaderMenu = false">
+        <TagIcon :size="20" :stroke-width="1.9" /><span>Tag</span>
       </button>
       <button v-if="selectedConv?.contact" class="mch-act-item" @click="showNotes = true; showHeaderMenu = false">
-        <StickyNoteIcon :size="20" :stroke-width="1.9" /><span>Ghi chú nội bộ</span>
+        <StickyNoteIcon :size="20" :stroke-width="1.9" /><span>Ghi ch� n?i b?</span>
       </button>
       <button v-if="selectedConv?.contact" class="mch-act-item" @click="showAppointmentEditor = true; showHeaderMenu = false">
-        <CalendarClockIcon :size="20" :stroke-width="1.9" /><span>Tạo lịch hẹn</span>
+        <CalendarClockIcon :size="20" :stroke-width="1.9" /><span>T?o l?ch h?n</span>
       </button>
     </MBottomSheet>
 
@@ -265,6 +280,11 @@
       </button>
     </MBottomSheet>
 
+    <MBottomSheet v-model="showTags" title="Gắn Tag">
+      <div class="mch-tag-sheet">
+        <TagCrmBar :friend-id="selectedConv?.friendship?.id ?? null" :contact-id="selectedConv?.contact?.id ?? null" />
+      </div>
+    </MBottomSheet>
     <MBottomSheet v-model="showNotes" title="Ghi chú nội bộ"><NotesSection :contact-id="selectedConv?.contact?.id ?? null" :contact-name="selectedConv?.contact?.fullName ?? null" /></MBottomSheet>
 
     <AppointmentEditor
@@ -371,7 +391,7 @@ import { useToast } from '@/composables/use-toast';
 import { groupAvatarStore } from '@/composables/use-group-avatar-cache';
 import {
   ChevronLeft as ChevronLeftIcon, Image as ImageIcon, Send as SendIcon, Loader2 as LoaderIcon, Reply as ReplyIcon, Paperclip as PaperclipIcon, CalendarClock as CalendarClockIcon, StickyNote as StickyNoteIcon, Sparkles as SparklesIcon, BookOpen as BookOpenIcon, Plus as PlusIcon,
-  X as XIcon, Copy as CopyIcon, Download as DownloadIcon, RotateCcw as RotateCcwIcon, Trash2 as Trash2Icon, Pin as PinIcon, PinOff as PinOffIcon, Forward as ForwardIcon, Search as SearchIcon, FolderOpen as FolderOpenIcon, Link as LinkIcon, MoreVertical as MoreVerticalIcon, Heart as HeartIcon, Smile as SmileIcon, ChevronUp as ChevronUpIcon, ChevronDown as ChevronDownIcon,
+  X as XIcon, Copy as CopyIcon, Download as DownloadIcon, RotateCcw as RotateCcwIcon, Trash2 as Trash2Icon, Pin as PinIcon, PinOff as PinOffIcon, Forward as ForwardIcon, Search as SearchIcon, FolderOpen as FolderOpenIcon, Link as LinkIcon, MoreVertical as MoreVerticalIcon, Heart as HeartIcon, Smile as SmileIcon, ChevronUp as ChevronUpIcon, ChevronDown as ChevronDownIcon, User as UserIcon, Tag as TagIcon,
 } from 'lucide-vue-next';
 import MessageBubble from '@/components/chat/message-bubble.vue';
 import Avatar from '@/components/ui/Avatar.vue';
@@ -380,6 +400,7 @@ import MBottomSheet from '@/components/mobile/MBottomSheet.vue';
 import TypingIndicator from '@/components/chat/typing-indicator.vue';
 import AppointmentEditor from '@/components/appointments/AppointmentEditor.vue';
 import NotesSection from '@/components/chat/NotesSection.vue';
+import TagCrmBar from '@/components/chat/TagCrmBar.vue';
 import StickerPicker from '@/components/chat/StickerPicker.vue';
 import AiCopilotPanel from '@/components/chat/AiCopilotPanel.vue';
 import MediaPickerPopover from '@/components/media/MediaPickerPopover.vue';
@@ -415,6 +436,7 @@ const historyError = ref(false);
 const hasOlderMessages = ref(true);
 const showAppointmentEditor = ref(false);
 const showNotes = ref(false);
+const showTags = ref(false);
 const showCopilot = ref(false);
 const showMediaPicker = ref(false);
 const showTemplatePicker = ref(false);
@@ -428,7 +450,6 @@ const draftKey = (id: string) => `zalocrm-mobile-draft:${id}`;
 const title = computed(() => selectedConv.value?.contact?.fullName || 'Chat');
 const avatarUrl = computed(() => (selectedConv.value?.contact as any)?.avatarUrl ?? null);
 const nickName = computed(() => (selectedConv.value as any)?.zaloAccount?.displayName ?? '');
-const initial = computed(() => (title.value || '?').charAt(0).toUpperCase());
 
 const isGroupThread = computed(() => selectedConv.value?.threadType === 'group');
 
@@ -458,7 +479,11 @@ function primeGroupAvatars() {
   if (uids.length) void groupAvatarStore.fetchBatch(uids, accountId);
 }
 
-function goBack() { router.push({ name: 'M.Conversations' }); }
+function openCustomerProfile() {
+  const contactId = selectedConv.value?.contact?.id;
+  if (!contactId || isGroupThread.value) return;
+  router.push({ name: 'M.CustomerDetail', params: { id: contactId }, query: { from: 'chat', convId: convId.value } });
+}function goBack() { router.push({ name: 'M.Conversations' }); }
 function restoreDraft(id: string) { text.value = localStorage.getItem(draftKey(id)) ?? ''; void nextTick(autoGrow); }
 function saveDraft() { if (!convId.value) return; const value = text.value.trimEnd(); if (value) localStorage.setItem(draftKey(convId.value), value); else localStorage.removeItem(draftKey(convId.value)); }
 function syncViewport() { const viewport = window.visualViewport; if (!viewport) return; keyboardOffset.value = Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop); }
@@ -1164,12 +1189,7 @@ watch(convId, async (id) => { if (id) { hasOlderMessages.value = true; unseenCou
   border-bottom: 1px solid var(--m-border);
 }
 .mch-back, .mch-pinned { color: var(--m-brand); }
-.mch-avatar {
-  width: 38px; height: 38px; border-radius: var(--m-r-full); flex-shrink: 0;
-  background: linear-gradient(135deg, #8fb7ff, #1f6fd6); color: #fff;
-  display: flex; align-items: center; justify-content: center; font-weight: var(--m-fw-semibold);
-}
-.mch-avatar img { width: 100%; height: 100%; border-radius: var(--m-r-full); object-fit: cover; }
+.mch-avatar { flex-shrink: 0; cursor: pointer; }
 .mch-info { min-width: 0; flex: 1; }
 .mch-name { font-size: var(--m-fs-md); font-weight: var(--m-fw-bold); color: var(--m-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mch-nick { font-size: var(--m-fs-2xs); color: var(--m-text-3); }
@@ -1367,6 +1387,9 @@ watch(convId, async (id) => { if (id) { hasOlderMessages.value = true; unseenCou
 .mch-media-picker-sheet { min-height: min(620px, calc(82dvh - 54px)); }
 .mch-media-picker-sheet :deep(.mp-pop) { position: static; inset: auto; bottom: auto; z-index: auto; height: 100%; }
 .mch-media-picker-sheet :deep(.mp-card) { height: min(620px, calc(82dvh - 54px)); max-height: none; border: 0; border-radius: 0; padding: 8px var(--m-sp-3) calc(var(--m-safe-bottom) + 10px); box-shadow: none; background: var(--m-surface); }
+.mch-tag-sheet { padding: 4px 4px 14px; }
+.mch-tag-sheet :deep(.tag-crm-bar) { align-items: flex-start; flex-wrap: wrap; gap: 7px; }
+.mch-tag-sheet :deep(.tag-add-btn), .mch-tag-sheet :deep(.tag-x) { min-height: 32px; }
 .mch-media-picker-sheet :deep(.mp-filter-btn), .mch-media-picker-sheet :deep(.mp-x), .mch-media-picker-sheet :deep(.mp-send-album), .mch-media-picker-sheet :deep(.mp-fitem) { min-height: var(--m-touch); }
 .mch-media-picker-sheet :deep(.seg span) { min-height: 36px; display: inline-flex; align-items: center; }
 .mch-media-picker-sheet :deep(.mp-grid), .mch-media-picker-sheet :deep(.mp-list) { min-height: 0; flex: 1; overscroll-behavior: contain; touch-action: pan-y; -webkit-overflow-scrolling: touch; }
@@ -1412,4 +1435,6 @@ watch(convId, async (id) => { if (id) { hasOlderMessages.value = true; unseenCou
 <style>
 ::highlight(mch-kw) { background-color: #ffd54a; color: #1a1a1a; }
 </style>
+
+
 
