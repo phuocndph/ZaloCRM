@@ -118,6 +118,8 @@
             :name="displayName(conv)"
             :size="44"
             :is-group="conv.threadType === 'group'"
+            :group-members-count="conv.groupMembersCount"
+            :group-member-avatars="conv.groupMemberAvatars"
             :platform="conv.threadType === 'user' ? 'zalo' : null"
             :gradient-seed="conv.id"
           />
@@ -1509,6 +1511,13 @@ function truncate(s: string, n: number): string {
   --cl-radius: 10px;
   --cl-item-h: 66px;               /* chuẩn chiều cao item (3 hàng gọn) */
   --cl-pad-x: 10px;
+  /* Nền bề mặt + công thức trộn màu chip — ĐẢO được ở dark (xem dark-theme.css).
+     Nhờ tách token, chip/hover/viền không còn hardcode "white" → tối không bị mảng sáng. */
+  --cl-surface: #ffffff;
+  --cl-chip-bg-base: #ffffff;      /* nền để trộn ra màu chip */
+  --cl-chip-bg-mix: 12%;
+  --cl-chip-fg-base: #000000;      /* nền để trộn ra chữ chip */
+  --cl-chip-fg-mix: 80%;
 }
 .conv-item {
   padding: 7px var(--cl-pad-x);
@@ -1556,7 +1565,8 @@ function truncate(s: string, n: number): string {
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  border: 2px solid #fff;
+  /* Viền tách badge khỏi avatar — theo NỀN bề mặt (đảo ở dark), không hardcode trắng. */
+  border: 2px solid var(--cl-surface);
   background: var(--smax-grey-100, #f3f4f6);
   object-fit: cover;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
@@ -1715,7 +1725,8 @@ function truncate(s: string, n: number): string {
   line-height: 18px;
 }
 .ci-preview.tone-danger { color: var(--cl-danger); font-weight: 600; }
-.ci-preview.tone-muted { color: var(--cl-ink-3); font-style: italic; }
+/* Tin thu hồi / cuộc gọi không trả lời — chỉ LÀM NHẠT, KHÔNG in nghiêng (dễ đọc hơn). */
+.ci-preview.tone-muted { color: var(--cl-ink-3); }
 .ci-preview-private { font-style: italic; color: var(--cl-ink-3); }
 
 /* Chip trạng thái/tag — nhỏ, tinh tế, tối đa 2 */
@@ -1725,8 +1736,8 @@ function truncate(s: string, n: number): string {
   padding: 0 7px;
   border-radius: 999px;
   font-size: 10px; font-weight: 600; line-height: 15px;
-  background: color-mix(in srgb, var(--chip-color, #64748b) 12%, white);
-  color: color-mix(in srgb, var(--chip-color, #64748b) 80%, black);
+  background: color-mix(in srgb, var(--chip-color, #64748b) var(--cl-chip-bg-mix), var(--cl-chip-bg-base));
+  color: color-mix(in srgb, var(--chip-color, #64748b) var(--cl-chip-fg-mix), var(--cl-chip-fg-base));
   white-space: nowrap; overflow: hidden;
 }
 .ci-chip-text { overflow: hidden; text-overflow: ellipsis; }
@@ -1739,14 +1750,14 @@ function truncate(s: string, n: number): string {
   display: flex; gap: 2px;
   padding: 2px;
   border-radius: 8px;
-  background: color-mix(in srgb, var(--cl-hover) 60%, white);
+  background: color-mix(in srgb, var(--cl-hover) 60%, var(--cl-surface));
   box-shadow: 0 1px 4px rgba(16, 24, 40, 0.12);
   opacity: 0; visibility: hidden;
   transition: opacity 0.12s ease;
 }
 .conv-item:hover .ci-actions,
 .conv-item:focus-within .ci-actions { opacity: 1; visibility: visible; }
-.conv-item.active .ci-actions { background: color-mix(in srgb, var(--cl-accent-soft) 70%, white); }
+.conv-item.active .ci-actions { background: color-mix(in srgb, var(--cl-accent-soft) 70%, var(--cl-surface)); }
 .ci-act {
   width: 26px; height: 26px;
   display: inline-flex; align-items: center; justify-content: center;

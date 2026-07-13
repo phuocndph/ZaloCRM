@@ -14,6 +14,7 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { Server } from 'socket.io';
 import { Prisma } from '@prisma/client';
+import { extractZaloMsgId } from '../chat/chat-media-helpers.js';
 import { prisma } from '../../shared/database/prisma-client.js';
 import { authMiddleware } from '../auth/auth-middleware.js';
 import { requireGrant } from '../rbac/rbac-middleware.js';
@@ -659,7 +660,7 @@ export async function mediaRoutes(app: FastifyInstance) {
           const sendResult: any = await zaloOps.sendImage(
             conversation.zaloAccountId, threadId, threadType as 0 | 1, [tmp.path], io, caption,
           );
-          zaloMsgId = String(sendResult?.msgId || sendResult?.data?.msgId || '');
+          zaloMsgId = extractZaloMsgId(sendResult);
           content = JSON.stringify({ href: blob.publicUrl, thumb: blob.publicUrl, size: blob.sizeBytes });
         } else if (asset.kind === 'video') {
           // VIDEO: gửi NATIVE (player + thumbnail + duration) như chat thường — KHÔNG sendFile
@@ -683,13 +684,13 @@ export async function mediaRoutes(app: FastifyInstance) {
               api: instance.api as any, videoPath: tmp.path, thumbnailPath: thumbPath,
               threadId, threadType: threadType as 0 | 1, message: caption,
             });
-            zaloMsgId = String(sendResult?.msgId || sendResult?.data?.msgId || '');
+            zaloMsgId = extractZaloMsgId(sendResult);
           } catch (e) {
             logger.warn('[media] sendNativeVideo lỗi → fallback sendFile:', (e as Error)?.message ?? e);
             const sendResult: any = await zaloOps.sendFile(
               conversation.zaloAccountId, threadId, threadType as 0 | 1, [tmp.path], io, caption,
             );
-            zaloMsgId = String(sendResult?.msgId || sendResult?.data?.msgId || '');
+            zaloMsgId = extractZaloMsgId(sendResult);
           }
           content = JSON.stringify({ href: blob.publicUrl, thumb: thumbUrl, thumbUrl, thumbnail: thumbUrl, size: blob.sizeBytes });
         } else {
@@ -697,7 +698,7 @@ export async function mediaRoutes(app: FastifyInstance) {
           const sendResult: any = await zaloOps.sendFile(
             conversation.zaloAccountId, threadId, threadType as 0 | 1, [tmp.path], io, caption,
           );
-          zaloMsgId = String(sendResult?.msgId || sendResult?.data?.msgId || '');
+          zaloMsgId = extractZaloMsgId(sendResult);
           content = JSON.stringify({ href: blob.publicUrl, name: asset.name, size: blob.sizeBytes, mime: blob.mimeType });
         }
 
@@ -1364,7 +1365,7 @@ export async function mediaRoutes(app: FastifyInstance) {
             userId, conversationId: conversation.id, meta: { albumCount: assets.length },
           });
         }
-        const zaloMsgId = String(sendResult?.msgId || sendResult?.data?.msgId || '');
+        const zaloMsgId = extractZaloMsgId(sendResult);
         return { sent: assets.length, zaloMsgId, viaEcho: true };
       } catch (err: any) {
         logger.error('[media] album send error:', err);

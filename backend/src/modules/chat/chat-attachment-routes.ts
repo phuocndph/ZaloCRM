@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { Server } from 'socket.io';
 import { emitChatMessage } from '../../shared/realtime/emit-chat.js';
+import { extractZaloMsgId } from './chat-media-helpers.js';
 import { prisma } from '../../shared/database/prisma-client.js';
 import { authMiddleware } from '../auth/auth-middleware.js';
 import { requireZaloAccess } from '../zalo/zalo-access-middleware.js';
@@ -183,8 +184,21 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
             threadId,
             threadType,
           );
-          const zaloMsgId = String(sendResult?.msgId || sendResult?.data?.msgId || '');
-          for (const i of imageIndexes) {
+          // FIX 2026-07-13 — msgId PER ẢNH. Gửi lô N ảnh = 1 lệnh sendMessage, zca-js trả
+          // `attachment: [{msgId}, ...]` mỗi phần tử ứng 1 ảnh. Nếu dùng CHUNG 1 msgId cho
+          // mọi ảnh thì message thứ 2 vi phạm UNIQUE(conversation_id, zalo_msg_id) → create
+          // văng lỗi → KHÔNG tin nào được tạo → ảnh "không hiện". Thiếu msgId → '' (lưu NULL,
+          // NULL không đụng UNIQUE).
+          const attachArr: any[] = Array.isArray(sendResult?.attachment) ? sendResult.attachment : [];
+          const usedMsgIds = new Set<string>();
+          for (const [k, i] of imageIndexes.entries()) {
+            let zaloMsgId = String(attachArr[k]?.msgId ?? '');
+            // Lô 1 ảnh: một số shape chỉ trả msgId ở cấp ngoài.
+            if (!zaloMsgId && imageIndexes.length === 1) zaloMsgId = extractZaloMsgId(sendResult);
+            // Chống trùng trong cùng lô (an toàn tuyệt đối với UNIQUE).
+            if (zaloMsgId && usedMsgIds.has(zaloMsgId)) zaloMsgId = '';
+            if (zaloMsgId) usedMsgIds.add(zaloMsgId);
+
             const mirror = mirrors[i];
             const msg = await createMediaMessage({
               conversationId: id,
@@ -222,7 +236,7 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
               threadType: threadType as 0 | 1,
               message: caption,
             });
-            const zaloMsgId = String((sendResult as any)?.msgId || (sendResult as any)?.data?.msgId || '');
+            const zaloMsgId = extractZaloMsgId(sendResult);
             const mirror = mirrors[i];
             const thumbUrl = thumbnailMirror?.url ?? mirror.url;
             const msg = await createMediaMessage({
@@ -246,7 +260,7 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
               [tmpPaths[i]],
               io,
             );
-            const zaloMsgId = String(sendResult?.msgId || sendResult?.data?.msgId || '');
+            const zaloMsgId = extractZaloMsgId(sendResult);
             const mirror = mirrors[i];
             const thumbUrl = thumbnailMirror?.url ?? mirror.url;
             const msg = await createMediaMessage({
@@ -274,7 +288,7 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
             io,
             caption,
           );
-          const zaloMsgId = String(sendResult?.msgId || sendResult?.data?.msgId || '');
+          const zaloMsgId = extractZaloMsgId(sendResult);
           const mirror = mirrors[i];
           const f = files[i];
           const msg = await createMediaMessage({

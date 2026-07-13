@@ -36,7 +36,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, computed } from 'vue';
+import { onUnmounted, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
   MessageCircle as MessageCircleIcon, Users as UsersIcon,
@@ -69,10 +69,14 @@ function isActive(t: { path: string }) {
 }
 function go(path: string) { if (path !== route.path) router.push(path); }
 // Ẩn tab bar ở màn chi tiết (chat / hồ sơ KH / chi tiết lịch hẹn) — toàn màn cho nội dung.
-const DETAIL_RE = /^\/m\/(c\/|customers\/[^/]+|appointments\/[^/]+)/;
+const DETAIL_RE = /^\/m\/(c\/|compose|customers\/[^/]+|appointments\/[^/]+)/;
 const showBottomNav = computed(() => !DETAIL_RE.test(route.path));
 
-onMounted(() => initSocket());
+// Dựng socket NGAY trong setup (đồng bộ) — KHÔNG đợi onMounted. Vì onMounted của con
+// (MChatView) chạy TRƯỚC cha; nếu F5 thẳng vào /m/c/:id mà socket chưa có thì con
+// registerSocketListeners(null) → mất realtime reactions/typing. Dựng ở setup đảm bảo
+// getSocket() đã sống trước khi bất kỳ view con nào mount.
+initSocket();
 onUnmounted(() => destroySocket());
 </script>
 

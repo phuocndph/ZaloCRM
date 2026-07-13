@@ -238,17 +238,19 @@
           <!-- E10/E11 Voice / Audio — anh chốt 2026-05-21: inline player có waveform-decor +
                controls native, KHÔNG mở external link. Browser tự handle play/pause/seek/duration. -->
           <div v-else-if="message.contentType === 'voice' || message.contentType === 'audio'">
-            <div class="voice-msg-v2">
-              <v-icon size="16" class="voice-mic-icon">mdi-microphone</v-icon>
-              <audio
-                v-if="voiceUrl"
-                :src="voiceUrl"
-                controls
-                preload="metadata"
-                class="voice-audio"
-              />
-              <span v-else class="voice-fallback">🎤 Tin thoại (không tải được)</span>
+            <!-- Trình phát thoại tuỳ biến (play/pause tròn + waveform + mm:ss) — thay <audio> thô. -->
+            <div v-if="voiceUrl" class="voice-player" :class="{ playing: voicePlaying }">
+              <button type="button" class="voice-play" :aria-label="voicePlaying ? 'Tạm dừng' : 'Phát'" @click.stop="toggleVoice">
+                <svg v-if="voicePlaying" viewBox="0 0 24 24" width="20" height="20"><rect x="6" y="5" width="4" height="14" rx="1.5" fill="currentColor"/><rect x="14" y="5" width="4" height="14" rx="1.5" fill="currentColor"/></svg>
+                <svg v-else viewBox="0 0 24 24" width="20" height="20"><path d="M8 5.5v13l11-6.5z" fill="currentColor"/></svg>
+              </button>
+              <div class="voice-wave" @click.stop="seekVoice">
+                <span v-for="(h, i) in VOICE_BARS" :key="i" :style="{ height: h + '%', opacity: (i / VOICE_BARS.length) <= voiceProgress ? 1 : 0.4 }" />
+              </div>
+              <span class="voice-dur">{{ voiceTimeLabel }}</span>
+              <audio ref="voiceEl" :src="voiceUrl" preload="metadata" @loadedmetadata="onVoiceMeta" @timeupdate="onVoiceTime" @ended="onVoiceEnd" />
             </div>
+            <div v-else class="voice-fallback">🎤 Tin thoại (không tải được)</div>
             <div v-if="formattedCaption" class="media-caption" v-html="formattedCaption" />
           </div>
 
@@ -784,6 +786,40 @@ watch(() => props.message.content, (content) => {
 const gifUrl = computed(() => extractMediaUrl('gif', props.message.content));
 const voiceUrl = computed(() => extractMediaUrl('voice', props.message.content));
 
+// ── Trình phát tin nhắn thoại (tuỳ biến, không dùng <audio controls> thô) ──
+// Waveform tĩnh trang trí (kiểu Zalo) — cao độ pseudo-random cố định, tô dần theo tiến độ.
+const VOICE_BARS = [38, 62, 50, 78, 44, 90, 55, 70, 40, 84, 48, 66, 58, 92, 46, 74, 52, 82, 42, 60];
+const voiceEl = ref<HTMLAudioElement | null>(null);
+const voicePlaying = ref(false);
+const voiceCur = ref(0);
+const voiceTotal = ref(0);
+const voiceProgress = computed(() => (voiceTotal.value > 0 ? Math.min(1, voiceCur.value / voiceTotal.value) : 0));
+const voiceTimeLabel = computed(() => {
+  const sec = voicePlaying.value || voiceCur.value > 0 ? voiceCur.value : voiceTotal.value;
+  const s = Math.max(0, Math.round(sec));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+});
+function toggleVoice() {
+  const el = voiceEl.value;
+  if (!el) return;
+  if (voicePlaying.value) { el.pause(); voicePlaying.value = false; }
+  else { void el.play().then(() => { voicePlaying.value = true; }).catch(() => { voicePlaying.value = false; }); }
+}
+function onVoiceMeta() {
+  const d = voiceEl.value?.duration;
+  if (d && isFinite(d)) voiceTotal.value = d;
+}
+function onVoiceTime() { voiceCur.value = voiceEl.value?.currentTime ?? 0; }
+function onVoiceEnd() { voicePlaying.value = false; voiceCur.value = 0; if (voiceEl.value) voiceEl.value.currentTime = 0; }
+function seekVoice(e: MouseEvent) {
+  const el = voiceEl.value;
+  if (!el || !voiceTotal.value) return;
+  const box = (e.currentTarget as HTMLElement).getBoundingClientRect();
+  const ratio = Math.min(1, Math.max(0, (e.clientX - box.left) / box.width));
+  el.currentTime = ratio * voiceTotal.value;
+  voiceCur.value = el.currentTime;
+}
+
 const videoThumb = computed(() => {
   const p = safeParse(props.message.content);
   if (!p) return null;
@@ -895,7 +931,15 @@ const replySenderLabel = computed(() => {
 const replyPreviewText = computed(() => {
   const r = props.reply;
   if (!r) return '';
-  const text = (r.content || '').trim();
+  let text = (r.content || '').trim();
+  // Reply tới tin media (voice/sticker/file...) có thể lưu content = JSON THÔ
+  // (vd {"href":"/files/..aac"}). Bỏ đi để rơi xuống nhãn theo loại thay vì hiện JSON.
+  if (text.startsWith('{')) {
+    try {
+      const p = JSON.parse(text);
+      if (p && (p.href || p.thumbUrl || p.thumb || p.normalUrl || p.hdUrl || 'title' in p)) text = '';
+    } catch { /* không phải JSON → giữ nguyên */ }
+  }
   if (text) return text.length > 80 ? text.slice(0, 80) + '…' : text;
   // Fallback theo msgType (zalo msgType khi text rỗng — image/sticker/voice...)
   const t = (r.msgType || '').toLowerCase();
@@ -1490,6 +1534,43 @@ async function openFile(href: string, name?: string) {
 .voice-audio { height: 32px; flex: 1; min-width: 0; }
 .voice-fallback { font-size: 12px; color: var(--smax-grey-700); font-style: italic; }
 
+/* Trình phát thoại tuỳ biến — play/pause tròn + waveform + mm:ss (kiểu Zalo). */
+.voice-player {
+  display: inline-flex; align-items: center; gap: 10px;
+  padding: 7px 12px 7px 8px;
+  background: var(--smax-grey-100, #eef1f6);
+  border-radius: 999px;
+  min-width: 168px; max-width: 260px;
+}
+.message-bubble.is-self .voice-player { background: rgba(255, 255, 255, 0.28); }
+.voice-play {
+  flex-shrink: 0; width: 34px; height: 34px; display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 50%; cursor: pointer; padding: 0;
+  background: var(--smax-primary, #2962ff); color: #fff;
+  box-shadow: 0 1px 4px rgba(41, 98, 255, 0.35);
+  transition: transform 0.1s ease;
+}
+.message-bubble.is-self .voice-play { background: #fff; color: var(--smax-primary, #2962ff); }
+.voice-play:active { transform: scale(0.9); }
+.voice-wave {
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 2px; height: 26px; cursor: pointer;
+}
+.voice-wave > span {
+  flex: 1; min-width: 2px; border-radius: 3px;
+  background: var(--smax-primary, #2962ff);
+  transition: opacity 0.15s ease;
+}
+.message-bubble.is-self .voice-wave > span { background: #fff; }
+.voice-player.playing .voice-wave > span { animation: voice-bar 0.9s ease-in-out infinite alternate; }
+.voice-player.playing .voice-wave > span:nth-child(3n) { animation-delay: 0.15s; }
+.voice-player.playing .voice-wave > span:nth-child(3n+1) { animation-delay: 0.3s; }
+@keyframes voice-bar { from { transform: scaleY(0.75); } to { transform: scaleY(1.05); } }
+.voice-dur {
+  flex-shrink: 0; font-size: 11.5px; font-weight: 600; font-variant-numeric: tabular-nums;
+  color: var(--smax-grey-700, #4b5563); min-width: 30px; text-align: right;
+}
+.message-bubble.is-self .voice-dur { color: rgba(255, 255, 255, 0.92); }
+
 .recall-card {
   /* 2026-06-20 (anh báo dồn sau tên): block riêng dòng + hug content + tách khỏi tên người gửi. */
   display: block;
@@ -1510,11 +1591,12 @@ async function openFile(href: string, name?: string) {
 }
 .recall-icon { font-size: 14px; }
 .recall-label { font-style: normal; }
+/* Tin đã thu hồi (2026-07-13, anh chốt): BỎ gạch ngang + in nghiêng — khó đọc.
+   Chỉ LÀM NHẠT nội dung; dấu hiệu nhận biết đã có ở .recall-header (🔂 "Tin nhắn đã thu hồi"). */
 .recall-body {
-  text-decoration: line-through;
   color: var(--smax-grey-700, #5a6478);
+  opacity: 0.75;
   font-size: 13px;
-  font-style: italic;
   margin-top: 2px;
   word-break: break-word;
 }

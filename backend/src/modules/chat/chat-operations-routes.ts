@@ -32,6 +32,7 @@ interface ResolvedMessageRefs {
   content: string | null;
   contentType: string;
   sentAt: Date;
+  albumKey: string | null;       // ảnh gửi theo cụm (Zalo group_layout_id) — forward phải gửi cả cụm
 }
 
 async function resolveMessageRefs(conversationId: string, messageId: string, userOrgId: string): Promise<ResolvedMessageRefs | null> {
@@ -43,7 +44,7 @@ async function resolveMessageRefs(conversationId: string, messageId: string, use
     },
     select: {
       id: true, zaloMsgId: true, zaloCliMsgId: true, senderUid: true, senderType: true,
-      repliedByUserId: true, content: true, contentType: true, sentAt: true,
+      repliedByUserId: true, content: true, contentType: true, sentAt: true, albumKey: true,
     },
   });
 
@@ -58,6 +59,7 @@ async function resolveMessageRefs(conversationId: string, messageId: string, use
     content: message.content,
     contentType: message.contentType,
     sentAt: message.sentAt,
+    albumKey: message.albumKey,
   };
 }
 
@@ -110,13 +112,23 @@ async function getConversation(id: string, orgId: string, reply: FastifyReply, v
   return conv;
 }
 
-const FORWARD_MEDIA_TYPES = new Set(['image', 'video', 'voice', 'audio']);
+const FORWARD_MEDIA_TYPES = new Set(['image', 'video', 'voice', 'audio', 'gif', 'file']);
 const MEDIA_URL_FIELDS: Record<string, string[]> = {
   image: ['hdUrl', 'href', 'normalUrl', 'url', 'thumbUrl', 'thumb', 'thumbnail'],
   video: ['href', 'fileUrl', 'url', 'normalUrl', 'hdUrl'],
   voice: ['href', 'url', 'fileUrl'],
   audio: ['href', 'url', 'fileUrl'],
+  gif: ['href', 'hdUrl', 'url', 'normalUrl'],
+  file: ['href', 'url', 'fileUrl'],
 };
+
+// Media URL hợp lệ để tải: http(s) TUYỆT ĐỐI hoặc TƯƠNG ĐỐI `/files/...` (driver lưu trữ local
+// persist đường dẫn tương đối). Trước đây chỉ nhận http(s) → mọi ảnh lưu bằng driver local đều
+// rơi vào lỗi "Tin gốc không có URL media để chuyển tiếp". candidateDownloadUrls() đã biết cách
+// gắn origin nội bộ cho đường dẫn tương đối, nên chỉ cần đừng loại nó ở đây.
+function isDownloadableUrl(value: unknown): value is string {
+  return typeof value === 'string' && (/^https?:\/\//i.test(value.trim()) || value.trim().startsWith('/'));
+}
 
 function safeJsonObject(value: string | null): Record<string, unknown> | null {
   if (!value?.trim().startsWith('{')) return null;
@@ -130,7 +142,7 @@ function safeJsonObject(value: string | null): Record<string, unknown> | null {
 
 function pickForwardMedia(content: string | null, contentType: string): { url: string; filename?: string; mimeType?: string } | null {
   if (!content) return null;
-  if (/^https?:\/\//i.test(content.trim())) return { url: content.trim() };
+  if (isDownloadableUrl(content.trim())) return { url: content.trim() };
 
   const parsed = safeJsonObject(content);
   if (!parsed) return null;
@@ -138,9 +150,9 @@ function pickForwardMedia(content: string | null, contentType: string): { url: s
   const fields = MEDIA_URL_FIELDS[contentType] ?? ['href', 'url', 'fileUrl'];
   for (const field of fields) {
     const value = parsed[field];
-    if (typeof value === 'string' && /^https?:\/\//i.test(value)) {
+    if (isDownloadableUrl(value)) {
       return {
-        url: value,
+        url: value.trim(),
         filename: pickString(parsed, ['fileName', 'filename', 'name']),
         mimeType: pickString(parsed, ['mime', 'mimeType', 'contentType']),
       };
@@ -151,9 +163,9 @@ function pickForwardMedia(content: string | null, contentType: string): { url: s
   if (params) {
     for (const field of ['rawUrl', 'hd', 'url'] as const) {
       const value = params[field];
-      if (typeof value === 'string' && /^https?:\/\//i.test(value)) {
+      if (isDownloadableUrl(value)) {
         return {
-          url: value,
+          url: value.trim(),
           filename: pickString(parsed, ['fileName', 'filename', 'name']),
           mimeType: pickString(parsed, ['mime', 'mimeType', 'contentType']),
         };
@@ -452,7 +464,22 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
     if (!conv) return;
 
     const refs = await resolveMessageRefs(id, msgId, user.orgId);
-    if (!refs) return reply.status(404).send({ error: 'Message not found' });
+    if (!refs) {
+      // Phân biệt "không thấy tin" vs "tin thiếu zaloMsgId". Trước đây cả hai đều trả
+      // 404 'Message not found' và KHÔNG log → thất bại im lặng, không lần ra nguyên nhân.
+      const raw = await prisma.message.findFirst({
+        where: { id: msgId, conversationId: id, conversation: { orgId: user.orgId } },
+        select: { id: true, zaloMsgId: true, contentType: true },
+      });
+      if (raw && !raw.zaloMsgId) {
+        logger.warn('[chat-ops] forward bị chặn: tin thiếu zaloMsgId', { messageId: msgId, contentType: raw.contentType });
+        return reply.status(400).send({
+          error: 'Tin này không chuyển tiếp được (thiếu ID tin Zalo do gửi lỗi trước đây). Hãy gửi lại nội dung như tin mới.',
+        });
+      }
+      logger.warn('[chat-ops] forward: không tìm thấy tin gốc', { conversationId: id, messageId: msgId });
+      return reply.status(404).send({ error: 'Không tìm thấy tin nhắn gốc để chuyển tiếp' });
+    }
 
     try {
       const targets = await prisma.conversation.findMany({
@@ -494,22 +521,59 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
         };
         const userTargets = validTargets.filter((t) => t.threadType !== 'group').map((t) => t.externalThreadId!);
         const groupTargets = validTargets.filter((t) => t.threadType === 'group').map((t) => t.externalThreadId!);
-        if (userTargets.length) {
-          const res = (await (zaloOps.forwardMessage as any)(conv.zaloAccountId, textToForward, userTargets, 0, reference)) as FwdResp;
-          succeeded += res?.success?.length ?? userTargets.length;
-          failed += res?.fail?.length ?? 0;
-        }
-        if (groupTargets.length) {
-          const res = (await (zaloOps.forwardMessage as any)(conv.zaloAccountId, textToForward, groupTargets, 1, reference)) as FwdResp;
-          succeeded += res?.success?.length ?? groupTargets.length;
-          failed += res?.fail?.length ?? 0;
-        }
+        // Gửi text: KHÔNG "mặc định coi là thành công" khi zca-js không trả field success —
+        // trước đây `?? targets.length` nuốt mất lỗi thật. Ném lỗi ra ngoài để trả về đúng.
+        const forwardText = async (threads: string[], type: 0 | 1) => {
+          if (!threads.length) return;
+          try {
+            const res = (await (zaloOps.forwardMessage as any)(conv.zaloAccountId, textToForward, threads, type, reference)) as FwdResp;
+            const okCount = Array.isArray(res?.success) ? res.success.length : undefined;
+            const failCount = Array.isArray(res?.fail) ? res.fail.length : 0;
+            if (okCount === undefined && failCount === 0) {
+              // Không rõ kết quả → coi là thành công (zca-js không phải lúc nào cũng trả success),
+              // nhưng LOG lại để còn lần ra nếu khách báo không nhận được.
+              logger.info('[chat-ops] forward text: zca-js không trả success/fail', { threads: threads.length, type });
+              succeeded += threads.length;
+              return;
+            }
+            succeeded += okCount ?? Math.max(0, threads.length - failCount);
+            failed += failCount;
+            if (failCount > 0) logger.warn('[chat-ops] forward text: một số đích thất bại', { fail: res?.fail });
+          } catch (err) {
+            failed += threads.length;
+            logger.error('[chat-ops] forward text thất bại:', { type, threads: threads.length, err: (err as Error).message });
+          }
+        };
+        await forwardText(userTargets, 0);
+        await forwardText(groupTargets, 1);
       } else if (FORWARD_MEDIA_TYPES.has(refs.contentType)) {
-        const media = pickForwardMedia(refs.content, refs.contentType);
-        if (!media) return reply.status(400).send({ error: 'Tin gốc không có URL media để chuyển tiếp' });
+        // Ảnh gửi theo CỤM (album): Zalo lưu MỖI TẤM là một message riêng, chung albumKey. Nếu chỉ
+        // gửi đúng tin được nhấn thì bên nhận chỉ thấy 1 tấm trong cụm — nên gom cả cụm và gửi một
+        // lần (sendFile nhận nhiều path → Zalo dựng lại thành album).
+        const albumItems = refs.albumKey
+          ? await prisma.message.findMany({
+              where: { conversationId: id, albumKey: refs.albumKey, contentType: 'image' },
+              select: { content: true, contentType: true },
+              orderBy: [{ albumIndex: 'asc' }, { sentAt: 'asc' }],
+            })
+          : [];
+        const sourceItems = albumItems.length > 1
+          ? albumItems
+          : [{ content: refs.content, contentType: refs.contentType }];
 
-        const downloaded = await downloadMediaToTemp(media, refs.contentType);
+        const resolved = sourceItems
+          .map((item) => ({ item, media: pickForwardMedia(item.content, item.contentType) }))
+          .filter((entry): entry is { item: typeof entry.item; media: NonNullable<typeof entry.media> } => !!entry.media);
+        if (!resolved.length) return reply.status(400).send({ error: 'Tin gốc không có URL media để chuyển tiếp' });
+
+        const downloads: Array<{ path: string; cleanup: () => Promise<void> }> = [];
         try {
+          for (const entry of resolved) {
+            downloads.push(await downloadMediaToTemp(entry.media, entry.item.contentType));
+          }
+          const paths = downloads.map((d) => d.path);
+          const isAlbum = paths.length > 1;
+
           for (const target of validTargets) {
             const threadType = target.threadType === 'group' ? 1 : 0;
             const threadId = target.externalThreadId!;
@@ -517,99 +581,124 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
             const instance = refs.contentType === 'video' ? zaloPool.getInstance(targetAccountId) : null;
             let sendResult: unknown;
             try {
-              if (refs.contentType === 'image') {
-                sendResult = await zaloOps.sendFile(targetAccountId, threadId, threadType, [downloaded.path], io);
+              if (isAlbum) {
+                sendResult = await zaloOps.sendFile(targetAccountId, threadId, threadType, paths, io);
               } else if (refs.contentType === 'video' && instance?.api) {
                 try {
                   sendResult = await sendNativeVideo({
                     api: instance.api as any,
                     threadId,
                     threadType,
-                    videoPath: downloaded.path,
+                    videoPath: paths[0],
                   });
                 } catch (err) {
                   logger.warn('[chat-ops] native forward video failed, falling back to attachment:', err);
-                  sendResult = await zaloOps.sendFile(targetAccountId, threadId, threadType, [downloaded.path], io);
+                  sendResult = await zaloOps.sendFile(targetAccountId, threadId, threadType, paths, io);
                 }
               } else if (refs.contentType === 'voice' || refs.contentType === 'audio') {
                 try {
-                  sendResult = await zaloOps.sendVoice(targetAccountId, threadId, threadType, downloaded.path);
+                  sendResult = await zaloOps.sendVoice(targetAccountId, threadId, threadType, paths[0]);
                 } catch (err) {
                   logger.warn('[chat-ops] forward voice failed, falling back to attachment:', err);
-                  sendResult = await zaloOps.sendFile(targetAccountId, threadId, threadType, [downloaded.path], io);
+                  sendResult = await zaloOps.sendFile(targetAccountId, threadId, threadType, paths, io);
                 }
               } else {
-                sendResult = await zaloOps.sendFile(targetAccountId, threadId, threadType, [downloaded.path], io);
+                // image / gif / file — sendFile lo cả 3.
+                sendResult = await zaloOps.sendFile(targetAccountId, threadId, threadType, paths, io);
               }
 
-              const zaloMsgId = extractZaloMsgId(sendResult);
-              const created = await prisma.message.create({
-                data: {
-                  id: randomUUID(),
+              // Album trả về mảng attachment (1 msgId / tấm); tin đơn trả về 1 msgId.
+              const attachments = (sendResult as { attachment?: Array<{ msgId?: string | number }> } | null)?.attachment;
+              const msgIdAt = (index: number): string => {
+                const raw = Array.isArray(attachments) ? attachments[index]?.msgId : undefined;
+                if (raw) return String(raw);
+                return index === 0 ? extractZaloMsgId(sendResult) : '';
+              };
+
+              const senderName = await getUserFullName(user.id);
+              for (let index = 0; index < resolved.length; index += 1) {
+                const item = resolved[index].item;
+                const zaloMsgId = msgIdAt(index);
+                const created = await prisma.message.create({
+                  data: {
+                    id: randomUUID(),
+                    conversationId: target.id,
+                    zaloMsgId: zaloMsgId || null,
+                    zaloMsgIdNum: zaloMsgId && /^\d+$/.test(zaloMsgId) ? BigInt(zaloMsgId) : null,
+                    senderType: 'self',
+                    senderUid: target.zaloAccount.zaloUid || '',
+                    senderName: 'Staff',
+                    sentVia: 'user',
+                    metadata: { sender: { kind: 'user_crm', name: senderName } },
+                    content: item.content,
+                    contentType: item.contentType,
+                    sentAt: new Date(),
+                    repliedByUserId: user.id,
+                  },
+                });
+
+                io?.emit('chat:message', {
+                  accountId: target.zaloAccountId,
+                  message: { ...created, zaloMsgIdNum: created.zaloMsgIdNum?.toString() ?? null },
                   conversationId: target.id,
-                  zaloMsgId: zaloMsgId || null,
-                  zaloMsgIdNum: zaloMsgId && /^\d+$/.test(zaloMsgId) ? BigInt(zaloMsgId) : null,
-                  senderType: 'self',
-                  senderUid: target.zaloAccount.zaloUid || '',
-                  senderName: 'Staff',
-                  sentVia: 'user',
-                  metadata: { sender: { kind: 'user_crm', name: await getUserFullName(user.id) } },
-                  content: refs.content,
-                  contentType: refs.contentType,
-                  sentAt: new Date(),
-                  repliedByUserId: user.id,
-                },
-              });
+                  _privacyMeta: {
+                    privacyMode: target.zaloAccount.privacyMode,
+                    ownerUserId: target.zaloAccount.ownerUserId,
+                  },
+                });
+
+                const aggInput = {
+                  conversationId: target.id,
+                  message: {
+                    id: created.id,
+                    content: created.content,
+                    contentType: created.contentType,
+                    sentAt: created.sentAt,
+                    senderType: 'self' as const,
+                  },
+                  outboundUserId: user.id,
+                };
+                void applyContactAggregateFromMessage(aggInput);
+                void applyFriendAggregate(aggInput);
+              }
 
               await prisma.conversation.update({
                 where: { id: target.id },
                 data: { lastMessageAt: new Date(), isReplied: true, unreadCount: 0 },
               });
-
-              io?.emit('chat:message', {
-                accountId: target.zaloAccountId,
-                message: { ...created, zaloMsgIdNum: created.zaloMsgIdNum?.toString() ?? null },
-                conversationId: target.id,
-                _privacyMeta: {
-                  privacyMode: target.zaloAccount.privacyMode,
-                  ownerUserId: target.zaloAccount.ownerUserId,
-                },
-              });
-
-              const aggInput = {
-                conversationId: target.id,
-                message: {
-                  id: created.id,
-                  content: created.content,
-                  contentType: created.contentType,
-                  sentAt: created.sentAt,
-                  senderType: 'self' as const,
-                },
-                outboundUserId: user.id,
-              };
-              void applyContactAggregateFromMessage(aggInput);
-              void applyFriendAggregate(aggInput);
               succeeded += 1;
             } catch (err) {
               failed += 1;
               logger.error('[chat-ops] forward media target failed:', {
                 targetConversationId: target.id,
                 contentType: refs.contentType,
+                album: isAlbum ? resolved.length : 0,
                 err: (err as Error).message,
               });
             }
           }
         } finally {
-          await downloaded.cleanup().catch(() => {});
+          for (const d of downloads) await d.cleanup().catch(() => {});
         }
       } else {
         return reply.status(400).send({
-          error: 'Chỉ hỗ trợ chuyển tiếp text, hình ảnh, video và audio.',
+          error: 'Chỉ hỗ trợ chuyển tiếp text, hình ảnh, video, audio, GIF và tệp.',
         });
       }
 
       io?.emit('chat:forwarded', { conversationId: id, messageId: refs.messageId, succeeded, failed });
-      return { success: true, forwarded: succeeded, failed };
+
+      // TRẢ ĐÚNG SỰ THẬT. Trước đây luôn `success: true` kể cả khi MỌI đích đều fail → FE hiện
+      // toast xanh "Đã chuyển tiếp" mà khách không hề nhận được. Giờ: fail hết → báo lỗi.
+      if (succeeded === 0 && failed > 0) {
+        logger.error('[chat-ops] forward: TẤT CẢ đích thất bại', { conversationId: id, messageId: refs.messageId, failed });
+        return reply.status(502).send({
+          error: 'Không chuyển tiếp được tới hội thoại nào. Kiểm tra kết nối nick Zalo rồi thử lại.',
+          forwarded: 0,
+          failed,
+        });
+      }
+      return { success: failed === 0, forwarded: succeeded, failed };
     } catch (err) { return handleError(err, reply); }
   });
 

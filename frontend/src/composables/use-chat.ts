@@ -117,6 +117,8 @@ export interface Conversation {
   groupAvatarUrl?: string | null;
   /** Số thành viên nhóm */
   groupMembersCount?: number | null;
+  /** Avatar thành viên nhóm — BE trả để ghép lưới avatar khi nhóm chưa có ảnh riêng. */
+  groupMemberAvatars?: Array<{ uid: string; name?: string | null; avatarUrl: string }>;
   /** External thread ID (group id từ Zalo, hoặc UID per-nick cho user thread) */
   externalThreadId?: string | null;
   /** Friend record per-pair (chỉ user thread) — backend join từ Friend table */
@@ -319,7 +321,18 @@ function mergeConvListPreserveDetail(
   return merged;
 }
 
+// SINGLETON 2026-07-12 — GỐC RỄ "mobile không realtime, phải F5":
+// state (messages/conversations/socket…) VỐN khai báo TRONG hàm ⇒ mỗi component gọi
+// useChat() nhận 1 instance RIÊNG. Trên /m, MobileShell.initSocket() dựng socket ở
+// instance A, nhưng MChatView render messages ở instance B (socket=null) ⇒ tin realtime
+// rơi vào mảng không ai hiển thị. Desktop chạy vì ChatView là component DUY NHẤT.
+// Bọc memo → mọi nơi dùng CHUNG 1 instance (1 socket, 1 messages) đúng như ý đồ ban đầu.
+// An toàn: thân hàm KHÔNG đăng ký lifecycle hook nào (đã kiểm), desktop chỉ ChatView dùng.
+let __chatSingleton: ReturnType<typeof buildChat> | null = null;
 export function useChat() {
+  return (__chatSingleton ??= buildChat());
+}
+function buildChat() {
   const authStore = useAuthStore();
   const privacyStore = usePrivacyStore();
   function currentUserIdForPrivacy(): string | null { return authStore.user?.id ?? null; }
@@ -874,7 +887,10 @@ export function useChat() {
       const res = await api.post(`/conversations/${conversationId}/messages`, payload);
       if (conversationId === selectedConvId.value) {
         if (!messages.value.find(m => m.id === res.data.id)) {
-          insertMessageSorted(res.data);
+          // FIX reply preview (Lỗi 1): normalize để map quote→reply NGAY khi gửi. Trước đây
+          // chèn res.data THÔ nên tin vừa gửi (nhất là tin Trả lời) không hiện khối trích dẫn
+          // cho tới khi reload. Đường ĐỌC (fetch/context) vốn đã .map(normalizeMessage).
+          insertMessageSorted(normalizeMessage(res.data as RawMessage));
         }
       }
     } catch (err) {

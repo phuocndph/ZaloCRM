@@ -74,7 +74,38 @@
           </span>
         </button>
 
-        <div v-if="filtered.length === 0" class="fw-empty">
+        <!-- Bạn bè của nick — kể cả người CHƯA từng chat qua CRM. Chọn xong bấm Chuyển tiếp
+             thì hệ thống tự mở hội thoại cho họ rồi gửi. -->
+        <div v-if="friendsLoading" class="fw-empty">Đang tìm bạn bè…</div>
+        <template v-else-if="friends.length">
+          <div class="fw-section">Bạn bè trên Zalo</div>
+          <button
+            v-for="f in friends"
+            :key="f.id"
+            type="button"
+            class="fw-item"
+            :class="{ 'is-selected': selectedFriends.has(f.id) }"
+            @click="toggleFriend(f.id)"
+          >
+            <span class="fw-check" :class="{ 'is-checked': selectedFriends.has(f.id) }">
+              <svg v-if="selectedFriends.has(f.id)" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="white" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                <polyline points="20 6 9 17 4 12"/>
+              </svg>
+            </span>
+            <span class="fw-avatar">
+              <img v-if="f.zaloAvatarUrl" :src="f.zaloAvatarUrl" alt="" referrerpolicy="no-referrer" />
+              <span v-else class="fw-avatar__fallback">{{ (forwardFriendName(f)[0] || '?').toUpperCase() }}</span>
+            </span>
+            <span class="fw-body">
+              <span class="fw-name">{{ forwardFriendName(f) }}</span>
+              <span class="fw-meta">
+                <span v-if="!f.hasConversation" class="fw-time">Chưa có hội thoại</span>
+              </span>
+            </span>
+          </button>
+        </template>
+
+        <div v-if="filtered.length === 0 && !friends.length && !friendsLoading" class="fw-empty">
           <div class="fw-empty__icon">
             <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
@@ -87,16 +118,16 @@
       <!-- Footer -->
       <footer class="fw-foot">
         <span class="fw-foot__count">
-          {{ selectedSet.size > 0 ? `Đã chọn ${selectedSet.size}` : 'Chưa chọn' }}
+          {{ totalSelected > 0 ? `Đã chọn ${totalSelected}` : 'Chưa chọn' }}
         </span>
         <div class="fw-foot__actions">
           <button class="fw-btn fw-btn--ghost" @click="emit('update:modelValue', false)">Huỷ</button>
           <button
             class="fw-btn fw-btn--primary"
-            :disabled="selectedSet.size === 0"
+            :disabled="totalSelected === 0 || forwarding"
             @click="onForward"
           >
-            Chuyển tiếp
+            {{ forwarding ? 'Đang mở hội thoại…' : 'Chuyển tiếp' }}
           </button>
         </div>
       </footer>
@@ -106,11 +137,12 @@
 
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
+import { useForwardFriends, forwardFriendName } from '@/composables/use-forward-friends';
 
 interface ConvShape {
   id: string;
   threadType: string;
-  contact?: { fullName?: string | null; crmName?: string | null; avatarUrl?: string | null } | null;
+  contact?: { id?: string; fullName?: string | null; crmName?: string | null; avatarUrl?: string | null } | null;
   friendship?: { aliasInNick?: string | null; zaloDisplayName?: string | null; zaloAvatarUrl?: string | null } | null;
   zaloAccount?: { id: string; displayName?: string | null } | null;
   groupName?: string | null;
@@ -138,10 +170,36 @@ const query = ref('');
 const selectedSet = ref(new Set<string>());
 const brokenAvatars = ref(new Set<string>());
 
+// ── Tìm cả BẠN BÈ của nick (kể cả người chưa từng chat qua CRM) ──
+const { friends, searching: friendsLoading, searchFriends, ensureConversations, clear: clearFriends } = useForwardFriends();
+const selectedFriends = ref(new Set<string>());
+const forwarding = ref(false);
+let friendTimer: ReturnType<typeof setTimeout> | undefined;
+
+watch(query, (q) => {
+  clearTimeout(friendTimer);
+  if (!q.trim()) { clearFriends(); return; }
+  friendTimer = setTimeout(() => {
+    // Bỏ người đã hiện ở danh sách hội thoại để không trùng dòng.
+    const shown = new Set<string>();
+    for (const c of filtered.value) if (c.contact?.id) shown.add(c.contact.id);
+    void searchFriends(props.sourceZaloAccountId, q, shown);
+  }, 280);
+});
+
+function toggleFriend(id: string) {
+  const next = new Set(selectedFriends.value);
+  if (next.has(id)) next.delete(id); else next.add(id);
+  selectedFriends.value = next;
+}
+const totalSelected = computed(() => selectedSet.value.size + selectedFriends.value.size);
+
 // Reset selection mỗi lần dialog mở (tránh dirty state cross-session)
 watch(() => props.modelValue, (open) => {
   if (open) {
     selectedSet.value = new Set();
+    selectedFriends.value = new Set();
+    clearFriends();
     query.value = '';
     brokenAvatars.value = new Set();
   }
@@ -212,10 +270,21 @@ function toggleSelect(id: string) {
   selectedSet.value = next;
 }
 
-function onForward() {
-  if (selectedSet.value.size === 0) return;
-  emit('forward', Array.from(selectedSet.value));
-  emit('update:modelValue', false);
+async function onForward() {
+  if (totalSelected.value === 0 || forwarding.value) return;
+  forwarding.value = true;
+  try {
+    // Bạn bè chưa có hội thoại → mở/lấy hội thoại (idempotent) rồi mới chuyển tiếp.
+    const friendConvIds = selectedFriends.value.size
+      ? await ensureConversations([...selectedFriends.value])
+      : [];
+    const targets = [...new Set([...selectedSet.value, ...friendConvIds])];
+    if (!targets.length) return;
+    emit('forward', targets);
+    emit('update:modelValue', false);
+  } finally {
+    forwarding.value = false;
+  }
 }
 
 // Live "now" ticker (2026-06-11) — cùng cơ chế ConversationList: ref `now` cập
@@ -336,6 +405,14 @@ function formatRelativeTime(iso: string, _tick: number = now.value): string {
   padding: 4px 8px 8px;
   min-height: 280px;
   max-height: 380px;
+}
+/* Tiêu đề nhóm "Bạn bè trên Zalo" trong danh sách đích */
+.fw-section {
+  padding: 8px 14px 4px;
+  font-size: 11px; font-weight: 700; letter-spacing: .3px; text-transform: uppercase;
+  color: var(--smax-grey-700, #6b7280);
+  background: var(--smax-grey-50, #f8fafc);
+  border-top: 1px solid var(--smax-grey-200, #e5e7eb);
 }
 .fw-item {
   display: flex;

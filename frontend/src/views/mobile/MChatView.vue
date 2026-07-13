@@ -41,7 +41,9 @@
       </button>
     </MBottomSheet>
 
-    <div ref="scroller" class="mch-msgs" @scroll.passive="onScroll">
+    <!-- is-direct: chat 1-1 → ẩn tên người gửi trong bubble (đã có ở header, hiện lại là thừa).
+         Chỉ áp cho mobile; desktop giữ nguyên quyết định cũ (hiện tên ở cả 1-1 lẫn nhóm). -->
+    <div ref="scroller" class="mch-msgs" :class="{ 'is-direct': !isGroupThread }" @scroll.passive="onScroll" @contextmenu.prevent>
       <div v-if="loadingOlder" class="mch-history-status">Đang tải tin cũ...</div>
       <div v-else-if="historyError" class="mch-history-status mch-history-status--err">
         Không tải được tin cũ. <button class="mch-history-retry" @click="retryHistory">Thử lại</button>
@@ -57,11 +59,19 @@
         <div
           class="mch-row"
           :data-msg-id="m.id"
+          :class="{ 'mch-row--swiping': swipeId === m.id && swipeX > 0, 'is-self': m.senderType === 'self', 'is-cluster-end': isGroupEnd(i) }"
+          :style="swipeId === m.id && swipeX > 0 ? { transform: `translateX(${swipeX}px)` } : undefined"
           @contextmenu.prevent="openActions(m)"
-          @touchstart.passive="onRowTouchStart(m)"
-          @touchmove.passive="onRowTouchMove"
-          @touchend="onRowTouchEnd"
+          @touchstart.passive="onRowTouchStart(m, $event)"
+          @touchmove="onRowTouchMove(m, $event)"
+          @touchend="onRowTouchEnd(m)"
+          @touchcancel="onRowTouchEnd(m)"
         >
+          <span
+            v-if="swipeId === m.id && swipeX > 0"
+            class="mch-swipe-reply"
+            :style="{ opacity: Math.min(swipeX / 56, 1) }"
+          ><ReplyIcon :size="18" :stroke-width="2.2" /></span>
           <MessageBubble
           :message="m"
           :reply="(m as any).reply || null"
@@ -80,52 +90,98 @@
       </div>
     </div>
 
-    <!-- Long-press → menu hành động tin (P1). Chỉ hiện hành động đúng loại tin + quyền. -->
-    <MBottomSheet v-model="showActions">
-      <div v-if="actionMsg" class="mch-react">
-        <button v-for="e in QUICK_EMOJIS" :key="e" class="mch-react-btn" @click="onReact(e)">{{ e }}</button>
+    <!-- Nhấn-giữ tin → overlay kiểu Zalo: nền mờ + bubble nổi lên + hàng cảm xúc + lưới hành động.
+         Thay cụm nút tròn thường trực cạnh bubble (cũ) — nút đó che nội dung khi tin ngắn liên tiếp. -->
+    <Teleport to="body">
+      <div v-if="showActions && actionMsg" class="mch-ov" @click.self="closeActions" @contextmenu.prevent>
+        <div class="mch-ov-msg" :class="{ 'is-self': actionMsg.senderType === 'self' }" @click.self="closeActions">
+          <MessageBubble
+            :message="actionMsg"
+            :reply="actionMsg.reply || null"
+            :is-self="actionMsg.senderType === 'self'"
+            :is-group="selectedConv?.threadType === 'group'"
+            :sender-avatar-url="resolveSenderAvatar(actionMsg)"
+            :current-user-id="currentUserId"
+          />
+        </div>
+
+        <div class="mch-ov-react">
+          <button v-for="e in QUICK_EMOJIS" :key="e" class="mch-ov-react-btn" @click="onReact(e)">{{ e }}</button>
+        </div>
+
+        <div class="mch-ov-grid">
+          <button class="mch-ov-act" @click="onReply">
+            <ReplyIcon :size="24" :stroke-width="1.7" /><span>Trả lời</span>
+          </button>
+          <button class="mch-ov-act" @click="openForward">
+            <ForwardIcon :size="24" :stroke-width="1.7" /><span>Chuyển tiếp</span>
+          </button>
+          <button v-if="actionCanCopy" class="mch-ov-act" @click="onCopy">
+            <CopyIcon :size="24" :stroke-width="1.7" /><span>Sao chép</span>
+          </button>
+          <button v-if="actionCanPin && !actionIsPinned" class="mch-ov-act" @click="onPin">
+            <PinIcon :size="24" :stroke-width="1.7" /><span>Ghim</span>
+          </button>
+          <button v-else-if="actionCanPin" class="mch-ov-act" @click="onUnpin">
+            <PinOffIcon :size="24" :stroke-width="1.7" /><span>Bỏ ghim</span>
+          </button>
+          <a v-if="actionMediaUrl" class="mch-ov-act" :href="actionMediaUrl" target="_blank" rel="noopener" download @click="closeActions">
+            <DownloadIcon :size="24" :stroke-width="1.7" /><span>Tải xuống</span>
+          </a>
+          <button v-if="actionReactionDetails.length" class="mch-ov-act" @click="openReactionDetails">
+            <HeartIcon :size="24" :stroke-width="1.7" /><span>{{ actionReactionDetails.length }} cảm xúc</span>
+          </button>
+          <template v-if="actionMsg.senderType === 'self'">
+            <button class="mch-ov-act" @click="onRecall">
+              <RotateCcwIcon :size="24" :stroke-width="1.7" /><span>Thu hồi</span>
+            </button>
+            <button class="mch-ov-act danger" @click="onDelete">
+              <Trash2Icon :size="24" :stroke-width="1.7" /><span>Xóa</span>
+            </button>
+          </template>
+        </div>
       </div>
-      <button v-if="actionReactionDetails.length" class="mch-act-item" @click="openReactionDetails">
-        <span class="mch-reaction-summary">{{ actionReactionDetails.length }} cảm xúc</span>
-        <span>Xem chi tiết</span>
-      </button>
-      <button class="mch-act-item" @click="onReply">
-        <ReplyIcon :size="20" :stroke-width="1.9" /><span>Trả lời</span>
-      </button>
-      <button class="mch-act-item" @click="openForward">
-        <ForwardIcon :size="20" :stroke-width="1.9" /><span>Chuyển tiếp</span>
-      </button>
-      <button v-if="actionCanPin && !actionIsPinned" class="mch-act-item" @click="onPin">
-        <PinIcon :size="20" :stroke-width="1.9" /><span>Ghim tin nhắn</span>
-      </button>
-      <button v-else-if="actionCanPin" class="mch-act-item" @click="onUnpin">
-        <PinOffIcon :size="20" :stroke-width="1.9" /><span>Bỏ ghim</span>
-      </button>
-      <button v-if="actionCanCopy" class="mch-act-item" @click="onCopy">
-        <CopyIcon :size="20" :stroke-width="1.9" /><span>Sao chép</span>
-      </button>
-      <a v-if="actionMediaUrl" class="mch-act-item" :href="actionMediaUrl" target="_blank" rel="noopener" download @click="showActions = false">
-        <DownloadIcon :size="20" :stroke-width="1.9" /><span>Tải xuống</span>
-      </a>
-      <template v-if="actionMsg?.senderType === 'self'">
-        <button class="mch-act-item" @click="onRecall">
-          <RotateCcwIcon :size="20" :stroke-width="1.9" /><span>Thu hồi</span>
-        </button>
-        <button class="mch-act-item danger" @click="onDelete">
-          <Trash2Icon :size="20" :stroke-width="1.9" /><span>Xóa</span>
-        </button>
-      </template>
-    </MBottomSheet>
+    </Teleport>
 
     <MBottomSheet v-model="showForward" title="Chuyển tiếp tin nhắn">
-      <div class="mch-forward-search"><SearchIcon :size="18" :stroke-width="2" /><input v-model="forwardQuery" type="search" placeholder="Tìm hội thoại" /></div>
+      <div class="mch-forward-search"><SearchIcon :size="18" :stroke-width="2" /><input v-model="forwardQuery" type="search" placeholder="Tìm hội thoại hoặc bạn bè" @input="onForwardQueryInput" /></div>
       <div v-if="forwardLoading" class="mch-sheet-state">Đang tải hội thoại...</div>
-      <div v-else-if="!forwardCandidates.length" class="mch-sheet-state">Không có hội thoại phù hợp.</div>
+      <div v-else-if="!forwardCandidates.length && !forwardFriends.length && !forwardFriendsLoading" class="mch-sheet-state">
+        {{ forwardQuery.trim() ? 'Không tìm thấy hội thoại hoặc bạn bè phù hợp.' : 'Không có hội thoại phù hợp.' }}
+      </div>
       <button v-for="conversation in forwardCandidates" :key="conversation.id" class="mch-forward-item" :class="{ selected: forwardTargetIds.has(conversation.id) }" @click="toggleForwardTarget(conversation.id)">
         <span class="mch-forward-check">{{ forwardTargetIds.has(conversation.id) ? '✓' : '' }}</span>
+        <Avatar
+          :src="forwardAvatarUrl(conversation)"
+          :name="forwardName(conversation)"
+          :size="40"
+          :is-group="conversation.threadType === 'group'"
+          :group-member-avatars="conversation.groupMemberAvatars || []"
+          :gradient-seed="conversation.id"
+        />
         <span class="mch-forward-name">{{ forwardName(conversation) }}</span>
       </button>
-      <div class="mch-forward-foot"><span>Đã chọn {{ forwardTargetIds.size }}</span><button :disabled="forwardTargetIds.size === 0 || forwarding" @click="submitForward">{{ forwarding ? 'Đang chuyển...' : 'Chuyển tiếp' }}</button></div>
+
+      <!-- Bạn bè của nick — kể cả người CHƯA từng chat qua CRM. Chọn xong bấm Chuyển tiếp
+           thì hệ thống tự mở hội thoại cho họ (ensure-conversation) rồi gửi. -->
+      <div v-if="forwardFriendsLoading" class="mch-sheet-state">Đang tìm bạn bè...</div>
+      <template v-else-if="forwardFriends.length">
+        <div class="mch-forward-sec">Bạn bè trên Zalo</div>
+        <button
+          v-for="f in forwardFriends" :key="f.id"
+          class="mch-forward-item" :class="{ selected: forwardFriendIds.has(f.id) }"
+          @click="toggleForwardFriend(f.id)"
+        >
+          <span class="mch-forward-check">{{ forwardFriendIds.has(f.id) ? '✓' : '' }}</span>
+          <Avatar :src="f.zaloAvatarUrl" :name="forwardFriendName(f)" :size="40" :gradient-seed="f.id" />
+          <span class="mch-forward-name">
+            {{ forwardFriendName(f) }}
+            <small v-if="!f.hasConversation" class="mch-forward-hint">chưa có hội thoại</small>
+          </span>
+        </button>
+      </template>
+
+      <div class="mch-forward-foot"><span>Đã chọn {{ forwardTotalSelected }}</span><button :disabled="forwardTotalSelected === 0 || forwarding" @click="submitForward">{{ forwarding ? 'Đang chuyển...' : 'Chuyển tiếp' }}</button></div>
     </MBottomSheet>
 
     <MBottomSheet v-model="showContentLibrary" title="Nội dung đã chia sẻ">
@@ -224,15 +280,13 @@
     <MBottomSheet v-model="showComposerTools" title="Thêm chức năng">
       <div class="mch-tool-grid">
         <button @click="imageInput?.click(); showComposerTools = false"><ImageIcon :size="23" /><span>Ảnh</span></button>
-        <button @click="cameraInput?.click(); showComposerTools = false"><CameraIcon :size="23" /><span>Camera</span></button>
-        <button @click="fileInput?.click(); showComposerTools = false"><PaperclipIcon :size="23" /><span>Tệp</span></button>
         <button @click="showMediaPicker = true; showComposerTools = false"><FolderOpenIcon :size="23" /><span>Kho Media</span></button>
         <button @click="openTemplatePicker(); showComposerTools = false"><BookOpenIcon :size="23" /><span>Mẫu tin</span></button>
         <button @click="showCopilot = true; showComposerTools = false"><SparklesIcon :size="23" /><span>Trả lời AI</span></button>
       </div>
     </MBottomSheet>
 
-    <MBottomSheet v-model="showMediaPicker" title="Kho Media"><div class="mch-media-picker-sheet"><MediaPickerPopover :conversation-id="convId" @close="showMediaPicker = false" @sent="onMediaSent" /></div></MBottomSheet>
+    <MBottomSheet v-model="showMediaPicker" title="Kho Media"><div class="mch-media-picker-sheet"><MediaPickerPopover :conversation-id="convId" stage-before-send @close="showMediaPicker = false" @sent="onMediaSent" /></div></MBottomSheet>
 
     <!-- Gộp Emoji + Sticker vào 1 sheet (1 nút trên thanh soạn). -->
     <MBottomSheet v-model="showEmojiSticker" title="Biểu cảm">
@@ -275,7 +329,18 @@
         <div class="mch-replybar-body"><b>Trả lời {{ replyingTo.senderName || 'tin nhắn' }}</b><span>{{ replyPreview(replyingTo.content) }}</span></div>
         <button class="m-iconbtn" aria-label="Hủy trả lời" @click="clearReplyTo"><XIcon :size="19" :stroke-width="2" /></button>
       </div>
-      <div v-if="pendingFiles.length" class="mch-attachment-queue"><span v-for="file in pendingFiles" :key="file.name + file.size" class="mch-attachment-chip">{{ file.name }}<button @click="removePendingFile(file)"><XIcon :size="13" /></button></span></div>
+      <div v-if="pendingFiles.length" class="mch-attachment-queue">
+        <template v-for="file in pendingFiles" :key="file.name + file.size">
+          <span v-if="previewUrl(file)" class="mch-attachment-thumb">
+            <img :src="previewUrl(file)!" alt="" />
+            <button aria-label="Bỏ ảnh" @click="removePendingFile(file)"><XIcon :size="12" :stroke-width="2.4" /></button>
+          </span>
+          <span v-else class="mch-attachment-chip">
+            <PaperclipIcon :size="13" :stroke-width="2" /> {{ file.name }}
+            <button aria-label="Bỏ tệp" @click="removePendingFile(file)"><XIcon :size="13" /></button>
+          </span>
+        </template>
+      </div>
       <div class="mch-composer-row">
         <button class="m-iconbtn mch-tool" aria-label="Thêm chức năng" @click="showComposerTools = true"><PlusIcon :size="24" :stroke-width="2" /></button>
         <textarea
@@ -291,8 +356,6 @@
           <SendIcon v-else :size="20" :stroke-width="2" />
         </button>
         <input ref="imageInput" type="file" accept="image/*" multiple hidden @change="queueAttachments" />
-        <input ref="cameraInput" type="file" accept="image/*" capture="environment" hidden @change="queueAttachments" />
-        <input ref="fileInput" type="file" multiple hidden @change="queueAttachments" />
       </div>
     </footer>
   </div>
@@ -307,10 +370,11 @@ import { useAuthStore } from '@/stores/auth';
 import { useToast } from '@/composables/use-toast';
 import { groupAvatarStore } from '@/composables/use-group-avatar-cache';
 import {
-  ChevronLeft as ChevronLeftIcon, Image as ImageIcon, Send as SendIcon, Loader2 as LoaderIcon, Reply as ReplyIcon, Paperclip as PaperclipIcon, Camera as CameraIcon, CalendarClock as CalendarClockIcon, StickyNote as StickyNoteIcon, Sparkles as SparklesIcon, BookOpen as BookOpenIcon, Plus as PlusIcon,
-  X as XIcon, Copy as CopyIcon, Download as DownloadIcon, RotateCcw as RotateCcwIcon, Trash2 as Trash2Icon, Pin as PinIcon, PinOff as PinOffIcon, Forward as ForwardIcon, Search as SearchIcon, FolderOpen as FolderOpenIcon, Link as LinkIcon, MoreVertical as MoreVerticalIcon, Smile as SmileIcon, ChevronUp as ChevronUpIcon, ChevronDown as ChevronDownIcon,
+  ChevronLeft as ChevronLeftIcon, Image as ImageIcon, Send as SendIcon, Loader2 as LoaderIcon, Reply as ReplyIcon, Paperclip as PaperclipIcon, CalendarClock as CalendarClockIcon, StickyNote as StickyNoteIcon, Sparkles as SparklesIcon, BookOpen as BookOpenIcon, Plus as PlusIcon,
+  X as XIcon, Copy as CopyIcon, Download as DownloadIcon, RotateCcw as RotateCcwIcon, Trash2 as Trash2Icon, Pin as PinIcon, PinOff as PinOffIcon, Forward as ForwardIcon, Search as SearchIcon, FolderOpen as FolderOpenIcon, Link as LinkIcon, MoreVertical as MoreVerticalIcon, Heart as HeartIcon, Smile as SmileIcon, ChevronUp as ChevronUpIcon, ChevronDown as ChevronDownIcon,
 } from 'lucide-vue-next';
 import MessageBubble from '@/components/chat/message-bubble.vue';
+import Avatar from '@/components/ui/Avatar.vue';
 import MLightbox from '@/components/mobile/MLightbox.vue';
 import MBottomSheet from '@/components/mobile/MBottomSheet.vue';
 import TypingIndicator from '@/components/chat/typing-indicator.vue';
@@ -323,6 +387,7 @@ import TemplateComposerPreview from '@/components/chat/TemplateComposerPreview.v
 import { useMessageTemplates, type MessageTemplate } from '@/composables/use-message-templates';
 import { templateToBlocks, isSimpleTextTemplate, type TemplateBlock } from '@/composables/use-template-blocks';
 import { useChatOperations } from '@/composables/use-chat-operations';
+import { useForwardFriends, forwardFriendName } from '@/composables/use-forward-friends';
 import { useConversationContent } from '@/composables/use-conversation-content';
 import { CONVERSATION_PRIVATE_MESSAGE } from '@/composables/use-conversation-privacy';
 
@@ -341,8 +406,6 @@ const sendError = ref<string | null>(null);
 const scroller = ref<HTMLElement | null>(null);
 const textarea = ref<HTMLTextAreaElement | null>(null);
 const imageInput = ref<HTMLInputElement | null>(null);
-const cameraInput = ref<HTMLInputElement | null>(null);
-const fileInput = ref<HTMLInputElement | null>(null);
 const pendingFiles = ref<File[]>([]);
 const currentUserId = computed(() => auth.user?.id || undefined);
 const unseenCount = ref(0);
@@ -460,6 +523,7 @@ async function send() {
   try {
     if (body) { await sendMessage(body, replyMessageId); clearReplyTo(); }
     if (filesToSend.length) await sendPendingFiles(filesToSend);
+    for (const f of filesToSend) revokePreview(f);
     pendingFiles.value = pendingFiles.value.filter((file) => !filesToSend.includes(file));
     await scrollBottom(true);
   } catch {
@@ -550,17 +614,64 @@ let contentSearchTimer: ReturnType<typeof setTimeout> | undefined;
 const QUICK_EMOJIS = ['❤️', '👍', '😆', '😮', '😢', '😡'];
 const showActions = ref(false);
 const actionMsg = ref<any>(null);
-let pressTimer: ReturnType<typeof setTimeout> | undefined;
 
 function openActions(m: any) {
   if (!m || m.isDeleted) return;
   actionMsg.value = m;
   showActions.value = true;
-  if (navigator.vibrate) navigator.vibrate(12);
+  if (navigator.vibrate) navigator.vibrate(10);
 }
-function onRowTouchStart(m: any) { clearTimeout(pressTimer); pressTimer = setTimeout(() => openActions(m), 480); }
-function onRowTouchMove() { clearTimeout(pressTimer); }
-function onRowTouchEnd() { clearTimeout(pressTimer); }
+function closeActions() { showActions.value = false; }
+
+// Vuốt-để-trả-lời (kéo hàng sang PHẢI qua ngưỡng → trả lời tin đó) + NHẤN-GIỮ mở overlay hành
+// động (kiểu Zalo). Cụm nút tròn thường trực cạnh bubble đã bỏ: với chuỗi tin ngắn liên tiếp,
+// cụm nút cao 90px đè lên các hàng lân cận và che nội dung.
+const swipeId = ref<string | null>(null);
+const swipeX = ref(0);
+let swStartX = 0, swStartY = 0, swiping = false, swDecided = false, swHoriz = false;
+const SWIPE_TRIGGER = 56, SWIPE_MAX = 80;
+const LONG_PRESS_MS = 420, LONG_PRESS_SLOP = 10;
+let lpTimer: ReturnType<typeof setTimeout> | undefined;
+function cancelLongPress() { clearTimeout(lpTimer); lpTimer = undefined; }
+
+function onRowTouchStart(_m: any, e: TouchEvent) {
+  swStartX = e.touches[0].clientX; swStartY = e.touches[0].clientY;
+  swiping = true; swDecided = false; swHoriz = false;
+  swipeId.value = _m.id; swipeX.value = 0;
+  cancelLongPress();
+  lpTimer = setTimeout(() => {
+    lpTimer = undefined;
+    swiping = false; swipeX.value = 0; swipeId.value = null; // giữ đủ lâu → không còn là cử chỉ vuốt
+    openActions(_m);
+  }, LONG_PRESS_MS);
+}
+function onRowTouchMove(_m: any, e: TouchEvent) {
+  if (!swiping) { cancelLongPress(); return; }
+  const dx = e.touches[0].clientX - swStartX;
+  const dy = e.touches[0].clientY - swStartY;
+  // Ngón di quá ngưỡng rung tay → là vuốt/cuộn, không phải nhấn-giữ.
+  if (Math.abs(dx) > LONG_PRESS_SLOP || Math.abs(dy) > LONG_PRESS_SLOP) cancelLongPress();
+  if (!swDecided) {
+    if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return; // chưa đủ để quyết hướng
+    swDecided = true;
+    swHoriz = Math.abs(dx) > Math.abs(dy) && dx > 0; // chỉ nhận vuốt sang PHẢI
+  }
+  if (swHoriz) {
+    swipeX.value = Math.min(Math.max(dx, 0), SWIPE_MAX);
+    e.preventDefault(); // chặn cuộn dọc khi đang vuốt ngang
+  }
+}
+function onRowTouchEnd(m: any) {
+  cancelLongPress();
+  const trigger = swHoriz && swipeX.value >= SWIPE_TRIGGER;
+  swiping = false; swDecided = false; swHoriz = false;
+  swipeX.value = 0; swipeId.value = null;
+  if (trigger) {
+    setReplyTo(m);
+    if (navigator.vibrate) navigator.vibrate(10);
+    void nextTick(() => textarea.value?.focus());
+  }
+}
 
 const actionCanCopy = computed(() => actionMsg.value?.contentType === 'text' && !!actionMsg.value?.content && !actionMsg.value?.redacted);
 const actionCanPin = computed(() => !!actionMsg.value && !actionMsg.value.isDeleted && !actionMsg.value.redacted);
@@ -758,23 +869,53 @@ const actionMediaUrl = computed(() => {
   return null;
 });
 
+const sourceNickId = computed(() => selectedConv.value?.zaloAccount?.id ?? null);
 const forwardCandidates = computed(() => {
   const query = forwardQuery.value.trim().toLocaleLowerCase('vi-VN');
-  const sourceNickId = selectedConv.value?.zaloAccount?.id ?? null;
   return conversations.value.filter((conversation) => {
     if (conversation.id === convId.value) return false;
-    if (sourceNickId && conversation.zaloAccount?.id !== sourceNickId) return false;
+    if (sourceNickId.value && conversation.zaloAccount?.id !== sourceNickId.value) return false;
     const name = forwardName(conversation).toLocaleLowerCase('vi-VN');
     return !query || name.includes(query);
   });
 });
+
+// ── Tìm cả BẠN BÈ của nick (kể cả người chưa từng chat qua CRM) ──
+const { friends: forwardFriends, searching: forwardFriendsLoading, searchFriends, ensureConversations, clear: clearForwardFriends } = useForwardFriends();
+const forwardFriendIds = ref(new Set<string>());
+let forwardFriendTimer: ReturnType<typeof setTimeout> | undefined;
+
+function onForwardQueryInput() {
+  clearTimeout(forwardFriendTimer);
+  const q = forwardQuery.value.trim();
+  if (!q) { clearForwardFriends(); return; }
+  forwardFriendTimer = setTimeout(() => {
+    // Bỏ những người đã hiện ở mục Hội thoại để không trùng.
+    const shown = new Set<string>();
+    for (const c of forwardCandidates.value) if ((c as any).contact?.id) shown.add((c as any).contact.id);
+    void searchFriends(sourceNickId.value, q, shown);
+  }, 280);
+}
+function toggleForwardFriend(id: string) {
+  const next = new Set(forwardFriendIds.value);
+  if (next.has(id)) next.delete(id); else next.add(id);
+  forwardFriendIds.value = next;
+}
 function forwardName(conversation: any) {
   return conversation.groupName || conversation.contact?.crmName || conversation.contact?.fullName || conversation.friendship?.aliasInNick || conversation.friendship?.zaloDisplayName || 'Hội thoại';
+}
+// Ảnh đại diện hội thoại đích — nhóm ưu tiên ảnh nhóm (thiếu thì Avatar tự ghép lưới mặt
+// thành viên), chat 1-1 lấy ảnh khách. Cùng nguồn dữ liệu với danh sách hội thoại.
+function forwardAvatarUrl(conversation: any): string | null {
+  if (conversation.threadType === 'group') return conversation.groupAvatarUrl || null;
+  return conversation.contact?.avatarUrl || null;
 }
 async function openForward() {
   showActions.value = false;
   forwardQuery.value = '';
   forwardTargetIds.value = new Set();
+  forwardFriendIds.value = new Set();
+  clearForwardFriends();
   showForward.value = true;
   forwardLoading.value = true;
   try { await fetchConversations({ bypassCache: true }); }
@@ -786,14 +927,22 @@ function toggleForwardTarget(id: string) {
   if (next.has(id)) next.delete(id); else next.add(id);
   forwardTargetIds.value = next;
 }
+const forwardTotalSelected = computed(() => forwardTargetIds.value.size + forwardFriendIds.value.size);
 async function submitForward() {
   const message = actionMsg.value;
-  if (!message || !convId.value || forwardTargetIds.value.size === 0) return;
+  if (!message || !convId.value || forwardTotalSelected.value === 0) return;
   forwarding.value = true;
   try {
-    await forwardMessage(convId.value, message.id, [...forwardTargetIds.value]);
+    // Bạn bè chưa có hội thoại → tạo/lấy hội thoại (idempotent) rồi mới chuyển tiếp.
+    const friendConvIds = forwardFriendIds.value.size
+      ? await ensureConversations([...forwardFriendIds.value])
+      : [];
+    const targets = [...new Set([...forwardTargetIds.value, ...friendConvIds])];
+    if (!targets.length) { toast.error('Không mở được hội thoại đích'); return; }
+
+    await forwardMessage(convId.value, message.id, targets);
     showForward.value = false;
-    toast.push(`Đã chuyển tiếp đến ${forwardTargetIds.value.size} hội thoại`);
+    toast.push(`Đã chuyển tiếp đến ${targets.length} hội thoại`);
   } catch (error: any) {
     toast.error(error?.response?.data?.error || 'Chuyển tiếp thất bại');
   } finally { forwarding.value = false; }
@@ -851,14 +1000,27 @@ function onReply() {
 }
 async function jumpToReply(messageId: string) {
   if (!messageId || !convId.value) return;
-  const found = await loadMessageContext(convId.value, messageId);
-  if (!found) { toast.push('Không tìm thấy tin nhắn gốc'); return; }
+  // messageId có thể là zaloMsgId (từ khối Trả lời) HOẶC id nội bộ (từ tìm kiếm/ghim).
+  // Hàng DOM gắn data-msg-id = id NỘI BỘ, nên phải resolve về đúng message rồi query theo id đó
+  // (fix Lỗi 2: trước đây query thẳng zaloMsgId → không khớp → không cuộn được).
+  const findLoaded = () => messages.value.find(
+    (m) => m.id === messageId || (m as any).zaloMsgId === messageId,
+  );
+  let target = findLoaded();
+  if (!target) {
+    // Chưa render → nạp đúng cửa sổ tin quanh tin gốc (KHÔNG reload cả hội thoại).
+    const found = await loadMessageContext(convId.value, messageId);
+    if (!found) { toast.push('Tin nhắn gốc không còn tồn tại'); return; }
+    await nextTick();
+    target = findLoaded();
+  }
+  if (!target) { toast.push('Tin nhắn gốc không còn tồn tại'); return; }
   await nextTick();
-  const target = scroller.value?.querySelector<HTMLElement>(`[data-msg-id="${messageId}"]`);
-  if (!target) return;
-  target.scrollIntoView({ block: 'center', behavior: 'smooth' });
-  target.classList.add('mch-jump-highlight');
-  window.setTimeout(() => target.classList.remove('mch-jump-highlight'), 1800);
+  const el = scroller.value?.querySelector<HTMLElement>(`[data-msg-id="${target.id}"]`);
+  if (!el) return;
+  el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  el.classList.add('mch-jump-highlight');
+  window.setTimeout(() => el.classList.remove('mch-jump-highlight'), 2200);
 }
 
 async function onCopy() {
@@ -890,7 +1052,26 @@ function queueAttachments(ev: Event) {
   const keys = new Set(pendingFiles.value.map((file) => `${file.name}:${file.size}:${file.lastModified}`));
   pendingFiles.value = [...pendingFiles.value, ...picked.filter((file) => !keys.has(`${file.name}:${file.size}:${file.lastModified}`))];
 }
-function removePendingFile(file: File) { pendingFiles.value = pendingFiles.value.filter((item) => item !== file); }
+function removePendingFile(file: File) {
+  revokePreview(file);
+  pendingFiles.value = pendingFiles.value.filter((item) => item !== file);
+}
+
+// Xem trước ảnh trong hàng đính kèm — object URL cache theo file, tự revoke để không rò bộ nhớ.
+const previewUrls = new Map<string, string>();
+function fileKey(f: File) { return `${f.name}:${f.size}:${f.lastModified}`; }
+function previewUrl(f: File): string | null {
+  if (!f.type.startsWith('image/')) return null;
+  const k = fileKey(f);
+  let u = previewUrls.get(k);
+  if (!u) { u = URL.createObjectURL(f); previewUrls.set(k, u); }
+  return u;
+}
+function revokePreview(f: File) {
+  const k = fileKey(f);
+  const u = previewUrls.get(k);
+  if (u) { URL.revokeObjectURL(u); previewUrls.delete(k); }
+}
 
 // Presence: existing heartbeat keeps notification behavior unchanged.
 let hb: ReturnType<typeof setInterval> | undefined;
@@ -907,9 +1088,16 @@ function stopPresence() {
   announceViewing(null);
 }
 
+// Báo danh sách hội thoại (MConversationsView, keep-alive) xoá badge chưa đọc NGAY khi mở
+// chat — server đã tự mark-read, đây chỉ đồng bộ UI tức thì thay vì đợi lần refresh sau.
+function notifyRead(id: string | null) {
+  if (id) window.dispatchEvent(new CustomEvent('mobile:conv-read', { detail: id }));
+}
+
 // Mở hội thoại + auto-scroll khi có tin mới (socket đã cập nhật `messages`).
 onMounted(async () => {
   await selectConversation(convId.value);
+  notifyRead(convId.value);
   registerSocketListeners(getSocket());
   void refreshPinned();
   restoreDraft(convId.value);
@@ -922,16 +1110,32 @@ onMounted(async () => {
   syncViewport();
 });
 // Ẩn tab / khoá máy → coi như không còn xem, để vẫn nhận được notification.
+// Quay lại foreground (từ nền) → resync tin đã lỡ của thread đang mở (merge, KHÔNG reload UI)
+// nếu đang ở gần đáy. Đang cuộn đọc tin cũ thì KHÔNG đụng để không xáo vị trí.
 function onVisibility() {
-  announceViewing(document.hidden ? null : convId.value);
+  const hidden = document.hidden;
+  announceViewing(hidden ? null : convId.value);
+  if (!hidden && convId.value && nearBottom.value) void resyncOpenThread();
+}
+// Merge tin mới nhất của thread đang mở — dùng khi reconnect/foreground. fetchMessages cùng
+// conv là MERGE (giữ tin socket, lấp lỗ hổng), không wipe. Chỉ gọi khi ở gần đáy.
+let resyncing = false;
+async function resyncOpenThread() {
+  if (resyncing || !convId.value) return;
+  resyncing = true;
+  try { await fetchMessages(convId.value); if (nearBottom.value) await scrollBottom(true); }
+  finally { resyncing = false; }
 }
 document.addEventListener('visibilitychange', onVisibility);
 onUnmounted(() => {
   document.removeEventListener('visibilitychange', onVisibility);
   stopPresence();
   clearReplyTo();
+  cancelLongPress();
   clearTimeout(contentSearchTimer);
   clearKeywordHighlight();
+  for (const u of previewUrls.values()) URL.revokeObjectURL(u);
+  previewUrls.clear();
   window.removeEventListener('chat:insert-suggestion', onCopilotInsert as EventListener);
   window.visualViewport?.removeEventListener('resize', syncViewport);
   window.visualViewport?.removeEventListener('scroll', syncViewport);
@@ -943,7 +1147,11 @@ watch(() => messages.value.length, (next, previous) => {
   else if (next > previous) unseenCount.value += next - previous;
 });
 watch(text, saveDraft);
-watch(convId, async (id) => { if (id) { hasOlderMessages.value = true; unseenCount.value = 0; await selectConversation(id); void refreshPinned(); restoreDraft(id); primeGroupAvatars(); await scrollBottom(); startPresence(); } });
+// Vừa KẾT NỐI LẠI realtime (offline→online) → merge tin đã lỡ của thread đang mở (nếu gần đáy).
+watch(realtimeOffline, (offline, was) => {
+  if (was && !offline && convId.value && nearBottom.value) void resyncOpenThread();
+});
+watch(convId, async (id) => { if (id) { hasOlderMessages.value = true; unseenCount.value = 0; await selectConversation(id); notifyRead(id); void refreshPinned(); restoreDraft(id); primeGroupAvatars(); await scrollBottom(); startPresence(); } });
 </script>
 
 <style scoped>
@@ -971,16 +1179,87 @@ watch(convId, async (id) => { if (id) { hasOlderMessages.value = true; unseenCou
 .mch-history-status--err { color: var(--m-danger); }
 .mch-history-retry { border: 0; background: transparent; color: var(--m-brand); font-weight: var(--m-fw-semibold); font-size: var(--m-fs-xs); text-decoration: underline; cursor: pointer; }
 .mch-day { width: fit-content; margin: 10px auto 8px; padding: 3px 9px; border-radius: 999px; background: var(--m-surface-2); color: var(--m-text-3); font-size: var(--m-fs-xs); }
-.mch-row { margin-bottom: 2px; border-radius: var(--m-r-md); contain: layout paint; }
+/* Nhịp dọc: tin trong CÙNG cụm sát nhau (2px), giữa hai cụm khác người gửi giãn ra (10px) —
+   nếu để 2px cho tất cả thì mắt không tách được ai đang nói. */
+.mch-row { position: relative; margin-bottom: 2px; border-radius: var(--m-r-md); contain: layout paint; }
+.mch-row.is-cluster-end { margin-bottom: 10px; }
+/* Chat 1-1: tên người gửi trong bubble trùng với tên ở header → ẩn (nhóm vẫn hiện). */
+.mch-msgs.is-direct :deep(.sender-name) { display: none; }
+/* Vuốt-để-trả-lời: snap-back mượt khi thả (chỉ transition khi KHÔNG đang kéo). */
+.mch-row:not(.mch-row--swiping) { transition: transform 0.18s cubic-bezier(0.22, 1, 0.36, 1); }
+
+/* P2 — chặn menu/căn-chọn/callout mặc định của TRÌNH DUYỆT trong vùng tin nhắn (không đụng
+   ô nhập ở footer). Sao chép/thao tác đi qua menu riêng (icon ⋯). */
+.mch-msgs {
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+
+/* Overlay nhấn-giữ (kiểu Zalo): nền mờ + bubble nổi + hàng cảm xúc + lưới hành động.
+   Xếp dọc, canh giữa; tin dài tự cuộn trong khung để không đẩy lưới hành động ra ngoài. */
+.mch-ov {
+  position: fixed; inset: 0; z-index: 3000;
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px; padding: calc(env(safe-area-inset-top, 0px) + 16px) 16px calc(env(safe-area-inset-bottom, 0px) + 16px);
+  background: rgba(15, 23, 42, 0.55);
+  backdrop-filter: blur(3px); -webkit-backdrop-filter: blur(3px);
+  animation: mch-ov-in 0.16s ease-out;
+}
+@keyframes mch-ov-in { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .mch-ov { animation: none; } }
+/* Bubble nổi: giữ nguyên renderer chung, chỉ giới hạn chiều cao + canh trái/phải theo người gửi. */
+.mch-ov-msg {
+  display: flex; width: 100%; max-width: 520px; max-height: 42vh; overflow-y: auto;
+  scrollbar-width: none;
+}
+.mch-ov-msg.is-self { justify-content: flex-end; }
+.mch-ov-msg :deep(.bubble-wrapper) { max-width: 100%; }
+/* Overlay là bản sao tĩnh để xem + chọn hành động — ẩn nút hover reaction của desktop. */
+.mch-ov-msg :deep(.reaction-trigger) { display: none; }
+
+.mch-ov-react {
+  display: flex; align-items: center; gap: 4px;
+  padding: 6px 10px; border-radius: var(--m-r-full);
+  background: var(--m-surface); box-shadow: 0 6px 24px rgba(15, 23, 42, 0.25);
+}
+.mch-ov-react-btn {
+  width: 44px; height: 44px; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 50%; background: none; padding: 0;
+  font-size: 27px; line-height: 1; cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: transform 0.12s ease;
+}
+.mch-ov-react-btn:active { transform: scale(1.28); }
+
+.mch-ov-grid {
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px;
+  width: 100%; max-width: 420px; padding: 12px 6px;
+  border-radius: 18px; background: var(--m-surface);
+  box-shadow: 0 8px 32px rgba(15, 23, 42, 0.28);
+}
+.mch-ov-act {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  min-height: var(--m-touch); padding: 10px 4px;
+  border: 0; border-radius: 12px; background: none; cursor: pointer;
+  color: var(--m-text); font-family: inherit; font-size: var(--m-fs-xs); text-align: center; text-decoration: none;
+  -webkit-tap-highlight-color: transparent;
+}
+.mch-ov-act:active { background: var(--m-surface-2); }
+.mch-ov-act.danger { color: var(--m-danger); }
+.mch-swipe-reply {
+  position: absolute; left: -34px; top: 50%; transform: translateY(-50%);
+  width: 30px; height: 30px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--m-brand-soft); color: var(--m-brand-strong);
+}
 .mch-jump-highlight { outline: 2px solid var(--m-brand); outline-offset: 3px; background: var(--m-brand-soft); transition: background 0.3s ease; }
 /* P1 — ảnh trong bubble không kéo full quá lớn; bo góc, cắt gọn. Album grid do MessageBubble lo. */
 .mch-msgs :deep(.chat-image) { max-height: 62vh; max-width: 100%; object-fit: cover; border-radius: 14px; }
 .mch-msgs :deep(.chat-video) { max-height: 62vh; max-width: 100%; border-radius: 14px; }
 
-/* Menu hành động (long-press) */
-.mch-react { display: flex; justify-content: space-around; padding: 6px var(--m-sp-4) 12px; }
-.mch-react-btn { width: 46px; height: 46px; border: 0; background: var(--m-surface-2); border-radius: var(--m-r-full); font-size: 24px; cursor: pointer; display: flex; align-items: center; justify-content: center; }
-.mch-react-btn:active { transform: scale(0.88); background: var(--m-brand-soft); }
+/* Menu phụ (header, ghim, chuyển tiếp…) — vẫn dùng bottom sheet dạng danh sách. */
 .mch-act-item { display: flex; align-items: center; gap: var(--m-sp-3); width: 100%; min-height: var(--m-touch); padding: 13px var(--m-sp-4); border: 0; background: none; color: var(--m-text); font-size: var(--m-fs-md); font-family: inherit; text-align: left; text-decoration: none; cursor: pointer; }
 .mch-act-item:active { background: var(--m-surface-2); }
 .mch-act-item.danger { color: var(--m-danger); }
@@ -989,9 +1268,12 @@ watch(convId, async (id) => { if (id) { hasOlderMessages.value = true; unseenCou
 .mch-forward-search input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; padding: 11px 0; font: inherit; color: var(--m-text); }
 .mch-forward-item { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 52px; padding: 8px var(--m-sp-4); border: 0; border-top: 1px solid var(--m-border); background: none; text-align: left; color: var(--m-text); }
 .mch-forward-item.selected { background: var(--m-brand-soft); }
+.mch-forward-sec { padding: 10px var(--m-sp-4) 4px; font-size: var(--m-fs-xs); font-weight: var(--m-fw-bold); color: var(--m-text-3); text-transform: uppercase; letter-spacing: .3px; background: var(--m-surface-2); }
+.mch-forward-hint { display: block; font-size: var(--m-fs-2xs); color: var(--m-text-3); font-weight: var(--m-fw-regular, 400); }
 .mch-forward-check { width: 22px; height: 22px; flex: 0 0 22px; display: inline-flex; align-items: center; justify-content: center; border: 1.5px solid var(--m-border-strong); border-radius: 50%; color: var(--m-brand-ink); background: transparent; font-weight: var(--m-fw-bold); }
 .mch-forward-item.selected .mch-forward-check { background: var(--m-brand); border-color: var(--m-brand); }
-.mch-forward-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--m-fs-md); }
+.mch-forward-name { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--m-fs-md); }
+.mch-forward-item :deep(.smax-av) { flex-shrink: 0; }
 .mch-forward-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px var(--m-sp-4); border-top: 1px solid var(--m-border); color: var(--m-text-2); font-size: var(--m-fs-sm); }
 .mch-forward-foot button { min-height: 40px; border: 0; border-radius: var(--m-r-sm); padding: 0 16px; color: var(--m-brand-ink); background: var(--m-brand); font-weight: var(--m-fw-semibold); }
 .mch-forward-foot button:disabled { opacity: .5; }
@@ -1043,10 +1325,13 @@ watch(convId, async (id) => { if (id) { hasOlderMessages.value = true; unseenCou
 .mch-library-url { color: var(--m-brand); font-size: var(--m-fs-xs); }
 
 /* Modal video toàn màn hình */
-.mch-video { position: fixed; inset: 0; z-index: 4000; background: #000; display: flex; align-items: center; justify-content: center; }
-.mch-video-el { max-width: 100vw; max-height: 100dvh; }
-.mch-video-close { position: absolute; top: calc(env(safe-area-inset-top, 0px) + 6px); right: 10px; width: 44px; height: 44px; display: inline-flex; align-items: center; justify-content: center; border: 0; background: rgba(255,255,255,0.14); color: #fff; border-radius: 999px; z-index: 2; }
-.mch-video-close:active { background: rgba(255,255,255,0.28); }
+.mch-video { position: fixed; inset: 0; z-index: 4000; background: rgba(0,0,0,0.96); display: flex; align-items: center; justify-content: center; animation: mch-fade-in 0.2s ease; }
+@keyframes mch-fade-in { from { opacity: 0; } to { opacity: 1; } }
+/* Thanh điều khiển trên cùng: scrim gradient để nút Đóng luôn thấy rõ trên video sáng. */
+.mch-video::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 96px; background: linear-gradient(to bottom, rgba(0,0,0,0.5), transparent); pointer-events: none; z-index: 1; }
+.mch-video-el { max-width: 100vw; max-height: 100dvh; border-radius: 4px; }
+.mch-video-close { position: absolute; top: calc(env(safe-area-inset-top, 0px) + 8px); right: 12px; width: 42px; height: 42px; display: inline-flex; align-items: center; justify-content: center; border: 0; background: rgba(255,255,255,0.16); backdrop-filter: blur(6px); color: #fff; border-radius: 999px; z-index: 2; transition: transform 0.1s ease; }
+.mch-video-close:active { background: rgba(255,255,255,0.3); transform: scale(0.92); }
 .mch-state { text-align: center; color: var(--m-text-2); font-size: var(--m-fs-md); padding: var(--m-sp-6); }
 .mch-state--private { font-style: italic; padding-top: 48px; }
 
@@ -1088,6 +1373,14 @@ watch(convId, async (id) => { if (id) { hasOlderMessages.value = true; unseenCou
 .mch-attachment-queue { display: flex; width: 100%; max-width: 100%; gap: 6px; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; touch-action: pan-x; padding: 2px 0; }
 .mch-attachment-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 180px; padding: 5px 8px; border-radius: 999px; background: var(--m-surface-2); color: var(--m-text-2); font-size: var(--m-fs-xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mch-attachment-chip button { border: 0; background: none; color: var(--m-text-3); padding: 0; }
+/* Thumbnail ảnh chờ gửi (thấy trước ảnh, có nút xoá góc). */
+.mch-attachment-thumb { position: relative; flex-shrink: 0; width: 54px; height: 54px; border-radius: var(--m-r-md); overflow: hidden; background: var(--m-surface-2); }
+.mch-attachment-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.mch-attachment-thumb button {
+  position: absolute; top: 2px; right: 2px; width: 18px; height: 18px; display: inline-flex;
+  align-items: center; justify-content: center; border: 0; border-radius: 50%;
+  background: rgba(0,0,0,0.55); color: #fff; padding: 0; cursor: pointer;
+}
 .mch-replybar { display: flex; width: 100%; align-items: center; gap: var(--m-sp-2); padding: 6px var(--m-sp-1) 0 var(--m-sp-2); border-left: 3px solid var(--m-brand); }
 .mch-replybar-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
 .mch-replybar-body b, .mch-replybar-body span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

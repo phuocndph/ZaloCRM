@@ -48,6 +48,23 @@
       </section>
 
       <section class="mst-group">
+        <h2>Giao diện</h2>
+        <button
+          v-for="opt in THEME_OPTIONS"
+          :key="opt.value"
+          class="mst-link mst-theme"
+          :class="{ 'is-active': theme.mode.value === opt.value }"
+          @click="theme.setMode(opt.value)"
+        >
+          <span>
+            {{ opt.label }}
+            <small v-if="opt.value === 'system'">Đang: {{ theme.isDark.value ? 'Tối' : 'Sáng' }}</small>
+          </span>
+          <CheckIcon v-if="theme.mode.value === opt.value" :size="18" />
+        </button>
+      </section>
+
+      <section class="mst-group">
         <h2>Khác</h2>
         <button class="mst-link" @click="router.push('/chat')">Mở bản Desktop</button>
         <button class="mst-link danger" @click="logout">Đăng xuất</button>
@@ -61,14 +78,23 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
-import { ChevronLeft as ChevronLeftIcon } from 'lucide-vue-next';
+import { ChevronLeft as ChevronLeftIcon, Check as CheckIcon } from 'lucide-vue-next';
 import { useAuthStore } from '@/stores/auth';
 import { useWebPush } from '@/composables/use-web-push';
+import { useTheme, type ThemeMode } from '@/composables/use-theme';
 
 const router = useRouter();
 const auth = useAuthStore();
 const push = useWebPush();
 const msg = ref('');
+
+// Giao diện Sáng / Tối / Theo hệ thống (2026-07-13) — dùng chung store với bản desktop.
+const theme = useTheme();
+const THEME_OPTIONS: Array<{ value: ThemeMode; label: string }> = [
+  { value: 'light', label: 'Sáng' },
+  { value: 'dark', label: 'Tối' },
+  { value: 'system', label: 'Theo hệ thống' },
+];
 
 const initial = computed(() => (auth.user?.fullName || 'U').charAt(0).toUpperCase());
 
@@ -111,5 +137,9 @@ onMounted(() => push.refresh());
 .mst-note { font-size: var(--m-fs-sm); line-height: 1.6; color: var(--m-text-2); background: var(--m-info-soft); border-radius: var(--m-r-md); padding: var(--m-sp-3); margin: var(--m-sp-2) 0; }
 .mst-link { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 0; min-height: var(--m-touch); font-size: var(--m-fs-md); color: var(--m-text); border-top: 1px solid var(--m-border); }
 .mst-link.danger { color: var(--m-danger); font-weight: var(--m-fw-semibold); }
+/* Hàng chọn giao diện — dấu tick ở mép phải cho lựa chọn đang dùng */
+.mst-theme { display: flex; align-items: center; justify-content: space-between; gap: var(--m-sp-3); }
+.mst-theme.is-active { color: var(--m-brand); font-weight: var(--m-fw-semibold); }
+.mst-theme small { display: block; font-size: var(--m-fs-2xs); color: var(--m-text-3); font-weight: var(--m-fw-regular); margin-top: 2px; }
 .mst-msg { margin-top: var(--m-sp-4); text-align: center; font-size: var(--m-fs-sm); color: var(--m-text-2); }
 </style>

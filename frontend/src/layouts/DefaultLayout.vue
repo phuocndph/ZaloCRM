@@ -99,6 +99,33 @@
         <v-icon size="18">mdi-cellphone-link</v-icon>
       </RouterLink>
 
+      <!-- Giao diện Sáng / Tối / Theo hệ thống (2026-07-13) -->
+      <v-menu v-model="themeMenu" :close-on-content-click="true">
+        <template #activator="{ props: act }">
+          <button class="icon-btn" v-bind="act" :title="`Giao diện: ${themeLabel}`" aria-label="Đổi giao diện sáng/tối">
+            <v-icon size="18">{{ themeIcon }}</v-icon>
+          </button>
+        </template>
+        <v-list density="compact" min-width="200">
+          <v-list-item
+            :active="theme.mode.value === 'light'"
+            title="Sáng" prepend-icon="mdi-white-balance-sunny"
+            @click="theme.setMode('light')"
+          />
+          <v-list-item
+            :active="theme.mode.value === 'dark'"
+            title="Tối" prepend-icon="mdi-weather-night"
+            @click="theme.setMode('dark')"
+          />
+          <v-list-item
+            :active="theme.mode.value === 'system'"
+            title="Theo hệ thống" prepend-icon="mdi-theme-light-dark"
+            :subtitle="theme.isDark.value ? 'Đang: Tối' : 'Đang: Sáng'"
+            @click="theme.setMode('system')"
+          />
+        </v-list>
+      </v-menu>
+
       <NotificationBell class="icon-btn-wrap" />
 
       <v-menu v-model="userMenu" :close-on-content-click="true">
@@ -112,6 +139,7 @@
           <v-divider />
           <!-- 2026-06-13 (anh chốt): Hồ sơ trỏ về trang gom "Tài khoản của tôi". Bỏ nút Theme tối. -->
           <v-list-item to="/settings/personal/profile" title="Hồ sơ" prepend-icon="mdi-account-circle-outline" />
+          <v-list-item to="/settings/personal/notifications" title="Thông báo tin nhắn" prepend-icon="mdi-bell-ring-outline" />
           <v-divider />
           <v-list-item @click="logout" title="Đăng xuất" prepend-icon="mdi-logout" />
         </v-list>
@@ -142,12 +170,17 @@
 
     <!-- Global toast queue -->
     <ToastContainer />
+
+    <!-- Thông báo tin nhắn nổi (desktop, giống Zalo) -->
+    <MessageNotifications />
   </v-app>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted, nextTick } from 'vue';
 import { useTheme } from 'vuetify';
+// Dark mode 2026-07-13 — đặt alias vì 'useTheme' đã bị Vuetify chiếm tên.
+import { useTheme as useAppTheme } from '@/composables/use-theme';
 import { useRoute, RouterLink } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
 import { isExtension } from '@ee/edition';
@@ -155,6 +188,8 @@ import { useRouter } from 'vue-router';
 import NotificationBell from '@/components/NotificationBell.vue';
 import GlobalSearch from '@/components/GlobalSearch.vue';
 import ToastContainer from '@/components/ui/ToastContainer.vue';
+import MessageNotifications from '@/components/MessageNotifications.vue';
+import { useMessageNotifications } from '@/composables/use-message-notifications';
 import Avatar from '@/components/ui/Avatar.vue';
 import { fetchPublicBranding } from '@/api/public-branding';
 // Open-core: extension top-nav shortcuts (empty in Community edition via @ee stub).
@@ -162,10 +197,25 @@ import { eeTopNavShortcuts } from '@ee/nav';
 // 2026-06-04: gỡ MiniOnboardingIndicator (Anh chốt code lại setup 4 bước sau)
 // LeadFloatingButton moved to ConversationFilterSidebar 2026-06-01
 // 2026-06-08: gỡ import api — banner "BỎ LỠ thông báo" đã tắt (checkInternalContactSetup no-op).
-const theme = useTheme();
+const theme = useAppTheme();          // Sáng / Tối / Theo hệ thống (use-theme.ts)
+const vuetifyTheme = useTheme();      // giữ để tương thích code cũ dùng Vuetify theme
+void vuetifyTheme;
 const route = useRoute();
 const authStore = useAuthStore();
 const router = useRouter();
+
+// ── Nút giao diện Sáng/Tối/Theo hệ thống ──
+const themeMenu = ref(false);
+const themeIcon = computed(() =>
+  theme.mode.value === 'system'
+    ? 'mdi-theme-light-dark'
+    : theme.mode.value === 'dark'
+      ? 'mdi-weather-night'
+      : 'mdi-white-balance-sunny',
+);
+const themeLabel = computed(() =>
+  theme.mode.value === 'system' ? 'Theo hệ thống' : theme.mode.value === 'dark' ? 'Tối' : 'Sáng',
+);
 
 // 2026-06-09 (anh báo menu bar kẹt, phải F5) — điều khiển dropdown nav bằng v-model
 // + ép đóng HẾT sau mỗi điều hướng (kể cả khi điều hướng bị huỷ/chặn quyền). Dropdown
@@ -253,12 +303,14 @@ function onLogoError() {
 }
 
 onMounted(() => {
-  // 2026-06-13 (anh chốt): app LUÔN theme sáng 'hsLight', bỏ chọn theme tối. Ép cứng +
-  // dọn giá trị 'legacy-dark'/'smax-light' cũ trong localStorage để user nào đang kẹt
-  // dark cũng về sáng.
-  theme.global.name.value = 'hsLight';
-  localStorage.setItem('theme', 'hsLight');
+  // 2026-07-13: BỎ ép cứng 'hsLight' (trước đây app light-only). Theme giờ do
+  // use-theme.ts quản (Sáng/Tối/Theo hệ thống, lưu ở key 'zalocrm-theme') và đã được
+  // áp trong main.ts trước khi mount. Dọn key 'theme' cũ để không gây nhầm.
+  localStorage.removeItem('theme');
   void checkInternalContactSetup();
+
+  // Thông báo tin nhắn nổi (desktop) — socket sống toàn app ở tầng layout.
+  useMessageNotifications().start();
 
   fetchPublicBranding()
     .then((b) => {
@@ -355,6 +407,7 @@ const isReportsActive = computed(
 // 2026-06-13 (anh chốt): bỏ chọn theme tối — app luôn theme sáng 'hsLight' (mặc định ở vuetify.ts).
 
 function logout() {
+  useMessageNotifications().stop(); // ngắt socket thông báo để không giữ token cũ khi đổi tài khoản
   authStore.logout();
   router.push('/login');
 }

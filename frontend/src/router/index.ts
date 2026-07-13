@@ -58,6 +58,7 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true, resource: 'conversation' },
     children: [
       { path: '', name: 'M.Conversations', component: () => import('@/views/mobile/MConversationsView.vue'), meta: { requiresAuth: true, resource: 'conversation' } },
+      { path: 'compose', name: 'M.Compose', component: () => import('@/views/mobile/MComposeView.vue'), meta: { requiresAuth: true, resource: 'conversation' } },
       { path: 'c/:convId', name: 'M.Chat', component: () => import('@/views/mobile/MChatView.vue'), meta: { requiresAuth: true, resource: 'conversation' } },
       // Khách hàng mobile (2026-07-12) — tái dùng API /contacts (quyền contact ở backend).
       { path: 'customers', name: 'M.Customers', component: () => import('@/views/mobile/MCustomersView.vue'), meta: { requiresAuth: true, resource: 'contact' } },
@@ -136,7 +137,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'personal/profile',       name: 'Settings.Profile',       component: () => import('@/views/settings/PersonalAccountPage.vue') },
       // Đổi mật khẩu giờ là modal trong trang Tài khoản → giữ link cũ không gãy bằng redirect.
       { path: 'personal/password',      name: 'Settings.Password',      redirect: '/settings/personal/profile' },
-      { path: 'personal/notifications', name: 'Settings.Notifications', component: () => import('@/views/settings/SettingsComingSoon.vue'), props: { feature: 'notifications' } },
+      { path: 'personal/notifications', name: 'Settings.Notifications', component: () => import('@/views/settings/NotificationSettingsPage.vue') },
       { path: 'personal/theme',         name: 'Settings.Theme',         component: () => import('@/views/settings/SettingsComingSoon.vue'), props: { feature: 'theme' } },
       { path: 'personal/sessions',      name: 'Settings.Sessions',      component: () => import('@/views/settings/SettingsComingSoon.vue'), props: { feature: 'sessions' } },
 

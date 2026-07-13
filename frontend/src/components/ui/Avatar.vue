@@ -7,9 +7,27 @@
     :style="containerStyle"
     :title="title || name || ''"
   >
-    <!-- Image with fallback to initials on error -->
+    <!-- Nhóm chưa có avatar riêng → GHÉP LƯỚI avatar thành viên (Zalo/Messenger style) -->
+    <div
+      v-if="showCollage"
+      class="av-collage"
+      :class="`av-collage--${groupMemberAvatarUrls.length}`"
+    >
+      <img
+        v-for="url in groupMemberAvatarUrls"
+        :key="url"
+        :src="url"
+        class="av-cell"
+        alt=""
+        loading="lazy"
+        decoding="async"
+        referrerpolicy="no-referrer"
+        @error="onMemberAvatarError(url)"
+      />
+    </div>
+    <!-- Ảnh đơn (user, hoặc nhóm có avatar riêng) — fallback initials khi lỗi/thiếu -->
     <img
-      v-if="src && !imgError"
+      v-else-if="src && !imgError"
       :src="src"
       :alt="name || 'avatar'"
       class="av-img"
@@ -19,9 +37,17 @@
     />
     <span v-else class="av-initials" :style="initialsStyle">{{ initials }}</span>
 
-    <!-- Group sticker (góc phải trên) — Material Design "group" icon, clean ở size nhỏ -->
+    <!-- +N thành viên vượt quá số ô hiển thị trong lưới -->
     <span
-      v-if="isGroup"
+      v-if="showCollage && extraGroupMembers > 0"
+      class="av-collage-extra"
+      :style="membersBadgeStyle"
+    >+{{ extraGroupMembers > 99 ? '99+' : extraGroupMembers }}</span>
+
+    <!-- Group sticker (góc phải trên) — Material "group" icon. Ẩn khi đã ghép lưới (mặt
+         thành viên đã đủ báo "nhóm"), tránh rối. -->
+    <span
+      v-if="isGroup && !showCollage"
       class="av-group-sticker"
       :style="stickerStyle"
       aria-label="Nhóm hội thoại"
@@ -32,7 +58,7 @@
     </span>
 
     <!-- Group member count badge (optional) -->
-    <span v-if="isGroup && groupMembersCount" class="av-members" :style="membersBadgeStyle">
+    <span v-if="isGroup && groupMembersCount && !groupMemberAvatarUrls.length" class="av-members" :style="membersBadgeStyle">
       {{ groupMembersCount > 99 ? '99+' : groupMembersCount }}
     </span>
 
@@ -64,6 +90,11 @@ const props = withDefaults(defineProps<{
   size?: number;
   isGroup?: boolean;
   groupMembersCount?: number | null;
+  /**
+   * Avatar các thành viên nhóm — dùng ghép "lưới" (collage kiểu Zalo/Messenger) khi
+   * nhóm chưa có ảnh đại diện riêng. BE trả sẵn (chat-routes list). Chỉ dùng khi isGroup.
+   */
+  groupMemberAvatars?: Array<{ uid: string; name?: string | null; avatarUrl: string }>;
   gender?: string | null;
   platform?: 'zalo' | null;
   /** String dùng để hash ra gradient màu khi không có src (mặc định = name) */
@@ -74,6 +105,7 @@ const props = withDefaults(defineProps<{
   size: 36,
   isGroup: false,
   groupMembersCount: null,
+  groupMemberAvatars: () => [],
   gender: null,
   platform: null,
   gradientSeed: '',
@@ -81,9 +113,37 @@ const props = withDefaults(defineProps<{
 });
 
 const imgError = ref(false);
+// URL avatar thành viên tải lỗi → loại khỏi lưới (tránh ô vỡ ảnh).
+const failedMemberAvatars = ref<Set<string>>(new Set());
 
 // Reset imgError khi src đổi
 watch(() => props.src, () => { imgError.value = false; });
+watch(() => props.groupMemberAvatars, () => { failedMemberAvatars.value = new Set(); });
+
+const groupMemberAvatarUrls = computed(() => {
+  if (!props.isGroup) return [];
+  const urls = (props.groupMemberAvatars || [])
+    .map((m) => m.avatarUrl)
+    .filter((url): url is string => !!url && !failedMemberAvatars.value.has(url));
+  return [...new Set(urls)].slice(0, 4);
+});
+/**
+ * Ghép lưới khi: là nhóm + nhóm CHƯA có avatar riêng (hoặc ảnh lỗi) + có ≥2 avatar thành
+ * viên. Nhóm đã có avatar riêng → tôn trọng ảnh đó (không ghép). 1 thành viên → ảnh đơn.
+ */
+const showCollage = computed(() =>
+  props.isGroup && (!props.src || imgError.value) && groupMemberAvatarUrls.value.length >= 2,
+);
+const extraGroupMembers = computed(() => {
+  const count = props.groupMembersCount || 0;
+  const visible = groupMemberAvatarUrls.value.length;
+  return count > visible ? count - visible : 0;
+});
+function onMemberAvatarError(url: string) {
+  const next = new Set(failedMemberAvatars.value);
+  next.add(url);
+  failedMemberAvatars.value = next;
+}
 
 const initials = computed(() => {
   const name = (props.name || '?').trim();
@@ -188,11 +248,52 @@ const platformBadgeStyle = computed(() => {
 
 /* ════════ Group treatment ════════ */
 .smax-av.is-group .av-img,
-.smax-av.is-group .av-initials {
+.smax-av.is-group .av-initials,
+.smax-av.is-group .av-collage {
   /* Vòng viền xanh đậm — đặc trưng cho group */
   outline: 2px solid #0D47A1;
   outline-offset: -1px;
   box-shadow: 0 0 0 1px var(--smax-bg, white);
+}
+
+/* ════════ Group collage — ghép avatar thành viên (co giãn theo size) ════════ */
+.av-collage {
+  width: 100%; height: 100%;
+  border-radius: 50%;
+  overflow: hidden;
+  display: grid;
+  gap: 1.5px;
+  background: var(--smax-bg, #fff);   /* khe trắng ngăn cách các ô */
+}
+.av-collage .av-cell {
+  width: 100%; height: 100%;
+  object-fit: cover;
+  display: block;
+  background: var(--smax-grey-100, #f3f4f6);
+}
+/* 2 thành viên → 2 nửa dọc */
+.av-collage--2 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr; }
+/* 3 → 1 ô trái cao full + 2 ô phải xếp chồng */
+.av-collage--3 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+.av-collage--3 .av-cell:nth-child(1) { grid-row: 1 / span 2; }
+/* 4 → lưới 2×2 */
+.av-collage--4 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+
+/* +N thành viên còn lại — badge nhỏ góc dưới-phải */
+.av-collage-extra {
+  position: absolute;
+  bottom: -3px; right: -3px;
+  background: var(--smax-grey-200, #e5e7eb);
+  color: var(--smax-grey-800, #374151);
+  border-radius: 999px;
+  font-weight: 700;
+  text-align: center;
+  border: 2px solid var(--smax-bg, white);
+  padding: 0 4px;
+  box-sizing: content-box;
+  display: inline-flex; align-items: center; justify-content: center;
+  z-index: 3;
+  pointer-events: none;
 }
 
 /* Group sticker (góc phải trên) — Material group icon, nền xanh đậm.

@@ -69,6 +69,7 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
       // Riêng Tư 2026-06-06: trỏ thẳng tab Privacy trong trang Zalo (nơi quản lý DUY NHẤT).
       { id: 'privacy', label: 'Riêng tư', icon: 'mdi-shield-lock-outline', route: '/settings/channels/zalo?tab=privacy', permission: 'everyone', extensionOnly: true, aliases: ['privacy', 'otp', 'riêng tư', 'blur', 'nick chính'] },
       { id: 'notifications', label: 'Thông báo của tôi', icon: 'mdi-bell-outline', route: '/settings/channels/zalo?tab=internal-contact', permission: 'everyone', aliases: ['internal contact', 'liên lạc nội bộ', 'system notify', 'thông báo zalo'] },
+      { id: 'msg-notify', label: 'Thông báo tin nhắn nổi', icon: 'mdi-bell-ring-outline', route: '/settings/personal/notifications', permission: 'everyone', aliases: ['thông báo nổi', 'popup', 'tin nhắn mới', 'notification', 'desktop notify', 'âm báo', 'bật thông báo'] },
     ],
   },
 

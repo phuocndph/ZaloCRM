@@ -75,21 +75,47 @@ export interface CreateMediaMessageInput {
 
 export async function createMediaMessage(input: CreateMediaMessageInput) {
   const { zaloMsgId } = input;
-  return prisma.message.create({
-    data: {
-      id: randomUUID(),
-      conversationId: input.conversationId,
-      zaloMsgId: zaloMsgId || null,
-      zaloMsgIdNum: zaloMsgId && /^\d+$/.test(zaloMsgId) ? BigInt(zaloMsgId) : null,
-      senderType: 'self',
-      senderUid: input.zaloAccount.zaloUid || '',
-      senderName: 'Staff',
-      sentVia: input.sentVia,
-      metadata: input.metadata,
-      content: input.content,
-      contentType: input.contentType,
-      sentAt: new Date(),
-      repliedByUserId: input.repliedByUserId,
-    },
+
+  const build = (msgId: string | null) => ({
+    id: randomUUID(),
+    conversationId: input.conversationId,
+    zaloMsgId: msgId,
+    zaloMsgIdNum: msgId && /^\d+$/.test(msgId) ? BigInt(msgId) : null,
+    senderType: 'self',
+    senderUid: input.zaloAccount.zaloUid || '',
+    senderName: 'Staff',
+    sentVia: input.sentVia,
+    metadata: input.metadata,
+    content: input.content,
+    contentType: input.contentType,
+    sentAt: new Date(),
+    repliedByUserId: input.repliedByUserId,
   });
+
+  try {
+    return await prisma.message.create({ data: build(zaloMsgId || null) });
+  } catch (err) {
+    // UNIQUE(conversation_id, zalo_msg_id) đụng độ = tin với msgId này ĐÃ TỒN TẠI — thường do
+    // echo từ Zalo listener về trước khi ta kịp create. KHÔNG tạo tin thứ 2 (sẽ hiện ảnh 2 lần):
+    // cập nhật tin sẵn có bằng content mirror của ta (URL /files bền hơn CDN Zalo) rồi trả về.
+    if ((err as { code?: string })?.code === 'P2002' && zaloMsgId) {
+      const existing = await prisma.message.findFirst({
+        where: { conversationId: input.conversationId, zaloMsgId },
+      });
+      if (existing) {
+        return await prisma.message.update({
+          where: { id: existing.id },
+          data: {
+            senderType: 'self',
+            content: input.content,
+            contentType: input.contentType,
+            sentVia: input.sentVia,
+            metadata: input.metadata,
+            repliedByUserId: input.repliedByUserId,
+          },
+        });
+      }
+    }
+    throw err;
+  }
 }

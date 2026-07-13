@@ -47,8 +47,16 @@
         <input v-model="tagFilter" class="mp-tag-input" placeholder="🏷 tag" @input="debouncedReload" />
       </div>
 
-      <!-- Thanh chọn nhiều (album) — CHỈ khi đang lọc ẢNH (Zalo album = ảnh) -->
-      <div v-if="kindFilter === 'image'" class="mp-multibar">
+      <!-- Mobile (stageBeforeSend): luôn hiện thanh "Gửi" — chạm chỉ CHỌN, bấm Gửi mới gửi. -->
+      <div v-if="stageBeforeSend" class="mp-multibar">
+        <span class="mp-count">{{ picked.size }} đã chọn</span>
+        <button class="mp-send-album" :disabled="picked.size === 0 || sendingAlbum || !!sending" @click="sendPicked">
+          {{ (sendingAlbum || sending) ? 'Đang gửi…' : `Gửi ${picked.size || ''}` }}
+        </button>
+      </div>
+
+      <!-- Desktop: thanh chọn nhiều (album) — CHỈ khi đang lọc ẢNH (Zalo album = ảnh) -->
+      <div v-else-if="kindFilter === 'image'" class="mp-multibar">
         <label class="mp-toggle">
           <input type="checkbox" :checked="multiMode" @change="toggleMultiMode" />
           Chọn nhiều ảnh (gửi cả album)
@@ -72,8 +80,9 @@
           v-for="a in items"
           :key="a.id"
           class="mp-fitem"
+          :class="{ picked: picked.has(a.id) }"
           :disabled="sending === a.id"
-          @click="send(a)"
+          @click="stageBeforeSend ? togglePick(a) : send(a)"
         >
           <span class="mp-ficon" :style="{ background: fileIcon(a.name).bg, color: fileIcon(a.name).fg }">{{ fileIcon(a.name).label }}</span>
           <span class="mp-finfo">
@@ -81,6 +90,7 @@
             <span class="mp-fmeta">{{ fmtSize(a.sizeBytes) }}</span>
           </span>
           <span v-if="sending === a.id" class="mp-fsending">Đang gửi…</span>
+          <span v-else-if="stageBeforeSend" class="mp-fsend">{{ picked.has(a.id) ? '✓ Đã chọn' : 'Chọn' }}</span>
           <span v-else class="mp-fsend">Gửi ›</span>
         </button>
       </div>
@@ -104,7 +114,7 @@
           <span class="mp-name">
             {{ a.name }}<template v-if="a.kind === 'video' && a.sizeBytes"> · {{ fmtSize(a.sizeBytes) }}</template>
           </span>
-          <span v-if="multiMode && picked.has(a.id)" class="mp-check on">{{ pickIndex(a.id) }}</span>
+          <span v-if="(multiMode || stageBeforeSend) && picked.has(a.id)" class="mp-check on">{{ pickIndex(a.id) }}</span>
           <span v-if="sending === a.id" class="mp-sending">Đang gửi…</span>
         </button>
       </div>
@@ -117,7 +127,8 @@ import { ref, computed, onMounted } from 'vue';
 import { listMedia, sendMediaToConversation, sendAlbumToConversation, type MediaAssetItem, type ListMediaParams } from '@/api/media';
 import { useToast } from '@/composables/use-toast';
 
-const props = defineProps<{ conversationId: string }>();
+/** stageBeforeSend (mobile): CHẠM = CHỌN, không gửi thẳng. Phải bấm "Gửi" mới gửi cho khách. */
+const props = defineProps<{ conversationId: string; stageBeforeSend?: boolean }>();
 const emit = defineEmits<{ close: []; sent: [] }>();
 const toast = useToast();
 
@@ -211,12 +222,23 @@ async function reload() {
 }
 
 function onCellClick(a: MediaAssetItem) {
+  // Mobile: chạm = CHỌN (không gửi thẳng cho khách). Desktop giữ nguyên hành vi cũ.
+  if (props.stageBeforeSend) { togglePick(a); return; }
   if (multiMode.value && a.kind === 'image') { togglePick(a); return; }
   send(a);
 }
 
 function togglePick(a: MediaAssetItem) {
+  // Video/tệp không ghép album được → chọn ĐƠN (thay thế lựa chọn cũ).
+  if (a.kind !== 'image') {
+    picked.value = picked.value.has(a.id) ? new Set() : new Set([a.id]);
+    return;
+  }
   const next = new Set(picked.value);
+  // Đang chọn 1 video/tệp mà giờ chọn ảnh → bỏ cái cũ (không trộn loại).
+  for (const id of next) {
+    if (items.value.find((x) => x.id === id)?.kind !== 'image') next.delete(id);
+  }
   if (next.has(a.id)) {
     next.delete(a.id);
   } else {
@@ -224,6 +246,18 @@ function togglePick(a: MediaAssetItem) {
     next.add(a.id);
   }
   picked.value = next;
+}
+
+/** Gửi những mục ĐÃ CHỌN (mobile). 1 mục → gửi đơn; nhiều ảnh → gửi album. */
+async function sendPicked() {
+  const ids = [...picked.value];
+  if (ids.length === 0 || sendingAlbum.value || sending.value) return;
+  if (ids.length === 1) {
+    const a = items.value.find((x) => x.id === ids[0]);
+    if (a) await send(a);
+    return;
+  }
+  await sendAlbum();
 }
 
 // Số thứ tự theo lượt chọn (anh chốt): tick trước → số nhỏ. Bỏ giữa → số sau dồn lại.

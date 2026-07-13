@@ -44,7 +44,15 @@
             autocomplete="current-password"
             placeholder="Nhập mật khẩu"
             persistent-placeholder
-            class="mb-5"
+            class="mb-2"
+          />
+          <v-checkbox
+            v-model="rememberMe"
+            label="Ghi nhớ đăng nhập trên thiết bị này"
+            color="primary"
+            density="compact"
+            hide-details
+            class="mb-3 remember-check"
           />
           <v-btn type="submit" color="primary" block size="large" :loading="loading" rounded="lg" class="login-btn">
             <v-icon start>mdi-login</v-icon>
@@ -81,6 +89,7 @@ import { useRouter, useRoute } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
 import { fetchPublicBranding } from '@/api/public-branding';
 import LoginBrandBanner from '@/components/branding/LoginBrandBanner.vue';
+import { saveLogin, loadLogin, clearLogin, consumeAutoLoginChance } from '@/composables/use-remembered-login';
 
 // SĐT mẫu cố định trong gợi ý ô đăng nhập (kèm sau email theo tên miền tổ chức).
 const SAMPLE_PHONE = '0901 234 567';
@@ -90,6 +99,7 @@ const password = ref('');
 const showPassword = ref(false);
 const loading = ref(false);
 const error = ref('');
+const rememberMe = ref(true); // mặc định BẬT — mobile muốn khỏi gõ lại
 const router = useRouter();
 const route = useRoute();
 const authStore = useAuthStore();
@@ -109,6 +119,18 @@ const emailPlaceholder = ref(DEFAULT_PLACEHOLDER);
 const passwordChangedNotice = ref(route.query['password-changed'] === '1');
 
 onMounted(() => {
+  // Ghi nhớ đăng nhập: tự điền tài khoản/mật khẩu đã lưu; nếu có → tự đăng nhập luôn
+  // (1 lần/phiên tab, chặn vòng lặp). Không tự đăng nhập khi vừa đổi mật khẩu (phải gõ mới).
+  const saved = loadLogin();
+  if (saved) {
+    identifier.value = saved.identifier;
+    password.value = saved.password;
+    rememberMe.value = true;
+    if (!passwordChangedNotice.value && consumeAutoLoginChance()) {
+      void handleLogin();
+    }
+  }
+
   // Setup-check (điều hướng /setup) và branding fetch chạy song song, độc lập.
   authStore
     .checkSetup()
@@ -138,6 +160,9 @@ async function handleLogin() {
   error.value = '';
   try {
     await authStore.login(identifier.value, password.value);
+    // Ghi nhớ (hoặc xoá) thông tin đăng nhập theo lựa chọn.
+    if (rememberMe.value) saveLogin(identifier.value, password.value);
+    else clearLogin();
     router.push('/');
   } catch (err: any) {
     // 2026-06-09 (anh báo lỗi "Unauthorized"): server trả {error:'Unauthorized', message:'...'}
@@ -186,6 +211,8 @@ async function handleLogin() {
   margin: 0 0 26px;
 }
 .login-btn { font-weight: 600; letter-spacing: 0.3px; margin-top: 2px; }
+.remember-check { margin-left: -6px; }
+.login-card :deep(.remember-check .v-label) { color: #41505c; opacity: 1; font-size: 13.5px; }
 
 /* ══ Responsive: ≤900px xếp dọc (banner tự thu gọn trong component) ══ */
 @media (max-width: 900px) {

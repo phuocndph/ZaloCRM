@@ -1,0 +1,182 @@
+/* ════════════════════════════════════════════════════════════════════════════
+   DARK THEME — bảng màu tối tương phản tốt (2026-07-13)
+   Kích hoạt bằng data-theme="dark" trên <html> (use-theme.ts).
+   Nguyên tắc: nền xám-than dịu (không đen tuyền), chữ sáng đạt WCAG AA (≥4.5:1),
+   accent xanh Zalo sáng hơn để nổi trên nền tối. Đảo thang xám (50 tối ↔ 700 sáng).
+   Chỉ ĐỔI GIÁ TRỊ TOKEN — không đụng logic/cấu trúc.
+   ════════════════════════════════════════════════════════════════════════════ */
+:root[data-theme="dark"] {
+  /* ── Bề mặt ── */
+  --smax-bg: #171f29;            /* card/list/panel */
+  --smax-grey-50: #1e2732;       /* hover nhạt */
+  --smax-grey-100: #222c38;      /* nền phụ / chip nền */
+  --smax-grey-200: #2a3542;      /* viền / divider đậm hơn */
+  --smax-grey-300: #3a4757;      /* viền control */
+  --smax-header-bg: #0c1620;     /* thanh header đậm */
+
+  /* ── Chữ (đảo: grey-700 giờ là chữ phụ SÁNG) ── */
+  --smax-text: #e6edf5;          /* chữ chính — ~13:1 trên #171f29 */
+  --smax-grey-700: #9fb0c3;      /* chữ phụ — ~7:1 */
+
+  /* ── Accent ── */
+  --smax-primary: #4aa3d5;       /* xanh Zalo sáng hơn cho nền tối */
+  --smax-primary-hover: #5bb8e5;
+  --smax-primary-soft: #1b3a4d;  /* nền selected/soft */
+  --smax-primary-700: #7cc0ea;
+
+  /* Trạng thái — sáng hơn để đủ contrast trên nền tối */
+  --smax-success: #3ddc84;
+  --smax-warning: #f5b350;
+  --smax-info: #4aa3d5;
+  --smax-error: #ff6b6b;
+
+  /* ── Bảng màu khung Chat ── */
+  --chat-page-bg: #0f151c;             /* nền vùng tin nhắn */
+  --chat-bubble-in: #222c38;           /* bong bóng khách */
+  --chat-bubble-in-border: #2a3542;
+  --chat-bubble-in-text: #e6edf5;
+  --chat-bubble-out: #234a63;          /* bong bóng nhân viên — xanh đậm dịu */
+  --chat-bubble-out-hover: #2a5877;
+  --chat-bubble-out-text: #dbeafe;
+  --chat-bubble-out-accent: #7cc0ea;
+  --chat-time: #7d92a8;                /* timestamp — vẫn ~4.5:1 */
+  --chat-meta: #8a97a8;
+  --chat-divider: rgba(255, 255, 255, 0.07);
+  --chat-bubble-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
+
+  /* Bong bóng nick main/group nền */
+  --smax-bubble-self: #234a63;
+  --smax-group-bg: #3a2a24;
+}
+
+/* ── Nền app + màu chữ gốc ── */
+:root[data-theme="dark"] body,
+:root[data-theme="dark"] .smax-app {
+  background: #0f151c;
+  color: var(--smax-text);
+}
+
+/* ════════════════════════════════════════════════════════════════════════════
+   MOBILE / PWA — Design System riêng (token --m-*, mobile.css)
+   Dùng CHUNG bảng màu với desktop để trải nghiệm nhất quán giữa 2 bản.
+   ════════════════════════════════════════════════════════════════════════════ */
+:root[data-theme="dark"] {
+  /* Bề mặt */
+  --m-bg: #0f151c;               /* nền app (sau card) */
+  --m-surface: #171f29;          /* card / header / bottom bar */
+  --m-surface-2: #1e2732;        /* input, chip nền, hàng nhấn */
+  --m-surface-sunken: #0f151c;   /* vùng lõm (nền chat) */
+
+  /* Chữ — đạt AA trên --m-surface */
+  --m-text: #e6edf5;             /* tiêu đề — 14:1 */
+  --m-text-2: #9fb0c3;           /* phụ — 7.5:1 */
+  --m-text-3: #7d92a8;           /* mờ (timestamp/meta) — 5.2:1 */
+
+  /* Viền + lớp phủ */
+  --m-border: #232e3a;
+  --m-border-strong: #3a4757;
+  --m-overlay: rgba(0, 0, 0, 0.62);
+
+  /* Brand */
+  --m-brand: #4aa3d5;
+  --m-brand-strong: #5bb8e5;
+  --m-brand-soft: #1b3a4d;
+  --m-brand-ink: #0a1118;
+
+  /* Trạng thái — nền "soft" thành mảng TỐI (không còn mảng pastel chói) */
+  --m-danger: #ff6b6b;   --m-danger-soft: #3a1f22;
+  --m-success: #3ddc84;  --m-success-soft: #16301f;
+  --m-warning: #f5b350;  --m-warning-soft: #33291a;
+  --m-info: #4aa3d5;     --m-info-soft: #14293a;
+  --m-vip: #d4a94a;      --m-vip-soft: #332a17;
+  --m-badge: #ff6b6b;    --m-badge-ink: #ffffff;
+  --m-online: #3ddc84;
+
+  /* Bong bóng chat mobile */
+  --m-bubble-in: #222c38;
+  --m-bubble-in-border: #2a3542;
+  --m-bubble-out: #234a63;
+  --m-bubble-out-text: #dbeafe;
+}
+
+/* Mobile — vài phần tử còn hardcode nền sáng (banner offline, chip) → tránh mảng chói. */
+:root[data-theme="dark"] .ms-offline {
+  background: #3a1f22;
+  color: #ffb4b4;
+}
+:root[data-theme="dark"] .ms-offline.ms-warn {
+  background: #33291a;
+  color: #f5c97a;
+}
+:root[data-theme="dark"] .mcp-tag.is-chat {
+  background: #16301f;
+  color: #6ee7a5;
+}
+
+/* Scrollbar tối (WebKit) */
+:root[data-theme="dark"] ::-webkit-scrollbar-thumb {
+  background: #2a3542;
+}
+:root[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
+  background: #3a4757;
+}
+:root[data-theme="dark"] ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* ════════ Chat — override token của ConversationList (Design System cột 2) ════════ */
+:root[data-theme="dark"] .conv-list {
+  --cl-accent: #4aa3d5;
+  --cl-accent-soft: #1b3a4d;     /* nền hội thoại đang chọn */
+  --cl-ink: #e6edf5;             /* tên khách — cấp 1 */
+  --cl-ink-content: #cbd6e2;     /* nội dung tin cuối — cấp 2 */
+  --cl-ink-2: #9fb0c3;           /* phụ trách / người trả lời */
+  --cl-ink-3: #7d92a8;           /* metadata / giờ */
+  --cl-line: #232e3a;            /* kẻ phân cách */
+  --cl-hover: #1e2732;           /* hover */
+  --cl-danger: #ff6b6b;          /* badge chưa đọc */
+
+  /* Bề mặt + công thức trộn chip — ĐẢO so với sáng: trộn với nền TỐI, chữ trộn với TRẮNG
+     → chip là mảng tối có chữ sáng (không còn mảng trắng chói giữa nền tối). */
+  --cl-surface: #171f29;
+  --cl-chip-bg-base: #171f29;
+  --cl-chip-bg-mix: 24%;
+  --cl-chip-fg-base: #ffffff;
+  --cl-chip-fg-mix: 55%;
+}
+
+/* ════════ MessageThread (cột 3) — phần tử phụ còn hardcode nền sáng ════════
+   Bề mặt CHÍNH (.message-thread / .chat-header / .input-area / bong bóng) đã dùng token
+   nên tự tối. Dưới đây là các pill/popup nhỏ còn hardcode — override để không lóa mảng sáng.
+   Selector `:root[data-theme=dark] .x` (0,3,0) thắng scoped style `.x[data-v-…]` (0,2,0). */
+:root[data-theme="dark"] .drop-card,
+:root[data-theme="dark"] .nick-dd-panel,
+:root[data-theme="dark"] .editor-lock-pill,
+:root[data-theme="dark"] .nick-archived-chip,
+:root[data-theme="dark"] .btn-cancel-invite,
+:root[data-theme="dark"] .btn-remove-friend {
+  background: var(--smax-grey-100);
+  color: var(--smax-text);
+  border-color: var(--smax-grey-300);
+}
+
+/* Thẻ "tin nhắn đã thu hồi" — nền xám 6% quá mờ trên nền tối → nâng lên cho thấy rõ.
+   (Nội dung chỉ LÀM NHẠT, không gạch ngang/nghiêng — xem message-bubble.vue) */
+:root[data-theme="dark"] .recall-card {
+  background: rgba(255, 255, 255, 0.05);
+  border-left-color: var(--smax-grey-300);
+}
+:root[data-theme="dark"] .recall-header,
+:root[data-theme="dark"] .recall-body {
+  color: var(--smax-grey-700);
+}
+
+/* Vùng cuộn tin nhắn — thanh cuộn tối */
+:root[data-theme="dark"] .messages::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  background-clip: content-box;
+}
+:root[data-theme="dark"] .messages::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.24);
+  background-clip: content-box;
+}

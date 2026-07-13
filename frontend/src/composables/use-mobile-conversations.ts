@@ -1,29 +1,34 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
-// Copyright (C) 2026 Nguyễn Tiến Lộc
+// Copyright (C) 2026 Nguyen Tien Loc
 /**
- * use-mobile-conversations.ts — danh sách hội thoại cho PWA Mobile.
- *
- * Vì sao KHÔNG dùng `useChat().fetchConversations`: hàm đó kéo theo work-scope,
- * inbox filter, folder, tag… (bộ máy của desktop) và luôn lấy top-N, KHÔNG phân trang.
- * Ở đây gọi thẳng `GET /conversations` — endpoint SẴN CÓ, đã hỗ trợ page/limit/search/unread.
- * Không thêm API mới, không nhân bản logic desktop.
- *
- * Realtime: nghe `chat:message` trên socket ĐANG CÓ (do useChat().initSocket dựng).
+ * Lightweight mobile conversation list for the PWA shell.
+ * Calls GET /conversations directly because desktop useChat carries extra filters and no mobile paging.
  */
 import { ref, computed } from 'vue';
 import { api } from '@/api/index';
+import type { ConversationState } from '@/composables/use-conversation-state';
 
 const PAGE_SIZE = 30;
 
-/** Chỉ lấy các field mobile cần — bám theo response thật của GET /conversations. */
 export interface MConversation {
   id: string;
   unreadCount?: number;
   lastMessageAt?: string | null;
   threadType?: string;
+  groupName?: string | null;
+  groupAvatarUrl?: string | null;
+  groupMembersCount?: number | null;
+  groupMemberAvatars?: Array<{ uid: string; name?: string | null; avatarUrl: string }>;
   contact?: { id?: string; fullName?: string | null; crmName?: string | null; avatarUrl?: string | null } | null;
   zaloAccount?: { id?: string; displayName?: string | null } | null;
-  messages?: Array<{ content?: string | null; contentType?: string | null; senderType?: string | null }>;
+  messages?: Array<{
+    content?: string | null;
+    contentType?: string | null;
+    senderType?: string | null;
+    /** Tin đã thu hồi — preview hiện nhãn "đã thu hồi" thay vì nội dung gốc (như desktop). */
+    isDeleted?: boolean | null;
+  }>;
+  userState?: ConversationState;
   redacted?: boolean;
   [k: string]: unknown;
 }
@@ -39,12 +44,24 @@ export function useMobileConversations() {
   const error = ref<string | null>(null);
 
   const hasMore = computed(() => items.value.length < total.value);
-  const totalUnread = computed(() => items.value.reduce((s, c) => s + (c.unreadCount ?? 0), 0));
+  const isUnread = (c: MConversation) => (c.unreadCount ?? 0) > 0 || c.userState?.isManualUnread === true;
+  const displayItems = computed(() => {
+    const pinned: MConversation[] = [];
+    const rest: MConversation[] = [];
+    const source = unreadOnly.value ? items.value.filter(isUnread) : items.value;
+    for (const c of source) (c.userState?.isPinned ? pinned : rest).push(c);
+    pinned.sort((a, b) => {
+      const ta = a.userState?.pinnedAt ? Date.parse(a.userState.pinnedAt) : 0;
+      const tb = b.userState?.pinnedAt ? Date.parse(b.userState.pinnedAt) : 0;
+      return tb - ta;
+    });
+    return [...pinned, ...rest];
+  });
+  const totalUnread = computed(() => items.value.reduce((s, c) => s + (isUnread(c) ? Math.max(c.unreadCount ?? 0, 1) : 0), 0));
 
   function params(p: number) {
     const q: Record<string, string> = { page: String(p), limit: String(PAGE_SIZE) };
     if (search.value.trim()) q.search = search.value.trim();
-    if (unreadOnly.value) q.unread = 'true';
     return q;
   }
 
@@ -70,29 +87,23 @@ export function useMobileConversations() {
       const next = page.value + 1;
       const { data } = await api.get('/conversations', { params: params(next) });
       const incoming: MConversation[] = data.conversations ?? [];
-      // Chống trùng khi có tin mới đẩy conv nhảy trang giữa 2 lần fetch.
       const seen = new Set(items.value.map((c) => c.id));
       items.value.push(...incoming.filter((c) => !seen.has(c.id)));
       total.value = data.total ?? total.value;
       page.value = next;
     } catch {
-      /* im lặng — cuộn thêm thất bại không nên chặn UI */
+      // Loading the next page should not block the current list.
     } finally {
       loadingMore.value = false;
     }
   }
 
-  /**
-   * Tin mới từ socket → cập nhật preview + thời gian + badge, đẩy hội thoại lên đầu.
-   * `activeConvId`: hội thoại đang mở → KHÔNG tăng badge chưa đọc.
-   */
   function applyIncoming(
     payload: { conversationId: string; message: Record<string, unknown> },
     activeConvId: string | null,
   ) {
     const idx = items.value.findIndex((c) => c.id === payload.conversationId);
     if (idx === -1) {
-      // Hội thoại chưa có trong danh sách (vd lần đầu khách nhắn) → nạp lại trang 1.
       void load();
       return;
     }
@@ -104,29 +115,83 @@ export function useMobileConversations() {
     if (isInbound && payload.conversationId !== activeConvId) {
       conv.unreadCount = (conv.unreadCount ?? 0) + 1;
     }
-    // Mới nhất lên đầu.
     items.value.splice(idx, 1);
     items.value.unshift(conv);
   }
 
-  /** Đánh dấu đã đọc tại chỗ (khi mở hội thoại) — server đã tự mark-read. */
+  function applyState(convId: string, state: ConversationState) {
+    const conv = items.value.find((c) => c.id === convId);
+    if (conv) conv.userState = state;
+  }
+
   function markRead(convId: string) {
     const conv = items.value.find((c) => c.id === convId);
-    if (conv) conv.unreadCount = 0;
+    if (!conv) return;
+    conv.unreadCount = 0;
+    if (conv.userState?.isManualUnread) {
+      conv.userState = { ...conv.userState, isManualUnread: false, manualUnreadAt: null };
+      void setManualUnread(convId, false).catch(() => {});
+    }
+  }
+
+  async function patchState(convId: string, patch: { isPinned?: boolean; isManualUnread?: boolean }) {
+    const { data } = await api.patch<ConversationState>(`/conversations/${convId}/state`, patch);
+    applyState(convId, data);
+    return data;
+  }
+
+  async function setPinned(convId: string, pinned: boolean) {
+    const conv = items.value.find((c) => c.id === convId);
+    const prev = conv?.userState;
+    if (conv) {
+      conv.userState = {
+        conversationId: convId,
+        isPinned: pinned,
+        pinnedAt: pinned ? new Date().toISOString() : null,
+        isManualUnread: prev?.isManualUnread ?? false,
+        manualUnreadAt: prev?.manualUnreadAt ?? null,
+        flags: prev?.flags ?? {},
+      };
+    }
+    try { return await patchState(convId, { isPinned: pinned }); }
+    catch (err) { if (conv) conv.userState = prev; throw err; }
+  }
+
+  async function setManualUnread(convId: string, unread: boolean) {
+    const conv = items.value.find((c) => c.id === convId);
+    const prev = conv?.userState;
+    if (conv) {
+      conv.userState = {
+        conversationId: convId,
+        isPinned: prev?.isPinned ?? false,
+        pinnedAt: prev?.pinnedAt ?? null,
+        isManualUnread: unread,
+        manualUnreadAt: unread ? new Date().toISOString() : null,
+        flags: prev?.flags ?? {},
+      };
+    }
+    try { return await patchState(convId, { isManualUnread: unread }); }
+    catch (err) { if (conv) conv.userState = prev; throw err; }
   }
 
   return {
-    items, loading, loadingMore, total, search, unreadOnly, error,
-    hasMore, totalUnread,
-    load, loadMore, applyIncoming, markRead,
+    items, displayItems, loading, loadingMore, total, search, unreadOnly, error,
+    hasMore, totalUnread, isUnread,
+    load, loadMore, applyIncoming, markRead, setPinned, setManualUnread,
   };
 }
 
-/** Rút gọn nội dung tin cuối để hiển thị 1 dòng. */
+/** Tin nhắn cuối có phải tin ĐÃ THU HỒI không (để làm nhạt preview). */
+export function isRecalledPreview(conv: MConversation): boolean {
+  return conv.messages?.[0]?.isDeleted === true;
+}
+
 export function previewText(conv: MConversation): string {
   const m = conv.messages?.[0];
   if (!m) return 'Chưa có tin nhắn';
   if (conv.redacted) return '🔒 Nội dung riêng tư';
+  // Tin thu hồi — hiện NHÃN, không hiện nội dung gốc (đồng bộ với bản desktop).
+  if (m.isDeleted) return '🔂 Tin nhắn đã thu hồi';
   const kind = m.contentType ?? 'text';
   if (kind === 'image') return '🖼️ Hình ảnh';
   if (kind === 'video') return '🎬 Video';
@@ -137,7 +202,6 @@ export function previewText(conv: MConversation): string {
   return prefix + (m.content || '').replace(/\s+/g, ' ').slice(0, 60);
 }
 
-/** Thời gian ngắn gọn kiểu Zalo/Messenger. */
 export function shortTime(iso?: string | null): string {
   if (!iso) return '';
   const d = new Date(iso);

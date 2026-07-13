@@ -85,6 +85,37 @@ export const vuetify = createVuetify({
           'on-primary': '#0A192F',
         },
       },
+      // hsDark — Dark mode chính thức (2026-07-13). Nền xám-than dịu, chữ sáng tương phản
+      // AA, accent xanh Zalo sáng hơn để nổi trên nền tối. Mirror dark-theme.css.
+      'hsDark': {
+        dark: true,
+        colors: {
+          primary: '#4aa3d5',
+          'primary-darken-1': '#3a8fc0',
+          secondary: '#5bb8e5',
+          accent: '#7cc0ea',
+          background: '#0f151c',
+          surface: '#171f29',
+          'surface-variant': '#1e2732',
+          success: '#3ddc84',
+          warning: '#f5b350',
+          error: '#ff6b6b',
+          info: '#4aa3d5',
+          'nav-a': '#0c1620',
+          'nav-b': '#060d14',
+          'nav-accent': '#5bb8e5',
+          'on-surface': '#e6edf5',
+          'on-background': '#e6edf5',
+          'on-primary': '#0a1118',
+        },
+        variables: {
+          'border-color': '#2a3542',
+          'border-opacity': 1,
+          'high-emphasis-opacity': 1,
+          'medium-emphasis-opacity': 0.72,
+          'theme-radius': '8px',
+        },
+      },
     },
   },
   defaults: {

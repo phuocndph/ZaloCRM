@@ -4,6 +4,7 @@ import { defineStore } from 'pinia';
 import { ref, computed } from 'vue';
 import { api } from '@/api/index';
 import { refreshOrgTimezone } from '@/composables/use-org-timezone';
+import { clearLogin, resetAutoLoginChance } from '@/composables/use-remembered-login';
 
 interface User {
   id: string;
@@ -137,6 +138,9 @@ export const useAuthStore = defineStore('auth', () => {
     user.value = null;
     localStorage.removeItem('token');
     localStorage.removeItem('refreshToken');
+    // Đăng xuất CHỦ ĐỘNG → xoá thông tin ghi nhớ + reset cờ để KHÔNG tự đăng nhập lại ngay.
+    clearLogin();
+    resetAutoLoginChance();
   }
 
   async function init() {

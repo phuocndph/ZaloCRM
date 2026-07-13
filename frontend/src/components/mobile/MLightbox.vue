@@ -87,14 +87,22 @@ function onTouchEnd() {
 </script>
 
 <style scoped>
-.mlb { position: fixed; inset: 0; z-index: 4000; background: #000; display: flex; flex-direction: column; }
+.mlb { position: fixed; inset: 0; z-index: 4000; background: rgba(0,0,0,0.97); display: flex; flex-direction: column; animation: mlb-fade 0.2s ease; }
+@keyframes mlb-fade { from { opacity: 0; } to { opacity: 1; } }
 .mlb-top {
   position: absolute; top: 0; left: 0; right: 0; z-index: 2;
   display: flex; align-items: center; justify-content: space-between;
-  padding: calc(env(safe-area-inset-top, 0px) + 6px) 10px 6px;
+  padding: calc(env(safe-area-inset-top, 0px) + 8px) 12px 14px;
+  background: linear-gradient(to bottom, rgba(0,0,0,0.5), transparent); /* scrim để nút thấy rõ trên ảnh sáng */
+  pointer-events: none;
 }
-.mlb-btn { width: 44px; height: 44px; display: inline-flex; align-items: center; justify-content: center; border: 0; background: rgba(255,255,255,0.14); color: #fff; border-radius: 999px; text-decoration: none; }
-.mlb-btn:active { background: rgba(255,255,255,0.28); }
+.mlb-btn {
+  pointer-events: auto;
+  width: 42px; height: 42px; display: inline-flex; align-items: center; justify-content: center;
+  border: 0; background: rgba(255,255,255,0.16); backdrop-filter: blur(6px); color: #fff; border-radius: 999px;
+  text-decoration: none; transition: transform 0.1s ease, background 0.12s ease;
+}
+.mlb-btn:active { background: rgba(255,255,255,0.3); transform: scale(0.92); }
 .mlb-stage { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; transition: transform 0.05s linear; overflow: hidden; touch-action: none; overscroll-behavior: none; }
 .mlb-skel { width: 60vw; height: 40vh; border-radius: 12px; }
 .mlb-img { max-width: 100vw; max-height: 100dvh; object-fit: contain; transition: transform var(--m-dur-base, 220ms) var(--m-ease, ease); }

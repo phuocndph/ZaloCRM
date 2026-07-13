@@ -39,6 +39,8 @@
             :size="40"
             :gender="contactGender"
             :is-group="conversation.threadType === 'group'"
+            :group-members-count="conversation.groupMembersCount"
+            :group-member-avatars="conversation.groupMemberAvatars"
             :gradient-seed="conversation.id"
           />
         </div>

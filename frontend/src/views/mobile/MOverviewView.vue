@@ -50,7 +50,7 @@
           <div class="mov-sec-title">Cần xử lý ngay</div>
           <button v-for="u in me.urgent.slice(0, 6)" :key="u.conversationId" class="mov-urow" @click="go(`/m/c/${u.conversationId}`)">
             <div class="mov-uav">
-              <img v-if="u.contactAvatar" :src="u.contactAvatar" alt="" loading="lazy" />
+              <img v-if="u.contactAvatar && !imgFailed.has(u.conversationId)" :src="u.contactAvatar" alt="" loading="lazy" @error="imgFailed.add(u.conversationId)" />
               <span v-else>{{ (u.contactName || '?').charAt(0).toUpperCase() }}</span>
             </div>
             <div class="mov-ubody">
@@ -73,7 +73,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue';
+import { computed, onMounted, ref, reactive } from 'vue';
 import { useRouter } from 'vue-router';
 import { MessageCircle as MessageCircleIcon, Users as UsersIcon, CalendarClock as CalendarClockIcon } from 'lucide-vue-next';
 import { api } from '@/api/index';
@@ -91,6 +91,7 @@ const { realtimeOffline } = useChat();
 const me = ref<any>(null);
 const loading = ref(false);
 const error = ref<string | null>(null);
+const imgFailed = reactive(new Set<string>()); // avatar lỗi → chữ cái đầu
 
 const firstName = computed(() => (auth.user?.fullName || 'bạn').trim().split(/\s+/).pop());
 const greeting = computed(() => { const h = new Date().getHours(); return h < 11 ? 'Chào buổi sáng' : h < 14 ? 'Chào buổi trưa' : h < 18 ? 'Chào buổi chiều' : 'Chào buổi tối'; });

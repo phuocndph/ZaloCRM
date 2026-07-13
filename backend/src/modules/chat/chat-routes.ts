@@ -862,6 +862,49 @@ export async function chatRoutes(app: FastifyInstance) {
       prisma.conversation.count({ where }),
     ]);
 
+
+    const groupPairsRaw = conversations
+      .filter(c => c.threadType === 'group' && c.externalThreadId)
+      .map(c => ({ zaloAccountId: c.zaloAccountId, groupId: c.externalThreadId! }));
+    const groupPairKeys = new Set<string>();
+    const groupPairs: typeof groupPairsRaw = [];
+    for (const p of groupPairsRaw) {
+      const key = `${p.zaloAccountId}:${p.groupId}`;
+      if (!groupPairKeys.has(key)) {
+        groupPairKeys.add(key);
+        groupPairs.push(p);
+      }
+    }
+    let groupMemberAvatarMap = new Map<string, Array<{ uid: string; name: string | null; avatarUrl: string }>>();
+    if (groupPairs.length) {
+      const rows = await prisma.groupMember.findMany({
+        where: {
+          avatarUrl: { not: null },
+          OR: groupPairs.map(p => ({ AND: [{ zaloAccountId: p.zaloAccountId }, { groupId: p.groupId }] })),
+        },
+        select: {
+          zaloAccountId: true,
+          groupId: true,
+          memberUid: true,
+          displayName: true,
+          zaloName: true,
+          avatarUrl: true,
+          lastSeenAt: true,
+        },
+        orderBy: { lastSeenAt: 'desc' },
+        take: Math.min(groupPairs.length * 8, 600),
+      });
+      groupMemberAvatarMap = new Map();
+      for (const row of rows) {
+        if (!row.avatarUrl) continue;
+        const key = `${row.zaloAccountId}:${row.groupId}`;
+        const list = groupMemberAvatarMap.get(key) ?? [];
+        if (list.length >= 4 || list.some((item) => item.uid === row.memberUid)) continue;
+        list.push({ uid: row.memberUid, name: row.displayName || row.zaloName || null, avatarUrl: row.avatarUrl });
+        groupMemberAvatarMap.set(key, list);
+      }
+    }
+
     // Batch fetch Friend records cho user threads để FE biết friendship state.
     // QUAN TRỌNG: lookup theo (zaloAccountId × zaloUidInNick = conv.externalThreadId)
     // — đây là unique key cho Friend row. KHÔNG dùng (accountId × contactId) vì cùng
@@ -980,6 +1023,9 @@ export async function chatRoutes(app: FastifyInstance) {
           friendship: c.contactId && c.externalThreadId
             ? friendMap.get(`${c.zaloAccountId}:${c.externalThreadId}`) || null
             : null,
+          groupMemberAvatars: c.threadType === 'group' && c.externalThreadId
+            ? groupMemberAvatarMap.get(`${c.zaloAccountId}:${c.externalThreadId}`) ?? []
+            : [],
         };
         // KHÔNG dùng `as any` ở đây — để tsc bắt buộc `base` phải mang isPrivate +
         // privateOwnerUserId (fail-closed lúc compile, xem redact.ts::PrivacyConversation).
@@ -1313,8 +1359,12 @@ export async function chatRoutes(app: FastifyInstance) {
       prisma.message.findMany({
         where: { conversationId: id },
         // Primary sort by Zalo Snowflake (zaloMsgIdNum) — match Zalo Web order.
-        // sentAt fallback chỉ kick in cho row chưa có zaloMsgIdNum (CRM in-flight).
-        orderBy: [{ zaloMsgIdNum: { sort: 'desc', nulls: 'last' } }, { sentAt: 'desc' }],
+        // FIX 2026-07-13 (ảnh gửi đi không hiện): nulls phải đứng ĐẦU trong thứ tự DESC.
+        // Tin CRM vừa gửi chưa có echo zaloMsgId (null) là tin MỚI NHẤT; với nulls:'last'
+        // chúng bị coi là CŨ NHẤT → rớt khỏi cửa sổ `take` (100 tin mới nhất) → mất khỏi
+        // khung chat ở hội thoại dài. FE vẫn tự sắp lại đúng vị trí (compareMessages:
+        // snowflake trước, sentAt fallback) nên thứ tự hiển thị không đổi.
+        orderBy: [{ zaloMsgIdNum: { sort: 'desc', nulls: 'first' } }, { sentAt: 'desc' }],
         skip: (parseInt(page) - 1) * parseInt(limit),
         take: parseInt(limit),
         select: {
