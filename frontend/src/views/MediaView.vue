@@ -26,6 +26,9 @@
       <button v-for="t in tabs" :key="t.kind" class="tab" :class="{ on: activeKind === t.kind }" @click="setKind(t.kind)">{{ t.label }}</button>
     </nav>
 
+    <R2StorageManager v-if="activeKind === 'r2'" />
+
+
     <!-- ════════ THÙNG RÁC (GĐ13a) ════════ -->
     <section v-if="trashMode" class="m-trash">
       <div class="trash-bar">
@@ -61,9 +64,10 @@
     </section>
 
     <!-- Filter row — LEVER 1: Quyền (Loại = tabs ở trên) + nút Lọc sâu -->
-    <div v-if="!trashMode" class="m-filter">
+    <div v-if="!trashMode && activeKind !== 'r2'" class="m-filter">
       <span class="crumb">Tất cả<template v-if="activeFolder"> ▸ <b>{{ activeFolderName }}</b></template></span>
       <span v-for="tag in activeTags" :key="tag" class="chip coral" @click="toggleTag(tag)">#{{ tag }} <XIcon :size="11" :stroke-width="2.2" /></span>
+
       <button class="lvl2-btn" :class="{ on: showLever2 }" @click="showLever2 = !showLever2">⚙ Lọc sâu</button>
       <div class="vis-toggle">
         <span :class="{ on: visFilter === '' }" @click="setVis('')">Tất cả</span>
@@ -73,11 +77,12 @@
     </div>
 
     <!-- LEVER 2: Sắp xếp / Thời gian / Size / Tag (ẩn/hiện) -->
-    <div v-if="showLever2 && !trashMode" class="m-lever2">
+    <div v-if="showLever2 && !trashMode && activeKind !== 'r2'" class="m-lever2">
       <select v-model="ownerFilter" class="lv2-sel" @change="applyFilters">
         <option value="">Mọi người sở hữu</option>
         <option v-for="u in uploaders" :key="u.id" :value="u.id">{{ u.name }} ({{ u.count }})</option>
       </select>
+
       <select v-model="sortBy" class="lv2-sel" @change="applyFilters">
         <option value="recent">Gần đây dùng</option>
         <option value="newest">Mới tải lên</option>
@@ -99,7 +104,7 @@
       <input v-model="tagInput" class="lv2-tag" placeholder="Lọc theo tag…" @keyup.enter="applyTagFilter" @input="debouncedReload" />
     </div>
 
-    <div v-if="!trashMode" class="m-work">
+    <div v-if="!trashMode && activeKind !== 'r2'" class="m-work">
       <!-- Folder tree -->
       <aside class="m-tree">
         <div class="tree-ttl">Thư mục
@@ -211,6 +216,7 @@ import {
 } from '@/api/media';
 import { useToast } from '@/composables/use-toast';
 import MediaDetailPanel from '@/components/media/MediaDetailPanel.vue';
+import R2StorageManager from '@/components/media/R2StorageManager.vue';
 import {
   Trash2 as Trash2Icon, RotateCcw as RotateCcwIcon, X as XIcon, CheckSquare as CheckSquareIcon,
   Globe as GlobeIcon, Lock as LockIcon, Smartphone as NickIcon, Upload as UploadIcon,
@@ -241,8 +247,9 @@ const tabs = [
   { kind: 'album', label: 'Album' },
   { kind: 'file', label: 'Tệp' },
   { kind: 'video', label: 'Video' },
-];
-const activeKind = ref<'image' | 'album' | 'file' | 'video'>('image');
+  { kind: 'r2', label: 'Quản lý R2' },
+] as const;
+const activeKind = ref<'image' | 'album' | 'file' | 'video' | 'r2'>('image');
 const items = ref<MediaAssetItem[]>([]);
 const folders = ref<MediaFolder[]>([]);
 const loading = ref(false);
@@ -270,6 +277,7 @@ const total = ref(0);
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)));
 
 const activeFolderName = computed(() => folders.value.find((f) => f.id === activeFolder.value)?.name ?? '');
+
 
 function sizeRange(): { sizeMin?: number; sizeMax?: number } {
   const MB = 1024 * 1024;
@@ -342,9 +350,14 @@ async function loadFolders() {
   try { folders.value = await listMediaFolders(); } catch { /* ignore */ }
 }
 
-function setKind(k: any) { activeKind.value = k; selected.value = null; if (trashMode.value) loadTrash(); else { applyFilters(); loadUploaders(); } }
-function setVis(v: any) { visFilter.value = v; applyFilters(); loadUploaders(); }
-function setFolder(id: string | null) { activeFolder.value = id; applyFilters(); }
+function setKind(k: 'image' | 'album' | 'file' | 'video' | 'r2') {
+  activeKind.value = k;
+  selected.value = null;
+  if (k === 'r2') { trashMode.value = false; return; }
+  if (trashMode.value) loadTrash();
+  else { applyFilters(); loadUploaders(); }
+}
+function setVis(v: any) { visFilter.value = v; applyFilters(); loadUploaders(); }function setFolder(id: string | null) { activeFolder.value = id; applyFilters(); }
 function toggleTag(tag: string) { activeTags.value = activeTags.value.filter((t) => t !== tag); applyFilters(); }
 function select(a: MediaAssetItem) { selected.value = a; }
 
@@ -539,6 +552,13 @@ onMounted(() => { reload(); loadFolders(); loadUploaders(); });
 .m-tabs { display:flex; gap:2px; padding:0 24px; border-bottom:1px solid var(--hairline); }
 .tab { padding:11px 16px; font-size:14px; color:var(--muted); border:none; background:none; cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px; }
 .tab.on { color:var(--ink); font-weight:500; border-bottom-color:var(--ink); }
+.chat-cleanup-bar { display:flex; align-items:center; gap:10px; padding:10px 24px; border-bottom:1px solid #f0d0c8; background:#fff7f5; flex-wrap:wrap; }
+.cleanup-copy { display:flex; flex-direction:column; gap:2px; min-width:210px; }
+.cleanup-copy b { font-size:13px; color:#7a271a; }
+.cleanup-copy span { font-size:11.5px; color:#8a4b3f; }
+.cleanup-select { min-width:270px; max-width:430px; flex:1; border:1px solid #e8b5aa; border-radius:var(--r-sm,6px); padding:7px 10px; font-size:13px; color:var(--ink); background:#fff; outline:none; }
+.cleanup-delete { display:inline-flex; align-items:center; justify-content:center; gap:6px; border:1px solid #b42318; background:#b42318; color:#fff; border-radius:var(--r-sm,6px); padding:7px 13px; font-size:13px; font-weight:700; cursor:pointer; }
+.cleanup-delete:disabled { opacity:.42; cursor:default; background:#fff; color:#8a4b3f; border-color:#e8b5aa; }
 .m-filter { display:flex; align-items:center; gap:10px; padding:12px 24px; border-bottom:1px solid var(--hairline); flex-wrap:wrap; }
 .crumb { color:var(--muted); font-size:13px; }
 .crumb b { color:var(--ink); font-weight:500; }
@@ -552,6 +572,10 @@ onMounted(() => { reload(); loadFolders(); loadUploaders(); });
 .m-lever2 { display:flex; gap:8px; align-items:center; padding:10px 24px; border-bottom:1px solid var(--hairline); flex-wrap:wrap; background:var(--soft); }
 .lv2-sel { border:1px solid var(--hairline); border-radius:var(--r-sm,6px); padding:5px 10px; font-size:12.5px; color:var(--ink); background:var(--canvas); outline:none; }
 .lv2-tag { border:1px solid var(--hairline); border-radius:var(--r-sm,6px); padding:5px 11px; font-size:12.5px; width:150px; outline:none; }
+.scope-chip { background:#eef2fb; border-color:#cbd8ff; color:#1f3a8a; }
+.scope-trash { display:inline-flex; align-items:center; gap:5px; border:1px solid #f0c8c2; background:#fff; color:#b42318; border-radius:var(--pill); padding:5px 12px; font-size:12.5px; font-weight:600; cursor:pointer; }
+.scope-trash:hover { background:#b42318; color:#fff; border-color:#b42318; }
+.lv2-scope { min-width:220px; max-width:320px; }
 .thumb .play-ic { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); width:34px; height:34px; border-radius:9999px; background:rgba(0,0,0,.5); color:#fff; font-size:14px; display:flex; align-items:center; justify-content:center; pointer-events:none; }
 .thumb .dur { position:absolute; bottom:6px; right:6px; background:rgba(0,0,0,.7); color:#fff; border-radius:4px; padding:1px 6px; font-size:10.5px; font-variant-numeric:tabular-nums; }
 .m-work { display:flex; flex:1; overflow:hidden; min-height:0; }

@@ -44,6 +44,7 @@ import { chatAttachmentRoutes } from './modules/chat/chat-attachment-routes.js';
 import { deviceRoutes } from './modules/devices/device-routes.js';
 import { configRoutes } from './modules/config/config-routes.js';
 import { mediaRoutes } from './modules/media/media-routes.js';
+import { storageAdminRoutes } from './modules/media/storage-admin-routes.js';
 import { contactRoutes } from './modules/contacts/contact-routes.js';
 import { statusRoutes } from './modules/contacts/status-routes.js';
 import { contactSubResourceRoutes } from './modules/contacts/contact-sub-resource-routes.js';
@@ -319,6 +320,7 @@ async function bootstrap() {
   await app.register(deviceRoutes);
   await app.register(configRoutes);
   await app.register(mediaRoutes);
+  await app.register(storageAdminRoutes);
   await app.register(contactRoutes);
   await app.register(statusRoutes);
   await app.register(contactSubResourceRoutes);

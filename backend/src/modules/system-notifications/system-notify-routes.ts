@@ -14,6 +14,7 @@ import { resolveSystemNotifyRecipient, sendSystemNotificationToUser, resolveUidB
 import { DEFAULT_WELCOME_TEMPLATE, buildWelcomeMessage, validateTemplate, toZaloStyles } from './welcome-message-builder.js';
 import { formatMessage } from '../../shared/text-formatter.js';
 import { uploadBuffer } from '../../shared/storage/minio-client.js';
+import { recordStorageReference } from '../../shared/storage/storage-ledger.js';
 import { config } from '../../config/index.js';
 
 function hashPhone(phone: string): string {
@@ -544,7 +545,13 @@ export async function systemNotifyRoutes(app: FastifyInstance): Promise<void> {
               where: { id: currentUser.orgId },
               data: { welcomeImageUrl: result.url },
             });
-            return { ok: true, url: result.url };
+            await recordStorageReference({
+              upload: result,
+              orgId: currentUser.orgId,
+              referenceKey: `organization:${currentUser.orgId}:welcome-image`,
+              source: 'system_notification',
+              purpose: 'welcome-image',
+            });            return { ok: true, url: result.url };
           }
         }
       } catch (err) {

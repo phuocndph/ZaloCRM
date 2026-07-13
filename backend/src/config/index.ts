@@ -90,6 +90,7 @@ export const config = {
   s3AccessKey: envValue('S3_ACCESS_KEY') || 'minioadmin',
   s3SecretKey: envValue('S3_SECRET_KEY') || 'minioadmin',
   s3Region: envValue('S3_REGION') || 'us-east-1',
+  r2StorageCapBytes: Math.max(0, Number(envValue('R2_STORAGE_CAP_GB') || '0')) * 1024 * 1024 * 1024,
 
   aiDefaultProvider: envValue('AI_DEFAULT_PROVIDER') || 'anthropic',
   aiDefaultModel: envValue('AI_DEFAULT_MODEL') || 'claude-sonnet-4-6',

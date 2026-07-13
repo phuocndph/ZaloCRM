@@ -19,6 +19,11 @@ export interface UploadResult {
   deduped: boolean;
 }
 
+export interface StorageObjectMetadata {
+  size: number;
+  mimeType: string;
+}
+
 export interface StorageDriver {
   /** Upload buffer (content-hash dedup). Key = `media/{sha256}{ext}`. */
   uploadBuffer(buffer: Buffer, mimeType: string, originalName?: string): Promise<UploadResult>;
@@ -26,6 +31,9 @@ export interface StorageDriver {
   getObjectStream(key: string): Promise<NodeJS.ReadableStream | null>;
   /** Đọc toàn bộ object thành Buffer. Trả null nếu key sai / không tồn tại. */
   getObjectBuffer(key: string): Promise<Buffer | null>;
+  /** Xoá object khỏi storage. Trả true nếu đã xoá hoặc object không còn tồn tại. */
+  statObject(key: string): Promise<StorageObjectMetadata | null>;
+  deleteObject(key: string): Promise<boolean>;
   /** Đảm bảo nơi lưu sẵn sàng (mkdir cho local, kiểm tra bucket cho R2). */
   ensureBucket(): Promise<void>;
   /** Public URL để gửi cho Zalo CDN / trình duyệt tải. */

@@ -30,6 +30,17 @@ export const getObjectStream: StorageDriver['getObjectStream'] = (key) => driver
 
 export const getObjectBuffer: StorageDriver['getObjectBuffer'] = (key) => driver.getObjectBuffer(key);
 
+export const deleteObject: StorageDriver['deleteObject'] = (key) => driver.deleteObject(key);
+
+export const deleteObjectFrom = (storageDriver: 'local' | 'r2', key: string) =>
+  (storageDriver === 'r2' ? r2Driver : localDriver).deleteObject(key);
+
+export const statObjectFrom = (storageDriver: 'local' | 'r2', key: string) =>
+  (storageDriver === 'r2' ? r2Driver : localDriver).statObject(key);
+
+export const publicUrlFrom = (storageDriver: 'local' | 'r2', key: string) =>
+  (storageDriver === 'r2' ? r2Driver : localDriver).publicUrl(key);
+
 export const ensureBucket: StorageDriver['ensureBucket'] = () => driver.ensureBucket();
 
 /**

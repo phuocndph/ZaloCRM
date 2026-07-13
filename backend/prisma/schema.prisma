@@ -209,8 +209,11 @@ model Organization {
   // Phase Media Library 2026-06-11 — kho phương tiện (ảnh/album/file/video) + dedup.
   mediaBlobs              MediaBlob[]
   mediaAssets             MediaAsset[]
+  storageCleanupRuns       StorageCleanupRun[]
   mediaAlbums             MediaAlbum[]
   mediaUsageEvents        MediaUsageEvent[]
+  mediaStorageAttributions MediaStorageAttribution[]
+  storageObjectReferences StorageObjectReference[]
 
   @@map("organizations")
 }
@@ -343,6 +346,7 @@ model User {
   // Phase Media Library 2026-06-11 — kho phương tiện (owner + người tạo).
   ownedMediaAssets             MediaAsset[]                 @relation("MediaAssetOwner")
   createdMediaAssets           MediaAsset[]                 @relation("MediaAssetCreatedBy")
+  storageCleanupRuns           StorageCleanupRun[]          @relation("StorageCleanupPerformedBy")
   ownedMediaAlbums             MediaAlbum[]                 @relation("MediaAlbumOwner")
   createdMediaAlbums           MediaAlbum[]                 @relation("MediaAlbumCreatedBy")
   // Riêng tư cấp hội thoại 2026-07-09 — các hội thoại user này đang bật "Chỉ mình tôi xem".
@@ -480,6 +484,8 @@ model ZaloAccount {
   sdkLimits                        SdkLimit[]
   // 2026-06-15 — ảnh kho lưu từ chat của nick này (để hiện "ảnh từ nick nào").
   mediaAssetsAsSource              MediaAsset[]            @relation("MediaAssetSourceNick")
+  storageAttributions              MediaStorageAttribution[]
+  storageObjectReferences          StorageObjectReference[]
   // 2026-06-18 — Cầu Zalo↔Telegram: cấu hình cầu per-nick (1 nick = 1 supergroup).
   telegramBridge                   TelegramBridgeConfig?
   // 2026-06-21 (E1 quét group) — roster member quét ra + lịch sử lần quét per-nick.
@@ -879,6 +885,8 @@ model Conversation {
   userStates             ConversationUserState[]
   // 2026-06-18 — Cầu Telegram: 1 hội thoại = 1 forum topic (định tuyến reply).
   telegramTopic          TelegramTopicMap?
+  storageAttributions    MediaStorageAttribution[]
+  storageObjectReferences StorageObjectReference[]
 
   @@unique([zaloAccountId, externalThreadId])
   @@index([privateOwnerUserId])
@@ -974,6 +982,7 @@ model Message {
   aiFeedbackFollowupCustomerMessages AiFeedback[]            @relation("AiFeedbackFollowupCustomerMessage")
   aiSuggestionTriggers               AiAssistantSuggestion[] @relation("AiSuggestionTriggerMessage")
   aiSentMessage                      AiSentMessage?
+  storageObjectReferences            StorageObjectReference[]
 
   @@unique([conversationId, zaloMsgId])
   // BE-3 idempotency — 1 echoId duy nhất / conversation. Multiple NULL cho phép (tin cũ).
@@ -4064,6 +4073,7 @@ model MediaBlob {
   publicUrl   String   @map("public_url")
   mimeType    String   @map("mime_type")
   sizeBytes   Int      @map("size_bytes")
+  storageDriver String   @default("local") @map("storage_driver")
   width       Int?
   height      Int?
   durationSec Int?     @map("duration_sec") // video
@@ -4127,6 +4137,8 @@ model MediaAsset {
   blobs             MediaBlob[]
   albumItems        MediaAlbumItem[]
   usageEvents       MediaUsageEvent[]
+  storageAttributions MediaStorageAttribution[]
+  storageObjectReferences StorageObjectReference[]
 
   @@index([orgId, kind])
   @@index([orgId, visibility])
@@ -5381,4 +5393,117 @@ model AiUsageRecord {
   @@index([orgId, provider, model, createdAt])
   @@index([runId])
   @@map("ai_usage_records")
+}
+
+// Completed permanent cleanups of chat-saved objects, retained for storage audit.
+model StorageCleanupRun {
+  id             String    @id @default(uuid())
+  orgId          String    @map("org_id")
+  performedById  String?   @map("performed_by_id")
+  targetType     String    @map("target_type")
+  targetId       String?   @map("target_id")
+  beforeDate     DateTime  @map("before_date") @db.Date
+  fileKinds      String[]  @default([]) @map("file_kinds")
+  assetsDeleted  Int       @default(0) @map("assets_deleted")
+  objectsDeleted Int       @default(0) @map("objects_deleted")
+  bytesFreed     BigInt    @default(0) @map("bytes_freed")
+  failedCount    Int       @default(0) @map("failed_count")
+  targetName     String?   @map("target_name")
+  status         String    @default("previewed")
+  breakdown      Json?
+  errorSummary   Json?     @map("error_summary")
+  expiresAt      DateTime? @map("expires_at")
+  startedAt      DateTime? @map("started_at")
+  completedAt    DateTime? @map("completed_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  org         Organization         @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  performedBy User?                @relation("StorageCleanupPerformedBy", fields: [performedById], references: [id], onDelete: SetNull)
+  items       StorageCleanupItem[]
+
+  @@index([orgId, createdAt])
+  @@map("storage_cleanup_runs")
+}
+
+model StorageCleanupItem {
+  id            String            @id @default(uuid())
+  runId         String            @map("run_id")
+  objectId      String            @map("object_id")
+  referenceIds  String[]          @default([]) @map("reference_ids")
+  objectKey     String            @map("object_key")
+  storageDriver String            @map("storage_driver")
+  sizeBytes     BigInt            @default(0) @map("size_bytes")
+  fileType      String            @map("file_type")
+  status        String            @default("pending")
+  error         String?
+  attempts      Int               @default(0)
+  updatedAt     DateTime          @updatedAt @map("updated_at")
+  run           StorageCleanupRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, objectId])
+  @@index([runId, status])
+  @@map("storage_cleanup_object_items")
+}
+model MediaStorageAttribution {
+  id             String   @id @default(uuid())
+  orgId          String   @map("org_id")
+  mediaAssetId   String   @map("media_asset_id")
+  zaloAccountId  String?  @map("zalo_account_id")
+  conversationId String?  @map("conversation_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  org          Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  asset        MediaAsset    @relation(fields: [mediaAssetId], references: [id], onDelete: Cascade)
+  zaloAccount  ZaloAccount?  @relation(fields: [zaloAccountId], references: [id], onDelete: SetNull)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+
+  @@unique([mediaAssetId, zaloAccountId, conversationId])
+  @@index([orgId, zaloAccountId])
+  @@index([orgId, conversationId])
+  @@map("media_storage_attributions")
+}
+model StorageObject {
+  id            String   @id @default(uuid())
+  storageDriver String   @map("storage_driver")
+  objectKey     String   @map("object_key")
+  publicUrl     String   @map("public_url")
+  contentHash   String   @map("content_hash")
+  mimeType      String   @map("mime_type")
+  fileType      String   @map("file_type")
+  sizeBytes     BigInt   @map("size_bytes")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  references StorageObjectReference[]
+
+  @@unique([storageDriver, objectKey])
+  @@index([fileType, createdAt])
+  @@map("storage_objects")
+}
+
+model StorageObjectReference {
+  id             String   @id @default(uuid())
+  objectId       String   @map("object_id")
+  orgId          String   @map("org_id")
+  referenceKey   String   @unique @map("reference_key")
+  source         String
+  purpose        String
+  zaloAccountId  String?  @map("zalo_account_id")
+  conversationId String?  @map("conversation_id")
+  messageId      String?  @map("message_id")
+  mediaAssetId   String?  @map("media_asset_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  object       StorageObject @relation(fields: [objectId], references: [id], onDelete: Cascade)
+  org          Organization  @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  zaloAccount  ZaloAccount?  @relation(fields: [zaloAccountId], references: [id], onDelete: SetNull)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  message      Message?      @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  mediaAsset   MediaAsset?   @relation(fields: [mediaAssetId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, createdAt])
+  @@index([orgId, zaloAccountId, createdAt])
+  @@index([orgId, conversationId, createdAt])
+  @@index([objectId, orgId])
+  @@map("storage_object_references")
 }

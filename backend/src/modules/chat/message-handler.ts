@@ -18,7 +18,8 @@ import { findExistingUserConversation } from './conversation-resolver.js';
 import { captureZaloProfile } from '../contacts/zalo-profile-capture.js';
 import { onInboundMessage as onInboundScoring, onOutboundMessage as onOutboundScoring } from '../scoring/scoring-hooks.js';
 import { syncReminderFromMessage } from '../contacts/reminder-sync.js';
-import { uploadBuffer, keyFromPublicUrl } from '../../shared/storage/minio-client.js';
+import { uploadBuffer, keyFromPublicUrl, type UploadResult } from '../../shared/storage/minio-client.js';
+import { recordMessageStorageReferences } from '../../shared/storage/storage-ledger.js';
 import { compressImage } from '../media/media-service.js';
 import { config } from '../../config/index.js';
 // Open-core: customer-reply care-session reaction moved to extension engine
@@ -166,7 +167,7 @@ function contentTypeToExtension(contentType: string): string {
   }
 }
 
-export async function mirrorRemoteMediaUrl(url: string, contentType: string): Promise<string | null> {
+async function mirrorRemoteMediaObject(url: string, contentType: string): Promise<UploadResult> {
   // 2026-06-11 FIX (ảnh từ Zalo Desktop mất hình): Zalo CDN hay trả 200 nhưng body RỖNG
   // (eventual consistency — ảnh vừa gửi chưa sẵn trên CDN). Trước đây upload buffer 0-byte
   // rồi REPLACE href gốc bằng URL MinIO hỏng → ảnh mất vĩnh viễn. Giờ: RETRY 1 lần sau 1.5s
@@ -190,8 +191,11 @@ export async function mirrorRemoteMediaUrl(url: string, contentType: string): Pr
     const proc = await compressImage(buffer, mimeType);
     outBuf = proc.buffer; outMime = proc.mimeType;
   }
-  const uploaded = await uploadBuffer(outBuf, outMime, fileNameFromUrl(url, contentType, mimeType));
-  return uploaded.url;
+  return uploadBuffer(outBuf, outMime, fileNameFromUrl(url, contentType, mimeType));
+}
+
+export async function mirrorRemoteMediaUrl(url: string, contentType: string): Promise<string | null> {
+  return (await mirrorRemoteMediaObject(url, contentType)).url;
 }
 
 function guessMimeType(url: string, contentType: string): string {
@@ -210,14 +214,22 @@ function guessMimeType(url: string, contentType: string): string {
   return 'application/octet-stream';
 }
 
-async function mirrorInboundMediaContent(msg: IncomingMessage): Promise<string> {
+async function mirrorInboundMediaContent(
+  msg: IncomingMessage,
+  uploads: Array<{ upload: UploadResult; purpose: string }>,
+): Promise<string> {
   if (!MIRROR_CONTENT_TYPES.has(msg.contentType) || !msg.content) return msg.content || '';
+  const mirrorAndTrack = async (url: string, purpose: string) => {
+    const upload = await mirrorRemoteMediaObject(url, msg.contentType);
+    uploads.push({ upload, purpose });
+    return upload.url;
+  };
 
   const parsed = safeParseJsonObject(msg.content);
   if (!parsed) {
     if (!isMirrorableUrl(msg.content)) return msg.content;
     try {
-      return await mirrorRemoteMediaUrl(msg.content, msg.contentType) ?? msg.content;
+      return await mirrorAndTrack(msg.content, 'primary') ?? msg.content;
     } catch (err) {
       logger.warn('[message-handler] inbound media mirror failed', {
         contentType: msg.contentType,
@@ -233,7 +245,7 @@ async function mirrorInboundMediaContent(msg: IncomingMessage): Promise<string> 
     const value = parsed[field];
     if (!isMirrorableUrl(value)) continue;
     try {
-      const mirrored = mirroredByUrl.get(value) ?? await mirrorRemoteMediaUrl(value, msg.contentType);
+      const mirrored = mirroredByUrl.get(value) ?? await mirrorAndTrack(value, `field:${field}`);
       if (!mirrored) continue;
       mirroredByUrl.set(value, mirrored);
       parsed[field] = mirrored;
@@ -253,7 +265,7 @@ async function mirrorInboundMediaContent(msg: IncomingMessage): Promise<string> 
       const value = params[field];
       if (!isMirrorableUrl(value)) continue;
       try {
-        const mirrored = mirroredByUrl.get(value) ?? await mirrorRemoteMediaUrl(value, msg.contentType);
+        const mirrored = mirroredByUrl.get(value) ?? await mirrorAndTrack(value, `field:${field}`);
         if (!mirrored) continue;
         mirroredByUrl.set(value, mirrored);
         params[field] = mirrored;
@@ -381,12 +393,13 @@ export async function handleIncomingMessage(
     }
 
     let message;
+    const mirroredUploads: Array<{ upload: UploadResult; purpose: string }> = [];
     try {
       // zaloMsgIdNum = numeric form của Snowflake — primary sort key match Zalo Web.
       // Parse fail → null (CRM-sent in-flight messages chưa có msgId).
       const zaloMsgIdNum = msg.msgId && /^\d+$/.test(msg.msgId) ? BigInt(msg.msgId) : null;
       // v3.3 mirror Zalo CDN → object storage (image/video/voice/file/gif)
-      const storedContent = await mirrorInboundMediaContent(msg);
+      const storedContent = await mirrorInboundMediaContent(msg, mirroredUploads);
       // ── M11 Source Badge writer (Anh chốt 2026-06-02) ──
       // Tin sale gõ trên app Zalo (mobile/web) → SDK echo về CRM ở đây.
       // Set sentVia='user_native' + metadata.sender.syncedFromNative=true
@@ -462,6 +475,17 @@ export async function handleIncomingMessage(
         return null;
       }
       throw err;
+    }
+
+    if (mirroredUploads.length) {
+      await recordMessageStorageReferences({
+        orgId: account.orgId,
+        zaloAccountId: msg.accountId,
+        conversationId: conversation.id,
+        messageId: message.id,
+        uploads: mirroredUploads,
+        createdAt: sentAt,
+      }).catch((err) => logger.error('[storage-ledger] inbound message reference failed', { messageId: message.id, err }));
     }
 
     await updateConversationAfterMessage(conversation.id, sentAt, msg.isSelf);

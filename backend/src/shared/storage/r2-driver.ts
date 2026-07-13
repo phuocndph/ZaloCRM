@@ -14,6 +14,7 @@
  */
 import { createHash } from 'node:crypto';
 import {
+  DeleteObjectCommand,
   GetObjectCommand,
   HeadBucketCommand,
   HeadObjectCommand,
@@ -70,7 +71,7 @@ export const r2Driver: StorageDriver = {
         Body: buffer,
         ContentType: mimeType,
         ContentLength: buffer.length,
-        CacheControl: 'public, max-age=31536000',
+        CacheControl: 'private, no-store, max-age=0',
       }),
     );
     return { key, url, size: buffer.length, mimeType, contentHash, deduped: false };
@@ -98,6 +99,29 @@ export const r2Driver: StorageDriver = {
       return Buffer.from(bytes);
     } catch {
       return null;
+    }
+  },
+
+  async statObject(key: string) {
+    if (!isSafeObjectKey(key)) return null;
+    try {
+      const res = await client.send(new HeadObjectCommand({ Bucket: BUCKET, Key: key }));
+      return {
+        size: Number(res.ContentLength || 0),
+        mimeType: res.ContentType || 'application/octet-stream',
+      };
+    } catch {
+      return null;
+    }
+  },
+
+  async deleteObject(key: string): Promise<boolean> {
+    if (!isSafeObjectKey(key)) return false;
+    try {
+      await client.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }));
+      return true;
+    } catch {
+      return false;
     }
   },
 

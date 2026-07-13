@@ -34,6 +34,7 @@ export interface MediaAssetItem {
   height?: number | null;
 }
 
+
 export interface ListMediaParams {
   kind?: string;
   tag?: string;
@@ -65,7 +66,7 @@ export async function listMediaPaged(
   return { items: data.items as MediaAssetItem[], total: (data.total as number) ?? 0 };
 }
 
-/** Danh sách người tải lên (có ảnh trong scope) + số lượng — đổ vào dropdown lọc người upload. */
+/** Danh sách người tải lên có media trong kho. */
 export async function listMediaUploaders(
   params: { kind?: string; visibility?: string } = {},
 ): Promise<Array<{ id: string; name: string; count: number }>> {
@@ -278,5 +279,101 @@ export async function createMediaFolder(
   visibility: 'private' | 'public' = 'private',
 ): Promise<{ folder: { id: string; name: string } }> {
   const { data } = await api.post('/media/folders', { name, visibility });
+  return data;
+}
+
+export type StorageFileKind = 'image' | 'video' | 'file' | 'audio';
+export type StorageTargetType = 'all' | 'account' | 'group';
+export type StorageSort = 'bytes' | 'files' | 'name';
+
+export interface StorageSummary {
+  files: number;
+  bytes: number;
+  shared?: number;
+  image: number;
+  video: number;
+  file: number;
+  audio: number;
+}
+
+export interface StorageAccountRow extends StorageSummary { id: string; name: string; uid: string; }
+export interface StorageGroupRow extends StorageSummary { id: string; name: string; accountCount: number; }
+export interface StorageCleanupRun {
+  id: string;
+  targetType: StorageTargetType;
+  targetId: string | null;
+  targetName: string | null;
+  beforeDate: string;
+  fileKinds: StorageFileKind[];
+  assetsDeleted: number;
+  objectsDeleted: number;
+  bytesFreed: number;
+  failedCount: number;
+  status: 'previewing' | 'previewed' | 'running' | 'completed' | 'partial' | 'failed';
+  breakdown: StorageSummary | null;
+  createdAt: string;
+  completedAt: string | null;
+  performedByName: string;
+}
+
+export interface StorageOverview {
+  storageDriver: string;
+  total: StorageSummary;
+  capacityBytes: number;
+  remainingBytes: number | null;
+  topAccounts: StorageAccountRow[];
+  topGroups: StorageGroupRow[];
+  fileTypes: Array<{ type: StorageFileKind; files: number; bytes: number }>;
+  daily: Array<{ date: string; bytes: number }>;
+  unattributed: { files: number; bytes: number };
+  freedBytes: number;
+  runs: StorageCleanupRun[];
+}
+
+export async function getStorageOverview(): Promise<StorageOverview> {
+  const { data } = await api.get('/media/storage/overview');
+  return data;
+}
+
+export async function listStorageEntities<T extends 'accounts' | 'groups'>(params: {
+  entity: T; page?: number; pageSize?: number; sort?: StorageSort; search?: string;
+}): Promise<{ items: T extends 'accounts' ? StorageAccountRow[] : StorageGroupRow[]; total: number; page: number; pageSize: number }> {
+  const { data } = await api.get('/media/storage/entities', { params });
+  return data;
+}
+
+export async function previewStorageCleanup(payload: {
+  targetType: StorageTargetType;
+  targetId?: string;
+  beforeDate: string;
+  fileKinds: StorageFileKind[];
+}): Promise<StorageSummary & { runId: string; expiresAt: string }> {
+  const { data } = await api.post('/media/storage/preview-cleanup', payload);
+  return data;
+}
+
+export async function executeStorageCleanup(payload: {
+  runId: string;
+  confirm: true;
+  retryFailed?: boolean;
+}): Promise<{
+  ok: boolean; runId: string; status: string; deleted: number; objectsDeleted: number;
+  bytes: number; failed: number; hasMore: boolean; totalDeleted: number; totalBytes: number;
+}> {
+  const { data } = await api.post('/media/storage/execute-cleanup', payload);
+  return data;
+}
+export async function listStorageHistory(params: { page?: number; pageSize?: number; search?: string } = {}): Promise<{
+  items: StorageCleanupRun[]; total: number; page: number; pageSize: number;
+}> {
+  const { data } = await api.get('/media/storage/history', { params });
+  return data;
+}
+
+export async function reconcileStorageLedger(payload: { cursor?: string; batch?: number } = {}): Promise<{
+  scanned: number; references: number; missing: number; skipped: number;
+  nextCursor: string | null; hasMore: boolean;
+}> {
+  const { data } = await api.post('/media/storage/reconcile', payload);
   return data;
 }

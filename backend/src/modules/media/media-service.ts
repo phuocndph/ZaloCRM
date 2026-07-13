@@ -25,6 +25,8 @@ import { resolve as resolvePath, join as joinPath } from 'node:path';
 import { tmpdir } from 'node:os';
 import { prisma } from '../../shared/database/prisma-client.js';
 import { uploadBuffer } from '../../shared/storage/minio-client.js';
+import { recordStorageReference } from '../../shared/storage/storage-ledger.js';
+import { config } from '../../config/index.js';
 import { candidateDownloadUrls } from '../chat/chat-media-helpers.js';
 import { generateThumbnail, probeVideoFile } from '../../shared/video-processor.js';
 import { logger } from '../../shared/utils/logger.js';
@@ -146,9 +148,9 @@ export async function compressImage(
  * (không chặn upload — video vẫn lưu, chỉ thiếu ảnh đại diện). KHÔNG throw.
  */
 async function extractVideoMeta(buffer: Buffer): Promise<{
-  thumbnailUrl: string | null; durationSec: number | null; width: number | null; height: number | null;
+  thumbnailUrl: string | null; thumbnailUpload: Awaited<ReturnType<typeof uploadBuffer>> | null; durationSec: number | null; width: number | null; height: number | null;
 }> {
-  const empty = { thumbnailUrl: null, durationSec: null, width: null, height: null };
+  const empty = { thumbnailUrl: null, thumbnailUpload: null, durationSec: null, width: null, height: null };
   let dir: string | null = null;
   try {
     dir = await mkdtemp(joinPath(tmpdir(), 'zalocrm-media-vid-'));
@@ -158,17 +160,19 @@ async function extractVideoMeta(buffer: Buffer): Promise<{
     const meta = await probeVideoFile(vidPath).catch(() => ({} as any));
     // Thumbnail (ffmpeg) → mirror lên MinIO.
     let thumbnailUrl: string | null = null;
+    let thumbnailUpload: Awaited<ReturnType<typeof uploadBuffer>> | null = null;
     try {
       const gen = await generateThumbnail(vidPath);
       const thumbBuf = await readFile(gen.path);
-      const up = await uploadBuffer(thumbBuf, 'image/jpeg', 'video-thumb.jpg');
-      thumbnailUrl = up.url;
+      thumbnailUpload = await uploadBuffer(thumbBuf, 'image/jpeg', 'video-thumb.jpg');
+      thumbnailUrl = thumbnailUpload.url;
       await gen.cleanup().catch(() => {});
     } catch (e) {
       logger.warn('[media] extractVideoMeta thumbnail failed:', (e as Error)?.message ?? e);
     }
     return {
       thumbnailUrl,
+      thumbnailUpload,
       durationSec: meta.durationMs ? Math.round(meta.durationMs / 1000) : null,
       width: meta.width ?? null,
       height: meta.height ?? null,
@@ -205,7 +209,7 @@ export async function registerAsset(input: RegisterAssetInput): Promise<Register
   // 1b. VIDEO: sinh thumbnail + metadata (ffmpeg) để kho hiển thị đẹp (anh chốt 2026-06-12).
   const videoMeta = kind === 'video'
     ? await extractVideoMeta(input.buffer)
-    : { thumbnailUrl: null, durationSec: null, width: null, height: null };
+    : { thumbnailUrl: null, thumbnailUpload: null, durationSec: null, width: null, height: null };
 
   const originalFilename = input.originalFilename ?? null;
   const name = input.name ?? originalFilename ?? 'Media';
@@ -219,6 +223,23 @@ export async function registerAsset(input: RegisterAssetInput): Promise<Register
     include: { asset: true },
   });
   if (existingBlob) {
+    // A hash can predate a local -> R2 migration. The uploaded object belongs to the
+    // active driver, so move the DB pointer instead of reusing a stale local key.
+    let activeBlob = existingBlob;
+    if (existingBlob.storageDriver !== config.storageDriver || existingBlob.minioKey !== up.key || existingBlob.publicUrl !== up.url) {
+      activeBlob = await prisma.mediaBlob.update({
+        where: { id: existingBlob.id },
+        data: {
+          storageDriver: config.storageDriver,
+          minioKey: up.key,
+          publicUrl: up.url,
+          mimeType: up.mimeType,
+          sizeBytes: up.size,
+        },
+        include: { asset: true },
+      });
+      logger.info(`[media][dedup] moved blob=${existingBlob.id} to ${config.storageDriver}:${up.key}`);
+    }
     // S8 observability: log dedup-hit (đo tiết kiệm thật — bao nhiêu ô lưu trữ né được).
     logger.info(`[media][dedup] hit org=${orgId} hash=${up.contentHash.slice(0, 12)} reusedAsset=${existingBlob.assetId} source=${source}`);
     // FIX 2026-06-12 (anh báo file .doc/.xlsx lưu cũ kẹt tên "Lưu từ chat"): khi dedup-hit,
@@ -285,7 +306,24 @@ export async function registerAsset(input: RegisterAssetInput): Promise<Register
     if (shouldPatchName) {
       logger.info(`[media][dedup] vá tên asset=${existingBlob.assetId} "${old?.name}" → "${input.name}"`);
     }
-    return { asset, blob: existingBlob, deduped: true };
+    await recordStorageReference({
+      upload: up,
+      orgId,
+      referenceKey: `asset:${asset.id}:blob:${activeBlob.id}`,
+      source: 'media_asset',
+      purpose: activeBlob.variantType,
+      zaloAccountId: asset.sourceZaloAccountId,
+      mediaAssetId: asset.id,
+      storageDriver: config.storageDriver,
+      createdAt: activeBlob.createdAt,
+    });
+    if (videoMeta.thumbnailUpload) {
+      await recordStorageReference({
+        upload: videoMeta.thumbnailUpload, orgId,
+        referenceKey: `asset:${asset.id}:video-thumbnail`, source: 'media_asset', purpose: 'video-thumbnail',
+        zaloAccountId: asset.sourceZaloAccountId, mediaAssetId: asset.id, storageDriver: config.storageDriver,
+      });
+    }    return { asset, blob: activeBlob, deduped: true };
   }
   // S8: log MISS (bytes mới hoàn toàn) — để tính hit-rate = hit/(hit+miss).
   logger.info(`[media][dedup] miss org=${orgId} hash=${up.contentHash.slice(0, 12)} source=${source}`);
@@ -321,6 +359,7 @@ export async function registerAsset(input: RegisterAssetInput): Promise<Register
           publicUrl: up.url,
           mimeType: up.mimeType,
           sizeBytes: up.size,
+          storageDriver: config.storageDriver,
           width: processed.width ?? videoMeta.width ?? null,
           height: processed.height ?? videoMeta.height ?? null,
           durationSec: videoMeta.durationSec,
@@ -328,7 +367,24 @@ export async function registerAsset(input: RegisterAssetInput): Promise<Register
       });
       return { asset, blob };
     });
-    return { ...result, deduped: up.deduped };
+    await recordStorageReference({
+      upload: up,
+      orgId,
+      referenceKey: `asset:${result.asset.id}:blob:${result.blob.id}`,
+      source: 'media_asset',
+      purpose: result.blob.variantType,
+      zaloAccountId: result.asset.sourceZaloAccountId,
+      mediaAssetId: result.asset.id,
+      storageDriver: config.storageDriver,
+      createdAt: result.blob.createdAt,
+    });
+    if (videoMeta.thumbnailUpload) {
+      await recordStorageReference({
+        upload: videoMeta.thumbnailUpload, orgId,
+        referenceKey: `asset:${result.asset.id}:video-thumbnail`, source: 'media_asset', purpose: 'video-thumbnail',
+        zaloAccountId: result.asset.sourceZaloAccountId, mediaAssetId: result.asset.id, storageDriver: config.storageDriver,
+      });
+    }    return { ...result, deduped: up.deduped };
   } catch (err) {
     // D10(1): 2 sale upload cùng bytes đồng thời → 1 ăn P2002 trên [orgId,contentHash].
     // Coi như dedup-hit: đọc lại blob bản kia + tăng usageCount, KHÔNG báo lỗi 500.
@@ -513,6 +569,7 @@ export async function generateWatermarkVariant(args: {
       publicUrl: up.url,
       mimeType: up.mimeType,
       sizeBytes: up.size,
+      storageDriver: config.storageDriver,
       width: out.info.width,
       height: out.info.height,
     },
@@ -524,7 +581,17 @@ export async function generateWatermarkVariant(args: {
     }
     throw err;
   });
-  // Lưu cấu hình watermark per-ảnh → BẬT (gửi đi dùng bản watermark) + nhớ góc/độ mờ.
+  await recordStorageReference({
+    upload: up,
+    orgId: args.orgId,
+    referenceKey: `asset:${asset.id}:blob:${blob.id}:watermark`,
+    source: 'media_asset',
+    purpose: 'watermarked',
+    zaloAccountId: asset.sourceZaloAccountId,
+    mediaAssetId: asset.id,
+    storageDriver: config.storageDriver,
+    createdAt: blob.createdAt,
+  });  // Lưu cấu hình watermark per-ảnh → BẬT (gửi đi dùng bản watermark) + nhớ góc/độ mờ.
   await prisma.mediaAsset.update({
     where: { id: asset.id },
     data: { watermarkEnabled: true, watermarkPosition: position, watermarkOpacity: opacityIn },

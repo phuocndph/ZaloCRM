@@ -27,7 +27,8 @@ import { downloadMediaToTemp } from '../chat/chat-media-helpers.js';
 import { createMediaMessage, getUserFullName } from '../chat/chat-helpers.js';
 import { emitChatMessage } from '../../shared/realtime/emit-chat.js';
 import { generateThumbnail, sendNativeVideo } from '../../shared/video-processor.js';
-import { uploadBuffer, getObjectBuffer, keyFromPublicUrl } from '../../shared/storage/minio-client.js';
+import { uploadBuffer, getObjectBuffer, keyFromPublicUrl, type UploadResult } from '../../shared/storage/minio-client.js';
+import { recordMessageStorageReferences, uploadResultFromBlob } from '../../shared/storage/storage-ledger.js';
 import { scanOrPass } from '../../shared/security/clamav-client.js';
 import { readFile } from 'node:fs/promises';
 import { logger } from '../../shared/utils/logger.js';
@@ -54,6 +55,7 @@ const FILE_MAX = 1024 * 1024 * 1024;
 // KHÔNG đụng byte MinIO). TRASH_EMPTY_BATCH: dọn-sạch-thủ-công xóa tối đa N/lần tránh khóa DB lâu.
 export const TRASH_RETENTION_DAYS = 30;
 const TRASH_EMPTY_BATCH = 500;
+
 
 function classify(mime: string): MediaKind | null {
   if (ALLOWED_IMAGE.includes(mime)) return 'image';
@@ -255,6 +257,15 @@ async function saveOneMessageToMedia(args: {
       conversationId: message.conversationId,
       meta: { visibility: vis.visibility, fromPrivateNick: isPrivateNick, deduped: res.deduped },
     });
+    await prisma.mediaStorageAttribution.upsert({
+      where: { mediaAssetId_zaloAccountId_conversationId: {
+        mediaAssetId: res.asset.id,
+        zaloAccountId: nick.id,
+        conversationId: message.conversationId,
+      } },
+      update: {},
+      create: { orgId, mediaAssetId: res.asset.id, zaloAccountId: nick.id, conversationId: message.conversationId },
+    });
     return { messageId, status: 'ok', asset: { id: res.asset.id, name: res.asset.name }, deduped: res.deduped };
   } catch (err: any) {
     logger.error('[media] save-from-chat error:', err);
@@ -445,7 +456,6 @@ export async function mediaRoutes(app: FastifyInstance) {
       return { uploaders };
     },
   );
-
   // ── POST /api/v1/media/upload — tải ảnh/file lên kho (multipart) ───────────
   app.post(
     '/api/v1/media/upload',
@@ -655,6 +665,7 @@ export async function mediaRoutes(app: FastifyInstance) {
         // Guard nick connected ở trên. Gửi qua zaloOps (check status + reconnect).
         let zaloMsgId = '';
         let content = '';
+        let generatedThumbUpload: UploadResult | null = null;
         if (asset.kind === 'image') {
           // ẢNH: sendImage (đã fix có msg) → temp CÓ đuôi .webp → Zalo nhận ẢNH INLINE.
           const sendResult: any = await zaloOps.sendImage(
@@ -713,6 +724,17 @@ export async function mediaRoutes(app: FastifyInstance) {
           sentVia: 'user',
         });
 
+        await recordMessageStorageReferences({
+          orgId: user.orgId,
+          zaloAccountId: conversation.zaloAccountId,
+          conversationId: conversation.id,
+          messageId: msg.id,
+          createdAt: msg.sentAt,
+          uploads: [
+            { upload: uploadResultFromBlob(blob), purpose: 'library-primary', storageDriver: blob.storageDriver === 'r2' ? 'r2' : 'local' },
+            ...(generatedThumbUpload ? [{ upload: generatedThumbUpload, purpose: 'thumbnail' }] : []),
+          ],
+        }).catch((err) => logger.error('[storage-ledger] media library send reference failed', { messageId: msg.id, err }));
         await prisma.conversation.update({
           where: { id: conversation.id },
           data: { lastMessageAt: new Date(), isReplied: true, unreadCount: 0 },
@@ -752,7 +774,6 @@ export async function mediaRoutes(app: FastifyInstance) {
       }
     },
   );
-
   // ── PATCH /api/v1/media/:id — sửa quyền/tên/tag (GĐ2) ──────────────────────
   app.patch(
     '/api/v1/media/:id',

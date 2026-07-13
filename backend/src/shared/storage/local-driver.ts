@@ -12,7 +12,7 @@
  */
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, extname, join, resolve, sep } from 'node:path';
 import { config } from '../../config/index.js';
 import { isSafeObjectKey, mimeToExt, type StorageDriver, type UploadResult } from './types.js';
@@ -71,6 +71,30 @@ export const localDriver: StorageDriver = {
       return await readFile(abs);
     } catch {
       return null;
+    }
+  },
+
+  async statObject(key: string) {
+    const abs = pathForKey(key);
+    if (!abs) return null;
+    const info = await stat(abs).catch(() => null);
+    if (!info?.isFile()) return null;
+    const ext = extname(key).toLowerCase();
+    const mimeType = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg'
+      : ext === '.png' ? 'image/png' : ext === '.webp' ? 'image/webp'
+        : ext === '.gif' ? 'image/gif' : ext === '.mp4' ? 'video/mp4'
+          : ext === '.mp3' ? 'audio/mpeg' : 'application/octet-stream';
+    return { size: info.size, mimeType };
+  },
+
+  async deleteObject(key: string): Promise<boolean> {
+    const abs = pathForKey(key);
+    if (!abs) return false;
+    try {
+      await rm(abs, { force: true });
+      return true;
+    } catch {
+      return false;
     }
   },
 

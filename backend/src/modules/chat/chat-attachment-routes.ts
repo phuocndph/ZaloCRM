@@ -21,6 +21,7 @@ import { zaloRateLimiter } from '../zalo/zalo-rate-limiter.js';
 import { zaloOps } from '../../shared/zalo-operations.js';
 import { generateThumbnail, sendNativeVideo } from '../../shared/video-processor.js';
 import { uploadBuffer, type UploadResult } from '../../shared/storage/minio-client.js';
+import { recordMessageStorageReferences } from '../../shared/storage/storage-ledger.js';
 import { compressImage } from '../media/media-service.js';
 import { logger } from '../../shared/utils/logger.js';
 // Fix 2026-06-03 — M11 optimistic badge cache (Anh báo "Sale CRM · Staff")
@@ -164,6 +165,22 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
         }));
 
         const created: any[] = [];
+        const recordStorage = async (
+          message: { id: string; sentAt?: Date },
+          uploads: Array<{ upload: UploadResult; purpose: string }>,
+        ) => {
+          await recordMessageStorageReferences({
+            orgId: user.orgId,
+            zaloAccountId: conversation.zaloAccountId,
+            conversationId: id,
+            messageId: message.id,
+            uploads,
+            createdAt: message.sentAt,
+          }).catch((err) => logger.error('[storage-ledger] outbound message reference failed', {
+            messageId: message.id,
+            err,
+          }));
+        };
 
         // Split by kind — image batch vs video one-by-one vs file one-by-one
         const imageIndexes: number[] = [];
@@ -210,6 +227,7 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
               metadata: { sender: { kind: 'user_crm', name: userFullName } },
               sentVia: 'user',
             });
+            await recordStorage(msg, [{ upload: mirror, purpose: 'primary' }]);
             created.push(msg);
           }
         }
@@ -249,6 +267,10 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
               metadata: { sender: { kind: 'user_crm', name: userFullName } },
               sentVia: 'user',
             });
+            await recordStorage(msg, [
+                          { upload: mirror, purpose: 'primary' },
+                          ...(thumbnailMirror ? [{ upload: thumbnailMirror, purpose: 'thumbnail' }] : []),
+                        ]);
             created.push(msg);
           } catch (err) {
             logger.error('[chat-attachment] Native video send failed, trying fallback:', err);
@@ -273,6 +295,10 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
               metadata: { sender: { kind: 'user_crm', name: userFullName } },
               sentVia: 'user',
             });
+            await recordStorage(msg, [
+                          { upload: mirror, purpose: 'primary' },
+                          ...(thumbnailMirror ? [{ upload: thumbnailMirror, purpose: 'thumbnail' }] : []),
+                        ]);
             created.push(msg);
           }
         }
@@ -299,6 +325,7 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
             contentType: 'file',
             content: JSON.stringify({ href: mirror.url, name: f.filename, size: mirror.size, mime: f.mimeType }),
           });
+          await recordStorage(msg, [{ upload: mirror, purpose: 'primary' }]);
           created.push(msg);
         }
 
