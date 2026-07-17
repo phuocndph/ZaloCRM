@@ -47,7 +47,14 @@
           </span>
         </button>
         <div class="ctx-divider"></div>
-
+        <template v-if="!isNotificationsMuted">
+          <button class="ctx-item" role="menuitem" :disabled="stateBusy" @click="onAction('mute-1h')"><span class="ctx-item__label">Tắt thông báo 1 giờ</span></button>
+          <button class="ctx-item" role="menuitem" :disabled="stateBusy" @click="onAction('mute-8h')"><span class="ctx-item__label">Tắt thông báo 8 giờ</span></button>
+          <button class="ctx-item" role="menuitem" :disabled="stateBusy" @click="onAction('mute-tomorrow')"><span class="ctx-item__label">Tắt đến 08:00 ngày mai</span></button>
+          <button class="ctx-item" role="menuitem" :disabled="stateBusy" @click="onAction('mute-forever')"><span class="ctx-item__label">Tắt cho đến khi bật lại</span></button>
+        </template>
+        <button v-else class="ctx-item is-primary" role="menuitem" :disabled="stateBusy" @click="onAction('unmute-notifications')"><span class="ctx-item__label">Bật thông báo</span></button>
+        <div class="ctx-divider"></div>
         <!-- Chuyển tab: từ Ưu tiên → Cá nhân, hoặc từ Cá nhân/Chính → Ưu tiên.
              activeTab='other' nghĩa là đang ở tab Ưu tiên. -->
         <button
@@ -152,6 +159,7 @@ const props = defineProps<{
   /** Conversation State 2026-07-10 — ghim cá nhân + đánh dấu chưa đọc thủ công. */
   isPersonalPinned?: boolean;
   isManualUnread?: boolean;
+  isNotificationsMuted?: boolean;
   stateBusy?: boolean;
 }>();
 
@@ -163,6 +171,12 @@ const emit = defineEmits<{
   'toggle-privacy': [];
   'toggle-personal-pin': [];
   'toggle-manual-unread': [];
+  'toggle-notifications-muted': [];
+  'mute-1h': [];
+  'mute-8h': [];
+  'mute-tomorrow': [];
+  'mute-forever': [];
+  'unmute-notifications': [];
   delete: [];
 }>();
 
@@ -242,7 +256,7 @@ function close() {
 }
 function onAction(
   name: 'move-main' | 'move-other' | 'toggle-follow' | 'toggle-privacy'
-      | 'toggle-personal-pin' | 'toggle-manual-unread' | 'delete',
+      | 'toggle-personal-pin' | 'toggle-manual-unread' | 'toggle-notifications-muted' | 'mute-1h' | 'mute-8h' | 'mute-tomorrow' | 'mute-forever' | 'unmute-notifications' | 'delete',
 ) {
   // toggle-follow KHÔNG đóng menu (sale có thể muốn xem trạng thái đổi); các action
   // khác đóng menu ngay như Zalo native.
@@ -253,6 +267,12 @@ function onAction(
     case 'toggle-privacy':      emit('toggle-privacy');      close(); break;
     case 'toggle-personal-pin': emit('toggle-personal-pin'); close(); break;
     case 'toggle-manual-unread':emit('toggle-manual-unread');close(); break;
+    case 'toggle-notifications-muted': emit('toggle-notifications-muted'); close(); break;
+    case 'mute-1h': emit('mute-1h'); close(); break;
+    case 'mute-8h': emit('mute-8h'); close(); break;
+    case 'mute-tomorrow': emit('mute-tomorrow'); close(); break;
+    case 'mute-forever': emit('mute-forever'); close(); break;
+    case 'unmute-notifications': emit('unmute-notifications'); close(); break;
     case 'toggle-follow':       emit('toggle-follow');                break;
   }
 }

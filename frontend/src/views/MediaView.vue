@@ -5,7 +5,7 @@
     <!-- Top bar -->
     <header class="m-top">
       <h1 class="m-title">Kho phương tiện</h1>
-      <div class="m-tools">
+      <div v-if="activeKind !== 'r2'" class="m-tools">
         <div class="m-search">
           <span class="i">🔍</span>
           <input v-model="search" placeholder="Tìm ảnh, tag dự án…" @input="debouncedReload" />
@@ -26,7 +26,7 @@
       <button v-for="t in tabs" :key="t.kind" class="tab" :class="{ on: activeKind === t.kind }" @click="setKind(t.kind)">{{ t.label }}</button>
     </nav>
 
-    <R2StorageManager v-if="activeKind === 'r2'" />
+    <R2StorageManager v-if="activeKind === 'r2'" class="r2-storage-view" />
 
 
     <!-- ════════ THÙNG RÁC (GĐ13a) ════════ -->
@@ -247,7 +247,7 @@ const tabs = [
   { kind: 'album', label: 'Album' },
   { kind: 'file', label: 'Tệp' },
   { kind: 'video', label: 'Video' },
-  { kind: 'r2', label: 'Quản lý R2' },
+  { kind: 'r2', label: 'Quản lý lưu trữ' },
 ] as const;
 const activeKind = ref<'image' | 'album' | 'file' | 'video' | 'r2'>('image');
 const items = ref<MediaAssetItem[]>([]);
@@ -579,6 +579,7 @@ onMounted(() => { reload(); loadFolders(); loadUploaders(); });
 .thumb .play-ic { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); width:34px; height:34px; border-radius:9999px; background:rgba(0,0,0,.5); color:#fff; font-size:14px; display:flex; align-items:center; justify-content:center; pointer-events:none; }
 .thumb .dur { position:absolute; bottom:6px; right:6px; background:rgba(0,0,0,.7); color:#fff; border-radius:4px; padding:1px 6px; font-size:10.5px; font-variant-numeric:tabular-nums; }
 .m-work { display:flex; flex:1; overflow:hidden; min-height:0; }
+.r2-storage-view { flex:1 1 auto; align-self:stretch; width:100%; min-width:0; min-height:0; }
 .m-tree { width:180px; border-right:1px solid var(--hairline); padding:14px 12px; flex-shrink:0; overflow:auto; }
 .tree-ttl { font-size:11px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin-bottom:8px; font-weight:500; display:flex; justify-content:space-between; align-items:center; }
 .addf { border:none; background:none; cursor:pointer; color:var(--ink); font-size:16px; line-height:1; }

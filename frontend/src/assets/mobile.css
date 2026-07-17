@@ -43,7 +43,7 @@
   --m-bubble-out-text: #14304a;
 
   /* ── Typography — thang cố định (base 16 iOS no-zoom cho input) ── */
-  --m-font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --m-font: Roboto, Arial, Helvetica, sans-serif;
   --m-fs-2xs: 11px;
   --m-fs-xs: 12px;
   --m-fs-sm: 13px;

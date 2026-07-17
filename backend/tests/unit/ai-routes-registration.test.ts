@@ -11,10 +11,14 @@ const routeMocks = vi.hoisted(() => ({
   skillFrameworkRoutes: vi.fn(async () => undefined),
   replyGeneratorRoutes: vi.fn(async () => undefined),
   policySafetyRoutes: vi.fn(async () => undefined),
+  releaseRoutes: vi.fn(async () => undefined),
+  agentManagerRoutes: vi.fn(async () => undefined),
+  providerConnectionRoutes: vi.fn(async () => undefined),
+  requireGrant: vi.fn((resource: string, action: string) => Object.assign(vi.fn(), { resource, action })),
 }));
 
 vi.mock('../../src/modules/auth/auth-middleware.js', () => ({ authMiddleware: vi.fn() }));
-vi.mock('../../src/modules/rbac/rbac-middleware.js', () => ({ requireGrant: vi.fn(() => vi.fn()) }));
+vi.mock('../../src/modules/rbac/rbac-middleware.js', () => ({ requireGrant: routeMocks.requireGrant }));
 vi.mock('../../src/modules/zalo/zalo-access-middleware.js', () => ({ requireZaloAccess: vi.fn(() => vi.fn()) }));
 vi.mock('../../src/modules/ai/ai-core-routes.js', () => ({ aiCoreRoutes: routeMocks.aiCoreRoutes }));
 vi.mock('../../src/modules/ai/prompt-manager-routes.js', () => ({ promptManagerRoutes: routeMocks.promptManagerRoutes }));
@@ -26,6 +30,9 @@ vi.mock('../../src/modules/ai/emotion-engine-routes.js', () => ({ emotionEngineR
 vi.mock('../../src/modules/ai/skill-framework-routes.js', () => ({ skillFrameworkRoutes: routeMocks.skillFrameworkRoutes }));
 vi.mock('../../src/modules/ai/reply-generator-routes.js', () => ({ replyGeneratorRoutes: routeMocks.replyGeneratorRoutes }));
 vi.mock('../../src/modules/ai/policy-safety-routes.js', () => ({ policySafetyRoutes: routeMocks.policySafetyRoutes }));
+vi.mock('../../src/modules/ai/release-routes.js', () => ({ releaseRoutes: routeMocks.releaseRoutes }));
+vi.mock('../../src/modules/ai/agent-manager-routes.js', () => ({ agentManagerRoutes: routeMocks.agentManagerRoutes }));
+vi.mock('../../src/modules/ai/provider-connection-routes.js', () => ({ providerConnectionRoutes: routeMocks.providerConnectionRoutes }));
 vi.mock('../../src/modules/ai/ai-service.js', () => ({
   getAiConfig: vi.fn(),
   getAiUsage: vi.fn(),
@@ -71,6 +78,20 @@ describe('aiRoutes registration', () => {
     expect(routeMocks.skillFrameworkRoutes).toHaveBeenCalledWith(app);
     expect(routeMocks.replyGeneratorRoutes).toHaveBeenCalledWith(app);
     expect(routeMocks.policySafetyRoutes).toHaveBeenCalledWith(app);
+    expect(routeMocks.releaseRoutes).toHaveBeenCalledWith(app);
+    expect(routeMocks.agentManagerRoutes).toHaveBeenCalledWith(app);
+    expect(routeMocks.providerConnectionRoutes).toHaveBeenCalledWith(app);
+
+    const providerSecretRoute = (app.put as any).mock.calls.find(
+      (call: any[]) => call[0] === '/api/v1/ai/providers/:id',
+    );
+    expect(providerSecretRoute?.[1].preHandler.resource).toBe('ai_model');
+    expect(providerSecretRoute?.[1].preHandler.action).toBe('manage_secret');
+
+    const modelConfigRoute = (app.put as any).mock.calls.find(
+      (call: any[]) => call[0] === '/api/v1/ai/config',
+    );
+    expect(modelConfigRoute?.[1].preHandler.resource).toBe('ai_model');
+    expect(modelConfigRoute?.[1].preHandler.action).toBe('edit');
   });
 });
-

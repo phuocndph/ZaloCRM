@@ -82,6 +82,7 @@
       :ai-suggestion="aiSuggestion"
       :ai-suggestion-loading="aiSuggestionLoading"
       :ai-suggestion-error="aiSuggestionError"
+      :ai-config="aiConfig"
       :all-conversations="conversations"
       :replying-to="replyingTo"
       :editing-message="editingMessage"
@@ -208,7 +209,7 @@ const {
   conversations, selectedConvId, selectedConv, messages,
   conversationPrivateBlocked,
   loadingConvs, loadingMsgs, sendingMsg, searchQuery, accountFilter, extraFilters,
-  aiSuggestion, aiSuggestionLoading, aiSuggestionError,
+  aiSuggestion, aiSuggestionLoading, aiSuggestionError, aiConfig,
   aiSummary, aiSummaryLoading, aiSentiment, aiSentimentLoading,
   fetchConversations, fetchAiConfig, fetchMessages, selectConversation, sendMessage,
   generateAiSuggestion, generateAiSummary, generateAiSentiment,

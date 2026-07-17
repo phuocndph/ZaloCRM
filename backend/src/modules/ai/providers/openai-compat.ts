@@ -4,6 +4,11 @@
  * Shared handler for OpenAI-compatible chat/completions API.
  * Works with: OpenAI, Qwen (dashscope compat mode), Kimi (Moonshot).
  */
+import {
+  normalizeOpenAICompatibleError,
+  readOpenAICompatibleCompletion,
+} from './openai-compatible-client.js';
+
 export async function generateWithOpenaiCompat(
   url: string,
   apiKey: string,
@@ -20,6 +25,7 @@ export async function generateWithOpenaiCompat(
   try {
     const response = await fetch(url, {
       method: 'POST',
+      redirect: 'error',
       headers: {
         'content-type': 'application/json',
         authorization: `Bearer ${apiKey}`,
@@ -37,15 +43,16 @@ export async function generateWithOpenaiCompat(
 
     if (!response.ok) {
       const status = response.status;
-      throw new Error(`OpenAI-compat request failed with status ${status}`);
+      await response.body?.cancel().catch(() => undefined);
+      throw Object.assign(new Error('OpenAI-compatible request failed'), { status });
     }
 
-    const data = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
+    const data = await readOpenAICompatibleCompletion(response);
     const text = data.choices?.[0]?.message?.content?.trim();
     if (!text) throw new Error('OpenAI-compat returned empty content');
     return text;
+  } catch (error) {
+    throw normalizeOpenAICompatibleError(error);
   } finally {
     clearTimeout(timeout);
   }

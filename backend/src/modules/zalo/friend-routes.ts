@@ -428,14 +428,29 @@ export async function friendRoutes(app: FastifyInstance) {
   // POST .../friends/requests — send friend request { userId, message? }
   app.post(`${BASE}/requests`, async (request: FastifyRequest, reply: FastifyReply) => {
     const { accountId } = request.params as { accountId: string };
-    const { userId, message = '' } = request.body as { userId: string; message?: string };
+    const { userId, message = '', contactId } = request.body as { userId: string; message?: string; contactId?: string };
     const user = request.user!;
     if (!userId) return reply.status(400).send({ error: 'userId is required' });
+    if (message.length > 500) return reply.status(400).send({ error: 'message is too long' });
     if (!await checkAccess(request, reply, accountId, 'chat')) return;
     try {
       await resolveAccount(accountId, user.orgId);
+      if (contactId) {
+        const contact = await prisma.contact.findFirst({ where: { id: contactId, orgId: user.orgId, mergedInto: null }, select: { id: true } });
+        if (!contact) return reply.status(400).send({ error: 'contact not found' });
+        const pending = await prisma.friendshipAttempt.findFirst({ where: { zaloAccountId: accountId, contactId, state: 'sent' }, select: { id: true } });
+        if (pending) return reply.status(409).send({ error: 'friend_request_pending', message: 'Friend request is pending.' });
+      }
       const data = await zaloOps.sendFriendRequest(accountId, message, userId);
-      await markFriendRequestSent(accountId, userId);
+      if (contactId) {
+        const now = new Date();
+        await prisma.friendshipAttempt.upsert({
+          where: { zaloAccountId_contactId: { zaloAccountId: accountId, contactId } },
+          create: { orgId: user.orgId, zaloAccountId: accountId, contactId, state: 'sent', source: 'user', zaloUidFound: userId, requestMsg: message || null, lookedUpAt: now, sentAt: now },
+          update: { state: 'sent', source: 'user', zaloUidFound: userId, requestMsg: message || null, lookedUpAt: now, sentAt: now, decidedAt: null, errorCode: null, errorDetail: null },
+        });
+      }
+      await markFriendRequestSent(accountId, userId, contactId);
       return reply.status(201).send({ data });
     } catch (err) {
       return handleError(reply, err, 'friend-op');

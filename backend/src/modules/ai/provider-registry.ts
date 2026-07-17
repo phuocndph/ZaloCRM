@@ -20,6 +20,8 @@ export type ProviderModel = { title: string; value: string };
 export type ProviderDef = {
   id: string;
   name: string;
+  adapter: 'anthropic' | 'gemini' | 'openai-compatible';
+  vendor: string;
   baseUrl: string;
   authToken: string;
 };
@@ -28,22 +30,25 @@ export type ProviderDef = {
 export type ProviderInfo = {
   id: string;
   name: string;
+  adapter: ProviderDef['adapter'];
+  vendor: string;
   baseUrl: string;
   hasKey: boolean;
   keyMask: string;
 };
 
-const PROVIDER_IDS = ['anthropic', 'gemini', 'openai', 'qwen', 'kimi'] as const;
+const PROVIDER_IDS = ['anthropic', 'gemini', 'openai', 'qwen', 'kimi', '9router'] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 
 /** Build catalog tĩnh từ config (env) */
 function buildCatalog(): ProviderDef[] {
   return [
-    { id: 'anthropic', name: 'Anthropic', baseUrl: config.anthropicBaseUrl, authToken: config.anthropicAuthToken },
-    { id: 'gemini', name: 'Gemini', baseUrl: config.geminiBaseUrl, authToken: config.geminiAuthToken },
-    { id: 'openai', name: 'OpenAI', baseUrl: config.openaiBaseUrl, authToken: config.openaiAuthToken },
-    { id: 'qwen', name: 'Qwen', baseUrl: config.qwenBaseUrl, authToken: config.qwenAuthToken },
-    { id: 'kimi', name: 'Kimi', baseUrl: config.kimiBaseUrl, authToken: config.kimiAuthToken },
+    { id: 'anthropic', name: 'Anthropic', adapter: 'anthropic', vendor: 'anthropic', baseUrl: config.anthropicBaseUrl, authToken: config.anthropicAuthToken },
+    { id: 'gemini', name: 'Gemini', adapter: 'gemini', vendor: 'gemini', baseUrl: config.geminiBaseUrl, authToken: config.geminiAuthToken },
+    { id: 'openai', name: 'OpenAI', adapter: 'openai-compatible', vendor: 'openai', baseUrl: config.openaiBaseUrl, authToken: config.openaiAuthToken },
+    { id: 'qwen', name: 'Qwen', adapter: 'openai-compatible', vendor: 'qwen', baseUrl: config.qwenBaseUrl, authToken: config.qwenAuthToken },
+    { id: 'kimi', name: 'Kimi', adapter: 'openai-compatible', vendor: 'kimi', baseUrl: config.kimiBaseUrl, authToken: config.kimiAuthToken },
+    { id: '9router', name: '9Router', adapter: 'openai-compatible', vendor: '9router', baseUrl: config.nineRouterBaseUrl, authToken: config.nineRouterApiKey },
   ];
 }
 
@@ -139,7 +144,7 @@ export async function getAvailableProviders(orgId: string): Promise<ProviderInfo
         resolveProviderApiKey(orgId, p.id),
         getProviderBaseUrl(orgId, p.id),
       ]);
-      return { id: p.id, name: p.name, baseUrl, hasKey: !!key, keyMask: maskKey(key) };
+      return { id: p.id, name: p.name, adapter: p.adapter, vendor: p.vendor, baseUrl, hasKey: !!key, keyMask: maskKey(key) };
     }),
   );
 }

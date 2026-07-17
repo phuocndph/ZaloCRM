@@ -165,6 +165,11 @@
                 title="Đang theo dõi khách hàng này"
               >mdi-bell-ring-outline</v-icon>
               <v-icon
+                v-if="isNotificationsMuted(conv)"
+                size="12" class="ci-icon ci-muted"
+                title="Đang tắt thông báo"
+              >mdi-bell-off-outline</v-icon>
+              <v-icon
                 v-if="conv.isPrivate"
                 size="12" class="ci-icon ci-lock"
                 :title="isPrivacyOwnerOf(conv) ? 'Chỉ mình tôi xem' : CONVERSATION_PRIVATE_MESSAGE"
@@ -207,7 +212,7 @@
             </div>
             <div class="ci-chips">
               <span
-                v-for="tag in displayTags(conv).slice(0, 2)"
+                v-for="tag in displayTags(conv).slice(0, 1)"
                 :key="tag.key"
                 class="ci-chip"
                 :class="{ 'is-zalo': tag.isZalo }"
@@ -274,6 +279,7 @@
       :privacy-busy="contextMenu.privacyBusy"
       :is-personal-pinned="contextMenu.isPersonalPinned"
       :is-manual-unread="contextMenu.isManualUnread"
+      :is-notifications-muted="contextMenu.isNotificationsMuted"
       :state-busy="contextMenu.stateBusy"
       @move-other="moveConversation(contextMenu.convId, 'other')"
       @move-main="moveConversation(contextMenu.convId, 'main')"
@@ -281,6 +287,12 @@
       @toggle-privacy="togglePrivacyFromMenu"
       @toggle-personal-pin="togglePersonalPinFromMenu"
       @toggle-manual-unread="toggleManualUnreadFromMenu"
+      @toggle-notifications-muted="toggleNotificationsMutedFromMenu"
+      @mute-1h="muteNotificationsForMenu(1)"
+      @mute-8h="muteNotificationsForMenu(8)"
+      @mute-tomorrow="muteNotificationsUntilTomorrow"
+      @mute-forever="muteNotificationsForMenu(null)"
+      @unmute-notifications="unmuteNotificationsFromMenu"
       @delete="askDeleteConversation"
     />
 
@@ -344,7 +356,7 @@ import {
   disableConversationPrivacy,
   type ConversationPrivacyStatus,
 } from '@/composables/use-conversation-privacy';
-import { setPersonalPin, setManualUnread } from '@/composables/use-conversation-state';
+import { setPersonalPin, setManualUnread, setConversationNotificationMute, clearConversationNotificationMute, isConversationNotificationMuted } from '@/composables/use-conversation-state';
 import type { ConversationUserStateView } from '@/composables/use-chat';
 
 const privacyVisibility = usePrivacyVisibility();
@@ -487,7 +499,7 @@ const contextMenu = reactive({
   // 2026-07-09 — item "Chỉ mình tôi xem" (riêng tư cấp hội thoại).
   isPrivate: false, isPrivacyOwner: false, privacyBusy: false,
   // 2026-07-10 — Conversation State: ghim cá nhân + đánh dấu chưa đọc thủ công.
-  isPersonalPinned: false, isManualUnread: false, stateBusy: false,
+  isPersonalPinned: false, isManualUnread: false, isNotificationsMuted: false, stateBusy: false,
 });
 
 // Hộp xác nhận xóa hội thoại
@@ -787,6 +799,9 @@ function isPersonalPinnedConv(conv: Conversation): boolean {
 function isManualUnreadConv(conv: Conversation): boolean {
   return conv.userState?.isManualUnread === true;
 }
+function isNotificationsMuted(conv: Conversation): boolean {
+  return isConversationNotificationMuted(conv.userState);
+}
 
 /**
  * Danh sách hiển thị: HỘI THOẠI GHIM CÁ NHÂN lên đầu (sort theo pinnedAt mới→cũ), phần
@@ -835,6 +850,7 @@ function openContextMenu(event: MouseEvent, conv: Conversation) {
   contextMenu.privacyBusy = false;
   contextMenu.isPersonalPinned = isPersonalPinnedConv(conv);
   contextMenu.isManualUnread = isManualUnreadConv(conv);
+  contextMenu.isNotificationsMuted = isNotificationsMuted(conv);
   contextMenu.stateBusy = false;
   contextMenu.show = true;
   // Lấy trạng thái theo dõi hiện tại (nếu đủ contact+nick) để hiện đúng nhãn.
@@ -892,6 +908,56 @@ async function togglePersonalPinFromMenu() {
 }
 
 /** Đánh dấu / bỏ đánh dấu CHƯA ĐỌC thủ công. Không đụng chưa đọc thật. */
+async function muteNotificationsForMenu(hours: number | null) {
+  if (contextMenu.stateBusy || !contextMenu.convId) return;
+  const convId = contextMenu.convId;
+  contextMenu.stateBusy = true;
+  try {
+    const until = hours === null ? null : new Date(Date.now() + hours * 60 * 60 * 1000);
+    const state = await setConversationNotificationMute(convId, until);
+    contextMenu.isNotificationsMuted = true;
+    applyStateToConv(convId, state);
+  } catch (err: any) {
+    window.alert(err?.response?.data?.error ?? 'Không đổi được thông báo, thử lại sau.');
+  } finally {
+    contextMenu.stateBusy = false;
+  }
+}
+async function muteNotificationsUntilTomorrow() {
+  const until = new Date();
+  until.setDate(until.getDate() + 1);
+  until.setHours(8, 0, 0, 0);
+  if (contextMenu.stateBusy || !contextMenu.convId) return;
+  const convId = contextMenu.convId;
+  contextMenu.stateBusy = true;
+  try {
+    const state = await setConversationNotificationMute(convId, until);
+    contextMenu.isNotificationsMuted = true;
+    applyStateToConv(convId, state);
+  } catch (err: any) {
+    window.alert(err?.response?.data?.error ?? 'Không đổi được thông báo, thử lại sau.');
+  } finally {
+    contextMenu.stateBusy = false;
+  }
+}
+async function unmuteNotificationsFromMenu() {
+  if (contextMenu.stateBusy || !contextMenu.convId) return;
+  const convId = contextMenu.convId;
+  contextMenu.stateBusy = true;
+  try {
+    const state = await clearConversationNotificationMute(convId);
+    contextMenu.isNotificationsMuted = false;
+    applyStateToConv(convId, state);
+  } catch (err: any) {
+    window.alert(err?.response?.data?.error ?? 'Không đổi được thông báo, thử lại sau.');
+  } finally {
+    contextMenu.stateBusy = false;
+  }
+}
+async function toggleNotificationsMutedFromMenu() {
+  if (contextMenu.isNotificationsMuted) return unmuteNotificationsFromMenu();
+  return muteNotificationsForMenu(8);
+}
 async function toggleManualUnreadFromMenu() {
   if (contextMenu.stateBusy || !contextMenu.convId) return;
   const convId = contextMenu.convId;
@@ -1668,7 +1734,8 @@ function truncate(s: string, n: number): string {
 .ci-group, .ci-hot, .ci-vip { font-size: 11px; }
 .ci-virtual { color: #f97316; }
 .ci-follow { color: #f59e0b; }
-.ci-lock { color: var(--cl-ink-3); }   /* riêng tư = xám, KHÔNG đỏ */
+.ci-lock { color: var(--cl-ink-3); }
+.ci-muted { color: var(--cl-ink-3); }   /* riêng tư = xám, KHÔNG đỏ */
 
 .ci-top-right {
   flex-shrink: 0;
@@ -1887,6 +1954,42 @@ function truncate(s: string, n: number): string {
 .empty-state {
   text-align: center; padding: 40px 13px;
   color: var(--smax-grey-700); font-size: 12px;
+}
+
+/* Sales scan hierarchy: stable three-row rhythm and restrained status color. */
+.conv-list {
+  --cl-ink: #17212b;
+  --cl-ink-content: #334155;
+  --cl-ink-2: #526277;
+  --cl-ink-3: #718096;
+  --cl-line: #e8edf3;
+  --cl-hover: #f6f9fc;
+  --cl-accent-soft: #eaf3ff;
+  --cl-danger: #e5484d;
+  --cl-item-h: 76px;
+  --cl-pad-x: 12px;
+  font-family: Inter, "Be Vietnam Pro", "Segoe UI", sans-serif;
+}
+.conv-item { gap: 10px; padding-top: 9px; padding-bottom: 9px; }
+.ci-body { gap: 3px; }
+.ci-row-top { order: 0; }
+.ci-row-content { order: 1; line-height: 18px; }
+.ci-row-meta { order: 2; min-height: 16px; gap: 6px; }
+.ci-name { line-height: 20px; }
+.ci-name-text { font-size: 14px; font-weight: 650; color: var(--cl-ink); }
+.ci-time { font-size: 11px; color: var(--cl-ink-3); }
+.ci-preview { font-size: 13px; line-height: 18px; color: var(--cl-ink-content); }
+.ci-who { font-size: 12px; line-height: 16px; color: var(--cl-ink-3); gap: 7px; }
+.ci-owner { max-width: 64%; }
+.ci-owner b, .ci-replier { color: var(--cl-ink-2); font-weight: 600; }
+.ci-chips { gap: 4px; }
+.ci-chip { max-width: 104px; min-height: 20px; padding: 0 7px; font-size: 11px; line-height: 20px; }
+.ci-unread { min-width: 18px; height: 18px; font-size: 10px; }
+.conv-item.unread .ci-preview { font-weight: 550; }
+@media (max-width: 768px) {
+  .conv-list { --cl-item-h: 78px; }
+  .ci-name-text { font-size: 14.5px; }
+  .ci-preview { font-size: 13.5px; }
 }
 </style>
 

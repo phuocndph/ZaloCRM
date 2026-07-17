@@ -102,8 +102,11 @@
       class="profile-card"
       :class="{ 'is-suggest': type === 'user_suggest' }"
     >
-      <div v-if="type === 'user_suggest'" class="profile-suggest-chip">
-        <v-icon size="11">mdi-account-plus</v-icon> Gợi ý kết bạn
+      <div class="profile-card-topline">
+        <span class="profile-card-label">
+          <v-icon size="12">{{ type === 'user_suggest' ? 'mdi-account-plus-outline' : 'mdi-card-account-details-outline' }}</v-icon>
+          {{ type === 'user_suggest' ? 'Gợi ý kết bạn' : 'Danh thiếp Zalo' }}
+        </span>
       </div>
       <div class="profile-body">
         <div class="profile-avatar">
@@ -116,31 +119,33 @@
             <v-icon size="12">mdi-phone</v-icon> {{ profilePhone }}
           </div>
           <div v-else-if="profileSubtitle" class="profile-phone">{{ profileSubtitle }}</div>
+          <div class="profile-subtitle">Danh thiếp Zalo</div>
+        </div>
+        <div v-if="profileQrImage" class="profile-qr-wrap">
+          <img :src="profileQrImage" alt="QR danh thiếp" class="profile-qr-img" />
         </div>
       </div>
       <div class="profile-actions">
         <button
           type="button"
           class="profile-btn primary"
-          :title="type === 'user_suggest' ? 'Kết bạn (chưa hỗ trợ qua CRM)' : 'Mở chat với người này'"
+          :title="type === 'user_suggest' ? 'Xem thông tin người này' : 'Mở chat với người này'"
           @click="onOpenProfile"
         >
           <v-icon size="13">{{ type === 'user_suggest' ? 'mdi-account-plus-outline' : 'mdi-message-outline' }}</v-icon>
-          {{ type === 'user_suggest' ? 'Xem thông tin' : 'Mở chat' }}
+          {{ type === 'user_suggest' ? 'Xem thông tin' : 'Gửi tin nhắn' }}
         </button>
         <button
-          v-if="profilePhone"
           type="button"
           class="profile-btn"
-          title="Copy SĐT"
-          @click="copyAccount(profilePhone)"
+          title="Kết bạn"
+          @click="onOpenProfile"
         >
-          <v-icon size="13">mdi-content-copy</v-icon>
-          Copy SĐT
+          <v-icon size="13">mdi-account-plus-outline</v-icon>
+          Kết bạn
         </button>
       </div>
     </div>
-
     <!-- E27 QR Code — anh chốt 2026-05-21: ảnh QR + 2 action button -->
     <div v-else-if="type === 'qr_code'" class="qr-card-v2">
       <div class="qr-card-header">
@@ -401,6 +406,11 @@ const profileAvatar = computed<string>(() => {
 const profilePhone = computed<string>(() => {
   const p = paramsObj.value;
   return String(p?.phone || p?.phoneNumber || '').trim();
+});
+const profileQrImage = computed<string>(() => {
+  const p = paramsObj.value;
+  const q = p?.qrCodeUrl || p?.qrUrl || p?.qrcode || p?.qr || props.content?.qrCodeUrl;
+  return typeof q === 'string' && q.startsWith('http') ? q : '';
 });
 const profileSubtitle = computed<string>(() => {
   const desc = props.content?.description;
@@ -829,58 +839,150 @@ const linkDescription = computed<string>(() => {
 /* ════════ E21/E22 Profile / Suggest user card ════════ */
 .profile-card {
   display: block;
+  width: min(276px, 100%);
   padding: 12px;
-  border-radius: 10px;
-  background: var(--smax-grey-50, #fafbfc);
-  border: 1px solid var(--smax-grey-200, #e5e7eb);
-  max-width: 320px;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.08), 0 1px 2px rgba(15, 23, 42, 0.05);
   position: relative;
+  overflow: hidden;
 }
-.profile-card.is-suggest { border-color: rgba(33, 150, 243, 0.35); background: rgba(33, 150, 243, 0.04); }
-.profile-suggest-chip {
-  display: inline-flex; align-items: center; gap: 3px;
-  font-size: 10px; font-weight: 700; text-transform: uppercase;
-  color: #1976d2; background: rgba(33, 150, 243, 0.12);
-  padding: 2px 7px; border-radius: 4px;
-  margin-bottom: 8px;
+.profile-card::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  background: linear-gradient(90deg, #1786be, #2f6fed);
 }
-.profile-body { display: flex; align-items: center; gap: 12px; }
+.profile-card.is-suggest::before { background: linear-gradient(90deg, #16a34a, #1786be); }
+.profile-card-topline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.profile-card-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(23, 134, 190, 0.09);
+  color: #0f6f9d;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.profile-card.is-suggest .profile-card-label {
+  background: rgba(22, 163, 74, 0.1);
+  color: #15803d;
+}
+.profile-body {
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
 .profile-avatar {
-  width: 48px; height: 48px; border-radius: 50%;
-  background: var(--smax-grey-100, #f1f3f5);
-  display: flex; align-items: center; justify-content: center;
-  overflow: hidden; flex-shrink: 0;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #eef6ff, #f3f4f6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  flex-shrink: 0;
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.08);
 }
 .profile-avatar-img { width: 100%; height: 100%; object-fit: cover; }
-.profile-info { flex: 1; min-width: 0; }
+.profile-info { min-width: 0; }
 .profile-name {
-  font-weight: 600; font-size: 14px; color: var(--smax-text);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-weight: 700;
+  font-size: 14px;
+  line-height: 1.25;
+  color: #172033;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .profile-phone {
-  font-size: 12px; color: var(--smax-grey-700);
-  display: flex; align-items: center; gap: 3px;
-  margin-top: 2px;
+  font-size: 12px;
+  color: #4b5563;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 3px;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.profile-subtitle {
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: #8a94a6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.profile-qr-wrap {
+  width: 52px;
+  height: 52px;
+  border-radius: 8px;
+  padding: 4px;
+  background: #fff;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  box-shadow: 0 2px 7px rgba(15, 23, 42, 0.08);
+}
+.profile-qr-img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
 }
 .profile-actions {
-  display: flex; gap: 6px; margin-top: 10px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(15, 23, 42, 0.07);
 }
 .profile-btn {
-  display: inline-flex; align-items: center; gap: 4px;
-  padding: 5px 10px; border-radius: 6px;
-  border: 1px solid var(--smax-grey-300, #d1d5db);
-  background: white; color: var(--smax-text);
-  font-size: 12px; font-weight: 500; cursor: pointer;
-  transition: background 0.15s ease;
+  width: 100%;
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  background: #fff;
+  color: #374151;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.12s ease, box-shadow 0.15s ease;
 }
-.profile-btn:hover { background: var(--smax-grey-100, #f3f4f6); }
+.profile-btn:hover {
+  background: #f8fafc;
+  border-color: rgba(15, 23, 42, 0.22);
+}
+.profile-btn:active { transform: translateY(1px); }
 .profile-btn.primary {
-  border-color: var(--smax-primary, #2962ff);
-  background: var(--smax-primary, #2962ff);
+  border-color: #1d5fe8;
+  background: linear-gradient(180deg, #3478f6 0%, #2167e8 100%);
   color: white;
+  box-shadow: 0 5px 12px rgba(33, 103, 232, 0.24);
 }
-.profile-btn.primary:hover { filter: brightness(0.95); }
-
+.profile-btn.primary:hover {
+  background: linear-gradient(180deg, #2f6fed 0%, #1d5fd8 100%);
+  box-shadow: 0 6px 14px rgba(33, 103, 232, 0.3);
+}
 /* ════════ E27 QR Code v2 ════════ */
 .qr-card-v2 {
   display: block;

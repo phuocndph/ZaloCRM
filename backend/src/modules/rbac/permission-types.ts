@@ -7,19 +7,25 @@
  * Lock 2026-05-21 trong design doc thanh-rbac-m2-design-20260521.md.
  */
 
-// 5 action columns. 'approve'/'pay' (Getfly) đã gỡ 2026-06-20: không có quy trình
-// duyệt/thanh toán trong ZaloCRM nên 2 cột đó chỉ là ô tick vô tác dụng.
+// Action whitelist dùng chung cho ma trận quyền. Các action nhạy cảm của AI
+// chỉ hợp lệ trên những resource được khai báo trong RESOURCE_ACTIONS.
 export const ACTIONS = [
   'access',       // Truy cập
   'create',       // Thêm mới
   'edit',         // Chỉnh sửa
   'delete',       // Xóa
   'view_all',     // Xem tất cả — KEY FLAG bypass dept scope
+  'approve',      // Phê duyệt thay đổi có kiểm soát
+  'deploy',       // Triển khai release
+  'rollback',     // Khôi phục release trước
+  'manage_secret',// Quản lý API key/secret
+  'emergency_stop', // Dừng khẩn cấp luồng tự động
+  'export',       // Xuất dữ liệu quản trị/audit
 ] as const;
 export type Action = (typeof ACTIONS)[number];
 
-// 18 resources, GOM THEO NHÓM MÀN HÌNH (2026-06-20) để ma trận phân quyền đọc theo
-// menu — admin gán quyền dễ hơn. Thứ tự ở đây = thứ tự cột dọc trong UI ma trận.
+// Resources được gom theo nhóm màn hình để ma trận phân quyền dễ quét.
+// Thứ tự ở đây cũng là thứ tự resource trong UI ma trận.
 export const RESOURCES = [
   // ── Hệ thống & tổ chức (menu Cài đặt / Phân quyền) ──
   'department',         // Quản lý phòng ban   → /settings/rbac/departments
@@ -44,6 +50,19 @@ export const RESOURCES = [
   'webhook',            // Webhook / API key   → /settings/dev/api
   // ── Báo cáo ──
   'engagement_score',   // Engagement + Score  → /reports
+  // ── AI control plane ──
+  'ai',
+  'ai_model',
+  'ai_agent',
+  'ai_skill',
+  'ai_prompt',
+  'ai_knowledge',
+  'ai_feedback',
+  'ai_learning',
+  'ai_evaluation',
+  'ai_auto_reply',
+  'ai_deployment',
+  'ai_audit',
 ] as const;
 export type Resource = (typeof RESOURCES)[number];
 
@@ -71,6 +90,18 @@ export const RESOURCE_ACTIONS: Record<Resource, readonly Action[]> = {
   // Kho phương tiện — access=xem/dùng kho, create=tải lên/lưu, edit=sửa quyền/tag/watermark,
   // delete=archive, view_all=xem cả org bỏ qua scope owner (admin/marketing).
   media: ['access', 'create', 'edit', 'delete', 'view_all'],
+  ai: ['access'],
+  ai_model: ['access', 'create', 'edit', 'delete', 'manage_secret', 'approve'],
+  ai_agent: ['access', 'create', 'edit', 'delete', 'approve'],
+  ai_skill: ['access', 'create', 'edit', 'delete', 'approve'],
+  ai_prompt: ['access', 'create', 'edit', 'delete', 'approve', 'rollback'],
+  ai_knowledge: ['access', 'create', 'edit', 'delete', 'approve'],
+  ai_feedback: ['access', 'approve', 'export'],
+  ai_learning: ['access', 'edit', 'approve'],
+  ai_evaluation: ['access', 'create', 'approve'],
+  ai_auto_reply: ['access', 'edit', 'approve', 'emergency_stop'],
+  ai_deployment: ['access', 'create', 'approve', 'deploy', 'rollback'],
+  ai_audit: ['access', 'view_all', 'export'],
 };
 
 // JSON shape lưu trong permission_groups.grants:

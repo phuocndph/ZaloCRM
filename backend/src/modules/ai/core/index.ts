@@ -13,8 +13,10 @@ export * from './prompt-renderer.js';
 export const aiModelRegistry = new ModelRegistry()
   .registerProvider(new AnthropicProvider())
   .registerProvider(new GeminiProvider())
+  .registerProvider(new OpenAICompatibleProvider())
   .registerProvider(new OpenAICompatibleProvider('openai'))
   .registerProvider(new OpenAICompatibleProvider('qwen', '/compatible-mode/v1/chat/completions'))
-  .registerProvider(new OpenAICompatibleProvider('kimi'));
+  .registerProvider(new OpenAICompatibleProvider('kimi'))
+  .registerProvider(new OpenAICompatibleProvider('9router'));
 
 export const aiClient = new AIClient(aiModelRegistry);

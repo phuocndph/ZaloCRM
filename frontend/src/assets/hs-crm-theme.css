@@ -84,7 +84,7 @@
   --sh-pop: 0 16px 48px rgba(20,26,36,.16);
 
   /* Type — brand font (matches private-hs main.css import) */
-  --font: "Plus Jakarta Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font: Roboto, Arial, Helvetica, sans-serif;
   --mono: "Roboto Mono", ui-monospace, "SF Mono", Menlo, monospace;
 
   /* HS Holding teal-navy nav gradient */

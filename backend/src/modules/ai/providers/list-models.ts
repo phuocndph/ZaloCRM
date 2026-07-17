@@ -7,6 +7,7 @@
  * (route sẽ bắt và trả {models:[],error} cho UI fallback gõ tay).
  */
 import { logger } from '../../../shared/utils/logger.js';
+import { listOpenAICompatibleModels } from './openai-compatible-client.js';
 
 export type ProviderModel = { title: string; value: string };
 
@@ -33,13 +34,6 @@ function toModels(ids: string[]): ProviderModel[] {
     .filter(Boolean)
     .sort()
     .map((id) => ({ title: id, value: id }));
-}
-
-async function listOpenaiCompat(baseUrl: string, apiKey: string, path: string): Promise<ProviderModel[]> {
-  const data = (await fetchJson(`${baseUrl}${path}`, { authorization: `Bearer ${apiKey}` })) as {
-    data?: Array<{ id?: string }>;
-  };
-  return toModels((data.data ?? []).map((m) => m.id || ''));
 }
 
 async function listAnthropic(baseUrl: string, apiKey: string): Promise<ProviderModel[]> {
@@ -78,10 +72,11 @@ export async function listProviderModels(
   switch (provider) {
     case 'openai':
     case 'kimi':
-      models = await listOpenaiCompat(baseUrl, apiKey, '/v1/models');
+    case '9router':
+      models = await listOpenAICompatibleModels({ baseUrl, apiKey, vendor: provider });
       break;
     case 'qwen':
-      models = await listOpenaiCompat(baseUrl, apiKey, '/compatible-mode/v1/models');
+      models = await listOpenAICompatibleModels({ baseUrl, apiKey, vendor: provider }, '/compatible-mode/v1/models');
       break;
     case 'anthropic':
       models = await listAnthropic(baseUrl, apiKey);

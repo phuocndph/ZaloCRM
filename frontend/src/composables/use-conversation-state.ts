@@ -62,3 +62,37 @@ export const setPersonalPin = (id: string, pinned: boolean) =>
 
 export const setManualUnread = (id: string, unread: boolean) =>
   patchConversationState(id, { isManualUnread: unread });
+
+export interface NotificationMuteState {
+  mode: 'until' | 'forever';
+  until: string | null;
+  mutedAt: string;
+}
+
+export function notificationMuteOf(state: Pick<ConversationState, 'flags'> | null | undefined): NotificationMuteState | null {
+  const value = state?.flags?.notificationMute;
+  if (!value || typeof value !== 'object') return null;
+  const mute = value as Partial<NotificationMuteState>;
+  if (mute.mode === 'forever') return { mode: 'forever', until: null, mutedAt: String(mute.mutedAt || '') };
+  if (mute.mode !== 'until' || typeof mute.until !== 'string' || Number.isNaN(Date.parse(mute.until)) || Date.parse(mute.until) <= Date.now()) return null;
+  return { mode: 'until', until: mute.until, mutedAt: String(mute.mutedAt || '') };
+}
+
+export function isConversationNotificationMuted(state: Pick<ConversationState, 'flags'> | null | undefined): boolean {
+  return notificationMuteOf(state) !== null;
+}
+
+export function setConversationNotificationMute(id: string, until: Date | null): Promise<ConversationState> {
+  return patchConversationState(id, {
+    flags: {
+      notificationMute: {
+        mode: until ? 'until' : 'forever',
+        until: until?.toISOString() ?? null,
+        mutedAt: new Date().toISOString(),
+      },
+    },
+  });
+}
+
+export const clearConversationNotificationMute = (id: string) =>
+  patchConversationState(id, { flags: { notificationMute: null } });
