@@ -32,6 +32,7 @@ export interface AiSentiment {
   reason: string;
 }
 
+export interface AiProviderStatus { id: string; name: string; hasKey: boolean; }
 export interface AiConfig {
   provider: string;
   model: string;
@@ -39,6 +40,7 @@ export interface AiConfig {
   enabled: boolean;
   hasAnthropicKey?: boolean;
   hasGeminiKey?: boolean;
+  availableProviders?: AiProviderStatus[];
 }
 
 interface ConversationMessage {
@@ -673,6 +675,7 @@ function buildChat() {
         enabled: res.data.enabled,
         hasAnthropicKey: res.data.hasAnthropicKey,
         hasGeminiKey: res.data.hasGeminiKey,
+        availableProviders: res.data.availableProviders ?? [],
       };
     } catch (err) {
       console.error('Failed to fetch AI config:', err);

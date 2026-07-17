@@ -6,7 +6,7 @@
   --rk-bg:#f5f7fa; --rk-surface:#fff; --rk-surface-2:#f8fafc; --rk-hairline:#e6e9ef;
   --rk-brand:var(--brand,#1786be); --rk-brand-700:var(--brand-700,#0b5880); --rk-brand-soft:var(--brand-soft,#e4f1f8); --rk-brand-softer:var(--brand-softer,#f2f8fc); --rk-brand-bright:#5bb8e5;
   --rk-ok:#12b76a; --rk-ok-soft:#e7f7ef; --rk-warn:#f79009; --rk-warn-soft:#fff6e8; --rk-danger:#f04438; --rk-danger-soft:#fdeceb;
-  font-family:Inter,system-ui,-apple-system,sans-serif; font-size:13.5px; color:var(--rk-body);
+  font-family:Roboto,Arial,Helvetica,sans-serif; font-size:14px; color:var(--rk-body);
   -webkit-font-smoothing:antialiased; letter-spacing:-.005em;
 }
 .rpt-scope *{box-sizing:border-box}

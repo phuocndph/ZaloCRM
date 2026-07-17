@@ -1,20 +1,17 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { requireGrant } from '../rbac/rbac-middleware.js';
+import { aiPermissions } from './ai-control-plane-permissions.js';
 import { AIErrorHandler, aiClient } from './core/index.js';
 
 export async function aiCoreRoutes(app: FastifyInstance) {
   app.post(
     '/api/v1/ai/internal/test-connection',
     {
-      preHandler: requireGrant('settings', 'edit'),
+      preHandler: aiPermissions.model.manageSecret,
       config: { rateLimit: { max: 5, timeWindow: '1 minute' } },
     },
     async (request: FastifyRequest, reply: FastifyReply) => {
       const body = (request.body ?? {}) as { modelConfigId?: string };
       if (!body.modelConfigId) return reply.status(400).send({ error: 'modelConfigId is required' });
-      if (!['owner', 'admin'].includes(request.user!.role)) {
-        return reply.status(403).send({ error: 'Admin access required' });
-      }
       try {
         const result = await aiClient.complete({
           orgId: request.user!.orgId,

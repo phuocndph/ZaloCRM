@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Roboto+Mono:wght@400;500;600&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&family=Roboto+Mono:wght@400;500;600&display=swap');
 
 /* ════════════════════════════════════════════════════════════
    Global app styles — Smax design language (mockup chat-smax-v3).
@@ -6,12 +6,16 @@
    Legacy navy/cyan glass effects retained only behind .v-theme--legacy-dark.
    ════════════════════════════════════════════════════════════ */
 
+:root {
+  --zalo-font: Roboto, Arial, Helvetica, sans-serif;
+}
+
 html, body {
   margin: 0;
   padding: 0;
   height: 100%;
   overflow: hidden; /* khoá cuộn cấp trang — chỉ vùng tin nhắn/list bên trong cuộn (fix 2026-06-14) */
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Plus Jakarta Sans", Roboto, sans-serif;
+  font-family: var(--zalo-font);
   scroll-behavior: smooth;
   background: var(--smax-grey-100);
   color: var(--smax-text);
@@ -19,10 +23,25 @@ html, body {
   line-height: var(--smax-line-height);
 }
 
-#app { height: 100%; }
+#app, .v-application {
+  height: 100%;
+  font-family: var(--zalo-font);
+}
+
+#app :is(button, input, select, textarea) { font-family: var(--zalo-font); }
 
 /* ════════ Smax light theme — defaults for v-* components ════════ */
 .v-theme--smax-light .v-card {
+/* One typeface across application surfaces. Keep icon glyphs and code readable. */
+#app :not(.v-icon):not(.v-icon *):not(.material-icons):not(.material-symbols-outlined):not(.mdi):not([class^="mdi-"]):not([class*=" mdi-"]):not(code):not(pre):not(kbd) {
+  font-family: var(--zalo-font) !important;
+}
+
+#app :is(.v-list-item-title, .v-field__input, .v-btn, .v-tab, .v-label) {
+  font-size: inherit;
+  letter-spacing: normal;
+}
+
   background: var(--smax-bg) !important;
   border: 1px solid var(--smax-grey-200) !important;
   backdrop-filter: none;

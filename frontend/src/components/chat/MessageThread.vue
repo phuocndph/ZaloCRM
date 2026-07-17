@@ -20,7 +20,7 @@
         <div class="drop-card">
           <v-icon size="34" color="primary">mdi-cloud-upload-outline</v-icon>
           <div class="drop-title">Thả để gửi file</div>
-          <div class="drop-subtitle">Hình ảnh, video và tài liệu sẽ được upload vào cuộc trò chuyện này</div>
+          <div class="drop-subtitle">Hình ảnh, video và tài liệu sẽ được thêm vào bản nháp; bấm Gửi để gửi</div>
         </div>
       </div>
 
@@ -338,7 +338,7 @@
                 @click="showLinkParentDialog = true"
               />
               <v-divider />
-              <v-list-item prepend-icon="mdi-bell-off-outline" title="Tắt thông báo" @click="toast.push('Mute: chưa implement')" />
+              <v-list-item :prepend-icon="notificationsMuted ? 'mdi-bell-outline' : 'mdi-bell-off-outline'" :title="notificationsMuted ? 'Bật thông báo' : 'Tắt thông báo 8 giờ'" @click="toggleThreadNotifications" />
               <v-list-item prepend-icon="mdi-flag-outline" title="Báo cáo" @click="toast.push('Report: chưa implement')" />
             </v-list>
           </v-menu>
@@ -627,9 +627,11 @@
           >
             <PackageIcon :size="18" :stroke-width="1.5" />
           </button>
-          <button class="icon-tool ai-btn" title="AI compose" :disabled="aiSuggestionLoading" @click="$emit('ask-ai')">
+          <button class="icon-tool ai-btn" :class="{ 'ai-btn-unavailable': !isAiReady }" :title="aiUnavailableMessage || 'Trợ lý AI'" :disabled="aiSuggestionLoading" @click="requestAiSuggestion">
             <SparklesIcon :size="18" :stroke-width="1.5" />
+            <span v-if="!isAiReady" class="ai-config-dot" aria-label="AI chưa được cấu hình"></span>
           </button>
+          <span v-if="!isAiReady" class="ai-config-notice">{{ aiUnavailableMessage }}</span>
         </div>
 
         <div class="input-row">
@@ -671,6 +673,7 @@
               v-model="inputText"
               :placeholder="inputPlaceholder"
               :show-toolbar="formatBarVisible"
+              :submit-on-enter="false"
               :intercept-keys="onComposerNavKey"
               :is-group="conversation.threadType === 'group'"
               :account-id="conversation.zaloAccount?.id ?? null"
@@ -681,6 +684,20 @@
               @typing="onTypingEvent"
               @paste-image="onPasteImage"
             />
+            <div v-if="pendingAttachments.length" class="pending-attachments" aria-label="Tệp đính kèm chờ gửi">
+              <template v-for="file in pendingAttachments" :key="attachmentKey(file)">
+                <div v-if="attachmentPreview(file)" class="pending-image-preview" :title="file.name">
+                  <img :src="attachmentPreview(file)!" :alt="file.name" />
+                  <button type="button" class="pending-preview-remove" :aria-label="`Bỏ ${file.name}`" @click="removePendingAttachment(file)"><v-icon size="15">mdi-close</v-icon></button>
+                </div>
+                <span v-else class="pending-attachment-chip" :title="file.name">
+                  <v-icon size="15">mdi-paperclip</v-icon>
+                  <span class="pending-attachment-name">{{ file.name }}</span>
+                  <button type="button" class="pending-attachment-remove" :aria-label="`Bỏ ${file.name}`" @click="removePendingAttachment(file)"><v-icon size="14">mdi-close</v-icon></button>
+                </span>
+              </template>
+            </div>
+            <div class="composer-send-hint">Enter xuống dòng · Bấm Gửi để gửi</div>
             <!-- Privacy lock overlay — chỉ phủ input editor, KHÔNG che toolbar bên ngoài -->
             <div
               v-if="!privacyVisibility.canSendInConv(conversation)"
@@ -706,9 +723,9 @@
           <button
             class="send-btn"
             :class="{ 'send-btn-virtual': isVirtualConv }"
-            :disabled="!inputText.trim() || sending || isArchivedNick"
+            :disabled="!hasDraftContent || sending || uploadingAttachments || isArchivedNick"
             @click="handleSend"
-            :title="isArchivedNick ? 'Nick đã xóa — không gửi được.' : isVirtualConv ? 'Lưu nội bộ (Enter) — KHÔNG gửi đi Zalo' : 'Gửi (Enter)'"
+            :title="isArchivedNick ? 'Nick đã xóa — không gửi được.' : isVirtualConv ? 'Lưu nội bộ' : 'Gửi tin nhắn và tệp đính kèm'"
           >
             <v-icon v-if="sending" size="20">mdi-loading mdi-spin</v-icon>
             <template v-else-if="isVirtualConv">
@@ -1085,6 +1102,7 @@ const _authStore = useAuthStore();
 const currentUserId = computed<string | null>(() => _authStore.user?.id ?? null);
 import FriendInviteDialog from '@/components/chat/FriendInviteDialog.vue';
 import { useToast } from '@/composables/use-toast';
+import { isConversationNotificationMuted, setConversationNotificationMute, clearConversationNotificationMute } from '@/composables/use-conversation-state';
 import { useZaloPresence } from '@/composables/use-zalo-presence';
 import { useZaloFriendStatus } from '@/composables/use-zalo-friend-status';
 import { useFriendSocket } from '@/composables/use-friend-socket';
@@ -1111,6 +1129,7 @@ const props = defineProps<{
   aiSuggestion: string;
   aiSuggestionLoading: boolean;
   aiSuggestionError: string;
+  aiConfig?: { provider: string; model: string; enabled: boolean; availableProviders?: Array<{ id: string; name: string; hasKey: boolean }> };
   allConversations?: Conversation[];
   replyingTo?: Message | null;
   editingMessage?: Message | null;
@@ -1158,6 +1177,36 @@ const emit = defineEmits<{
 }>();
 
 const toast = useToast();
+const notificationsMuted = computed(() => isConversationNotificationMuted(props.conversation?.userState));
+async function toggleThreadNotifications() {
+  const conversation = props.conversation;
+  if (!conversation) return;
+  try {
+    const state = notificationsMuted.value
+      ? await clearConversationNotificationMute(conversation.id)
+      : await setConversationNotificationMute(conversation.id, new Date(Date.now() + 8 * 60 * 60 * 1000));
+    conversation.userState = state;
+    toast.success(notificationsMuted.value ? 'Đã bật thông báo' : 'Đã tắt thông báo trong 8 giờ');
+  } catch (error: any) {
+    toast.error(error?.response?.data?.error || 'Không thể đổi cài đặt thông báo');
+  }
+}
+const isAiReady = computed(() => {
+  const config = props.aiConfig;
+  if (!config?.enabled || !config.model?.trim()) return false;
+  return !!config.availableProviders?.some((provider) => provider.id === config.provider && provider.hasKey);
+});
+const aiUnavailableMessage = computed(() => {
+  const config = props.aiConfig;
+  if (!config?.enabled) return 'AI đang tắt — vào Cài đặt > API & Webhook để bật.';
+  if (!config?.model?.trim()) return 'AI chưa chọn model — vào Cài đặt > API & Webhook.';
+  const providerName = config.availableProviders?.find((provider) => provider.id === config.provider)?.name || config?.provider || 'provider AI';
+  return `AI chưa có API key cho ${providerName} — vào Cài đặt > API & Webhook.`;
+});
+function requestAiSuggestion() {
+  if (!isAiReady.value) { toast.error(aiUnavailableMessage.value); return; }
+  emit('ask-ai');
+}
 const inputText = ref('');
 const messagesContainer = ref<HTMLElement | null>(null);
 const previewImageUrl = ref('');
@@ -2365,6 +2414,9 @@ async function onSendSticker(sticker: { id: number; catId: number; type: number 
 // ── File / image upload ─────────────────────────────────────────────────────
 const imageInputRef = ref<HTMLInputElement | null>(null);
 const fileInputRef = ref<HTMLInputElement | null>(null);
+const pendingAttachments = ref<File[]>([]);
+const uploadingAttachments = ref(false);
+const hasDraftContent = computed(() => !!inputText.value.trim() || pendingAttachments.value.length > 0);
 // 2026-06-12: showMediaPicker + MediaPickerPopover đã GỠ — nút "Chèn từ kho" giờ mở
 // tab Media ở cột 4 (emit 'open-media-tab'). Logic kho dời sang MediaTabPanel.
 // 2026-06-20: GỠ "Gợi ý ảnh dự án" (mediaSuggestions/loadMediaSuggestions/sendSuggestion) — anh chốt bỏ.
@@ -2374,21 +2426,49 @@ const isDraggingFiles = ref(false);
 function onPickImage() { imageInputRef.value?.click(); }
 function onPickFile() { fileInputRef.value?.click(); }
 
+const attachmentPreviewUrls = new Map<string, string>();
+function attachmentKey(file: File) { return `${file.name}:${file.size}:${file.lastModified}`; }
+function attachmentPreview(file: File): string | null {
+  if (!file.type.startsWith('image/')) return null;
+  const key = attachmentKey(file);
+  let url = attachmentPreviewUrls.get(key);
+  if (!url) { url = URL.createObjectURL(file); attachmentPreviewUrls.set(key, url); }
+  return url;
+}
+function revokeAttachmentPreview(file: File) {
+  const key = attachmentKey(file);
+  const url = attachmentPreviewUrls.get(key);
+  if (url) { URL.revokeObjectURL(url); attachmentPreviewUrls.delete(key); }
+}
+function queueAttachments(files: File[]) {
+  if (!files.length) return;
+  if (!props.conversation?.id) { toast.error('Chọn cuộc trò chuyện trước khi đính kèm tệp'); return; }
+  const known = new Set(pendingAttachments.value.map(attachmentKey));
+  const additions = files.filter((file) => !known.has(attachmentKey(file)));
+  if (!additions.length) return;
+  pendingAttachments.value = [...pendingAttachments.value, ...additions];
+  toast.push(`Đã thêm ${additions.length} tệp vào bản nháp. Bấm Gửi để gửi.`);
+}
+function removePendingAttachment(file: File) {
+  revokeAttachmentPreview(file);
+  pendingAttachments.value = pendingAttachments.value.filter((item) => item !== file);
+}
 function onImageFilesPicked(e: Event) {
   const files = Array.from((e.target as HTMLInputElement).files || []);
-  if (files.length) handleImageFiles(files);
+  queueAttachments(files);
   if (imageInputRef.value) imageInputRef.value.value = '';
 }
 function onFileFilesPicked(e: Event) {
   const files = Array.from((e.target as HTMLInputElement).files || []);
-  if (files.length) handleFiles(files);
+  queueAttachments(files);
   if (fileInputRef.value) fileInputRef.value.value = '';
 }
-function onPasteImage(files: File[]) {
-  // Bắt được khi user Ctrl+V image vào editor
-  handleImageFiles(files);
-}
+function onPasteImage(files: File[]) { queueAttachments(files); }
 
+onBeforeUnmount(() => {
+  attachmentPreviewUrls.forEach((url) => URL.revokeObjectURL(url));
+  attachmentPreviewUrls.clear();
+});
 function hasDraggedFiles(event: DragEvent): boolean {
   return Array.from(event.dataTransfer?.types || []).includes('Files');
 }
@@ -2436,46 +2516,26 @@ async function onDropFiles(event: DragEvent) {
     toast.error('Chọn cuộc trò chuyện trước khi gửi file');
     return;
   }
-  const imageFiles = files.filter((file) => file.type.startsWith('image/'));
-  const otherFiles = files.filter((file) => !file.type.startsWith('image/'));
-  if (imageFiles.length) await handleImageFiles(imageFiles);
-  if (otherFiles.length) await handleFiles(otherFiles);
+  queueAttachments(files);
 }
 
-async function handleImageFiles(files: File[]) {
-  if (!props.conversation?.id) return;
-  if (!files.length) return;
-  toast.push(`📷 Đang gửi ${files.length} ảnh…`);
+async function sendAttachments(files: File[]) {
+  if (!props.conversation?.id || !files.length) return false;
+  uploadingAttachments.value = true;
+  toast.push(`Đang gửi ${files.length} tệp đính kèm…`);
   try {
     const fd = new FormData();
-    for (const f of files) fd.append('files', f, f.name);
-    await api.post(`/conversations/${props.conversation.id}/attachments`, fd, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    });
-    toast.success(`Đã gửi ${files.length} ảnh`);
+    for (const file of files) fd.append('files', file, file.name);
+    await api.post(`/conversations/${props.conversation.id}/attachments`, fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+    toast.success(`Đã gửi ${files.length} tệp đính kèm`);
     emit('refresh-thread');
+    return true;
   } catch (err) {
     const detail = (err as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Upload thất bại';
-    toast.error(`Lỗi gửi ảnh: ${detail}`);
-    console.error('[upload-image]', err);
-  }
-}
-async function handleFiles(files: File[]) {
-  if (!props.conversation?.id) return;
-  if (!files.length) return;
-  toast.push(`📎 Đang gửi ${files.length} file…`);
-  try {
-    const fd = new FormData();
-    for (const f of files) fd.append('files', f, f.name);
-    await api.post(`/conversations/${props.conversation.id}/attachments`, fd, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    });
-    toast.success(`Đã gửi ${files.length} file`);
-    emit('refresh-thread');
-  } catch (err) {
-    const detail = (err as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Upload thất bại';
-    toast.error(`Lỗi gửi file: ${detail}`);
-  }
+    toast.error(`Lỗi gửi tệp: ${detail}`);
+    console.error('[upload-attachments]', err);
+    return false;
+  } finally { uploadingAttachments.value = false; }
 }
 
 // ── Format toggle: T icon bật/tắt format toolbar (B I U S list code) trong editor.
@@ -3033,27 +3093,29 @@ async function dispatchBlockComponents(blockId: string) {
 }
 
 // ── Send ────────────────────────────────────────────────────────────────────
-function handleSend() {
+async function handleSend() {
   if (showTemplatePopup.value) { showTemplatePopup.value = false; return; }
-  if (isArchivedNick.value) return; // T11: nick đã xóa → chặn gửi (Enter + nút). Khóa mềm UX.
-  if (!inputText.value.trim()) return;
-
-  // 2026-05-21 fix: lấy rich payload {text, styles} từ editor để gửi format đi Zalo.
-  // Nếu không có styles → behaves như plain text (backward compat).
-  const rich = (editorRef.value as any)?.getRichPayload?.() || { text: inputText.value, styles: [], mentions: [] };
-  const textToSend = rich.text || inputText.value;
-  const styles = Array.isArray(rich.styles) && rich.styles.length > 0 ? rich.styles : undefined;
-  // 2026-06-24: @mention thành viên nhóm — chỉ gửi khi có mention (group thread).
-  const mentions = Array.isArray(rich.mentions) && rich.mentions.length > 0 ? rich.mentions : undefined;
-
-  if (props.editingMessage) {
-    emit('edit-message', props.editingMessage.id, textToSend);
-  } else {
-    emit('send', textToSend, props.replyingTo?.id ?? null, styles, mentions);
+  if (isArchivedNick.value || uploadingAttachments.value) return;
+  const hasText = !!inputText.value.trim();
+  const attachmentsToSend = [...pendingAttachments.value];
+  if (!hasText && !attachmentsToSend.length) return;
+  if (hasText) {
+    const rich = (editorRef.value as any)?.getRichPayload?.() || { text: inputText.value, styles: [], mentions: [] };
+    const textToSend = rich.text || inputText.value;
+    const styles = Array.isArray(rich.styles) && rich.styles.length > 0 ? rich.styles : undefined;
+    const mentions = Array.isArray(rich.mentions) && rich.mentions.length > 0 ? rich.mentions : undefined;
+    if (props.editingMessage) emit('edit-message', props.editingMessage.id, textToSend);
+    else emit('send', textToSend, props.replyingTo?.id ?? null, styles, mentions);
+    inputText.value = '';
+    editorRef.value?.clear();
+    emit('cancel-reply-edit');
   }
-  inputText.value = '';
-  editorRef.value?.clear();
-  emit('cancel-reply-edit');
+  if (attachmentsToSend.length) {
+    pendingAttachments.value = pendingAttachments.value.filter((file) => !attachmentsToSend.includes(file));
+    const sent = await sendAttachments(attachmentsToSend);
+    if (sent) attachmentsToSend.forEach(revokeAttachmentPreview);
+    else pendingAttachments.value = [...attachmentsToSend, ...pendingAttachments.value];
+  }
 }
 
 // Áp dụng suggestion: chèn text vào editor + focus caret cuối → user Enter gửi luôn.
@@ -4237,6 +4299,21 @@ watch(() => props.editingMessage?.id, async (id) => {
 .send-btn:focus-visible { outline: 2px solid var(--smax-primary-soft, #bbdefb); outline-offset: 2px; }
 /* Rỗng nội dung → nút chìm (phẳng, xám); có nội dung → nút nổi gradient. */
 .send-btn:disabled { opacity: 1; cursor: not-allowed; background: var(--smax-grey-300); box-shadow: none; }
+
+.ai-btn { position: relative; }
+.ai-btn-unavailable { color: #a16207 !important; background: #fffbeb !important; }
+.ai-config-dot { position: absolute; top: 4px; right: 4px; width: 7px; height: 7px; border: 1px solid #fff; border-radius: 50%; background: #f59e0b; }
+.ai-config-notice { max-width: 270px; margin-left: 2px; color: #92400e; font-size: 11px; line-height: 1.25; }
+.pending-attachments { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 8px 0; }
+.pending-image-preview { position: relative; width: 64px; height: 64px; overflow: hidden; border: 1px solid var(--smax-grey-200, #dbe3ec); border-radius: 9px; background: #f5f8fb; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.08); }
+.pending-image-preview img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.pending-preview-remove { position: absolute; top: 3px; right: 3px; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; padding: 0; border: 1px solid rgba(255, 255, 255, 0.75); border-radius: 50%; color: #fff; background: rgba(20, 32, 45, 0.72); cursor: pointer; }
+.pending-preview-remove:hover { background: #b42318; }
+.pending-attachment-chip { display: inline-flex; align-items: center; min-width: 0; max-width: 220px; gap: 5px; padding: 4px 6px 4px 8px; color: var(--smax-grey-800, #243447); background: var(--smax-primary-soft, #e3f2fd); border: 1px solid color-mix(in srgb, var(--smax-primary, #1786be) 28%, white); border-radius: 8px; font-size: 12px; font-weight: 600; }
+.pending-attachment-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pending-attachment-remove { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 5px; color: var(--smax-grey-700, #52606d); background: transparent; cursor: pointer; }
+.pending-attachment-remove:hover { color: #b42318; background: rgba(180, 35, 24, 0.1); }
+.composer-send-hint { padding: 3px 10px 6px; color: var(--smax-grey-500, #758195); font-size: 11px; line-height: 1.2; }
 
 /* EmojiPicker trigger — emoji icon next to send button */
 .input-row :deep(.emoji-trigger) {

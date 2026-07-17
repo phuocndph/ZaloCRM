@@ -63,7 +63,7 @@
   --smax-chip-yellow-active: #f9a825;
 
   /* Typography (mockup uses 14.3px base — +10% from 13px) */
-  --smax-font-base: 14.3px;
+  --smax-font-base: 14px;
   --smax-font-small: 12px;
   --smax-font-tiny: 11px;
   --smax-line-height: 1.45;

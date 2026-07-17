@@ -7,6 +7,11 @@ import {
   emptyUsage,
 } from './ai-provider.js';
 import { AIError } from './ai-error-handler.js';
+import {
+  joinOpenAICompatibleUrl,
+  normalizeOpenAICompatibleError,
+  readOpenAICompatibleCompletion,
+} from '../providers/openai-compatible-client.js';
 
 async function readError(response: Response): Promise<never> {
   await response.body?.cancel().catch(() => undefined);
@@ -24,6 +29,31 @@ async function postJson(context: AIProviderContext, path: string, body: unknown,
   return response;
 }
 
+async function postOpenAICompatibleJson(
+  context: AIProviderContext,
+  path: string,
+  body: unknown,
+  signal?: AbortSignal,
+) {
+  try {
+    const response = await fetch(joinOpenAICompatibleUrl(context.baseUrl, path), {
+      method: 'POST',
+      redirect: 'error',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json',
+        authorization: `Bearer ${context.apiKey}`,
+      },
+      body: JSON.stringify(body),
+      signal,
+    });
+    if (!response.ok) return readError(response);
+    return response;
+  } catch (error) {
+    throw normalizeOpenAICompatibleError(error, context.provider);
+  }
+}
+
 export class OpenAICompatibleProvider implements AIProvider {
   readonly id: string;
   constructor(id = 'openai-compatible', private readonly completionPath = '/v1/chat/completions') {
@@ -31,7 +61,7 @@ export class OpenAICompatibleProvider implements AIProvider {
   }
 
   async complete(context: AIProviderContext, request: AIProviderRequest): Promise<AIProviderResponse> {
-    const response = await postJson(context, this.completionPath, {
+    const response = await postOpenAICompatibleJson(context, this.completionPath, {
       model: request.model,
       messages: request.messages,
       max_completion_tokens: request.maxTokens,
@@ -39,12 +69,8 @@ export class OpenAICompatibleProvider implements AIProvider {
       response_format: request.structuredOutput
         ? { type: 'json_schema', json_schema: { name: request.structuredOutput.name, strict: true, schema: request.structuredOutput.schema } }
         : undefined,
-    }, { authorization: `Bearer ${context.apiKey}` }, request.signal);
-    const data = await response.json() as {
-      id?: string;
-      choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
-      usage?: { prompt_tokens?: number; completion_tokens?: number; prompt_tokens_details?: { cached_tokens?: number } };
-    };
+    }, request.signal);
+    const data = await readOpenAICompatibleCompletion(response, context.provider);
     const text = data.choices?.[0]?.message?.content?.trim();
     if (!text) throw new AIError('INVALID_RESPONSE', 'AI provider returned empty content', false, 502, context.provider);
     return {
@@ -60,14 +86,14 @@ export class OpenAICompatibleProvider implements AIProvider {
   }
 
   async *stream(context: AIProviderContext, request: AIProviderRequest): AsyncIterable<AIStreamEvent> {
-    const response = await postJson(context, this.completionPath, {
+    const response = await postOpenAICompatibleJson(context, this.completionPath, {
       model: request.model,
       messages: request.messages,
       max_completion_tokens: request.maxTokens,
       temperature: request.temperature,
       stream: true,
       stream_options: { include_usage: true },
-    }, { authorization: `Bearer ${context.apiKey}` }, request.signal);
+    }, request.signal);
     if (!response.body) throw new AIError('INVALID_RESPONSE', 'AI provider returned no stream', false, 502, context.provider);
     const reader = response.body.getReader();
     const decoder = new TextDecoder();

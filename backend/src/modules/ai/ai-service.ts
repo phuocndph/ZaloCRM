@@ -7,6 +7,7 @@ import { getProviderConfig, getAvailableProviders, resolveProviderApiKey, getPro
 import { generateWithAnthropic } from './providers/anthropic.js';
 import { generateWithGemini } from './providers/gemini.js';
 import { generateWithOpenaiCompat } from './providers/openai-compat.js';
+import { joinOpenAICompatibleUrl } from './providers/openai-compatible-client.js';
 import { buildReplyDraftPrompt } from './prompts/reply-draft.js';
 import { buildSummaryPrompt } from './prompts/summary.js';
 import { buildSentimentPrompt } from './prompts/sentiment.js';
@@ -112,9 +113,9 @@ export async function generateText(provider: string, apiKey: string, model: stri
   if (provider === 'gemini') return generateWithGemini(baseUrl, apiKey, model, system, prompt, maxTokens);
 
   /* OpenAI, Qwen, Kimi all use OpenAI-compatible chat/completions API */
-  if (provider === 'openai') return generateWithOpenaiCompat(`${baseUrl}/v1/chat/completions`, apiKey, model, system, prompt, maxTokens, 'max_completion_tokens');
-  if (provider === 'qwen') return generateWithOpenaiCompat(`${baseUrl}/compatible-mode/v1/chat/completions`, apiKey, model, system, prompt, maxTokens);
-  if (provider === 'kimi') return generateWithOpenaiCompat(`${baseUrl}/v1/chat/completions`, apiKey, model, system, prompt, maxTokens);
+  if (provider === 'openai') return generateWithOpenaiCompat(joinOpenAICompatibleUrl(baseUrl, '/v1/chat/completions'), apiKey, model, system, prompt, maxTokens, 'max_completion_tokens');
+  if (provider === 'qwen') return generateWithOpenaiCompat(joinOpenAICompatibleUrl(baseUrl, '/compatible-mode/v1/chat/completions'), apiKey, model, system, prompt, maxTokens);
+  if (provider === 'kimi' || provider === '9router') return generateWithOpenaiCompat(joinOpenAICompatibleUrl(baseUrl, '/v1/chat/completions'), apiKey, model, system, prompt, maxTokens);
 
   throw new Error(`Unsupported AI provider: ${provider}`);
 }

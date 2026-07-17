@@ -120,7 +120,7 @@ export interface FilterState {
 // ─── Default state ──────────────────────────────────────────────────────
 
 export function defaultFilterState(): FilterState {
-  return {
+  const defaults: FilterState = {
     folderId: null,
     saleAssigneeId: null,
     activeTab: 'personal', // Default: Cá nhân (user-user 1-1)
@@ -149,6 +149,8 @@ export function defaultFilterState(): FilterState {
     engagementPatterns: [],
     messageReplyState: null,
   };
+  defaults.activeTab = 'main';
+  return defaults;
 }
 
 // ─── Composable ─────────────────────────────────────────────────────────

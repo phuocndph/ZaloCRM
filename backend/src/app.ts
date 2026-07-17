@@ -457,6 +457,49 @@ async function bootstrap() {
   // ── Start ─────────────────────────────────────────────────────────────────
 
   try {
+    // System permission templates evolve with new RBAC resources/actions. Upgrade
+    // every existing organization before accepting requests so a system Admin
+    // is not locked out after deployment. The operation is idempotent and
+    // preserves every explicit true/false customization already stored.
+    try {
+      const { backfillDefaultPermissionGroupsForAllOrganizations } = await import(
+        './modules/rbac/seed-default-groups.js'
+      );
+      const backfill = await backfillDefaultPermissionGroupsForAllOrganizations();
+      logger.info(
+        `[rbac-backfill] orgs=${backfill.organizations} created=${backfill.created} updated=${backfill.updated} existing=${backfill.existing} failed=${backfill.failed.length}`,
+      );
+      if (backfill.failed.length > 0) {
+        logger.warn('[rbac-backfill] organizations failed:', backfill.failed);
+      }
+    } catch (err) {
+      // Non-fatal: keep the service available and retry the idempotent backfill
+      // at the next bootstrap. Individual organization failures are reported by
+      // the summary above and do not stop upgrades for other organizations.
+      logger.error('[rbac-backfill] failed before startup (will retry next bootstrap):', err);
+    }
+
+    // Additive AI configuration cutover. The bridge preserves legacy rows,
+    // serializes each organization with an advisory lock, and never includes
+    // credential values in its result or logs. Failure is non-fatal so a
+    // deployment can still start before the additive migration is applied.
+    try {
+      const { backfillLegacyAiConfigurations } = await import(
+        './modules/ai/legacy-ai-config-bridge.js'
+      );
+      const backfill = await backfillLegacyAiConfigurations();
+      logger.info(
+        `[ai-legacy-bridge] scanned=${backfill.scanned} bridged=${backfill.bridged} existing=${backfill.alreadyConfigured} skipped=${backfill.skipped} failed=${backfill.failed.length}`,
+      );
+      if (backfill.failed.length > 0) {
+        logger.warn('[ai-legacy-bridge] failed organization codes:', backfill.failed);
+      }
+    } catch {
+      // Do not log the raw error: a driver/provider exception may contain
+      // legacy setting values. The idempotent bridge retries next bootstrap.
+      logger.error('[ai-legacy-bridge] bootstrap failed; will retry on next startup');
+    }
+
     await app.listen({ port: config.port, host: config.host });
     logger.info(`Zalo CRM running on http://${config.host}:${config.port}`);
     logger.info(`Environment: ${config.nodeEnv}`);

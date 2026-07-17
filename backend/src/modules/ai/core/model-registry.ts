@@ -1,6 +1,9 @@
 import { prisma } from '../../../shared/database/prisma-client.js';
 import { AIError } from './ai-error-handler.js';
 import type { AIProvider } from './ai-provider.js';
+import { parseOpenAICompatibleBaseUrl } from '../providers/openai-compatible-client.js';
+import { getProviderConnectionRuntime } from '../provider-connection-service.js';
+import { providerCredentialEnvironmentKey } from '../provider-credential-env.js';
 
 export type AIModelRuntimeConfig = {
   id: string;
@@ -28,7 +31,9 @@ export type StoredModelConfig = {
   name: string;
   provider: string;
   model: string;
+  connectionId?: string | null;
   credentialRef: string | null;
+  fallbackModelConfigId?: string | null;
   parameters: unknown;
   dataPolicy: unknown;
   status: string;
@@ -38,10 +43,35 @@ export type ModelConfigRepository = {
   find(orgId: string, id: string): Promise<StoredModelConfig | null>;
 };
 
+export type ProviderConnectionRuntime = {
+  id: string;
+  adapter: string;
+  vendor: string;
+  baseUrl: string;
+  apiKey: string;
+};
+
+export type ProviderConnectionRuntimeResolver = (
+  orgId: string,
+  connectionId: string,
+) => Promise<ProviderConnectionRuntime>;
+
 const prismaRepository: ModelConfigRepository = {
   find: (orgId, id) => prisma.aiModelConfig.findFirst({
     where: { id, orgId, deletedAt: null },
-    select: { id: true, orgId: true, name: true, provider: true, model: true, credentialRef: true, parameters: true, dataPolicy: true, status: true },
+    select: {
+      id: true,
+      orgId: true,
+      name: true,
+      provider: true,
+      model: true,
+      connectionId: true,
+      credentialRef: true,
+      fallbackModelConfigId: true,
+      parameters: true,
+      dataPolicy: true,
+      status: true,
+    },
   }),
 };
 
@@ -54,16 +84,13 @@ function numberValue(value: unknown, fallback: number, min: number, max: number)
   return Number.isFinite(parsed) ? Math.max(min, Math.min(max, parsed)) : fallback;
 }
 
-function envKey(provider: string, credentialRef: string | null): string {
-  const requested = credentialRef?.startsWith('env:') ? credentialRef.slice(4) : '';
-  if (requested && /^[A-Z][A-Z0-9_]{2,100}$/.test(requested)) return requested;
-  return `${provider.replace(/[^a-zA-Z0-9]/g, '_').toUpperCase()}_API_KEY`;
-}
-
 export class ModelRegistry {
   private readonly providers = new Map<string, AIProvider>();
 
-  constructor(private readonly repository: ModelConfigRepository = prismaRepository) {}
+  constructor(
+    private readonly repository: ModelConfigRepository = prismaRepository,
+    private readonly connectionRuntime: ProviderConnectionRuntimeResolver = getProviderConnectionRuntime,
+  ) {}
 
   registerProvider(provider: AIProvider): this {
     this.providers.set(provider.id, provider);
@@ -83,11 +110,49 @@ export class ModelRegistry {
     this.provider(stored.provider);
     const parameters = objectValue(stored.parameters);
     const policy = objectValue(stored.dataPolicy);
-    const keyName = envKey(stored.provider, stored.credentialRef);
-    const apiKey = process.env[keyName] ?? '';
-    if (!apiKey) throw new AIError('CONFIGURATION', `AI credential environment variable is not configured: ${keyName}`, false, 400, stored.provider);
-    const baseUrl = String(parameters.baseUrl ?? '');
-    if (!/^https:\/\//i.test(baseUrl)) throw new AIError('CONFIGURATION', 'AI model baseUrl must use HTTPS', false, 400, stored.provider);
+    let apiKey: string;
+    let baseUrl: string;
+    if (stored.connectionId) {
+      // A model attached to a managed connection is fail-closed. Missing,
+      // revoked, disabled or undecryptable persistent credentials must never
+      // be hidden by an environment fallback.
+      try {
+        const connection = await this.connectionRuntime(orgId, stored.connectionId);
+        apiKey = connection.apiKey;
+        baseUrl = connection.baseUrl;
+      } catch (error) {
+        const candidateCode = error && typeof error === 'object' && 'code' in error
+          ? String((error as { code?: unknown }).code ?? 'AI_CONNECTION_UNAVAILABLE')
+          : 'AI_CONNECTION_UNAVAILABLE';
+        const code = /^[A-Z][A-Z0-9_]{1,63}$/.test(candidateCode)
+          ? candidateCode : 'AI_CONNECTION_UNAVAILABLE';
+        throw new AIError(
+          'CONFIGURATION',
+          `AI provider connection is unavailable (${code})`,
+          false,
+          400,
+          stored.provider,
+        );
+      }
+    } else {
+      const keyName = providerCredentialEnvironmentKey(stored.provider, stored.credentialRef);
+      apiKey = process.env[keyName] ?? '';
+      if (!apiKey) {
+        throw new AIError(
+          'CONFIGURATION',
+          `AI credential environment variable is not configured: ${keyName}`,
+          false,
+          400,
+          stored.provider,
+        );
+      }
+      baseUrl = String(parameters.baseUrl ?? '');
+    }
+    if (stored.provider === 'openai-compatible' || stored.provider === 'openai' || stored.provider === 'qwen' || stored.provider === 'kimi' || stored.provider === '9router') {
+      parseOpenAICompatibleBaseUrl(baseUrl);
+    } else if (!/^https:\/\//i.test(baseUrl)) {
+      throw new AIError('CONFIGURATION', 'AI model baseUrl must use HTTPS', false, 400, stored.provider);
+    }
     return {
       id: stored.id,
       orgId: stored.orgId,
@@ -101,7 +166,8 @@ export class ModelRegistry {
       rateLimitPerMinute: numberValue(parameters.rateLimitPerMinute, 60, 1, 10_000),
       circuitFailureThreshold: numberValue(parameters.circuitFailureThreshold, 5, 1, 100),
       circuitResetMs: numberValue(parameters.circuitResetMs, 30_000, 1_000, 600_000),
-      fallbackModelConfigId: typeof parameters.fallbackModelConfigId === 'string' ? parameters.fallbackModelConfigId : undefined,
+      fallbackModelConfigId: stored.fallbackModelConfigId
+        ?? (typeof parameters.fallbackModelConfigId === 'string' ? parameters.fallbackModelConfigId : undefined),
       inputCostPerMillion: numberValue(parameters.inputCostPerMillion, 0, 0, 1_000_000),
       outputCostPerMillion: numberValue(parameters.outputCostPerMillion, 0, 0, 1_000_000),
       cachedInputCostPerMillion: numberValue(parameters.cachedInputCostPerMillion, 0, 0, 1_000_000),

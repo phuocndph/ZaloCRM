@@ -5,7 +5,7 @@ import { encryptToken } from '../integrations/_shared/token-encryption.util.js';
 import { checkReplyPolicy } from './policy-safety-checker-service.js';
 
 export type EvaluationActor = { orgId: string; userId: string };
-export type EvaluationTarget = 'prompt' | 'model' | 'skill' | 'knowledge' | 'policy';
+export type EvaluationTarget = 'prompt' | 'model' | 'agent' | 'skill' | 'knowledge' | 'policy';
 export type EvaluationOutput = { replyText: string; sources?: Array<Record<string, unknown>>; handoff?: boolean; accessAllowed?: boolean };
 export class EvaluationEngineError extends Error { constructor(message: string, public readonly statusCode = 400, public readonly code = 'EVALUATION_ENGINE_ERROR') { super(message); } }
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');

@@ -126,6 +126,11 @@ export const config = {
   kimiAuthToken: envValue('KIMI_AUTH_TOKEN') || '',
   kimiDefaultMoonshotV1Model: envValue('KIMI_DEFAULT_MOONSHOT_V1_MODEL') || '',
 
+  /* 9Router runs on the Windows host by default when ZaloCRM is in Docker.
+   * Production deployments should override this with the internal service DNS. */
+  nineRouterBaseUrl: envValue('NINE_ROUTER_BASE_URL') || 'http://host.docker.internal:20128/v1',
+  nineRouterApiKey: envValue('NINE_ROUTER_API_KEY') || '',
+
   isProduction: process.env.NODE_ENV === 'production',
 
   /**

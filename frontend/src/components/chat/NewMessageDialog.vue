@@ -432,6 +432,7 @@ const openButtonLabel = computed(() => {
   if (pickedKind.value === 'friend') return 'Mở chat';
   if (pickedKind.value === 'contact') return 'Bắt đầu chat & gắn vào nick này';
   if (pickedKind.value === 'lookup') {
+  if (pickedKind.value === 'lookup') return '\u0047\u1eedi l\u1eddi m\u1eddi k\u1ebft b\u1ea1n';
     return lookupCommitMode.value === 'create'
       ? 'Tạo KH + Bắt đầu chat'
       : 'Gắn vào KH có sẵn + Bắt đầu chat';
@@ -662,6 +663,24 @@ async function onOpenChat() {
           phone: r.phone,
         },
       );
+      const resolved = await api.post<{ matched: boolean; contact?: { id: string } }>('/contacts/resolve-by-keys', {
+        zaloGlobalId: r.globalId,
+        zaloUsername: r.username,
+        zaloUid: r.uid,
+        phone: r.phone,
+      });
+      const contactId = resolved.data?.contact?.id;
+      if (!contactId) {
+        toast.error('\u004b\u0068\u00f4ng x\u00e1c \u0111\u1ecbnh \u0111\u01b0\u1ee3c h\u1ed3 s\u01a1 kh\u00e1ch \u0111\u1ec3 g\u1eedi l\u1eddi m\u1eddi k\u1ebft b\u1ea1n');
+        return;
+      }
+      await api.post(`/zalo-accounts/${selectedAccountId.value}/friends/requests`, {
+        userId: r.uid,
+        contactId,
+      });
+      toast.success('\u0110\u00e3 g\u1eedi l\u1eddi m\u1eddi k\u1ebft b\u1ea1n. C\u00f3 th\u1ec3 nh\u1eafn tin sau khi kh\u00e1ch ch\u1ea5p nh\u1eadn.');
+      emit('update:modelValue', false);
+      return;
       toast.success(lookupCommitMode.value === 'create' ? 'Đã tạo KH + chat' : 'Đã gắn KH có sẵn + chat');
       emit('opened', res.data.conversationId);
     } else {

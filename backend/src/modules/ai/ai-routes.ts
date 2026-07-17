@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Nguyễn Tiến Lộc
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { authMiddleware } from '../auth/auth-middleware.js';
-import { requireGrant } from '../rbac/rbac-middleware.js';
 import { requireZaloAccess } from '../zalo/zalo-access-middleware.js';
 import { getAiConfig, getAiUsage, updateAiConfig, generateAiOutput, aiFormatRichText, aiGenerateSalesHandoffMessage } from './ai-service.js';
 // M53 2026-05-30 — Trợ Lý AI Virtual Chat
@@ -34,6 +33,11 @@ import { toolCallingRoutes } from './tool-calling-routes.js';
 import { autoReplyRoutes } from './auto-reply-routes.js';
 import { aiFollowupRoutes } from './ai-followup-routes.js';
 import { adminCenterRoutes } from './admin-center-routes.js';
+import { releaseRoutes } from './release-routes.js';
+import { agentManagerRoutes } from './agent-manager-routes.js';
+import { providerConnectionRoutes } from './provider-connection-routes.js';
+import { modelConfigRoutes } from './model-config-routes.js';
+import { aiPermissions } from './ai-control-plane-permissions.js';
 
 async function assertConversationReadAccess(request: FastifyRequest, reply: FastifyReply, conversationId: string) {
   const user = request.user!;
@@ -132,10 +136,14 @@ export async function aiRoutes(app: FastifyInstance) {
   await toolCallingRoutes(app);
   await autoReplyRoutes(app);
   await aiFollowupRoutes(app);
+  await releaseRoutes(app);
+  await agentManagerRoutes(app);
+  await providerConnectionRoutes(app);
+  await modelConfigRoutes(app);
   await adminCenterRoutes(app);
 
   /* Danh sách provider (cả 5) + baseUrl + trạng thái key per-org. */
-  app.get('/api/v1/ai/providers', async (request: FastifyRequest, reply: FastifyReply) => {
+  app.get('/api/v1/ai/providers', { preHandler: aiPermissions.model.access }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       return await getAvailableProviders(request.user!.orgId);
     } catch (err) {
@@ -145,7 +153,7 @@ export async function aiRoutes(app: FastifyInstance) {
   });
 
   /* Set/xoá API key + base URL của 1 provider (per-org). apiKey rỗng = xoá → fallback .env. */
-  app.put('/api/v1/ai/providers/:id', { preHandler: requireGrant('settings', 'edit') }, async (request: FastifyRequest, reply: FastifyReply) => {
+  app.put('/api/v1/ai/providers/:id', { preHandler: aiPermissions.model.manageSecret }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const orgId = request.user!.orgId;
       const { id } = request.params as { id: string };
@@ -161,7 +169,7 @@ export async function aiRoutes(app: FastifyInstance) {
   });
 
   /* Danh sách model lấy động từ provider. Lỗi → {models:[],error} (200) để UI fallback gõ tay. */
-  app.get('/api/v1/ai/providers/:id/models', async (request: FastifyRequest) => {
+  app.get('/api/v1/ai/providers/:id/models', { preHandler: aiPermissions.model.access }, async (request: FastifyRequest) => {
     const orgId = request.user!.orgId;
     const { id } = request.params as { id: string };
     try {
@@ -187,7 +195,7 @@ export async function aiRoutes(app: FastifyInstance) {
     }
   });
 
-  app.put('/api/v1/ai/config', { preHandler: requireGrant('settings', 'edit') }, async (request: FastifyRequest, reply: FastifyReply) => {
+  app.put('/api/v1/ai/config', { preHandler: aiPermissions.model.edit }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const body = request.body as { provider?: string; model?: string; maxDaily?: number; enabled?: boolean };
       if (body.maxDaily !== undefined && body.maxDaily < 1) return reply.status(400).send({ error: 'maxDaily must be at least 1' });
@@ -389,7 +397,7 @@ export async function aiRoutes(app: FastifyInstance) {
   // PUT /ai/assistant-config — admin update prompt + toggle + skip regex
   app.put(
     '/api/v1/ai/assistant-config',
-    { preHandler: requireGrant('settings', 'edit') },
+    { preHandler: aiPermissions.prompt.edit },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const body = request.body as {

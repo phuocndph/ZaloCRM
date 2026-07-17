@@ -59,6 +59,7 @@ model Organization {
   aiAgentSkills               AiAgentSkill[]
   aiPrompts                   AiPrompt[]
   aiPromptVersions            AiPromptVersion[]
+  aiProviderConnections       AiProviderConnection[]
   aiModelConfigs              AiModelConfig[]
   aiKnowledgeSources          AiKnowledgeSource[]
   aiKnowledgeDocuments        AiKnowledgeDocument[]
@@ -79,6 +80,7 @@ model Organization {
   aiEvaluationCases           AiEvaluationCase[]
   aiEvaluationRuns            AiEvaluationRun[]
   aiEvaluationResults         AiEvaluationResult[]
+  aiReleases                  AiRelease[]
   aiAuditLogs                 AiAuditLog[]
   aiUsageRecords              AiUsageRecord[]
   aiAutoReplyConfigs          AiAutoReplyConfig[]
@@ -210,6 +212,8 @@ model Organization {
   mediaBlobs              MediaBlob[]
   mediaAssets             MediaAsset[]
   storageCleanupRuns       StorageCleanupRun[]
+  storageManagementPolicy  StorageManagementPolicy?
+  storageReconciliationRuns StorageReconciliationRun[]
   mediaAlbums             MediaAlbum[]
   mediaUsageEvents        MediaUsageEvent[]
   mediaStorageAttributions MediaStorageAttribution[]
@@ -347,6 +351,7 @@ model User {
   ownedMediaAssets             MediaAsset[]                 @relation("MediaAssetOwner")
   createdMediaAssets           MediaAsset[]                 @relation("MediaAssetCreatedBy")
   storageCleanupRuns           StorageCleanupRun[]          @relation("StorageCleanupPerformedBy")
+  storageReconciliationRuns    StorageReconciliationRun[]   @relation("StorageReconciliationPerformedBy")
   ownedMediaAlbums             MediaAlbum[]                 @relation("MediaAlbumOwner")
   createdMediaAlbums           MediaAlbum[]                 @relation("MediaAlbumCreatedBy")
   // Riêng tư cấp hội thoại 2026-07-09 — các hội thoại user này đang bật "Chỉ mình tôi xem".
@@ -359,6 +364,9 @@ model User {
   aiPromptVersionsCreated      AiPromptVersion[]            @relation("AiPromptVersionCreatedBy")
   aiPromptVersionsApproved     AiPromptVersion[]            @relation("AiPromptVersionApprovedBy")
   aiModelConfigsCreated        AiModelConfig[]              @relation("AiModelConfigCreatedBy")
+  aiModelConfigsApproved       AiModelConfig[]              @relation("AiModelConfigApprovedBy")
+  aiProviderConnectionsCreated AiProviderConnection[]       @relation("AiProviderConnectionCreatedBy")
+  aiProviderConnectionsUpdated AiProviderConnection[]       @relation("AiProviderConnectionUpdatedBy")
   aiKnowledgeSourcesCreated    AiKnowledgeSource[]          @relation("AiKnowledgeSourceCreatedBy")
   aiKnowledgeSourcesApproved   AiKnowledgeSource[]          @relation("AiKnowledgeSourceApprovedBy")
   aiKnowledgeDocumentsCreated  AiKnowledgeDocument[]        @relation("AiKnowledgeDocumentCreatedBy")
@@ -372,6 +380,10 @@ model User {
   aiHandoffsAssigned           AiHandoff[]                  @relation("AiHandoffAssignedTo")
   aiEvaluationCasesCreated     AiEvaluationCase[]           @relation("AiEvaluationCaseCreatedBy")
   aiEvaluationRunsCreated      AiEvaluationRun[]            @relation("AiEvaluationRunCreatedBy")
+  aiReleasesCreated            AiRelease[]                   @relation("AiReleaseCreatedBy")
+  aiReleasesApproved           AiRelease[]                   @relation("AiReleaseApprovedBy")
+  aiReleasesDeployed           AiRelease[]                   @relation("AiReleaseDeployedBy")
+  aiReleasesRolledBack         AiRelease[]                   @relation("AiReleaseRolledBackBy")
   aiAuditEvents                AiAuditLog[]                 @relation("AiAuditActor")
 
   @@map("users")
@@ -1775,6 +1787,7 @@ model MessageTemplateFolder {
 model AiConfig {
   id                          String   @id @default(uuid())
   orgId                       String   @unique @map("org_id")
+  defaultModelConfigId        String?  @map("default_model_config_id")
   provider                    String   @default("anthropic")
   model                       String   @default("claude-sonnet-4-6")
   maxDaily                    Int      @default(500) @map("max_daily")
@@ -1787,8 +1800,10 @@ model AiConfig {
   createdAt                   DateTime @default(now()) @map("created_at")
   updatedAt                   DateTime @updatedAt @map("updated_at")
 
-  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  org                Organization   @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  defaultModelConfig AiModelConfig? @relation("AiConfigDefaultModel", fields: [defaultModelConfigId], references: [id], onDelete: SetNull)
 
+  @@index([defaultModelConfigId])
   @@map("ai_configs")
 }
 
@@ -4752,27 +4767,80 @@ model AiPromptVersion {
   @@map("ai_prompt_versions")
 }
 
+model AiProviderConnection {
+  id                 String          @id @default(uuid())
+  orgId              String          @map("org_id")
+  key                String
+  name               String
+  adapter            String
+  vendor             String
+  baseUrl            String          @map("base_url")
+  apiKeyEncrypted    Bytes?          @map("api_key_encrypted")
+  apiKeyLast4        String?         @map("api_key_last4") @db.VarChar(4)
+  credentialVersion Int             @default(1) @map("credential_version")
+  status             String          @default("draft")
+  lastTestStatus     String?         @map("last_test_status")
+  lastTestedAt       DateTime?       @map("last_tested_at")
+  lastLatencyMs      Int?            @map("last_latency_ms")
+  lastErrorCode      String?         @map("last_error_code")
+  createdByUserId    String?         @map("created_by_user_id")
+  updatedByUserId    String?         @map("updated_by_user_id")
+  createdAt          DateTime        @default(now()) @map("created_at")
+  updatedAt          DateTime        @updatedAt @map("updated_at")
+  deletedAt          DateTime?       @map("deleted_at")
+  org                Organization    @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  createdBy          User?           @relation("AiProviderConnectionCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  updatedBy          User?           @relation("AiProviderConnectionUpdatedBy", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+  modelConfigs       AiModelConfig[]
+
+  @@unique([orgId, key])
+  @@index([orgId, status, deletedAt])
+  @@index([orgId, adapter, vendor, deletedAt])
+  @@index([createdByUserId])
+  @@index([updatedByUserId])
+  @@map("ai_provider_connections")
+}
+
 model AiModelConfig {
-  id              String            @id @default(uuid())
-  orgId           String            @map("org_id")
-  name            String
-  provider        String
-  model           String
-  credentialRef   String?           @map("credential_ref")
-  parameters      Json              @default("{}")
-  dataPolicy      Json              @default("{}") @map("data_policy")
-  status          String            @default("draft")
-  createdByUserId String?           @map("created_by_user_id")
-  createdAt       DateTime          @default(now()) @map("created_at")
-  updatedAt       DateTime          @updatedAt @map("updated_at")
-  deletedAt       DateTime?         @map("deleted_at")
-  org             Organization      @relation(fields: [orgId], references: [id], onDelete: Cascade)
-  createdBy       User?             @relation("AiModelConfigCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
-  agents          AiAgent[]
-  runs            AiRun[]
-  evaluationRuns  AiEvaluationRun[]
+  id                    String                @id @default(uuid())
+  orgId                 String                @map("org_id")
+  connectionId          String?               @map("connection_id")
+  key                   String?
+  name                  String
+  provider              String
+  model                 String
+  version               Int                   @default(1)
+  revision              Int                   @default(1)
+  credentialRef         String?               @map("credential_ref")
+  parameters            Json                  @default("{}")
+  capabilities          Json                  @default("{}")
+  dataPolicy            Json                  @default("{}") @map("data_policy")
+  status                String                @default("draft")
+  fallbackModelConfigId String?               @map("fallback_model_config_id")
+  changeNote            String?               @map("change_note") @db.Text
+  createdByUserId       String?               @map("created_by_user_id")
+  approvedByUserId      String?               @map("approved_by_user_id")
+  approvedAt            DateTime?             @map("approved_at")
+  archivedAt            DateTime?             @map("archived_at")
+  createdAt             DateTime              @default(now()) @map("created_at")
+  updatedAt             DateTime              @updatedAt @map("updated_at")
+  deletedAt             DateTime?             @map("deleted_at")
+  org                   Organization          @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  connection            AiProviderConnection? @relation(fields: [connectionId], references: [id], onDelete: SetNull)
+  createdBy             User?                 @relation("AiModelConfigCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  approvedBy            User?                 @relation("AiModelConfigApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  fallbackModelConfig   AiModelConfig?        @relation("AiModelConfigFallback", fields: [fallbackModelConfigId], references: [id], onDelete: SetNull)
+  fallbackFor           AiModelConfig[]       @relation("AiModelConfigFallback")
+  defaultForAiConfigs   AiConfig[]            @relation("AiConfigDefaultModel")
+  agents                AiAgent[]
+  runs                  AiRun[]
+  evaluationRuns        AiEvaluationRun[]
 
   @@index([orgId, provider, status, deletedAt])
+  @@index([orgId, key, version])
+  @@index([connectionId, status, deletedAt])
+  @@index([fallbackModelConfigId])
+  @@index([approvedByUserId])
   @@map("ai_model_configs")
 }
 
@@ -5318,6 +5386,7 @@ model AiEvaluationRun {
   modelConfig     AiModelConfig?       @relation(fields: [modelConfigId], references: [id], onDelete: SetNull)
   createdBy       User?                @relation("AiEvaluationRunCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
   results         AiEvaluationResult[]
+  releases        AiRelease[]
 
   @@index([orgId, status, createdAt])
   @@map("ai_evaluation_runs")
@@ -5343,6 +5412,43 @@ model AiEvaluationResult {
   @@unique([evaluationRunId, evaluationCaseId])
   @@index([orgId, status])
   @@map("ai_evaluation_results")
+}
+
+model AiRelease {
+  id                 String           @id @default(uuid())
+  orgId              String           @map("org_id")
+  version            Int
+  status             String           @default("draft")
+  snapshot           Json
+  snapshotHash       String           @map("snapshot_hash") @db.Char(64)
+  evaluationRunId    String?          @map("evaluation_run_id")
+  previousReleaseId  String?          @map("previous_release_id")
+  createdByUserId    String?          @map("created_by_user_id")
+  approvedByUserId   String?          @map("approved_by_user_id")
+  deployedByUserId   String?          @map("deployed_by_user_id")
+  rolledBackByUserId String?          @map("rolled_back_by_user_id")
+  createdAt          DateTime         @default(now()) @map("created_at")
+  approvedAt         DateTime?        @map("approved_at")
+  deployedAt         DateTime?        @map("deployed_at")
+  rolledBackAt       DateTime?        @map("rolled_back_at")
+  org                Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  evaluationRun      AiEvaluationRun? @relation(fields: [evaluationRunId], references: [id], onDelete: SetNull)
+  previousRelease    AiRelease?       @relation("AiReleaseHistory", fields: [previousReleaseId], references: [id], onDelete: SetNull)
+  nextReleases       AiRelease[]      @relation("AiReleaseHistory")
+  createdBy          User?            @relation("AiReleaseCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  approvedBy         User?            @relation("AiReleaseApprovedBy", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  deployedBy         User?            @relation("AiReleaseDeployedBy", fields: [deployedByUserId], references: [id], onDelete: SetNull)
+  rolledBackBy       User?            @relation("AiReleaseRolledBackBy", fields: [rolledBackByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([orgId, version])
+  @@index([orgId, status, createdAt])
+  @@index([evaluationRunId])
+  @@index([previousReleaseId])
+  @@index([createdByUserId])
+  @@index([approvedByUserId])
+  @@index([deployedByUserId])
+  @@index([rolledBackByUserId])
+  @@map("ai_releases")
 }
 
 model AiAuditLog {
@@ -5443,6 +5549,45 @@ model StorageCleanupItem {
   @@unique([runId, objectId])
   @@index([runId, status])
   @@map("storage_cleanup_object_items")
+}
+// Per-organization operating guardrails for the storage ledger. A zero-day
+// retention means disabled; deletion still requires a fresh preview.
+model StorageManagementPolicy {
+  id                 String   @id @default(uuid())
+  orgId              String   @unique @map("org_id")
+  quotaAlertPercent  Int      @default(80) @map("quota_alert_percent")
+  anomalyMultiplier  Float    @default(2) @map("anomaly_multiplier")
+  retentionDays      Int      @default(0) @map("retention_days")
+  retentionFileKinds String[] @default([]) @map("retention_file_kinds")
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@map("storage_management_policies")
+}
+
+// Audit history for metadata reconciliation. It never removes storage bytes.
+model StorageReconciliationRun {
+  id            String    @id @default(uuid())
+  orgId         String    @map("org_id")
+  performedById String?   @map("performed_by_id")
+  status        String    @default("running")
+  scanned       Int       @default(0)
+  references    Int       @default(0)
+  missing       Int       @default(0)
+  skipped       Int       @default(0)
+  errorSummary  Json?     @map("error_summary")
+  startedAt     DateTime  @default(now()) @map("started_at")
+  completedAt   DateTime? @map("completed_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  org         Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  performedBy User?        @relation("StorageReconciliationPerformedBy", fields: [performedById], references: [id], onDelete: SetNull)
+
+  @@index([orgId, createdAt])
+  @@map("storage_reconciliation_runs")
 }
 model MediaStorageAttribution {
   id             String   @id @default(uuid())

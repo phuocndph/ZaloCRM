@@ -295,9 +295,34 @@ export interface StorageSummary {
   file: number;
   audio: number;
 }
-
+export interface StorageCleanupPreview extends StorageSummary {
+  runId: string;
+  expiresAt: string;
+  selectedBytes: number;
+  linksToRemove: number;
+  objectsToDelete: number;
+  linksKept: number;
+}
 export interface StorageAccountRow extends StorageSummary { id: string; name: string; uid: string; }
 export interface StorageGroupRow extends StorageSummary { id: string; name: string; accountCount: number; }
+export interface StoragePolicy {
+  quotaAlertPercent: number;
+  anomalyMultiplier: number;
+  retentionDays: number;
+  retentionFileKinds: StorageFileKind[];
+}
+export interface StorageReconciliationRun {
+  id: string;
+  status: 'running' | 'completed' | 'failed';
+  scanned: number;
+  references: number;
+  missing: number;
+  skipped: number;
+  startedAt: string;
+  completedAt: string | null;
+  workerActive: boolean;
+  errorSummary?: { message?: string } | null;
+}
 export interface StorageCleanupRun {
   id: string;
   targetType: StorageTargetType;
@@ -315,9 +340,23 @@ export interface StorageCleanupRun {
   completedAt: string | null;
   performedByName: string;
 }
-
+export interface StorageCleanupProgress extends StorageCleanupRun {
+  totalItems: number;
+  processedItems: number;
+  pendingItems: number;
+  processingItems: number;
+  deletedItems: number;
+  percent: number;
+  workerActive: boolean;
+}
+export interface StorageEntityDetail {
+  target: { id: string; name: string; type: 'group' | 'account' };
+  summary: StorageSummary;
+  fileTypes: Array<{ type: StorageFileKind; files: number; bytes: number }>;
+  range: { oldestAt: string | null; newestAt: string | null } | null;
+}
 export interface StorageOverview {
-  storageDriver: string;
+  storageDriver: 'r2' | 'local';
   total: StorageSummary;
   capacityBytes: number;
   remainingBytes: number | null;
@@ -326,7 +365,10 @@ export interface StorageOverview {
   fileTypes: Array<{ type: StorageFileKind; files: number; bytes: number }>;
   daily: Array<{ date: string; bytes: number }>;
   unattributed: { files: number; bytes: number };
+  orphanMetadata: { files: number; bytes: number };
   freedBytes: number;
+  policy: StoragePolicy;
+  latestReconciliation: StorageReconciliationRun | null;
   runs: StorageCleanupRun[];
 }
 
@@ -334,46 +376,51 @@ export async function getStorageOverview(): Promise<StorageOverview> {
   const { data } = await api.get('/media/storage/overview');
   return data;
 }
-
 export async function listStorageEntities<T extends 'accounts' | 'groups'>(params: {
   entity: T; page?: number; pageSize?: number; sort?: StorageSort; search?: string;
 }): Promise<{ items: T extends 'accounts' ? StorageAccountRow[] : StorageGroupRow[]; total: number; page: number; pageSize: number }> {
   const { data } = await api.get('/media/storage/entities', { params });
   return data;
 }
-
+export async function getStorageEntityDetail(entity: 'group' | 'account', id: string): Promise<StorageEntityDetail> {
+  const { data } = await api.get(`/media/storage/entities/${entity}/${encodeURIComponent(id)}`);
+  return data;
+}
+export async function getStoragePolicy(): Promise<StoragePolicy> {
+  const { data } = await api.get('/media/storage/policy');
+  return data;
+}
+export async function updateStoragePolicy(payload: StoragePolicy): Promise<StoragePolicy> {
+  const { data } = await api.put('/media/storage/policy', payload);
+  return data;
+}
 export async function previewStorageCleanup(payload: {
-  targetType: StorageTargetType;
-  targetId?: string;
-  beforeDate: string;
-  fileKinds: StorageFileKind[];
-}): Promise<StorageSummary & { runId: string; expiresAt: string }> {
+  targetType: StorageTargetType; targetId?: string; beforeDate: string; fileKinds: StorageFileKind[];
+}): Promise<StorageCleanupPreview> {
   const { data } = await api.post('/media/storage/preview-cleanup', payload);
   return data;
 }
-
-export async function executeStorageCleanup(payload: {
-  runId: string;
-  confirm: true;
-  retryFailed?: boolean;
-}): Promise<{
-  ok: boolean; runId: string; status: string; deleted: number; objectsDeleted: number;
-  bytes: number; failed: number; hasMore: boolean; totalDeleted: number; totalBytes: number;
-}> {
+export async function executeStorageCleanup(payload: { runId: string; confirm: true; retryFailed?: boolean }): Promise<{ accepted: boolean; run: StorageCleanupProgress; ok: boolean; status: string; deleted: number; objectsDeleted: number; bytes: number; failed: number; hasMore: boolean; totalDeleted: number; totalBytes: number }> {
   const { data } = await api.post('/media/storage/execute-cleanup', payload);
+  return { ...data, ok: data.run.status === 'completed', status: data.run.status, deleted: 0, objectsDeleted: data.run.objectsDeleted, bytes: data.run.bytesFreed, failed: data.run.failedCount, hasMore: false, totalDeleted: data.run.assetsDeleted, totalBytes: data.run.bytesFreed };
+}
+export async function getStorageCleanupProgress(runId: string): Promise<StorageCleanupProgress> {
+  const { data } = await api.get(`/media/storage/cleanup/${encodeURIComponent(runId)}`);
   return data;
 }
-export async function listStorageHistory(params: { page?: number; pageSize?: number; search?: string } = {}): Promise<{
-  items: StorageCleanupRun[]; total: number; page: number; pageSize: number;
-}> {
+export async function listStorageHistory(params: { page?: number; pageSize?: number; search?: string } = {}): Promise<{ items: StorageCleanupRun[]; total: number; page: number; pageSize: number }> {
   const { data } = await api.get('/media/storage/history', { params });
   return data;
 }
-
-export async function reconcileStorageLedger(payload: { cursor?: string; batch?: number } = {}): Promise<{
-  scanned: number; references: number; missing: number; skipped: number;
-  nextCursor: string | null; hasMore: boolean;
-}> {
-  const { data } = await api.post('/media/storage/reconcile', payload);
+export async function getStorageHistoryDetail(runId: string): Promise<{ run: StorageCleanupProgress; failedItems: Array<{ objectKey: string; storageDriver: string; fileType: string; sizeBytes: number; attempts: number; error: string | null }> }> {
+  const { data } = await api.get(`/media/storage/history/${encodeURIComponent(runId)}`);
+  return data;
+}
+export async function downloadStorageHistoryCsv(runId: string): Promise<Blob> {
+  const { data } = await api.get(`/media/storage/history/${encodeURIComponent(runId)}/export`, { responseType: 'blob' });
+  return data;
+}
+export async function reconcileStorageLedger(): Promise<{ accepted: boolean; run: StorageReconciliationRun }> {
+  const { data } = await api.post('/media/storage/reconcile', { confirm: true });
   return data;
 }

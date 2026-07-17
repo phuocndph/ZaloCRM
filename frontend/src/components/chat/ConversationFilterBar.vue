@@ -44,7 +44,7 @@
          User spec: "Đây dạng Main Tab — fix size không cần đếm số hội thoại". -->
     <div class="cfb-tabs main-tab-style">
       <button
-        v-for="tab in TABS"
+        v-for="tab in DISPLAY_TABS"
         :key="tab.key"
         class="cfb-tab"
         :class="{
@@ -54,7 +54,7 @@
         @click="setActiveTab(tab.key)"
         :title="tab.tooltip"
       >
-        <span class="tab-label">{{ tab.label }}</span>
+        <span class="tab-label">{{ tab.key === 'main' ? '\u0047\u1ed9p' : tab.label }}</span>
       </button>
     </div>
 
@@ -112,6 +112,11 @@ const TABS: Array<{
   // ở tab Cá nhân nữa (loại trừ lẫn nhau, xử lý ở backend).
   { key: 'other',    label: 'Ưu tiên', tooltip: 'Hội thoại ưu tiên (đã ghim từ menu chuột phải)' },
 ];
+const DISPLAY_TABS = [
+  ...TABS.filter((tab) => tab.key === 'main'),
+  ...TABS.filter((tab) => tab.key !== 'main'),
+];
+
 
 function setActiveTab(key: TabKey) {
   // 2026-06-20 (anh báo): click LẠI tab đang active cũng phải clear ô tìm kiếm. activeTab

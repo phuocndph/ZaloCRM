@@ -160,6 +160,24 @@ export interface NotifyNewInboundArgs {
   senderUserId?: string | null;
 }
 
+/** Exclude only users whose personal conversation mute is still active. */
+async function excludeMutedUsers(userIds: string[], conversationId: string): Promise<string[]> {
+  if (!userIds.length) return userIds;
+  const states = await prisma.conversationUserState.findMany({
+    where: { userId: { in: userIds }, conversationId },
+    select: { userId: true, flags: true },
+  });
+  const muted = new Set(states.filter((state) => {
+    const value = state.flags && typeof state.flags === 'object'
+      ? (state.flags as Record<string, unknown>).notificationMute
+      : null;
+    if (!value || typeof value !== 'object') return false;
+    const mute = value as { mode?: unknown; until?: unknown };
+    if (mute.mode === 'forever') return true;
+    return mute.mode === 'until' && typeof mute.until === 'string' && Date.parse(mute.until) > Date.now();
+  }).map((state) => state.userId));
+  return userIds.filter((userId) => !muted.has(userId));
+}
 const PRIVATE_BODY = 'Bạn có tin nhắn mới';
 
 /** Build preview body từ message (tôn trọng contentType — media không lộ text). */
@@ -216,6 +234,7 @@ export async function notifyNewInboundMessage(args: NotifyNewInboundArgs): Promi
       targets = owner && targets.includes(owner) ? [owner] : [];
     }
 
+    targets = await excludeMutedUsers(targets, conversationId);
     if (targets.length === 0) return;
 
     // Nick main + không phải owner → body đã che; owner (hoặc nick thường) → body thật.

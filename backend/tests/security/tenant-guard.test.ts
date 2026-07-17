@@ -25,6 +25,11 @@ describe('tenant-guard', () => {
     expect(() => checkTenantGuard('Contact', 'findMany')).toThrowError(/tenant context/i);
   });
 
+  it('treats AiProviderConnection as org-scoped defense in depth', () => {
+    config.tenantGuardMode = 'enforce';
+    expect(() => checkTenantGuard('AiProviderConnection', 'findMany')).toThrowError(/tenant context/i);
+  });
+
   it('enforce + model KHÔNG org-scoped → pass', () => {
     config.tenantGuardMode = 'enforce';
     // Organization không có orgId → không nằm trong ORG_SCOPED_MODELS.
