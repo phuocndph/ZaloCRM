@@ -898,6 +898,43 @@ export async function mediaRoutes(app: FastifyInstance) {
     },
   );
 
+  // ── GET /api/v1/media/preview — đọc file inline cho trình xem trên mobile ─────────────
+  // Không dùng Content-Disposition: attachment vì mobile browser sẽ luôn tải file xuống.
+  // Route vẫn đi qua authMiddleware và chỉ nhận URL thuộc kho MinIO.
+  app.get(
+    '/api/v1/media/preview',
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      const q = request.query as { url?: string; name?: string };
+      if (!q.url) return reply.status(400).send({ error: 'Thiếu url' });
+      const key = keyFromPublicUrl(q.url);
+      if (!key) return reply.status(400).send({ error: 'URL không thuộc kho' });
+      const buf = await getObjectBuffer(key);
+      if (!buf) return reply.status(404).send({ error: 'Không tìm thấy tệp' });
+
+      const name = (q.name || key.split('/').pop() || '').toLowerCase();
+      const mimeByExt: Record<string, string> = {
+        '.pdf': 'application/pdf',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.png': 'image/png',
+        '.gif': 'image/gif',
+        '.webp': 'image/webp',
+        '.mp4': 'video/mp4',
+        '.webm': 'video/webm',
+        '.txt': 'text/plain; charset=utf-8',
+      };
+      const ext = Object.keys(mimeByExt).find((candidate) => name.endsWith(candidate));
+      const contentType = ext ? mimeByExt[ext] : 'application/octet-stream';
+
+      return reply
+        .header('Content-Disposition', 'inline')
+        .header('Content-Type', contentType)
+        .header('Content-Length', String(buf.length))
+        .header('Cache-Control', 'private, max-age=300')
+        .send(buf);
+    },
+  );
+
   // ── GET /api/v1/media/download — tải file kho kèm ĐÚNG TÊN (2026-06-13, anh báo) ──────
   // Kho lưu object media/{hash}.ext → mở thẳng URL = tải về tên-hash. Endpoint proxy stream
   // file + Content-Disposition filename="tên thật" → trình duyệt tải đúng tên (như Zalo real).

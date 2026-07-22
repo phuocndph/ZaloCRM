@@ -54,7 +54,9 @@
 
       <!-- Label chip bar (filter theo tag CRM) — SINGLE-SELECT.
            Khi 1 tag active → ẩn tag khác. Click lại để clear (show all). -->
-      <div v-if="visibleTags.length" class="cl-label-bar">
+       <details v-if="visibleTags.length" class="cl-label-menu">
+          <summary><span>Tag</span><span class="cl-label-menu-caret">&#8964;</span></summary>
+         <div class="cl-label-bar">
         <span
           v-for="tag in visibleTags"
           :key="tag"
@@ -70,11 +72,21 @@
           @click="filters.tags = []"
           title="Bỏ lọc tag · hiển thị lại tất cả"
         ><XIcon :size="13" :stroke-width="2" /></button>
-      </div>
+         </div>
+       </details>
 
       <!-- Phase 6+ Inbox Triage Filter Bar (Pills + 4 tabs + Mini counter) -->
       <!-- Old "Chính/Khác" tabs replaced by 4-tab single-active trong slot này. -->
-      <slot name="filters" />
+      <slot
+        name="filters"
+        :tags="visibleTags"
+        :selected-tags="filters.tags"
+        :tag-color="tagColor"
+        :clean-tag-name="cleanTagName"
+        :is-zalo-managed="isZaloManaged"
+        :toggle-tag="toggleTag"
+        :clear-tags="() => { filters.tags = [] }"
+      />
     </div>
 
     <!-- ════════ Conv items ════════ -->
@@ -1367,6 +1379,7 @@ function truncate(s: string, n: number): string {
 }
 
 .cl-header {
+  position: relative;
   padding: 11px 13px;
   border-bottom: 1px solid var(--smax-grey-200);
   background: var(--smax-grey-50);
@@ -1454,13 +1467,24 @@ function truncate(s: string, n: number): string {
   color: white;
 }
 
-.cl-label-bar {
-  display: flex; gap: 4px; margin-top: 7px;
-  overflow-x: auto;
-  padding-bottom: 3px;
+.cl-label-menu { display: none;
+  /* Ch?a kho?ng ??m r? r?ng v?i n?t B? l?c n?m b?n ph?i filter bar. */
+  position: absolute; z-index: 40; top: 63px; right: 104px;
+}
+.cl-label-menu summary {
+  display: inline-flex; align-items: center; gap: 3px; height: 25px; padding: 0 8px;
+  border: 1px solid #E5E7EB; border-radius: 7px; background: #fff; color: #6B7280;
+  font-size: 11px; font-weight: 600; cursor: pointer; list-style: none;
+}
+.cl-label-menu summary::-webkit-details-marker { display: none; }
+.cl-label-menu[open] summary { color: #4F46E5; border-color: #C7D2FE; background: #EEF2FF; }
+.cl-label-menu-caret { font-size: 12px; line-height: 1; }
+.cl-label-menu .cl-label-bar {
+  position: absolute; right: 0; top: 30px; width: min(280px, calc(100vw - 24px));
+  display: flex; flex-wrap: wrap; gap: 5px; padding: 8px; border: 1px solid #E5E7EB;
+  border-radius: 10px; background: #fff; box-shadow: 0 8px 20px rgba(17, 24, 39, .14);
   align-items: center;
 }
-.cl-label-bar::-webkit-scrollbar { height: 4px; }
 /* Chip tag CRM — dùng --tag-color từ tagColor() lookup (sync system color).
    Text + border ăn theo --tag-color, active state fill background. */
 .cl-label-chip {

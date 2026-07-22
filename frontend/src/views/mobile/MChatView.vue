@@ -99,6 +99,7 @@
           :current-user-id="currentUserId"
           @preview-image="onPreviewImage"
           @preview-video="onPreviewVideo"
+          @preview-file="onPreviewFile"
           @jump-to-reply="jumpToReply"
           />
         </div>
@@ -327,6 +328,45 @@
     <!-- Lightbox ảnh + modal video (P1 — xem media toàn màn hình) -->
     <MLightbox :open="!!lightboxUrl" :url="lightboxUrl" @close="lightboxUrl = null" />
     <Teleport to="body">
+      <div v-if="filePreview" class="mch-file-preview" @click.self="closeFilePreview">
+        <div class="mch-file-preview-panel" role="dialog" aria-modal="true" :aria-label="`Xem trước ${filePreview.name}`">
+          <header class="mch-file-preview-head">
+            <span class="mch-file-preview-name">{{ filePreview.name }}</span>
+            <button class="m-iconbtn" aria-label="Đóng xem trước" @click="closeFilePreview"><XIcon :size="22" /></button>
+          </header>
+          <div class="mch-file-preview-body">
+            <div v-if="filePreview.loading" class="mch-file-preview-unsupported">
+              <LoaderIcon :size="40" class="mch-spin" />
+              <span>Đang tải bản xem trước...</span>
+            </div>
+            <iframe
+              v-else-if="filePreview.kind === 'pdf' && filePreview.previewUrl"
+              :src="filePreview.previewUrl"
+              class="mch-file-preview-frame"
+              title="Xem trước tài liệu PDF"
+            />
+            <iframe
+              v-else-if="filePreview.kind === 'office' && !filePreview.officeFailed"
+              :src="officeViewerUrl(filePreview.url)"
+              class="mch-file-preview-frame"
+              title="Xem trước tài liệu Office"
+              @error="filePreview.officeFailed = true"
+            />
+            <div v-else class="mch-file-preview-unsupported">
+              <FileTextIcon :size="48" />
+              <strong>Không thể xem trước định dạng này</strong>
+              <span>Hãy tải file về để mở bằng ứng dụng trên điện thoại.</span>
+            </div>
+          </div>
+          <footer class="mch-file-preview-actions">
+            <a class="mch-file-preview-download" :href="fileDownloadUrl(filePreview.url, filePreview.name)" target="_blank" rel="noopener">
+              <DownloadIcon :size="18" /> Tải xuống
+            </a>
+          </footer>
+        </div>
+      </div>
+    </Teleport>
+    <Teleport to="body">
       <div v-if="videoUrl" class="mch-video" @click.self="closeVideo">
         <button class="mch-video-close" aria-label="Đóng" @click="closeVideo"><XIcon :size="24" :stroke-width="2" /></button>
         <video ref="videoEl" :src="videoUrl" class="mch-video-el" controls playsinline preload="metadata"></video>
@@ -391,7 +431,7 @@ import { useToast } from '@/composables/use-toast';
 import { groupAvatarStore } from '@/composables/use-group-avatar-cache';
 import {
   ChevronLeft as ChevronLeftIcon, Image as ImageIcon, Send as SendIcon, Loader2 as LoaderIcon, Reply as ReplyIcon, Paperclip as PaperclipIcon, CalendarClock as CalendarClockIcon, StickyNote as StickyNoteIcon, Sparkles as SparklesIcon, BookOpen as BookOpenIcon, Plus as PlusIcon,
-  X as XIcon, Copy as CopyIcon, Download as DownloadIcon, RotateCcw as RotateCcwIcon, Trash2 as Trash2Icon, Pin as PinIcon, PinOff as PinOffIcon, Forward as ForwardIcon, Search as SearchIcon, FolderOpen as FolderOpenIcon, Link as LinkIcon, MoreVertical as MoreVerticalIcon, Heart as HeartIcon, Smile as SmileIcon, ChevronUp as ChevronUpIcon, ChevronDown as ChevronDownIcon, User as UserIcon, Tag as TagIcon,
+  X as XIcon, Copy as CopyIcon, Download as DownloadIcon, FileText as FileTextIcon, RotateCcw as RotateCcwIcon, Trash2 as Trash2Icon, Pin as PinIcon, PinOff as PinOffIcon, Forward as ForwardIcon, Search as SearchIcon, FolderOpen as FolderOpenIcon, Link as LinkIcon, MoreVertical as MoreVerticalIcon, Heart as HeartIcon, Smile as SmileIcon, ChevronUp as ChevronUpIcon, ChevronDown as ChevronDownIcon, User as UserIcon, Tag as TagIcon,
 } from 'lucide-vue-next';
 import MessageBubble from '@/components/chat/message-bubble.vue';
 import Avatar from '@/components/ui/Avatar.vue';
@@ -602,9 +642,64 @@ function onEmoji(e: string) {
 // ── P1: xem media toàn màn hình (tái dùng event MessageBubble desktop) ──
 const lightboxUrl = ref<string | null>(null);
 const videoUrl = ref<string | null>(null);
+const filePreview = ref<{
+  url: string;
+  name: string;
+  kind: 'pdf' | 'office' | 'other';
+  previewUrl?: string;
+  loading?: boolean;
+  officeFailed?: boolean;
+} | null>(null);
 const videoEl = ref<HTMLVideoElement | null>(null);
 function onPreviewImage(url: string) { if (url) lightboxUrl.value = url; }
 function onPreviewVideo(url: string) { if (url) videoUrl.value = url; }
+async function onPreviewFile(url: string, name: string) {
+  if (!url) return;
+  const safeName = name || 'Tệp đính kèm';
+  const target = `${safeName} ${url}`.toLowerCase();
+  const kind = /\.pdf(?:$|[?#])/i.test(target)
+    ? 'pdf'
+    : /\.(doc|docx|xls|xlsx|ppt|pptx)(?:$|[?#])/i.test(target)
+      ? 'office'
+      : 'other';
+
+  if (filePreviewObjectUrl.value) URL.revokeObjectURL(filePreviewObjectUrl.value);
+  filePreview.value = { url, name: safeName, kind, loading: kind === 'pdf' };
+
+  if (kind !== 'pdf') return;
+
+  try {
+    const response = await api.get('/media/preview', {
+      params: { url, name: safeName },
+      responseType: 'blob',
+    });
+    const objectUrl = URL.createObjectURL(response.data);
+    filePreviewObjectUrl.value = objectUrl;
+    if (filePreview.value?.url === url) {
+      filePreview.value.previewUrl = objectUrl;
+      filePreview.value.loading = false;
+    }
+  } catch {
+    if (filePreview.value?.url === url) {
+      filePreview.value.loading = false;
+      filePreview.value.kind = 'other';
+    }
+  }
+}
+const filePreviewObjectUrl = ref<string | null>(null);
+function fileDownloadUrl(url: string, name: string): string {
+  return `/api/v1/media/download?url=${encodeURIComponent(url)}&name=${encodeURIComponent(name)}`;
+}
+function officeViewerUrl(url: string): string {
+  return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(new URL(url, window.location.href).href)}`;
+}
+function closeFilePreview() {
+  if (filePreviewObjectUrl.value) {
+    URL.revokeObjectURL(filePreviewObjectUrl.value);
+    filePreviewObjectUrl.value = null;
+  }
+  filePreview.value = null;
+}
 function closeVideo() { videoEl.value?.pause(); videoUrl.value = null; }
 
 // ── P1: long-press → menu hành động (tái dùng useChatOperations, quyền enforce ở backend) ──
@@ -1161,6 +1256,7 @@ onUnmounted(() => {
   clearKeywordHighlight();
   for (const u of previewUrls.values()) URL.revokeObjectURL(u);
   previewUrls.clear();
+  if (filePreviewObjectUrl.value) URL.revokeObjectURL(filePreviewObjectUrl.value);
   window.removeEventListener('chat:insert-suggestion', onCopilotInsert as EventListener);
   window.visualViewport?.removeEventListener('resize', syncViewport);
   window.visualViewport?.removeEventListener('scroll', syncViewport);
@@ -1180,6 +1276,35 @@ watch(convId, async (id) => { if (id) { hasOlderMessages.value = true; unseenCou
 </script>
 
 <style scoped>
+.mch-file-preview {
+  position: fixed; inset: 0; z-index: 4000; display: flex; align-items: center;
+  justify-content: center; padding: 12px; background: rgba(15, 23, 42, 0.76);
+}
+.mch-file-preview-panel {
+  display: flex; flex-direction: column; width: min(100%, 920px); height: min(94dvh, 900px);
+  overflow: hidden; background: var(--m-surface); border-radius: 14px;
+}
+.mch-file-preview-head, .mch-file-preview-actions {
+  display: flex; align-items: center; gap: 10px; padding: 10px 14px; flex-shrink: 0;
+}
+.mch-file-preview-head { justify-content: space-between; border-bottom: 1px solid var(--m-border); }
+.mch-file-preview-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: var(--m-fw-semibold); color: var(--m-text); }
+.mch-file-preview-body { flex: 1; min-height: 0; background: #f1f5f9; }
+.mch-file-preview-frame { width: 100%; height: 100%; border: 0; }
+.mch-file-preview-unsupported {
+  height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px; padding: 24px; text-align: center; color: var(--m-text-2);
+}
+.mch-file-preview-actions { justify-content: flex-end; border-top: 1px solid var(--m-border); }
+.mch-file-preview-download {
+  display: inline-flex; align-items: center; gap: 7px; min-height: 40px; padding: 0 14px;
+  border-radius: var(--m-r-sm); background: var(--m-brand); color: var(--m-brand-ink);
+  text-decoration: none; font-weight: var(--m-fw-semibold);
+}
+@media (max-width: 640px) {
+  .mch-file-preview { padding: 0; }
+  .mch-file-preview-panel { width: 100%; height: 100dvh; border-radius: 0; }
+}
 .mch-wrap { display: flex; flex-direction: column; width: 100%; max-width: 100vw; height: 100%; min-height: 0; min-width: 0; overflow: hidden; overflow-x: clip; overscroll-behavior: none; touch-action: pan-y; background: var(--m-surface-sunken); padding-bottom: v-bind('keyboardOffset + 'px''); }
 .mch-head {
   flex-shrink: 0; display: flex; align-items: center; gap: var(--m-sp-2);
@@ -1435,6 +1560,4 @@ watch(convId, async (id) => { if (id) { hasOlderMessages.value = true; unseenCou
 <style>
 ::highlight(mch-kw) { background-color: #ffd54a; color: #1a1a1a; }
 </style>
-
-
 

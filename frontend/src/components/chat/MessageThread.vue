@@ -631,7 +631,6 @@
             <SparklesIcon :size="18" :stroke-width="1.5" />
             <span v-if="!isAiReady" class="ai-config-dot" aria-label="AI chưa được cấu hình"></span>
           </button>
-          <span v-if="!isAiReady" class="ai-config-notice">{{ aiUnavailableMessage }}</span>
         </div>
 
         <div class="input-row">
@@ -4230,6 +4229,12 @@ watch(() => props.editingMessage?.id, async (id) => {
   position: relative;
 }
 .input-editor { width: 100%; }
+/* Compact composer: one-line draft takes roughly half the former editor height.
+   The editor still grows and scrolls for longer messages. */
+.input-editor :deep(.tiptap-input) {
+  min-height: 32px;
+  padding: 5px 12px;
+}
 
 /* ── Avatar nick halo: gradient cam-đỏ-vàng đậm xoay quanh avatar ───────
  * Inspired Instagram Stories halo. Conic-gradient rotate 3s linear infinite.
@@ -4303,7 +4308,6 @@ watch(() => props.editingMessage?.id, async (id) => {
 .ai-btn { position: relative; }
 .ai-btn-unavailable { color: #a16207 !important; background: #fffbeb !important; }
 .ai-config-dot { position: absolute; top: 4px; right: 4px; width: 7px; height: 7px; border: 1px solid #fff; border-radius: 50%; background: #f59e0b; }
-.ai-config-notice { max-width: 270px; margin-left: 2px; color: #92400e; font-size: 11px; line-height: 1.25; }
 .pending-attachments { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 8px 0; }
 .pending-image-preview { position: relative; width: 64px; height: 64px; overflow: hidden; border: 1px solid var(--smax-grey-200, #dbe3ec); border-radius: 9px; background: #f5f8fb; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.08); }
 .pending-image-preview img { display: block; width: 100%; height: 100%; object-fit: cover; }
@@ -4313,7 +4317,7 @@ watch(() => props.editingMessage?.id, async (id) => {
 .pending-attachment-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pending-attachment-remove { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 5px; color: var(--smax-grey-700, #52606d); background: transparent; cursor: pointer; }
 .pending-attachment-remove:hover { color: #b42318; background: rgba(180, 35, 24, 0.1); }
-.composer-send-hint { padding: 3px 10px 6px; color: var(--smax-grey-500, #758195); font-size: 11px; line-height: 1.2; }
+.composer-send-hint { padding: 2px 8px; color: var(--smax-grey-500, #758195); font-size: 10px; line-height: 1.2; }
 
 /* EmojiPicker trigger — emoji icon next to send button */
 .input-row :deep(.emoji-trigger) {

@@ -375,6 +375,7 @@ function buildChat() {
   const aiSuggestion = ref('');
   const aiSuggestionLoading = ref(false);
   const aiSuggestionError = ref('');
+  const aiSuggestionRequest = ref(0);
   const aiSummary = ref('');
   const aiSummaryLoading = ref(false);
   const aiSentiment = ref<AiSentiment | null>(null);
@@ -420,6 +421,8 @@ function buildChat() {
   );
 
   function clearAiState() {
+    aiSuggestionRequest.value += 1;
+    aiSuggestionLoading.value = false;
     aiSuggestion.value = '';
     aiSuggestionError.value = '';
     aiSummary.value = '';
@@ -704,17 +707,23 @@ function buildChat() {
   }
 
   async function generateAiSuggestion() {
-    if (!selectedConvId.value) return;
+    const conversationId = selectedConvId.value;
+    if (!conversationId) return;
+    const requestId = ++aiSuggestionRequest.value;
     aiSuggestionLoading.value = true;
     aiSuggestionError.value = '';
     try {
-      const res = await api.post('/ai/suggest', { conversationId: selectedConvId.value });
+      const res = await api.post('/ai/suggest', { conversationId });
+      if (requestId !== aiSuggestionRequest.value || selectedConvId.value !== conversationId) return;
       aiSuggestion.value = res.data.content || '';
       await fetchAiUsage();
     } catch (err: any) {
+      if (requestId !== aiSuggestionRequest.value || selectedConvId.value !== conversationId) return;
       aiSuggestionError.value = err.response?.data?.error || 'Không thể tạo gợi ý AI';
     } finally {
-      aiSuggestionLoading.value = false;
+      if (requestId === aiSuggestionRequest.value && selectedConvId.value === conversationId) {
+        aiSuggestionLoading.value = false;
+      }
     }
   }
 
