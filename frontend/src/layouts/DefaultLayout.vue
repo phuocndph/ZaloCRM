@@ -309,8 +309,13 @@ onMounted(() => {
   localStorage.removeItem('theme');
   void checkInternalContactSetup();
 
-  // Thông báo tin nhắn nổi (desktop) — socket sống toàn app ở tầng layout.
-  useMessageNotifications().start();
+  // Thông báo tin nhắn nổi — socket sống toàn app ở tầng layout cho cả desktop/PWA.
+  // Tự kích hoạt sau đăng nhập nếu người dùng chưa chủ động tắt trong cài đặt.
+  const messageNotifications = useMessageNotifications();
+  messageNotifications.start();
+  if (messageNotifications.enabled.value) {
+    void messageNotifications.enable();
+  }
 
   fetchPublicBranding()
     .then((b) => {

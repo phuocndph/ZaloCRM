@@ -1,9 +1,22 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2026 Nguyễn Tiến Lộc -->
 <template>
-  <div class="cfb">
+  <div class="cfb" @mouseleave="closeQuickFilters">
+    <div class="cfb-filter-control">
+      <button
+        type="button"
+        class="cfb-filter-trigger"
+        :class="{ active: filters.state.quickPills.size > 0 }"
+        :aria-expanded="filterOpen"
+        @mouseenter="openQuickFilters"
+        @click="openQuickFilters"
+      >
+        <span class="cfb-filter-icon">&#9881;</span><span>B&#7897; l&#7885;c</span><span v-if="filters.state.quickPills.size" class="cfb-filter-badge">{{ filters.state.quickPills.size }}</span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="m6 9 6 6 6-6" /></svg>
+      </button>
+    </div>
     <!-- ① Quick pills row — soft button, no icon, count fixed-slot tránh nhảy UI -->
-    <div class="cfb-pills-wrap">
+    <div v-show="filterOpen" class="cfb-pills-wrap">
       <div class="cfb-pills">
         <button
           class="pill alert"
@@ -37,6 +50,21 @@
           <span class="pill-label">Sẵn sàng</span>
           <span class="count">{{ counts.ready ?? 0 }}</span>
         </button>
+    </div>
+      <div v-if="tags.length" class="cfb-tags">
+        <span class="cfb-tags-title">Tag</span>
+        <div class="cfb-tags-list">
+          <button
+            v-for="tag in tags"
+            :key="tag"
+            type="button"
+            class="cfb-tag"
+            :class="{ active: selectedTags.includes(tag), 'is-zalo': isZaloManaged?.(tag) }"
+            :style="{ '--tag-color': tagColor?.(tag) || '#6B7280' }"
+            @click="emit('toggle-tag', tag)"
+          >{{ cleanTagName?.(tag) || tag }}</button>
+          <button v-if="selectedTags.length" type="button" class="cfb-clear-tags" @click="emit('clear-tags')">B&#7887; l&#7885;c tag</button>
+        </div>
       </div>
     </div>
 
@@ -76,8 +104,15 @@
 </template>
 
 <script setup lang="ts">
+import { ref } from 'vue';
+
 const props = defineProps<{
   filters: any;
+  tags: string[];
+  selectedTags: string[];
+  tagColor: (tag: string) => string;
+  cleanTagName: (tag: string) => string;
+  isZaloManaged: (tag: string) => boolean;
   totalCount: number;
   counts: {
     unread?: number;
@@ -95,7 +130,18 @@ const props = defineProps<{
 }>();
 
 // 2026-06-20: phát khi click LẠI tab đang active → ChatView clear ô tìm kiếm.
-const emit = defineEmits<{ 'reselect-tab': [] }>();
+const emit = defineEmits<{ 'reselect-tab': []; 'toggle-tag': [tag: string]; 'clear-tags': [] }>();
+
+const filterOpen = ref(false);
+
+function openQuickFilters() {
+  filterOpen.value = true;
+}
+
+function closeQuickFilters() {
+  filterOpen.value = false;
+}
+
 
 type TabKey = 'personal' | 'group' | 'main' | 'other';
 
@@ -139,11 +185,66 @@ function toggleSort() {
   background: white;
   border-bottom: 1px solid #F3F4F6;
   flex-shrink: 0;
+  position: relative;
+  min-height: 38px;
+}
+.cfb-filter-control {
+  position: absolute;
+  z-index: 31;
+  top: 5px;
+  right: 8px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  padding: 4px 10px;
+}
+.cfb-filter-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 9px;
+  border: 1px solid #E5E7EB;
+  border-radius: 7px;
+  background: #fff;
+  color: #6B7280;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.cfb-filter-trigger:hover,
+.cfb-filter-trigger.active {
+  color: #4F46E5;
+  border-color: #C7D2FE;
+  background: #EEF2FF;
+}
+.cfb-filter-trigger svg { width: 12px; height: 12px; }
+.cfb-filter-icon { font-size: 12px; line-height: 1; }
+.cfb-filter-badge {
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #4F46E5;
+  color: #fff;
+  font-size: 9px;
+  line-height: 15px;
+  text-align: center;
 }
 
 /* ① Quick pills — 4 pills chia ĐỀU, vừa khít khung cột 2, KHÔNG scroll ngang */
 .cfb-pills-wrap {
-  border-bottom: 1px solid #F3F4F6;
+  position: absolute;
+  z-index: 30;
+  top: 37px;
+  left: 8px;
+  right: 8px;
+  border: 1px solid #E5E7EB;
+  border-radius: 10px;
+  background: #fff;
+  box-shadow: 0 8px 20px rgba(17, 24, 39, 0.14);
+  overflow: hidden;
 }
 .cfb-pills {
   display: flex;
@@ -151,6 +252,38 @@ function toggleSort() {
   padding: 7px 10px;
   align-items: center;
 }
+.cfb-tags {
+  border-top: 1px solid #F3F4F6;
+  padding: 7px 10px 9px;
+}
+.cfb-tags-title {
+  display: block;
+  margin-bottom: 5px;
+  color: #6B7280;
+  font-size: 11px;
+  font-weight: 700;
+}
+.cfb-tags-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  max-height: 94px;
+  overflow-y: auto;
+}
+.cfb-tag,
+.cfb-clear-tags {
+  border: 1px solid var(--tag-color, #D1D5DB);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--tag-color, #4B5563);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  line-height: 22px;
+  padding: 0 8px;
+}
+.cfb-tag.active { background: var(--tag-color, #6B7280); color: #fff; }
+.cfb-clear-tags { --tag-color: #9CA3AF; }
 
 /* Pill: 2-line layout (label trên, count dưới) — fit gọn trong ~76px/pill
    Cách này tránh ellipsis label "Chưa đọc" → "Ch..." khi cột 2 hẹp. */
@@ -232,8 +365,8 @@ function toggleSort() {
 .cfb-tabs.main-tab-style {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  padding: 6px;
-  margin: 8px 10px 0;
+  padding: 4px 82px 4px 4px;
+  margin: 0 10px;
   background: #F3F4F6;
   border-radius: 10px;
   gap: 2px;
@@ -300,7 +433,10 @@ function toggleSort() {
 }
 
 /* ④ Mini row — half height, muted */
+.cfb-mini { display: none; }
+
 .cfb-mini {
+
   display: flex;
   justify-content: space-between;
   align-items: center;

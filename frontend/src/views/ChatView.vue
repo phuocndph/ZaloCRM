@@ -59,12 +59,19 @@
         @follow-changed="onFollowChanged"
         @privacy-changed="onPrivacyChanged"
       >
-        <template #filters>
+        <template #filters="{ tags, selectedTags, tagColor, cleanTagName, isZaloManaged, toggleTag, clearTags }">
           <ConversationFilterBar
             :filters="inboxFilters"
             :total-count="conversations.length"
             :counts="conversationCounts"
             :priority-has-unread="priorityHasUnread"
+            :tags="tags"
+            :selected-tags="selectedTags"
+            :tag-color="tagColor"
+            :clean-tag-name="cleanTagName"
+            :is-zalo-managed="isZaloManaged"
+            @toggle-tag="toggleTag"
+            @clear-tags="clearTags"
             @reselect-tab="onReselectActiveTab"
           />
         </template>
