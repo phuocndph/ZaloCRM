@@ -82,8 +82,16 @@ export function isConversationNotificationMuted(state: Pick<ConversationState, '
   return notificationMuteOf(state) !== null;
 }
 
+// Theo dõi mute timeout timers để có thể clear nếu user unmute sớm hơn.
+const activeMuteTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
 export function setConversationNotificationMute(id: string, until: Date | null): Promise<ConversationState> {
-  return patchConversationState(id, {
+  // Clear timer cũ nếu có (user thay đổi mute setting).
+  const existing = activeMuteTimers.get(id);
+  if (existing) clearTimeout(existing);
+  activeMuteTimers.delete(id);
+
+  const result = patchConversationState(id, {
     flags: {
       notificationMute: {
         mode: until ? 'until' : 'forever',
@@ -92,6 +100,20 @@ export function setConversationNotificationMute(id: string, until: Date | null):
       },
     },
   });
+
+  // Nếu mute có timeout (không mãi mãi), set timer để tự unmute khi hết hạn.
+  // Đảm bảo notification được bật lại ngay cả khi socket disconnect hoặc app tắt.
+  if (until && until.getTime() > Date.now()) {
+    const delayMs = Math.max(0, until.getTime() - Date.now());
+    const timer = setTimeout(() => {
+      activeMuteTimers.delete(id);
+      void clearConversationNotificationMute(id)
+        .catch((err) => console.warn(`[mute-auto-unmute] failed for ${id}:`, err));
+    }, delayMs);
+    activeMuteTimers.set(id, timer);
+  }
+
+  return result;
 }
 
 export const clearConversationNotificationMute = (id: string) =>
