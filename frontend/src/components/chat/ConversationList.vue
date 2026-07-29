@@ -128,7 +128,7 @@
           <Avatar
             :src="avatarSrcOf(conv)"
             :name="displayName(conv)"
-            :size="44"
+            :size="48"
             :is-group="conv.threadType === 'group'"
             :group-members-count="conv.groupMembersCount"
             :group-member-avatars="conv.groupMemberAvatars"
@@ -1590,16 +1590,16 @@ function truncate(s: string, n: number): string {
    ══════════════════════════════════════════════════════════════════════════ */
 .conv-list {
   --cl-accent: #0068ff;            /* xanh Zalo — accent DUY NHẤT */
-  --cl-accent-soft: #e8f2ff;       /* nền chọn/hover xanh rất nhạt */
-  --cl-ink: #1c2733;               /* tên khách — đậm nhất (cấp 1) */
+  --cl-accent-soft: #e6f1ff;       /* nền chọn/hover xanh rất nhạt */
+  --cl-ink: #101828;               /* tên khách — đậm nhất (cấp 1) */
   --cl-ink-content: #3d4a5c;       /* NỘI DUNG tin cuối — đậm, nổi bật (cấp 2) */
   --cl-ink-2: #55657a;             /* phụ — xám trung tính */
-  --cl-ink-3: #8a97a8;             /* metadata/giờ/phụ trách — xám nhạt (cấp cuối) */
-  --cl-line: #eef1f5;              /* đường kẻ rất mờ */
-  --cl-hover: #f5f7fa;             /* hover xám cực nhẹ */
-  --cl-danger: #f5334f;            /* badge chưa đọc */
+  --cl-ink-3: #8a94a3;             /* metadata/giờ/phụ trách — xám nhạt (cấp cuối) */
+  --cl-line: #edf1f5;              /* đường kẻ rất mờ */
+  --cl-hover: #f2f6fb;             /* hover xám cực nhẹ */
+  --cl-danger: #fa5151;            /* badge chưa đọc */
   --cl-radius: 10px;
-  --cl-item-h: 66px;               /* chuẩn chiều cao item (3 hàng gọn) */
+  --cl-item-h: 80px;               /* chuẩn chiều cao item (3 hàng gọn) */
   --cl-pad-x: 10px;
   /* Nền bề mặt + công thức trộn màu chip — ĐẢO được ở dark (xem dark-theme.css).
      Nhờ tách token, chip/hover/viền không còn hardcode "white" → tối không bị mảng sáng. */
@@ -1610,7 +1610,7 @@ function truncate(s: string, n: number): string {
   --cl-chip-fg-mix: 80%;
 }
 .conv-item {
-  padding: 7px var(--cl-pad-x);
+  padding: 10px var(--cl-pad-x);
   display: flex; gap: 10px;
   align-items: center;
   cursor: pointer;
@@ -1736,7 +1736,7 @@ function truncate(s: string, n: number): string {
 .ci-body {
   flex: 1; min-width: 0;
   display: flex; flex-direction: column;
-  gap: 2px;
+  gap: 4px;
 }
 .ci-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
 
@@ -1748,7 +1748,7 @@ function truncate(s: string, n: number): string {
 }
 /* CẤP 1 — Tên khách: đậm nhất, nổi nhất */
 .ci-name-text {
-  font-size: 14.5px; font-weight: 600; color: var(--cl-ink);
+  font-size: 15px; font-weight: 700; color: var(--cl-ink);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   min-width: 0;
 }
@@ -1768,7 +1768,7 @@ function truncate(s: string, n: number): string {
 .ci-time { font-size: 11px; color: var(--cl-ink-3); line-height: 1; white-space: nowrap; }
 /* Badge chưa đọc — nhỏ gọn, tròn, đỏ Zalo. "5+" khi >5 */
 .ci-unread {
-  min-width: 17px; height: 17px;
+  min-width: 19px; height: 19px;
   padding: 0 5px;
   background: var(--cl-danger); color: #fff;
   font-size: 10px; font-weight: 700; line-height: 1;
@@ -1783,11 +1783,11 @@ function truncate(s: string, n: number): string {
 
 /* ── HÀNG 2 (metadata "ai") — phụ trách + người trả lời. Cấp THẤP: nhỏ, xám nhạt,
    KHÔNG hút mắt khỏi tên/nội dung. ── */
-.ci-row-meta { gap: 8px; }
+.ci-row-meta { gap: 8px; margin-top: 1px; }
 .ci-who {
   flex: 1; min-width: 0;
   display: inline-flex; align-items: center; gap: 10px;
-  font-size: 11.5px; color: var(--cl-ink-3);
+  font-size: 11px; color: var(--cl-ink-3);
   line-height: 15px; overflow: hidden; white-space: nowrap;
 }
 .ci-who-ic { flex-shrink: 0; margin-right: 2px; opacity: 0.75; }
@@ -1808,12 +1808,12 @@ function truncate(s: string, n: number): string {
 .ci-chips { flex-shrink: 0; display: inline-flex; align-items: center; gap: 5px; }
 
 /* ── HÀNG 3 — NỘI DUNG tin cuối. Cấp 2 (chỉ sau tên): to, đậm, dễ đọc, full-width. ── */
-.ci-row-content { line-height: 18px; }
+.ci-row-content { line-height: 19px; }
 .ci-preview {
   flex: 1; min-width: 0;
-  font-size: 14px; color: var(--cl-ink-content);
+  font-size: 13.5px; color: var(--cl-ink-content);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  line-height: 18px;
+  line-height: 19px;
 }
 .ci-preview.tone-danger { color: var(--cl-danger); font-weight: 600; }
 /* Tin thu hồi / cuộc gọi không trả lời — chỉ LÀM NHẠT, KHÔNG in nghiêng (dễ đọc hơn). */
@@ -1824,9 +1824,9 @@ function truncate(s: string, n: number): string {
 .ci-chip {
   display: inline-flex; align-items: center; gap: 3px;
   max-width: 92px;
-  padding: 0 7px;
+  padding: 0 6px;
   border-radius: 999px;
-  font-size: 10px; font-weight: 600; line-height: 15px;
+  font-size: 10.5px; font-weight: 600; line-height: 15px;
   background: color-mix(in srgb, var(--chip-color, #64748b) var(--cl-chip-bg-mix), var(--cl-chip-bg-base));
   color: color-mix(in srgb, var(--chip-color, #64748b) var(--cl-chip-fg-mix), var(--cl-chip-fg-base));
   white-space: nowrap; overflow: hidden;
@@ -1982,38 +1982,38 @@ function truncate(s: string, n: number): string {
 
 /* Sales scan hierarchy: stable three-row rhythm and restrained status color. */
 .conv-list {
-  --cl-ink: #17212b;
-  --cl-ink-content: #334155;
+  --cl-ink: #101828;
+  --cl-ink-content: #3d4a5c;
   --cl-ink-2: #526277;
-  --cl-ink-3: #718096;
-  --cl-line: #e8edf3;
-  --cl-hover: #f6f9fc;
-  --cl-accent-soft: #eaf3ff;
-  --cl-danger: #e5484d;
-  --cl-item-h: 76px;
+  --cl-ink-3: #8a94a3;
+  --cl-line: #edf1f5;
+  --cl-hover: #f2f6fb;
+  --cl-accent-soft: #e6f1ff;
+  --cl-danger: #fa5151;
+  --cl-item-h: 80px;
   --cl-pad-x: 12px;
   font-family: Inter, "Be Vietnam Pro", "Segoe UI", sans-serif;
 }
-.conv-item { gap: 10px; padding-top: 9px; padding-bottom: 9px; }
-.ci-body { gap: 3px; }
+.conv-item { gap: 10px; padding-top: 10px; padding-bottom: 10px; }
+.ci-body { gap: 4px; }
 .ci-row-top { order: 0; }
-.ci-row-content { order: 1; line-height: 18px; }
-.ci-row-meta { order: 2; min-height: 16px; gap: 6px; }
+.ci-row-content { order: 1; line-height: 19px; }
+.ci-row-meta { order: 2; min-height: 16px; gap: 6px; margin-top: 1px; }
 .ci-name { line-height: 20px; }
-.ci-name-text { font-size: 14px; font-weight: 650; color: var(--cl-ink); }
+.ci-name-text { font-size: 15px; font-weight: 700; color: var(--cl-ink); }
 .ci-time { font-size: 11px; color: var(--cl-ink-3); }
-.ci-preview { font-size: 13px; line-height: 18px; color: var(--cl-ink-content); }
-.ci-who { font-size: 12px; line-height: 16px; color: var(--cl-ink-3); gap: 7px; }
+.ci-preview { font-size: 13.5px; line-height: 19px; color: var(--cl-ink-content); }
+.ci-who { font-size: 11px; line-height: 16px; color: var(--cl-ink-3); gap: 7px; }
 .ci-owner { max-width: 64%; }
 .ci-owner b, .ci-replier { color: var(--cl-ink-2); font-weight: 600; }
 .ci-chips { gap: 4px; }
-.ci-chip { max-width: 104px; min-height: 20px; padding: 0 7px; font-size: 11px; line-height: 20px; }
-.ci-unread { min-width: 18px; height: 18px; font-size: 10px; }
+.ci-chip { max-width: 104px; min-height: 20px; padding: 0 6px; font-size: 10.5px; line-height: 20px; }
+.ci-unread { min-width: 19px; height: 19px; font-size: 10px; }
 .conv-item.unread .ci-preview { font-weight: 550; }
 @media (max-width: 768px) {
-  .conv-list { --cl-item-h: 78px; }
-  .ci-name-text { font-size: 14.5px; }
-  .ci-preview { font-size: 13.5px; }
+  .conv-list { --cl-item-h: 82px; }
+  .ci-name-text { font-size: 15.5px; }
+  .ci-preview { font-size: 14px; }
 }
 </style>
 
