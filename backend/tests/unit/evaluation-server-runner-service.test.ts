@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => {
     aiPromptVersion: { findFirst: vi.fn() },
     aiModelConfig: { findFirst: vi.fn() },
     aiAgent: { findFirst: vi.fn() },
+    aiKnowledgeDocument: { findFirst: vi.fn() },
     aiEvaluationCase: { findMany: vi.fn() },
     aiAuditLog: { create: vi.fn() },
   };
@@ -114,7 +115,7 @@ describe('Server-side evaluation runner', () => {
       modelConfigId: 'model-1',
     });
 
-    expect(mocks.complete).toHaveBeenCalledTimes(2);
+    expect(mocks.complete).toHaveBeenCalledTimes(1);
     expect(mocks.complete).toHaveBeenCalledWith(
       expect.objectContaining({
         orgId: 'org-1',
@@ -126,6 +127,7 @@ describe('Server-side evaluation runner', () => {
 
     const scoredInput = mocks.runEvaluation.mock.calls[0][1];
     expect(scoredInput.outputs.normal_case.replyText).toContain('xin thêm');
+    expect(scoredInput.outputs.private_case.replyText).toBe('');
     expect(scoredInput.outputs.private_case.accessAllowed).toBe(false);
     expect(result.executionSource).toBe('server');
     expect(result.clientOutputsAccepted).toBe(false);
@@ -204,6 +206,50 @@ describe('Server-side evaluation runner', () => {
     expect(mocks.prisma.aiPromptVersion.findFirst).not.toHaveBeenCalled();
     expect(mocks.complete).not.toHaveBeenCalled();
   });
+
+  it('binds a knowledge evaluation to an indexed document instead of a source', async () => {
+    mocks.prisma.aiKnowledgeDocument.findFirst.mockResolvedValue({
+      id: 'document-1',
+      _count: { chunks: 2 },
+    });
+
+    await runServerEvaluation(actor, {
+      name: 'Knowledge document gate',
+      targetType: 'knowledge',
+      targetId: 'document-1',
+      promptVersionId: 'prompt-version-1',
+      modelConfigId: 'model-1',
+    });
+
+    expect(mocks.prisma.aiKnowledgeDocument.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ id: 'document-1', orgId: 'org-1', deletedAt: null }),
+    }));
+    expect(mocks.runEvaluation).toHaveBeenCalledWith(actor, expect.objectContaining({
+      targetType: 'knowledge',
+      targetId: 'document-1',
+    }));
+  });
+
+  it('rejects a knowledge target that is missing or has not been indexed', async () => {
+    mocks.prisma.aiKnowledgeDocument.findFirst.mockResolvedValueOnce(null);
+    await expect(runServerEvaluation(actor, {
+      name: 'Missing knowledge document',
+      targetType: 'knowledge',
+      targetId: 'source-id-is-not-valid',
+      promptVersionId: 'prompt-version-1',
+      modelConfigId: 'model-1',
+    })).rejects.toMatchObject({ code: 'KNOWLEDGE_EVALUATION_TARGET_NOT_FOUND', statusCode: 404 });
+
+    mocks.prisma.aiKnowledgeDocument.findFirst.mockResolvedValueOnce({ id: 'document-2', _count: { chunks: 0 } });
+    await expect(runServerEvaluation(actor, {
+      name: 'Unindexed knowledge document',
+      targetType: 'knowledge',
+      targetId: 'document-2',
+      promptVersionId: 'prompt-version-1',
+      modelConfigId: 'model-1',
+    })).rejects.toMatchObject({ code: 'KNOWLEDGE_EVALUATION_TARGET_NOT_INDEXED', statusCode: 409 });
+  });
+
   it('requires both a prompt version and a model configuration', async () => {
     await expect(
       runServerEvaluation(actor, {

@@ -448,10 +448,9 @@ const editor = useEditor({
         }
       }
       if (event.key === 'Enter') {
-        // Shift+Enter = LUÔN xuống dòng (soft break) ngay trong ô đang gõ, KHÔNG nhảy
-        // focus sang ô khác. Tự chèn hardBreak + consume event (return true) để Tiptap/
-        // Vuetify dialog không nuốt phím rồi đẩy focus đi (bug "Shift+Enter nhảy ô sau").
-        if (event.shiftKey) {
+        // Chỉ Ctrl+Shift+Enter chèn xuống dòng trong composer. Tự chèn hardBreak +
+        // consume event để Tiptap/Vuetify không nuốt phím rồi đẩy focus sang ô khác.
+        if (event.ctrlKey && event.shiftKey) {
           event.preventDefault();
           editor.value?.chain().focus().setHardBreak().run();
           return true;

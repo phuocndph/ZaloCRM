@@ -141,9 +141,9 @@
           <button v-else-if="actionCanPin" class="mch-ov-act" @click="onUnpin">
             <PinOffIcon :size="24" :stroke-width="1.7" /><span>Bỏ ghim</span>
           </button>
-          <a v-if="actionMediaUrl" class="mch-ov-act" :href="actionMediaUrl" target="_blank" rel="noopener" download @click="closeActions">
+          <button v-if="actionMediaUrl" class="mch-ov-act" @click="downloadActionMedia">
             <DownloadIcon :size="24" :stroke-width="1.7" /><span>Tải xuống</span>
-          </a>
+          </button>
           <button v-if="actionReactionDetails.length" class="mch-ov-act" @click="openReactionDetails">
             <HeartIcon :size="24" :stroke-width="1.7" /><span>{{ actionReactionDetails.length }} cảm xúc</span>
           </button>
@@ -323,7 +323,7 @@
       </div>
     </MBottomSheet>
 
-    <AiCopilotPanel :open="showCopilot" :conversation-id="convId" :private-blocked="conversationPrivateBlocked" @close="showCopilot = false" />
+    <AiCopilotPanel :open="showCopilot" :conversation-id="convId" :private-blocked="conversationPrivateBlocked" @close="showCopilot = false" @feedback="onCopilotFeedback" />
 
     <!-- Lightbox ảnh + modal video (P1 — xem media toàn màn hình) -->
     <MLightbox :open="!!lightboxUrl" :url="lightboxUrl" @close="lightboxUrl = null" />
@@ -346,22 +346,35 @@
               title="Xem trước tài liệu PDF"
             />
             <iframe
-              v-else-if="filePreview.kind === 'office' && !filePreview.officeFailed"
-              :src="officeViewerUrl(filePreview.url)"
+              v-else-if="filePreview.kind === 'office' && filePreview.previewUrl"
+              :src="filePreview.previewUrl"
               class="mch-file-preview-frame"
-              title="Xem trước tài liệu Office"
-              @error="filePreview.officeFailed = true"
+              :title="`Xem trước ${filePreview.name}`"
+              allowfullscreen
             />
+            <div v-else-if="filePreview.kind === 'office'" class="mch-file-preview-unsupported">
+              <FileTextIcon :size="48" />
+              <strong>Không thể tải bản xem trước</strong>
+              <span>Hãy mở tài liệu bằng ứng dụng tương thích trên điện thoại.</span>
+            </div>
             <div v-else class="mch-file-preview-unsupported">
               <FileTextIcon :size="48" />
-              <strong>Không thể xem trước định dạng này</strong>
-              <span>Hãy tải file về để mở bằng ứng dụng trên điện thoại.</span>
+              <strong>Không thể xem trước tệp này</strong>
+              <span>Hãy tải xuống để mở bằng ứng dụng phù hợp.</span>
             </div>
           </div>
           <footer class="mch-file-preview-actions">
-            <a class="mch-file-preview-download" :href="fileDownloadUrl(filePreview.url, filePreview.name)" target="_blank" rel="noopener">
+            <button
+              v-if="filePreview.kind === 'office'"
+              class="mch-file-preview-download"
+              type="button"
+              @click="openFileInNewTab(filePreview.url)"
+            >
+              <FileTextIcon :size="18" /> Mở bằng ứng dụng
+            </button>
+            <button class="mch-file-preview-download" type="button" @click="downloadFile(filePreview.url, filePreview.name)">
               <DownloadIcon :size="18" /> Tải xuống
-            </a>
+            </button>
           </footer>
         </div>
       </div>
@@ -610,6 +623,54 @@ function onComposerInput() {
   if (convId.value) sendTypingEvent(convId.value);
 }
 
+// Khi đang đọc hội thoại trên thiết bị có bàn phím cứng, cho phép gõ ngay mà
+// không cần chạm vào ô soạn. Không chiếm phím của ô tìm kiếm, form, modal hay
+// phím tắt trình duyệt; bàn phím cảm ứng vẫn hoạt động theo hành vi focus chuẩn.
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  return !!target.closest('input, textarea, select, [contenteditable="true"], [contenteditable=""]');
+}
+function isComposerObscured(): boolean {
+  return conversationPrivateBlocked.value
+    || !!filePreview.value
+    || !!videoUrl.value
+    || !!lightboxUrl.value
+    || showActions.value
+    || showForward.value
+    || showContentSearch.value
+    || showContentLibrary.value
+    || showHeaderMenu.value
+    || showReactionDetails.value
+    || showPinned.value
+    || showTags.value
+    || showNotes.value
+    || showAppointmentEditor.value
+    || showTemplatePicker.value
+    || showTemplatePreview.value
+    || showComposerTools.value
+    || showMediaPicker.value
+    || showEmojiSticker.value
+    || showCopilot.value;
+}
+function onGlobalComposerKeydown(event: KeyboardEvent) {
+  if (
+    event.defaultPrevented
+    || event.ctrlKey
+    || event.metaKey
+    || event.altKey
+    || event.key.length !== 1
+    || isEditableTarget(event.target)
+    || isComposerObscured()
+  ) return;
+
+  // Ngăn ký tự rơi vào vùng trang hiện tại rồi chèn trực tiếp để phím đầu tiên
+  // cũng không bị mất khi textarea vừa nhận focus.
+  event.preventDefault();
+  text.value += event.key;
+  onComposerInput();
+  void nextTick(() => textarea.value?.focus());
+}
+
 async function openTemplatePicker() { showTemplatePicker.value = true; await fetchTemplates(); }
 function selectTemplate(template: MessageTemplate) {
   const blocks = templateToBlocks(template);
@@ -634,6 +695,16 @@ ${value}` : value;
   void nextTick(() => { autoGrow(); textarea.value?.focus(); });
 }
 
+async function onCopilotFeedback(kind: string, payload: Record<string, unknown> = {}) {
+  if (!convId.value) return;
+  try {
+    await api.post(`/ai/feedback/conversations/${convId.value}`, { type: kind, ...payload });
+    toast.push(kind === 'good' ? 'Đã ghi nhận đánh giá tốt.' : 'Đã ghi nhận phản hồi AI.', kind === 'good' ? 'success' : 'warning');
+  } catch (error: any) {
+    toast.error(error?.response?.data?.error || 'Không thể lưu phản hồi AI.');
+  }
+}
+
 function onEmoji(e: string) {
   text.value += e;
   textarea.value?.focus();
@@ -648,7 +719,6 @@ const filePreview = ref<{
   kind: 'pdf' | 'office' | 'other';
   previewUrl?: string;
   loading?: boolean;
-  officeFailed?: boolean;
 } | null>(null);
 const videoEl = ref<HTMLVideoElement | null>(null);
 function onPreviewImage(url: string) { if (url) lightboxUrl.value = url; }
@@ -665,6 +735,19 @@ async function onPreviewFile(url: string, name: string) {
 
   if (filePreviewObjectUrl.value) URL.revokeObjectURL(filePreviewObjectUrl.value);
   filePreview.value = { url, name: safeName, kind, loading: kind === 'pdf' };
+
+  // Office Online Viewer hỗ trợ DOC(X), XLS(X), PPT(X) trên Safari/iOS và Android.
+  // URL media là object URL công khai của kho; chỉ nhúng URL tuyệt đối HTTPS để viewer tải được.
+  if (kind === 'office') {
+    try {
+      const source = new URL(url, window.location.origin);
+      if (source.protocol !== 'https:') throw new Error('Office viewer requires HTTPS');
+      filePreview.value.previewUrl = `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(source.href)}`;
+    } catch {
+      // Giữ modal và hiển thị hành động mở/tải dự phòng khi URL không phù hợp.
+    }
+    return;
+  }
 
   if (kind !== 'pdf') return;
 
@@ -687,11 +770,28 @@ async function onPreviewFile(url: string, name: string) {
   }
 }
 const filePreviewObjectUrl = ref<string | null>(null);
-function fileDownloadUrl(url: string, name: string): string {
-  return `/api/v1/media/download?url=${encodeURIComponent(url)}&name=${encodeURIComponent(name)}`;
+function openFileInNewTab(url: string) {
+  const opened = window.open(url, '_blank', 'noopener,noreferrer');
+  if (!opened) toast.push('Trình duyệt đã chặn cửa sổ mở tệp. Hãy dùng nút tải xuống.');
 }
-function officeViewerUrl(url: string): string {
-  return `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(new URL(url, window.location.href).href)}`;
+async function downloadFile(url: string, name: string) {
+  try {
+    const response = await api.get('/media/download', {
+      params: { url, name },
+      responseType: 'blob',
+    });
+    const objectUrl = URL.createObjectURL(response.data);
+    const link = document.createElement('a');
+    link.href = objectUrl;
+    link.download = name || 'tep-dinh-kem';
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+  } catch {
+    toast.push('Không thể tải tệp. Vui lòng thử lại.');
+  }
 }
 function closeFilePreview() {
   if (filePreviewObjectUrl.value) {
@@ -820,7 +920,11 @@ function openContentLibraryMessage(message: any) {
     onPreviewVideo(url);
     return;
   }
-  if ((contentLibraryTab.value === 'files' || contentLibraryTab.value === 'links') && url) {
+  if (contentLibraryTab.value === 'files' && url) {
+    onPreviewFile(url, contentLibraryTitle(message));
+    return;
+  }
+  if (contentLibraryTab.value === 'links' && url) {
     window.open(url, '_blank', 'noopener');
     return;
   }
@@ -988,6 +1092,13 @@ const actionMediaUrl = computed(() => {
   if (c.startsWith('{')) { try { const p = JSON.parse(c); return p.hdUrl || p.href || p.normalUrl || p.thumb || null; } catch { return null; } }
   return null;
 });
+function downloadActionMedia() {
+  const url = actionMediaUrl.value;
+  if (!url) return;
+  const meta = sharedContentMeta(actionMsg.value);
+  closeActions();
+  void downloadFile(url, meta.title || 'tep-dinh-kem');
+}
 
 const sourceNickId = computed(() => selectedConv.value?.zaloAccount?.id ?? null);
 const forwardCandidates = computed(() => {
@@ -1225,6 +1336,7 @@ onMounted(async () => {
   await scrollBottom();
   startPresence();
   window.addEventListener('chat:insert-suggestion', onCopilotInsert as EventListener);
+  window.addEventListener('keydown', onGlobalComposerKeydown);
   window.visualViewport?.addEventListener('resize', syncViewport);
   window.visualViewport?.addEventListener('scroll', syncViewport);
   syncViewport();
@@ -1258,6 +1370,7 @@ onUnmounted(() => {
   previewUrls.clear();
   if (filePreviewObjectUrl.value) URL.revokeObjectURL(filePreviewObjectUrl.value);
   window.removeEventListener('chat:insert-suggestion', onCopilotInsert as EventListener);
+  window.removeEventListener('keydown', onGlobalComposerKeydown);
   window.visualViewport?.removeEventListener('resize', syncViewport);
   window.visualViewport?.removeEventListener('scroll', syncViewport);
 });

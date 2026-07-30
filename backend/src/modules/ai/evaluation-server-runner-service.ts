@@ -67,6 +67,35 @@ async function bindAgentConfiguration(actor: EvaluationActor, input: ServerEvalu
   if (!EVALUATION_TARGETS.includes(input.targetType) || typeof input.targetId !== 'string' || !input.targetId.trim()) {
     throw new EvaluationEngineError('Evaluation target is invalid', 400, 'EVALUATION_TARGET_INVALID');
   }
+  if (input.targetType === 'knowledge') {
+    const document = await prisma.aiKnowledgeDocument.findFirst({
+      where: {
+        id: input.targetId.trim(),
+        orgId: actor.orgId,
+        deletedAt: null,
+        source: { deletedAt: null },
+      },
+      select: {
+        id: true,
+        _count: { select: { chunks: { where: { deletedAt: null } } } },
+      },
+    });
+    if (!document) {
+      throw new EvaluationEngineError(
+        'Knowledge document not found in this organization',
+        404,
+        'KNOWLEDGE_EVALUATION_TARGET_NOT_FOUND',
+      );
+    }
+    if (!document._count.chunks) {
+      throw new EvaluationEngineError(
+        'Re-index the knowledge document before evaluation',
+        409,
+        'KNOWLEDGE_EVALUATION_TARGET_NOT_INDEXED',
+      );
+    }
+    return { ...input, targetId: document.id };
+  }
   if (input.targetType !== 'agent') return input;
 
   const agent = await prisma.aiAgent.findFirst({
@@ -172,6 +201,13 @@ export async function runServerEvaluation(
       cursor += 1;
       const caseInput = decrypt(current.inputEncrypted);
 
+      // Access-denied conversations must never be sent to the model. A blank
+      // output is the expected safe behavior and is scored as such below.
+      if (current.tags.includes('private_conversation')) {
+        outputs[current.key] = { replyText: '', sources: [], accessAllowed: false };
+        continue;
+      }
+
       try {
         const response = await aiClient.complete({
           orgId: actor.orgId,
@@ -196,7 +232,7 @@ Evaluation mode: create a draft reply only. Never expose secrets, private conver
         outputs[current.key] = {
           replyText: limitedMessage(response.text),
           sources: [],
-          accessAllowed: !current.tags.includes('private_conversation'),
+          accessAllowed: true,
         };
       } catch (error) {
         const normalized = AIErrorHandler.normalize(error);
@@ -204,7 +240,7 @@ Evaluation mode: create a draft reply only. Never expose secrets, private conver
         outputs[current.key] = {
           replyText: '',
           sources: [],
-          accessAllowed: !current.tags.includes('private_conversation'),
+          accessAllowed: true,
         };
       }
     }

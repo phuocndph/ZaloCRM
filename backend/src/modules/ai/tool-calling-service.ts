@@ -25,7 +25,8 @@ export const AI_TOOL_CATALOG: ToolDefinition[] = [
 const forbidden = new Set(['delete_data', 'change_owner', 'change_price', 'refund', 'bulk_export', 'read_private_conversation']);
 const definitions = new Map(AI_TOOL_CATALOG.map((tool) => [tool.name, tool]));
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
-const encrypt = (value: string) => new TextEncoder().encode(encryptToken(value));
+const encrypt = (value: string): Uint8Array<ArrayBuffer> =>
+  Buffer.from(encryptToken(value), 'utf8') as unknown as Uint8Array<ArrayBuffer>;
 export class ToolCallingError extends Error { constructor(message: string, public readonly statusCode = 400, public readonly code = 'TOOL_CALL_ERROR') { super(message); } }
 function object(value: unknown) { return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}; }
 function required(input: Record<string, unknown>, key: string) { const value = input[key]; if (typeof value !== 'string' || !value.trim()) throw new ToolCallingError(`${key} is required`, 400, 'INVALID_TOOL_INPUT'); return value.trim(); }

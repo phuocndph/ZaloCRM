@@ -204,6 +204,25 @@ async function effectiveAutoReplyConfig(
   };
 }
 
+export async function listAutoReplyConfigs(orgId: string) {
+  const rows = await prisma.aiAutoReplyConfig.findMany({
+    where: { orgId, deletedAt: null },
+    orderBy: [{ scope: 'asc' }, { updatedAt: 'desc' }],
+    select: {
+      id: true,
+      scope: true,
+      scopeRefId: true,
+      enabled: true,
+      mode: true,
+      emergencyStop: true,
+      config: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  });
+  return rows;
+}
+
 export async function updateAutoReplyConfig(actor: { orgId: string; userId: string }, input: { scope: 'workspace'|'zalo_account'|'employee'|'skill'|'intent'|'segment'; scopeRefId?: string | null; enabled?: boolean; mode?: AutoReplyMode; emergencyStop?: boolean; config?: Record<string, unknown> }) { if (!['workspace', 'zalo_account', 'employee', 'skill', 'intent', 'segment'].includes(input.scope)) throw new AutoReplyError('Invalid auto-reply scope', 400, 'INVALID_SCOPE'); if (input.scope !== 'workspace' && !input.scopeRefId) throw new AutoReplyError('scopeRefId is required for this scope', 400, 'SCOPE_REFERENCE_REQUIRED'); if (input.mode && !['disabled', 'shadow', 'auto_send'].includes(input.mode)) throw new AutoReplyError('Invalid auto-reply mode', 400, 'INVALID_MODE'); const current = await prisma.aiAutoReplyConfig.findFirst({ where: { orgId: actor.orgId, scope: input.scope, scopeRefId: input.scopeRefId ?? null, deletedAt: null }, orderBy: { updatedAt: 'desc' } }); const data = { enabled: input.enabled ?? current?.enabled ?? false, mode: input.mode ?? current?.mode ?? 'disabled', emergencyStop: input.emergencyStop ?? current?.emergencyStop ?? false, config: (input.config ?? current?.config ?? {}) as Prisma.InputJsonValue, createdByUserId: current?.createdByUserId ?? actor.userId }; const saved = current ? await prisma.aiAutoReplyConfig.update({ where: { id: current.id }, data }) : await prisma.aiAutoReplyConfig.create({ data: { orgId: actor.orgId, scope: input.scope, scopeRefId: input.scopeRefId ?? null, ...data } }); await prisma.aiAuditLog.create({ data: { orgId: actor.orgId, actorUserId: actor.userId, eventType: 'auto_reply.config_updated', outcome: 'success', targetType: 'ai_auto_reply_config', targetId: saved.id, metadata: { scope: saved.scope, enabled: saved.enabled, mode: saved.mode, emergencyStop: saved.emergencyStop } } }); return saved; }
 export async function evaluateAutoReply(
   actor: AutoReplyActor,

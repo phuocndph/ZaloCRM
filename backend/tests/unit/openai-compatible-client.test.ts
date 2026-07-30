@@ -109,6 +109,26 @@ describe('OpenAI-compatible 9Router client', () => {
     }));
   });
 
+  it('skips the non-chat vscode alias when 9Router chooses a probe model', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).endsWith('/models')) {
+        return new Response(JSON.stringify({
+          data: [{ id: 'vscode' }, { id: 'cx/gpt-5.6-terra' }, { id: 'cx/gpt-5.6-terra-review' }],
+        }), { status: 200 });
+      }
+      const body = JSON.parse(String(init?.body)) as { model?: string };
+      expect(body.model).toBe('cx/gpt-5.6-terra');
+      return new Response(JSON.stringify({ choices: [{ message: { content: 'OK' } }] }), { status: 200 });
+    }) as unknown as typeof fetch;
+
+    await expect(probeOpenAICompatibleConnection({
+      baseUrl: 'http://9router:20128/v1',
+      apiKey: 'secret-key',
+      vendor: '9router',
+      fetchImpl,
+    })).resolves.toMatchObject({ selectedModel: 'cx/gpt-5.6-terra' });
+  });
+
   it('normalizes an unexpected SSE completion response', async () => {
     const response = new Response([
       'data: {"id":"req-sse","choices":[{"delta":{"content":"O"}}]}',

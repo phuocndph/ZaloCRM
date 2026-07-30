@@ -84,7 +84,7 @@ function hash(value: string) {
 }
 
 function encryptText(value: string): Uint8Array<ArrayBuffer> {
-  return new TextEncoder().encode(encryptToken(value));
+  return Buffer.from(encryptToken(value), 'utf8') as unknown as Uint8Array<ArrayBuffer>;
 }
 
 function decryptText(value: Uint8Array): string {

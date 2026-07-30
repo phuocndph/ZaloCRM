@@ -430,7 +430,7 @@ export async function setProviderConnectionSecret(
 ) {
   const secret = cleanSecret(apiKey);
   const current = await secretRowOrThrow(actor.orgId, connectionId);
-  const encrypted = new TextEncoder().encode(encryptToken(secret));
+  const encrypted = Buffer.from(encryptToken(secret), 'utf8');
   const credentialVersion = current.apiKeyEncrypted
     ? current.credentialVersion + 1
     : current.credentialVersion;
@@ -605,12 +605,28 @@ export async function testProviderConnection(
   if (input.model !== undefined && input.model !== null && typeof input.model !== 'string') {
     throw new ProviderConnectionError('Model identifier is invalid', 400, 'AI_MODEL_ID_INVALID');
   }
-  const model = typeof input.model === 'string' && input.model.trim()
+  const requestedModel = typeof input.model === 'string' && input.model.trim()
     ? input.model.trim()
     : undefined;
-  if (model && model.length > 256) {
+  if (requestedModel && requestedModel.length > 256) {
     throw new ProviderConnectionError('Model identifier is invalid', 400, 'AI_MODEL_ID_INVALID');
   }
+  // Reuse a model already verified/configured for this connection. Router
+  // discovery endpoints may expose non-chat aliases (for example `vscode`)
+  // before real chat models, so blindly probing the first item is unreliable.
+  const configuredModel = requestedModel
+    ? null
+    : await prisma.aiModelConfig.findFirst({
+      where: {
+        orgId: actor.orgId,
+        connectionId,
+        deletedAt: null,
+        status: { in: ['approved', 'testing', 'submitted', 'draft'] },
+      },
+      orderBy: [{ status: 'asc' }, { updatedAt: 'desc' }],
+      select: { model: true },
+    });
+  const model = requestedModel ?? configuredModel?.model;
   const startedAt = Date.now();
   let probe: Awaited<ReturnType<typeof probeOpenAICompatibleConnection>>;
   try {

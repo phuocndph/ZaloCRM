@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => {
       updateMany: vi.fn(),
     },
     aiModelConfig: {
+      findFirst: vi.fn(),
       findMany: vi.fn(),
       count: vi.fn(),
     },
@@ -88,6 +89,7 @@ describe('provider connection service', () => {
     delete process.env.AI_PROVIDER_HTTP_HOST_ALLOWLIST;
     mocks.prisma.$transaction.mockImplementation(async (callback: (tx: any) => unknown) => callback(mocks.prisma));
     mocks.prisma.aiAuditLog.create.mockResolvedValue({});
+    mocks.prisma.aiModelConfig.findFirst.mockResolvedValue(null);
   });
 
   it('accepts HTTPS and only allows HTTP for an exact 9Router host allowlist match', () => {
@@ -297,6 +299,31 @@ describe('provider connection service', () => {
       latencyMs: 35,
     });
     expect(JSON.stringify(result)).not.toContain('sk-router-secret');
+  });
+
+  it('reuses a configured chat model instead of probing the first router alias', async () => {
+    const encryptedSecret = new TextEncoder().encode('encrypted:sk-router-secret');
+    mocks.prisma.aiProviderConnection.findFirst
+      .mockResolvedValueOnce(connectionRow({ apiKeyEncrypted: encryptedSecret, status: 'needs_test' }))
+      .mockResolvedValueOnce(connectionRow({ status: 'needs_test' }))
+      .mockResolvedValueOnce(connectionRow({ status: 'connected' }));
+    mocks.prisma.aiModelConfig.findFirst.mockResolvedValue({ model: 'cx/gpt-5.6-terra' });
+    mocks.prisma.aiProviderConnection.updateMany.mockResolvedValue({ count: 1 });
+    mocks.probeOpenAICompatibleConnection.mockResolvedValue({
+      models: [{ title: 'vscode', value: 'vscode' }, { title: 'cx/gpt-5.6-terra', value: 'cx/gpt-5.6-terra' }],
+      selectedModel: 'cx/gpt-5.6-terra',
+      latencyMs: 40,
+      completionVerified: true,
+    });
+
+    await testProviderConnection(actor, 'connection-1');
+
+    expect(mocks.prisma.aiModelConfig.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ orgId: 'org-1', connectionId: 'connection-1', deletedAt: null }),
+    }));
+    expect(mocks.probeOpenAICompatibleConnection).toHaveBeenCalledWith(expect.objectContaining({
+      model: 'cx/gpt-5.6-terra',
+    }));
   });
 
   it('normalizes and persists a failed probe without leaking provider response details', async () => {

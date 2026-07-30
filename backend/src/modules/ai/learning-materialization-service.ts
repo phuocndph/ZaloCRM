@@ -32,8 +32,8 @@ type CandidatePayload = {
 const hash = (value: string) =>
   createHash('sha256').update(value).digest('hex');
 
-const encryptedBytes = (value: string) =>
-  new TextEncoder().encode(encryptToken(value));
+const encryptedBytes = (value: string): Uint8Array<ArrayBuffer> =>
+  Buffer.from(encryptToken(value), 'utf8') as unknown as Uint8Array<ArrayBuffer>;
 
 function decryptPayload(value?: Uint8Array | null): CandidatePayload {
   if (!value?.length) return {};

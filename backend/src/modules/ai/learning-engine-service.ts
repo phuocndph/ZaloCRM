@@ -9,7 +9,8 @@ export type LearningKind = 'used_reply_pattern' | 'edited_reply_pattern' | 'know
 export type LearningActor = { orgId: string; userId: string; role: string };
 export class LearningEngineError extends Error { constructor(message: string, public readonly statusCode = 400, public readonly code = 'LEARNING_ENGINE_ERROR') { super(message); this.name = 'LearningEngineError'; } }
 const sha = (value: string) => createHash('sha256').update(value).digest('hex');
-const bytes = (value: string) => new TextEncoder().encode(encryptToken(value));
+const bytes = (value: string): Uint8Array<ArrayBuffer> =>
+  Buffer.from(encryptToken(value), 'utf8') as unknown as Uint8Array<ArrayBuffer>;
 const sensitivePatterns: Array<[RegExp, string]> = [
   [/\b(?:\+?84|0)(?:\d[ .-]?){8,10}\b/g, '[PHONE_REDACTED]'],
   [/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[EMAIL_REDACTED]'],

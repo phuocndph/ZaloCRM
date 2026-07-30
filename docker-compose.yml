@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   app:
     build:
@@ -14,6 +12,9 @@ services:
     environment:
       - NODE_ENV=production
       - DATABASE_URL=postgresql://${DB_USER:-crmuser}:${DB_PASSWORD}@db:5432/${DB_NAME:-zalocrm}
+      # AI provider policy: HTTP is permitted only for explicitly approved 9Router hosts.
+      # Public HTTP IPs must be opted in through .env; do not make them a safe default.
+      - AI_PROVIDER_HTTP_HOST_ALLOWLIST=${AI_PROVIDER_HTTP_HOST_ALLOWLIST:-host.docker.internal,9router}
       # STORAGE 2026-06-20: storage config (STORAGE_DRIVER, S3_*, LOCAL_PUBLIC_URL,
       # APP_URL) đến từ env_file .env — KHÔNG override ở đây nữa để keys R2 không bị
       # ghi đè bằng MINIO_ROOT_*. Mặc định STORAGE_DRIVER=local (lưu vào volume bên dưới).

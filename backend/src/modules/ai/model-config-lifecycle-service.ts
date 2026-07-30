@@ -241,7 +241,11 @@ export async function setDefaultModelConfig(
       }
       const result = await tx.aiConfig.updateMany({
         where: { orgId: actor.orgId, updatedAt: current.updatedAt },
-        data: { defaultModelConfigId: modelConfigId },
+        data: {
+          defaultModelConfigId: modelConfigId,
+          provider: model.provider,
+          model: model.model,
+        },
       });
       if (result.count !== 1) {
         throw new ModelConfigError('AI configuration was changed by another user', 409, 'AI_CONFIG_REVISION_CONFLICT');
@@ -251,7 +255,14 @@ export async function setDefaultModelConfig(
         throw new ModelConfigError('AI configuration was changed by another user', 409, 'AI_CONFIG_REVISION_CONFLICT');
       }
       try {
-        await tx.aiConfig.create({ data: { orgId: actor.orgId, defaultModelConfigId: modelConfigId } });
+        await tx.aiConfig.create({
+          data: {
+            orgId: actor.orgId,
+            defaultModelConfigId: modelConfigId,
+            provider: model.provider,
+            model: model.model,
+          },
+        });
       } catch (error) {
         if (uniqueViolation(error)) {
           throw new ModelConfigError('AI configuration was changed by another user', 409, 'AI_CONFIG_REVISION_CONFLICT');

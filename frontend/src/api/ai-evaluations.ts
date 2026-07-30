@@ -139,6 +139,16 @@ export interface AiEvaluationKnowledgeReference {
   lastIndexedAt?: string | null;
 }
 
+export interface AiEvaluationKnowledgeDocumentReference {
+  id: string;
+  sourceId: string;
+  title: string;
+  status: string;
+  version: number;
+  lastIndexedAt?: string | null;
+  source: { id: string; name: string; type: string; status: string };
+}
+
 export async function seedInitialEvaluationSuite(): Promise<{ count: number; keys: string[] }> {
   const response = await api.post<{ count: number; keys: string[] }>('/ai/evaluations/seed-initial-suite');
   return response.data;
@@ -181,4 +191,9 @@ export async function listEvaluationModels(signal?: AbortSignal): Promise<AiEval
 export async function listEvaluationKnowledgeSources(signal?: AbortSignal): Promise<AiEvaluationKnowledgeReference[]> {
   const response = await api.get<{ sources: AiEvaluationKnowledgeReference[] }>('/ai/knowledge/sources', { signal });
   return response.data.sources;
+}
+
+export async function listEvaluationKnowledgeDocuments(signal?: AbortSignal): Promise<AiEvaluationKnowledgeDocumentReference[]> {
+  const response = await api.get<{ documents: AiEvaluationKnowledgeDocumentReference[] }>('/ai/knowledge/documents', { signal });
+  return response.data.documents;
 }

@@ -1,6 +1,15 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { AIErrorHandler } from './core/ai-error-handler.js';
-import { AiAdminCenterError, adminCenterAudit, adminCenterSummary, setAdminEmergencyStop } from './admin-center-service.js';
+import {
+  AiAdminCenterError,
+  adminCenterAudit,
+  adminCenterSummary,
+  aiSecurityCenter,
+  aiUsageBreakdown,
+  getAiRunDetail,
+  listAiRuns,
+  setAdminEmergencyStop,
+} from './admin-center-service.js';
 import { AiReadinessError, getAiReadiness, testProviderConnection } from './ai-readiness-service.js';
 import { aiPermissions } from './ai-control-plane-permissions.js';
 
@@ -54,6 +63,40 @@ export async function adminCenterRoutes(app: FastifyInstance) {
           limit: query.limit ? Number(query.limit) : undefined,
         }),
       };
+    } catch (error) {
+      return fail(reply, error);
+    }
+  });
+
+  app.get('/api/v1/ai/admin-center/runs', { preHandler: aiPermissions.overview.access }, async (request, reply) => {
+    try {
+      const query = request.query as { from?: string; to?: string; status?: string; taskType?: string; search?: string; limit?: string };
+      return { runs: await listAiRuns(request.user!.orgId, { ...query, limit: query.limit ? Number(query.limit) : undefined }) };
+    } catch (error) {
+      return fail(reply, error);
+    }
+  });
+
+  app.get('/api/v1/ai/admin-center/runs/:id', { preHandler: aiPermissions.overview.access }, async (request, reply) => {
+    try {
+      return await getAiRunDetail(request.user!.orgId, (request.params as { id: string }).id);
+    } catch (error) {
+      return fail(reply, error);
+    }
+  });
+
+  app.get('/api/v1/ai/admin-center/usage', { preHandler: aiPermissions.overview.access }, async (request, reply) => {
+    try {
+      const query = request.query as { from?: string; to?: string };
+      return await aiUsageBreakdown(request.user!.orgId, query);
+    } catch (error) {
+      return fail(reply, error);
+    }
+  });
+
+  app.get('/api/v1/ai/admin-center/security', { preHandler: aiPermissions.audit.access }, async (request, reply) => {
+    try {
+      return await aiSecurityCenter(request.user!.orgId);
     } catch (error) {
       return fail(reply, error);
     }

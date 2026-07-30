@@ -114,7 +114,7 @@ const canTestConnection = computed(() => Boolean(
 const statusLabel = computed(() => {
   if (!readiness.value) return '';
   return ({
-    ready: 'Sẵn sàng',
+    ready: 'Kết nối tốt',
     disabled: 'Đang tắt',
     needs_test: 'Chưa xác minh',
     not_configured: 'Chưa cấu hình',
@@ -244,7 +244,7 @@ defineExpose({ refresh });
 }
 
 .ai-readiness__summary {
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   color: #334155 !important;
 }
@@ -254,7 +254,7 @@ defineExpose({ refresh });
   border-radius: 999px;
   background: color-mix(in srgb, var(--readiness-accent) 12%, white);
   color: var(--readiness-accent);
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 700;
 }
 
@@ -262,7 +262,7 @@ defineExpose({ refresh });
   margin: 3px 0 0;
   padding-left: 18px;
   color: #334155;
-  font-size: 12px;
+  font-size: 13px;
 }
 
 .ai-readiness__checks li + li {
@@ -289,7 +289,7 @@ defineExpose({ refresh });
   background: #fff;
   color: #334155;
   font: inherit;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   text-decoration: none;
   cursor: pointer;

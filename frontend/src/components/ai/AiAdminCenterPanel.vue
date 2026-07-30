@@ -115,6 +115,10 @@
         <KnowledgeBasePanel v-else-if="selected === 'knowledge'" />
         <FeedbackManagerPanel v-else-if="selected === 'feedback'" />
         <ModelsConnectionsPanel v-else-if="selected === 'models'" />
+        <AutoReplyPanel v-else-if="selected === 'auto_reply'" />
+        <AiRunLogsPanel v-else-if="selected === 'logs'" />
+        <AiUsagePanel v-else-if="selected === 'usage'" />
+        <AiSecurityPanel v-else-if="selected === 'security'" />
 
         <template v-else-if="selected === 'audit'">
           <div class="audit-toolbar">
@@ -137,7 +141,7 @@
           <div v-else class="logs">
             <article v-for="log in logs" :key="log.id">
               <span class="audit-icon mdi mdi-shield-check-outline" aria-hidden="true" />
-              <div><strong>{{ log.eventType }}</strong><p>{{ log.outcome }}</p></div>
+              <div class="audit-copy"><strong>{{ log.eventType }}</strong><p>{{ log.outcome }} · {{ log.actor?.fullName || 'Hệ thống' }}<template v-if="log.targetType"> · {{ log.targetType }}<template v-if="log.targetId"> / {{ shortId(log.targetId) }}</template></template></p><details v-if="log.runId || hasMetadata(log.metadata)"><summary>Xem chi tiết</summary><dl><template v-if="log.runId"><dt>Run ID</dt><dd>{{ log.runId }}</dd></template><template v-for="(value,key) in log.metadata" :key="key"><dt>{{ key }}</dt><dd>{{ displayMetadata(value) }}</dd></template></dl></details></div>
               <time :datetime="log.createdAt">{{ formatDate(log.createdAt) }}</time>
             </article>
           </div>
@@ -171,6 +175,10 @@ import EvaluationManagerPanel from '@/components/ai/EvaluationManagerPanel.vue';
 import PromptManagerPanel from '@/components/ai/PromptManagerPanel.vue';
 import ReleaseManagerPanel from '@/components/ai/ReleaseManagerPanel.vue';
 import SkillManagerPanel from '@/components/ai/SkillManagerPanel.vue';
+import AutoReplyPanel from '@/components/ai/AutoReplyPanel.vue';
+import AiRunLogsPanel from '@/components/ai/AiRunLogsPanel.vue';
+import AiUsagePanel from '@/components/ai/AiUsagePanel.vue';
+import AiSecurityPanel from '@/components/ai/AiSecurityPanel.vue';
 
 type SectionKey =
   | 'overview' | 'agents' | 'skills' | 'prompts' | 'knowledge'
@@ -186,6 +194,7 @@ type NavigationItem = {
 };
 
 type Summary = {
+  hasRuntimeData?: boolean;
   metrics?: Record<string, number | string | null | undefined>;
   alerts?: Array<{ code: string; level: string; message: string }>;
   topIntents?: Array<{ label: string; count: number }>;
@@ -195,6 +204,11 @@ type AuditLog = {
   id: string;
   eventType: string;
   outcome: string;
+  targetType?: string | null;
+  targetId?: string | null;
+  runId?: string | null;
+  actor?: { fullName: string } | null;
+  metadata?: Record<string, unknown>;
   createdAt: string;
 };
 
@@ -225,16 +239,16 @@ const navigation: Array<{ label: string; items: NavigationItem[] }> = [
   {
     label: 'Vận hành',
     items: [
-      { key: 'auto_reply', label: 'Tự động trả lời', description: 'Quản lý chế độ mô phỏng, phạm vi, ngưỡng tin cậy và bàn giao cho nhân viên.', icon: 'mdi-reply-all-outline', available: false },
-      { key: 'logs', label: 'Nhật ký chạy', description: 'Truy vết lượt chạy, lỗi, model, lời nhắc và nguồn tri thức đã sử dụng.', icon: 'mdi-text-box-search-outline', available: false },
-      { key: 'usage', label: 'Sử dụng & chi phí', description: 'Theo dõi token, chi phí, ngân sách và xu hướng sử dụng theo tác vụ.', icon: 'mdi-chart-line', available: false },
+      { key: 'auto_reply', label: 'Tự động trả lời', description: 'Quản lý chế độ mô phỏng, phạm vi, ngưỡng tin cậy và bàn giao cho nhân viên.', icon: 'mdi-reply-all-outline', available: true },
+      { key: 'logs', label: 'Nhật ký chạy', description: 'Truy vết lượt chạy, lỗi, model, lời nhắc và nguồn tri thức đã sử dụng.', icon: 'mdi-text-box-search-outline', available: true },
+      { key: 'usage', label: 'Sử dụng & chi phí', description: 'Theo dõi token, chi phí, ngân sách và xu hướng sử dụng theo tác vụ.', icon: 'mdi-chart-line', available: true },
     ],
   },
   {
     label: 'Quản trị',
     items: [
       { key: 'models', label: 'Mô hình & kết nối', description: 'Cấu hình nhà cung cấp, model, kết nối 9router và phương án dự phòng.', icon: 'mdi-connection', available: true },
-      { key: 'security', label: 'Bảo mật', description: 'Quản lý quyền, dữ liệu riêng tư, chính sách và an toàn công cụ.', icon: 'mdi-shield-lock-outline', available: false },
+      { key: 'security', label: 'Bảo mật', description: 'Quản lý quyền, dữ liệu riêng tư, chính sách và an toàn công cụ.', icon: 'mdi-shield-lock-outline', available: true },
       { key: 'audit', label: 'Kiểm toán', description: 'Theo dõi sự kiện quản trị AI không chứa secret hoặc payload nhạy cảm.', icon: 'mdi-file-document-check-outline', available: true },
       { key: 'deploy', label: 'Áp dụng & khôi phục', description: 'Áp dụng phiên bản đã đạt đánh giá và khôi phục về phiên bản đã duyệt.', icon: 'mdi-rocket-launch-outline', available: true },
     ],
@@ -270,10 +284,10 @@ const cards = computed(() => {
     { label: 'AI xử lý', value: metrics.aiProcessed ?? 0, hint: 'Lượt yêu cầu' },
     { label: 'Gợi ý', value: metrics.suggestions ?? 0, hint: 'Đã tạo' },
     { label: 'Nhân viên dùng', value: metrics.employeeUsed ?? 0, hint: 'Lượt chấp nhận' },
-    { label: 'Tỷ lệ sửa', value: String(metrics.editRate ?? 0) + '%', hint: 'Trước khi gửi' },
+    { label: 'Tỷ lệ sửa', value: metrics.editRate == null ? 'Chưa đủ dữ liệu' : String(metrics.editRate) + '%', hint: 'Trước khi gửi' },
     { label: 'Tự gửi', value: metrics.autoSent ?? 0, hint: 'Auto Reply' },
     { label: 'Bàn giao', value: metrics.handoffs ?? 0, hint: 'Cho nhân viên' },
-    { label: 'Tỷ lệ lỗi', value: String(metrics.errorRate ?? 0) + '%', hint: 'Theo lượt chạy' },
+    { label: 'Tỷ lệ lỗi', value: metrics.errorRate == null ? 'Chưa đủ dữ liệu' : String(metrics.errorRate) + '%', hint: 'Theo lượt chạy' },
     { label: 'Chi phí (µ)', value: metrics.costMicros ?? 0, hint: 'Trong kỳ' },
   ];
 });
@@ -284,6 +298,14 @@ function errorText(errorValue: any, fallback: string) {
 
 function formatDate(value: string) {
   return new Date(value).toLocaleString('vi-VN');
+}
+
+function shortId(value: string) { return value.slice(0, 8); }
+function hasMetadata(value: Record<string, unknown> | undefined) { return !!value && Object.keys(value).length > 0; }
+function displayMetadata(value: unknown) {
+  if (value == null) return '—';
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
 }
 
 function selectSection(key: SectionKey) {
@@ -378,8 +400,8 @@ onMounted(() => {
 }
 
 .nav-group + .nav-group { margin-top: 15px; }
-.nav-group-label { margin: 0 8px 5px; color: #94a3b8; font-size: 10px; font-weight: 750; letter-spacing: .08em; text-transform: uppercase; }
-.nav-item { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 36px; padding: 7px 9px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: #475569; font: 500 12px/1.35 inherit; text-align: left; cursor: pointer; }
+.nav-group-label { margin: 0 8px 6px; color: #64748b; font-size: 12px; font-weight: 750; letter-spacing: .07em; text-transform: uppercase; }
+.nav-item { display: flex; align-items: center; gap: 9px; width: 100%; min-height: 40px; padding: 8px 9px; border: 1px solid transparent; border-radius: 8px; background: transparent; color: #475569; font: 500 14px/1.35 inherit; text-align: left; cursor: pointer; }
 .nav-item:hover { background: #fff; color: #1e293b; }
 .nav-item.active { border-color: #bfdbfe; background: #eaf2ff; color: #1d4ed8; font-weight: 700; }
 .nav-icon { flex: 0 0 18px; width: 18px; font-size: 17px; text-align: center; }
@@ -390,14 +412,14 @@ onMounted(() => {
 .center-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; min-height: 74px; padding: 16px 18px; border-bottom: 1px solid #e2e8f0; }
 .section-heading { min-width: 220px; }
 .heading-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.center-header h2 { margin: 0; color: #172033; font-size: 17px; line-height: 1.35; }
-.center-header p { margin: 4px 0 0; color: #64748b; font-size: 12px; line-height: 1.5; }
+.center-header h2 { margin: 0; color: #172033; font-size: 19px; line-height: 1.35; }
+.center-header p { margin: 4px 0 0; color: #64748b; font-size: 14px; line-height: 1.5; }
 .status-badge { display: inline-flex; align-items: center; padding: 3px 7px; border: 1px solid #fde68a; border-radius: 999px; background: #fffbeb; color: #92400e; font-size: 10px; font-weight: 700; white-space: nowrap; }
 .header-actions { display: flex; align-items: flex-end; justify-content: flex-end; gap: 9px; flex-wrap: wrap; }
 .date-filter { display: flex; gap: 7px; }
-.date-filter label { display: flex; flex-direction: column; gap: 3px; color: #64748b; font-size: 9px; font-weight: 650; text-transform: uppercase; }
+.date-filter label { display: flex; flex-direction: column; gap: 3px; color: #64748b; font-size: 12px; font-weight: 650; text-transform: uppercase; }
 .date-filter input { box-sizing: border-box; min-height: 34px; padding: 5px 8px; border: 1px solid #cbd5e1; border-radius: 7px; background: #fff; color: #334155; font: 12px inherit; }
-.emergency-button { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 6px 10px; border: 1px solid #fecaca; border-radius: 7px; background: #fff; color: #b91c1c; font: 650 11px inherit; cursor: pointer; }
+.emergency-button { display: inline-flex; align-items: center; gap: 6px; min-height: 38px; padding: 7px 11px; border: 1px solid #fecaca; border-radius: 7px; background: #fff; color: #b91c1c; font: 650 13px inherit; cursor: pointer; }
 .emergency-button:hover:not(:disabled) { background: #fff1f2; }
 .emergency-button.active { border-color: #bbf7d0; background: #f0fdf4; color: #166534; }
 .emergency-button:disabled { cursor: not-allowed; opacity: .55; }
@@ -450,6 +472,11 @@ onMounted(() => {
 .logs strong { color: #334155; font-size: 12px; }
 .logs p { margin: 2px 0 0; color: #64748b; font-size: 11px; }
 .logs time { color: #94a3b8; font-size: 10px; white-space: nowrap; }
+.audit-copy details { margin-top: 7px; }
+.audit-copy summary { color: #2563eb; cursor: pointer; font-weight: 650; }
+.audit-copy dl { display: grid; grid-template-columns: minmax(90px, auto) 1fr; gap: 5px 10px; max-width: 780px; margin: 8px 0 0; padding: 10px; border-radius: 7px; background: #f8fafc; }
+.audit-copy dt { color: #64748b; }
+.audit-copy dd { min-width: 0; margin: 0; overflow-wrap: anywhere; color: #334155; }
 
 .not-implemented { display: flex; flex-direction: column; align-items: center; max-width: 600px; margin: 46px auto; padding: 30px 24px; color: #64748b; text-align: center; }
 .not-implemented-icon { display: grid; width: 54px; height: 54px; margin-bottom: 12px; place-items: center; border-radius: 16px; background: #f1f5f9; color: #64748b; font-size: 27px; }
@@ -458,6 +485,14 @@ onMounted(() => {
 .implementation-note { display: flex; align-items: flex-start; gap: 8px; margin-top: 18px; padding: 10px 12px; border: 1px solid #dbeafe; border-radius: 8px; background: #f8fbff; color: #475569; text-align: left; }
 .implementation-note .mdi { color: #2563eb; font-size: 17px; }
 .implementation-note p { margin: 0; font-size: 11px; line-height: 1.55; }
+.alerts .info { border-color: #bfdbfe; background: #eff6ff; color: #1e40af; }
+
+/* Chuẩn đọc tối thiểu cho toàn bộ nội dung quản trị AI. */
+.content-body :deep(p), .content-body :deep(li), .content-body :deep(label),
+.content-body :deep(button), .content-body :deep(input), .content-body :deep(select),
+.content-body :deep(textarea), .content-body :deep(small), .content-body :deep(td),
+.content-body :deep(th), .content-body :deep(summary), .content-body :deep(dt),
+.content-body :deep(dd) { font-size: 13px !important; }
 
 @media (max-width: 1100px) {
   .admin-center { grid-template-columns: 196px minmax(0, 1fr); }

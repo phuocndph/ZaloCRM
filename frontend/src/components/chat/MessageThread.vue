@@ -672,7 +672,7 @@
               v-model="inputText"
               :placeholder="inputPlaceholder"
               :show-toolbar="formatBarVisible"
-              :submit-on-enter="false"
+              :submit-on-enter="true"
               :intercept-keys="onComposerNavKey"
               :is-group="conversation.threadType === 'group'"
               :account-id="conversation.zaloAccount?.id ?? null"
@@ -696,7 +696,7 @@
                 </span>
               </template>
             </div>
-            <div class="composer-send-hint">Enter xuống dòng · Bấm Gửi để gửi</div>
+            <div class="composer-send-hint">Enter để gửi · Ctrl + Shift + Enter để xuống dòng</div>
             <!-- Privacy lock overlay — chỉ phủ input editor, KHÔNG che toolbar bên ngoài -->
             <div
               v-if="!privacyVisibility.canSendInConv(conversation)"

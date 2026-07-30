@@ -9,7 +9,8 @@ export type EvaluationTarget = 'prompt' | 'model' | 'agent' | 'skill' | 'knowled
 export type EvaluationOutput = { replyText: string; sources?: Array<Record<string, unknown>>; handoff?: boolean; accessAllowed?: boolean };
 export class EvaluationEngineError extends Error { constructor(message: string, public readonly statusCode = 400, public readonly code = 'EVALUATION_ENGINE_ERROR') { super(message); } }
 const hash = (value: string) => createHash('sha256').update(value).digest('hex');
-const encrypted = (value: string) => new TextEncoder().encode(encryptToken(value));
+const encrypted = (value: string): Uint8Array<ArrayBuffer> =>
+  Buffer.from(encryptToken(value), 'utf8') as unknown as Uint8Array<ArrayBuffer>;
 const CRITERIA = ['accuracy', 'groundedness', 'policy_compliance', 'tone', 'emotion_appropriateness', 'helpfulness', 'sales_effectiveness', 'conciseness', 'hallucination', 'privacy', 'handoff_correctness'] as const;
 type Criterion = typeof CRITERIA[number];
 type CaseDefinition = { key: string; name: string; input: string; tags: string[]; rubric: { mustInclude?: string[]; mustNotInclude?: string[]; requiresHandoff?: boolean; requiresQuestion?: boolean; requiresNoReply?: boolean; needsSources?: boolean; emotion?: 'angry'|'neutral' }; };
@@ -31,8 +32,16 @@ function scoreCase(definition: CaseDefinition, output: EvaluationOutput) { const
   const policy = checkReplyPolicy({ replyText: reply, context: { access: { allowed: output.accessAllowed !== false, contentVisible: output.accessAllowed !== false } } as any, sources: output.sources ?? [], intent: definition.tags[0], skillKey: handoff ? 'human_handoff' : undefined });
   const values: Record<Criterion, number> = { accuracy: includeScore * 100, groundedness: rubric.needsSources ? ((output.sources?.length ?? 0) ? 100 : 0) : 100, policy_compliance: policy.allowed ? 100 : 0, tone: /(?:dạ|ạ|xin|cảm ơn|em)/i.test(reply) ? 100 : 70, emotion_appropriateness: rubric.emotion === 'angry' ? (/xin lỗi|rất tiếc|thấu hiểu/i.test(reply) ? 100 : 0) : 100, helpfulness: reply.length >= 12 ? 100 : 0, sales_effectiveness: /giảm ngay|cam kết|chắc chắn/i.test(reply) ? 40 : 100, conciseness: reply.length > 0 && reply.length <= 700 ? 100 : 0, hallucination: forbidden ? 0 : 100, privacy: /(?:api key|system prompt|mật khẩu|token|\b\d{9,12}\b)/i.test(reply) ? 0 : 100, handoff_correctness: rubric.requiresHandoff ? (handoff ? 100 : 0) : (!handoff ? 100 : 75) };
   if (rubric.requiresQuestion) values.accuracy = Math.min(values.accuracy, asked ? 100 : 0);
-  if (rubric.requiresNoReply) { values.privacy = privateBlocked ? 100 : 0; values.accuracy = privateBlocked ? 100 : 0; values.handoff_correctness = privateBlocked ? 100 : 0; }
-  const total = Math.round(CRITERIA.reduce((sum, key) => sum + values[key], 0) / CRITERIA.length); return { score: total, criteria: values, policyViolations: policy.violations.map((item) => item.code), outputHash: hash(reply), passedCritical: values.policy_compliance === 100 && values.privacy === 100 && values.handoff_correctness === 100 };
+  if (rubric.requiresNoReply) {
+    for (const criterion of CRITERIA) values[criterion] = privateBlocked ? 100 : values[criterion];
+    if (!privateBlocked) {
+      values.privacy = 0;
+      values.accuracy = 0;
+      values.policy_compliance = 0;
+      values.handoff_correctness = 0;
+    }
+  }
+  const total = Math.round(CRITERIA.reduce((sum, key) => sum + values[key], 0) / CRITERIA.length); return { score: total, criteria: values, policyViolations: policy.violations.map((item) => item.code), outputHash: hash(reply), passedCritical: values.policy_compliance === 100 && values.privacy === 100 && (!rubric.requiresHandoff || values.handoff_correctness === 100) };
 }
 export async function seedInitialEvaluationCases(actor: EvaluationActor) { let created = 0; for (const definition of INITIAL_EVALUATION_CASES) { const rubric = definition.rubric; await prisma.aiEvaluationCase.upsert({ where: { orgId_key: { orgId: actor.orgId, key: definition.key } }, update: { name: definition.name, status: 'active', rubric: rubric as Prisma.InputJsonValue, tags: definition.tags, inputEncrypted: encrypted(definition.input), inputHash: hash(definition.input), expectedEncrypted: encrypted(JSON.stringify(rubric)), expectedHash: hash(JSON.stringify(rubric)) }, create: { orgId: actor.orgId, key: definition.key, name: definition.name, taskType: 'reply_draft', status: 'active', inputEncrypted: encrypted(definition.input), inputHash: hash(definition.input), expectedEncrypted: encrypted(JSON.stringify(rubric)), expectedHash: hash(JSON.stringify(rubric)), rubric: rubric as Prisma.InputJsonValue, tags: definition.tags, createdByUserId: actor.userId } }); created++; }
   await prisma.aiAuditLog.create({ data: { orgId: actor.orgId, actorUserId: actor.userId, eventType: 'evaluation.cases_seeded', outcome: 'success', targetType: 'ai_evaluation_case', metadata: { count: created } } }); return { count: created, keys: INITIAL_EVALUATION_CASES.map((item) => item.key) };

@@ -279,7 +279,10 @@ export async function probeOpenAICompatibleConnection(
   const startedAt = Date.now();
   const models = await listOpenAICompatibleModels(options, options.modelsPath ?? '/v1/models');
   const requestedModel = options.model?.trim();
-  const selectedModel = requestedModel || models[0]?.value;
+  const routerChatModel = safeVendor(options.vendor) === '9router'
+    ? models.find((item) => item.value !== 'vscode' && !item.value.endsWith('-review'))?.value
+    : undefined;
+  const selectedModel = requestedModel || routerChatModel || models[0]?.value;
   if (!selectedModel) throw invalidResponse(options.vendor);
   if (requestedModel && !models.some((model) => model.value === requestedModel)) {
     throw new AIError('INVALID_REQUEST', 'Selected AI model is not available', false, 400, safeVendor(options.vendor));

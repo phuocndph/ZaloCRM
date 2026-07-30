@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import ExcelJS from 'exceljs';
 import { prisma } from '../../shared/database/prisma-client.js';
 import { encryptToken, decryptToken } from '../integrations/_shared/token-encryption.util.js';
-import { requirePassingEvaluation } from './evaluation-engine-service.js';
+import { EvaluationEngineError, requirePassingEvaluation } from './evaluation-engine-service.js';
 
 export type KnowledgeActor = { orgId: string; userId: string; role: string };
 export type KnowledgeStatus = 'draft' | 'published' | 'archived' | 'failed';
@@ -23,7 +23,7 @@ export class KnowledgeBaseError extends Error {
 }
 
 function sha256(value: string | Buffer) { return createHash('sha256').update(value).digest('hex'); }
-function bytes(value: string) { return new TextEncoder().encode(value); }
+function bytes(value: string) { return Buffer.from(value, 'utf8'); }
 function text(value?: Uint8Array | null) { return value ? new TextDecoder().decode(value) : ''; }
 function clampPriority(value?: number) { return Math.max(-100, Math.min(100, Math.floor(Number(value ?? 0) || 0))); }
 function cleanTags(value?: unknown) { return Array.from(new Set((Array.isArray(value) ? value : []).filter((x): x is string => typeof x === 'string').map((x) => x.trim().toLowerCase()).filter(Boolean))).slice(0, 30); }
@@ -64,6 +64,138 @@ export async function createKnowledgeSource(actor: KnowledgeActor, input: { name
 export async function listKnowledgeSources(actor: KnowledgeActor, includeArchived = false) {
   const sources = await prisma.aiKnowledgeSource.findMany({ where: { orgId: actor.orgId, deletedAt: null, ...(includeArchived ? {} : { status: { not: 'archived' } }) }, orderBy: [{ priority: 'desc' }, { updatedAt: 'desc' }], include: { _count: { select: { documents: { where: { deletedAt: null } } } }, createdBy: { select: { id: true, fullName: true } }, approvedBy: { select: { id: true, fullName: true } } } });
   return sources.filter((source) => canReadScope(actor, source.scope));
+}
+
+export async function listKnowledgeDocuments(actor: KnowledgeActor, sourceId?: string) {
+  const sources = await listKnowledgeSources(actor, true);
+  const allowedSourceIds = sources.map((source) => source.id);
+  if (sourceId && !allowedSourceIds.includes(sourceId)) {
+    throw new KnowledgeBaseError('Knowledge source not found', 404, 'SOURCE_NOT_FOUND');
+  }
+  if (!allowedSourceIds.length) return [];
+  const documents = await prisma.aiKnowledgeDocument.findMany({
+    where: {
+      orgId: actor.orgId,
+      sourceId: sourceId ?? { in: allowedSourceIds },
+      deletedAt: null,
+    },
+    select: {
+      id: true,
+      sourceId: true,
+      title: true,
+      status: true,
+      version: true,
+      scope: true,
+      effectiveFrom: true,
+      effectiveTo: true,
+      approvedAt: true,
+      lastIndexedAt: true,
+      updatedAt: true,
+      _count: { select: { chunks: { where: { deletedAt: null } } } },
+      source: { select: { id: true, name: true, type: true, status: true } },
+    },
+    orderBy: { updatedAt: 'desc' },
+  });
+  const visible = documents.filter((document) => canReadScope(actor, document.scope));
+  const runs = await prisma.aiEvaluationRun.findMany({
+    where: { orgId: actor.orgId, status: { in: ['completed', 'failed'] } },
+    orderBy: [{ completedAt: 'desc' }, { createdAt: 'desc' }],
+    take: 200,
+    select: { id: true, status: true, config: true, metrics: true, completedAt: true },
+  });
+  return visible.map(({ scope: _scope, ...document }) => {
+    const matchingRuns = runs.filter((run) => {
+      const config = run.config && typeof run.config === 'object' && !Array.isArray(run.config)
+        ? run.config as Record<string, unknown>
+        : {};
+      return config.targetType === 'knowledge' && config.targetId === document.id;
+    });
+    const passingRun = matchingRuns.find((run) => {
+      const metrics = run.metrics && typeof run.metrics === 'object' && !Array.isArray(run.metrics)
+        ? run.metrics as Record<string, unknown>
+        : {};
+      return run.status === 'completed' && metrics.passed === true;
+    });
+    const latestRun = matchingRuns[0];
+    // Publishing only changes workflow metadata. Evaluation freshness follows the
+    // indexed payload, falling back to creation time before the first index.
+    const changedAt = document.lastIndexedAt ?? document.updatedAt;
+    const passingFresh = Boolean(passingRun?.completedAt && passingRun.completedAt >= changedAt);
+    const displayRun = passingFresh ? passingRun : latestRun ?? passingRun;
+    const displayMetrics = displayRun?.metrics && typeof displayRun.metrics === 'object' && !Array.isArray(displayRun.metrics)
+      ? displayRun.metrics as Record<string, unknown>
+      : {};
+    const evaluationStatus = passingFresh
+      ? 'passed'
+      : passingRun
+        ? 'stale'
+        : latestRun
+          ? 'failed'
+          : 'not_run';
+    return {
+      ...document,
+      evaluation: {
+        status: evaluationStatus,
+        runId: displayRun?.id ?? null,
+        score: typeof displayMetrics.averageScore === 'number' ? displayMetrics.averageScore : null,
+        completedAt: displayRun?.completedAt ?? null,
+      },
+    };
+  });
+}
+
+export async function getKnowledgeDocument(actor: KnowledgeActor, documentId: string) {
+  const document = await prisma.aiKnowledgeDocument.findFirst({
+    where: { id: documentId, orgId: actor.orgId, deletedAt: null },
+    select: {
+      id: true,
+      sourceId: true,
+      externalId: true,
+      title: true,
+      status: true,
+      contentRef: true,
+      version: true,
+      mimeType: true,
+      language: true,
+      effectiveFrom: true,
+      effectiveTo: true,
+      priority: true,
+      tags: true,
+      scope: true,
+      metadata: true,
+      lastIndexedAt: true,
+      approvedAt: true,
+      createdAt: true,
+      updatedAt: true,
+      source: {
+        select: {
+          id: true,
+          name: true,
+          type: true,
+          status: true,
+          scope: true,
+          deletedAt: true,
+        },
+      },
+      createdBy: { select: { id: true, fullName: true } },
+      approvedBy: { select: { id: true, fullName: true } },
+      _count: { select: { chunks: { where: { deletedAt: null } } } },
+    },
+  });
+  if (!document || document.source.deletedAt) {
+    throw new KnowledgeBaseError('Knowledge document not found', 404, 'DOCUMENT_NOT_FOUND');
+  }
+  if (!canReadScope(actor, document.source.scope) || !canReadScope(actor, document.scope)) {
+    throw new KnowledgeBaseError('No access to knowledge document', 403, 'DOCUMENT_ACCESS_DENIED');
+  }
+  const content = documentContent(document);
+  const { metadata: _metadata, scope: _scope, source, ...safeDocument } = document;
+  const { scope: _sourceScope, deletedAt: _sourceDeletedAt, ...safeSource } = source;
+  await audit(actor, 'knowledge.document_viewed', 'success', 'knowledge_document', documentId, {
+    sourceId: document.sourceId,
+    version: document.version,
+  });
+  return { ...safeDocument, source: safeSource, content };
 }
 
 export async function updateKnowledgeSource(actor: KnowledgeActor, sourceId: string, input: { name?: string; config?: Record<string, unknown>; priority?: number; tags?: string[]; scope?: Scope; effectiveFrom?: string | null; effectiveTo?: string | null }) {
@@ -115,7 +247,27 @@ export async function publishKnowledgeDocument(actor: KnowledgeActor, documentId
   if (!document) throw new KnowledgeBaseError('Knowledge document not found', 404, 'DOCUMENT_NOT_FOUND');
   if (!isEffective(document.effectiveFrom ?? document.source.effectiveFrom, document.effectiveTo ?? document.source.effectiveTo)) throw new KnowledgeBaseError('Expired or not-yet-effective knowledge cannot be published', 409, 'DOCUMENT_NOT_EFFECTIVE');
   if (!document._count.chunks) throw new KnowledgeBaseError('Re-index the document before publishing', 409, 'DOCUMENT_NOT_INDEXED');
-  await requirePassingEvaluation(actor.orgId, 'knowledge', documentId);
+  let gate: Awaited<ReturnType<typeof requirePassingEvaluation>>;
+  try {
+    gate = await requirePassingEvaluation(actor.orgId, 'knowledge', documentId);
+  } catch (error) {
+    if (error instanceof EvaluationEngineError && error.code === 'EVALUATION_GATE_BLOCKED') {
+      throw new KnowledgeBaseError(
+        'Run and pass evaluation for this document before publishing',
+        409,
+        'KNOWLEDGE_EVALUATION_REQUIRED',
+      );
+    }
+    throw error;
+  }
+  const changedAt = document.lastIndexedAt ?? document.updatedAt;
+  if (!gate.completedAt || gate.completedAt < changedAt) {
+    throw new KnowledgeBaseError(
+      'Document changed after its last passing evaluation; run evaluation again',
+      409,
+      'KNOWLEDGE_EVALUATION_STALE',
+    );
+  }
   await prisma.$transaction(async (tx) => { await tx.aiKnowledgeDocument.update({ where: { id: documentId }, data: { status: 'published', approvedByUserId: actor.userId, approvedAt: new Date() } }); if (document.source.status !== 'published') await tx.aiKnowledgeSource.update({ where: { id: document.sourceId }, data: { status: 'published', approvedByUserId: actor.userId, approvedAt: new Date() } }); });
   await audit(actor, 'knowledge.document_published', 'success', 'knowledge_document', documentId, { sourceId: document.sourceId });
   return { id: documentId, status: 'published' };

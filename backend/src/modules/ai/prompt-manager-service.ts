@@ -27,7 +27,9 @@ function hash(value: string): string {
 }
 
 function encryptContent(value: string): Uint8Array<ArrayBuffer> {
-  return new TextEncoder().encode(encryptToken(value));
+  // Prisma's Bytes field requires a Node Buffer. A plain Uint8Array works in
+  // some runtimes but is rejected by the production Prisma client.
+  return Buffer.from(encryptToken(value), 'utf8') as unknown as Uint8Array<ArrayBuffer>;
 }
 
 function decryptContent(value: Uint8Array): string {

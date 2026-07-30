@@ -137,4 +137,32 @@ describe('model config lifecycle service', () => {
     )).rejects.toMatchObject({ code: 'AI_CONFIG_REVISION_CONFLICT', statusCode: 409 });
     expect(mocks.prisma.aiConfig.updateMany).not.toHaveBeenCalled();
   });
+
+  it('keeps the legacy chat provider and model in sync with the default model config', async () => {
+    const updatedAt = new Date('2026-07-16T01:00:00Z');
+    mocks.prisma.aiModelConfig.findFirst.mockResolvedValue(row({
+      status: 'approved',
+      provider: '9router',
+      model: 'cx/gpt-5.6-terra',
+    }));
+    mocks.prisma.aiConfig.findUnique
+      .mockResolvedValueOnce({ id: 'config-1', defaultModelConfigId: null, updatedAt })
+      .mockResolvedValueOnce({ defaultModelConfigId: 'model-1', updatedAt });
+    mocks.prisma.aiConfig.updateMany.mockResolvedValue({ count: 1 });
+
+    await setDefaultModelConfig(
+      { orgId: 'org-1', userId: 'checker-1' },
+      'model-1',
+      updatedAt.toISOString(),
+    );
+
+    expect(mocks.prisma.aiConfig.updateMany).toHaveBeenCalledWith({
+      where: { orgId: 'org-1', updatedAt },
+      data: {
+        defaultModelConfigId: 'model-1',
+        provider: '9router',
+        model: 'cx/gpt-5.6-terra',
+      },
+    });
+  });
 });

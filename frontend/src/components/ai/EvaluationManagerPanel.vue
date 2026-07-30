@@ -186,12 +186,12 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute } from 'vue-router';
 import {
-  listEvaluationKnowledgeSources,
+  listEvaluationKnowledgeDocuments,
   listEvaluationModels,
   listEvaluationPrompts,
   runServerEvaluation,
   seedInitialEvaluationSuite,
-  type AiEvaluationKnowledgeReference,
+  type AiEvaluationKnowledgeDocumentReference,
   type AiEvaluationModelReference,
   type AiEvaluationPromptReference,
   type AiEvaluationRunResult,
@@ -223,7 +223,7 @@ const prompts = ref<AiEvaluationPromptReference[]>([]);
 const models = ref<AiEvaluationModelReference[]>([]);
 const skills = ref<AiSkillRecord[]>([]);
 const agents = ref<AiAgentRecord[]>([]);
-const knowledgeSources = ref<AiEvaluationKnowledgeReference[]>([]);
+const knowledgeDocuments = ref<AiEvaluationKnowledgeDocumentReference[]>([]);
 const referenceWarnings = ref<string[]>([]);
 const referenceLoading = ref(false);
 const seeding = ref(false);
@@ -249,7 +249,10 @@ const targetOptions = computed<TargetOption[]>(() => {
   if (targetType.value === 'skill') return skills.value.map((item) => ({ id: item.id, label: `${item.name} · ${item.key}` }));
   if (targetType.value === 'agent') return agents.value.map((item) => ({ id: item.id, label: `${item.name} · ${item.key} · ${item.status}` }));
   if (targetType.value === 'model') return models.value.map((item) => ({ id: item.id, label: `${item.name} · ${item.provider}/${item.model}` }));
-  if (targetType.value === 'knowledge') return knowledgeSources.value.map((item) => ({ id: item.id, label: `${item.name} · ${item.type} · ${item.status}` }));
+  if (targetType.value === 'knowledge') return knowledgeDocuments.value.map((item) => ({
+    id: item.id,
+    label: `${item.title} · ${item.source.name} · ${item.status}`,
+  }));
   return [];
 });
 
@@ -298,13 +301,13 @@ async function loadReferences() {
   referenceWarnings.value = [];
   const signal = referenceController.signal;
   const [promptResult, modelResult, skillResult, agentResult, knowledgeResult] = await Promise.allSettled([
-    listEvaluationPrompts(signal), listEvaluationModels(signal), listAiSkills(signal), listAiAgents(undefined, signal), listEvaluationKnowledgeSources(signal),
+    listEvaluationPrompts(signal), listEvaluationModels(signal), listAiSkills(signal), listAiAgents(undefined, signal), listEvaluationKnowledgeDocuments(signal),
   ]);
   if (promptResult.status === 'fulfilled') prompts.value = promptResult.value; else if (!cancelled(promptResult.reason)) referenceWarnings.value.push('Không tải được danh sách prompt/version.');
   if (modelResult.status === 'fulfilled') models.value = modelResult.value; else if (!cancelled(modelResult.reason)) referenceWarnings.value.push('Không tải được danh sách model active/approved.');
   if (skillResult.status === 'fulfilled') skills.value = skillResult.value; else if (!cancelled(skillResult.reason)) referenceWarnings.value.push('Không tải được danh sách kỹ năng.');
   if (agentResult.status === 'fulfilled') agents.value = agentResult.value; else if (!cancelled(agentResult.reason)) referenceWarnings.value.push('Không tải được danh sách tác nhân.');
-  if (knowledgeResult.status === 'fulfilled') knowledgeSources.value = knowledgeResult.value; else if (!cancelled(knowledgeResult.reason)) referenceWarnings.value.push('Không tải được danh sách nguồn tri thức.');
+  if (knowledgeResult.status === 'fulfilled') knowledgeDocuments.value = knowledgeResult.value; else if (!cancelled(knowledgeResult.reason)) referenceWarnings.value.push('Không tải được danh sách tài liệu tri thức.');
   referenceLoading.value = false;
   ensureSelections();
   if (!runName.value) suggestRunName();
