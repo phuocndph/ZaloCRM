@@ -641,6 +641,33 @@ function openQrForReconnect(account: any) {
   loginAccount(account.id);
 }
 
+// Deep-link từ chuông/toast cảnh báo: mở đúng nick và đi thẳng vào bước quét QR.
+// Query được xóa ngay sau khi consume để F5 không tự mở lại wizard hoặc tạo QR mới.
+async function consumeReconnectQuery() {
+  const accountId = typeof route.query.reconnect === 'string' ? route.query.reconnect : '';
+  if (!accountId) return;
+
+  const nextQuery = { ...route.query };
+  delete nextQuery.reconnect;
+  await router.replace({ query: nextQuery }).catch(() => {});
+
+  const account = enriched.value.find((item: EnrichedAccount) => item.id === accountId);
+  if (!account) {
+    toast.warning('Không tìm thấy tài khoản Zalo hoặc bạn không còn quyền truy cập.');
+    return;
+  }
+  if ((account.liveStatus || account.status).toLowerCase() === 'connected') {
+    toast.success(`Tài khoản "${account.displayName || 'Không tên'}" đã kết nối lại.`);
+    return;
+  }
+  if (!canManageZalo.value || !account.canManage) {
+    openDrawer(account.id);
+    toast.warning('Tài khoản đang bị out. Bạn không có quyền kết nối lại nick này.');
+    return;
+  }
+  openQrForReconnect(account);
+}
+
 async function onCardReconnect(account: any) {
   // 2026-06-21 (anh chốt): "Kết nối lại" nick ĐÃ NGẮT = QUÉT QR MỚI (mọi lý do). Trước đây nick
   // passive/disconnected thử reconnect ngầm bằng session cũ → session thường ĐÃ CHẾT → "tự end" /
@@ -817,6 +844,7 @@ onMounted(async () => {
   setupSocket();
   await Promise.all([refreshAll(), fetchDeptTree(), loadPrivacyCounter(), loadInternalContactBadge(), loadSdkLimits()]);
   lastRefresh.value = new Date();
+  await consumeReconnectQuery();
 
   // Light polling — refresh stats every 60s while page is open.
   // No refresh of enriched list to avoid blowing away in-flight selection state.
@@ -825,6 +853,10 @@ onMounted(async () => {
   }, 60_000);
   // Pin to view lifecycle
   (window as any).__zaPollId = id;
+});
+
+watch(() => route.query.reconnect, (accountId) => {
+  if (typeof accountId === 'string' && accountId) void consumeReconnectQuery();
 });
 </script>
 

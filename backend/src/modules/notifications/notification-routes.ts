@@ -18,6 +18,21 @@ interface NotificationItem {
   detail: string;
   priority: string;
   createdAt: string;
+  accountId?: string;
+  accountName?: string;
+  status?: string;
+  disconnectReason?: string | null;
+  incidentKey?: string;
+  actionUrl?: string;
+  actionLabel?: string;
+  shouldAlert?: boolean;
+}
+
+function disconnectedAccountDetail(status: string, reason: string | null): string {
+  if (reason === 'manual') return 'Tài khoản đã được ngắt thủ công';
+  if (status === 'qr_pending' || status === 'expired') return 'Phiên đăng nhập đã hết hạn, cần quét QR lại';
+  if (status === 'connecting') return 'Hệ thống đang thử kết nối lại';
+  return 'Tài khoản đã bị out, cần kết nối lại';
 }
 
 export async function notificationRoutes(app: FastifyInstance) {
@@ -107,20 +122,41 @@ export async function notificationRoutes(app: FastifyInstance) {
     }
 
     // 4. Disconnected Zalo accounts (2026-06-10: ẩn nick đã xóa mềm).
+    // Dùng disconnectedAt/createdAt làm mốc CỐ ĐỊNH cho một incident. Trước đây createdAt
+    // luôn là new Date() nên FE tưởng đây là cảnh báo mới ở mỗi lần poll và dễ spam toast.
     const accounts = await prisma.zaloAccount.findMany({
       where: { orgId: user.orgId, archivedAt: null, ...accountScope },
-      select: { id: true, displayName: true },
+      select: {
+        id: true,
+        displayName: true,
+        status: true,
+        disconnectReason: true,
+        disconnectedAt: true,
+        createdAt: true,
+      },
     });
     for (const acc of accounts) {
       const status = zaloPool.getStatus(acc.id);
       if (status !== 'connected') {
+        const accountName = acc.displayName?.trim() || 'Không tên';
+        const incidentAt = acc.disconnectedAt ?? acc.createdAt;
         notifications.push({
           id: `zalo-${acc.id}`,
           type: 'error',
           priority: 'high',
-          title: `Zalo "${acc.displayName}" mất kết nối`,
-          detail: `Trạng thái: ${status}`,
-          createdAt: new Date().toISOString(),
+          title: `Tài khoản Zalo "${accountName}" đã bị out`,
+          detail: disconnectedAccountDetail(status, acc.disconnectReason),
+          createdAt: incidentAt.toISOString(),
+          accountId: acc.id,
+          accountName,
+          status,
+          disconnectReason: acc.disconnectReason,
+          incidentKey: `${acc.id}:${acc.disconnectedAt?.toISOString() ?? `${acc.status}:${status}`}`,
+          actionUrl: `/settings/channels/zalo?reconnect=${encodeURIComponent(acc.id)}`,
+          actionLabel: 'Kết nối lại',
+          // Sale vừa chủ động ngắt nick đã biết trạng thái này; vẫn hiện trong chuông nhưng
+          // không bật toast gây hiểu nhầm là sự cố ngoài ý muốn.
+          shouldAlert: acc.disconnectReason !== 'manual' && status !== 'connecting',
         });
       }
     }

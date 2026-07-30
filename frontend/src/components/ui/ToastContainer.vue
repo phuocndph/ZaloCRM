@@ -114,4 +114,20 @@ async function onAction(t: ToastItem) {
 .toast-leave-active { transition: all 0.25s ease; }
 .toast-enter-from   { opacity: 0; transform: translateY(-10px); }
 .toast-leave-to     { opacity: 0; transform: translateX(60%); }
+
+@media (max-width: 600px) {
+  .toast-container {
+    top: calc(env(safe-area-inset-top, 0px) + 10px);
+    right: 10px;
+    left: 10px;
+  }
+  .toast {
+    box-sizing: border-box;
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    padding: 11px 10px;
+  }
+  .toast-action { padding: 6px 8px; }
+}
 </style>
