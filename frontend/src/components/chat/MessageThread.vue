@@ -696,7 +696,11 @@
                 </span>
               </template>
             </div>
-            <div class="composer-send-hint">Enter để gửi · Ctrl + Shift + Enter để xuống dòng</div>
+            <div class="composer-send-hint" aria-label="Enter để gửi; Control Shift Enter để xuống dòng">
+              <span><kbd>Enter</kbd> Gửi</span>
+              <span class="composer-hint-separator" aria-hidden="true">·</span>
+              <span><kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>Enter</kbd> Xuống dòng</span>
+            </div>
             <!-- Privacy lock overlay — chỉ phủ input editor, KHÔNG che toolbar bên ngoài -->
             <div
               v-if="!privacyVisibility.canSendInConv(conversation)"
@@ -4317,7 +4321,9 @@ watch(() => props.editingMessage?.id, async (id) => {
 .pending-attachment-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pending-attachment-remove { display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 5px; color: var(--smax-grey-700, #52606d); background: transparent; cursor: pointer; }
 .pending-attachment-remove:hover { color: #b42318; background: rgba(180, 35, 24, 0.1); }
-.composer-send-hint { padding: 2px 8px; color: var(--smax-grey-500, #758195); font-size: 10px; line-height: 1.2; }
+.composer-send-hint { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 4px 8px 3px; color: var(--smax-grey-600, #667085); font-size: 12px; line-height: 1.35; }
+.composer-send-hint kbd { display: inline-flex; align-items: center; min-height: 20px; padding: 1px 5px; border: 1px solid var(--smax-grey-300, #cfd8e3); border-bottom-width: 2px; border-radius: 5px; color: var(--smax-grey-700, #344054); background: var(--smax-grey-50, #f8fafc); font: 600 11px/1.2 inherit; box-shadow: 0 1px 0 rgba(16, 24, 40, 0.04); }
+.composer-hint-separator { margin: 0 2px; color: var(--smax-grey-400, #98a2b3); }
 
 /* EmojiPicker trigger — emoji icon next to send button */
 .input-row :deep(.emoji-trigger) {

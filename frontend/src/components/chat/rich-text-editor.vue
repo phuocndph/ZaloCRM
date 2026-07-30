@@ -191,6 +191,7 @@ import type { SuggestionProps, SuggestionKeyDownProps } from '@tiptap/suggestion
 import { api } from '@/api/index';
 import { useToast } from '@/composables/use-toast';
 import { useGroups } from '@/composables/use-groups';
+import { getComposerEnterAction } from './composer-keyboard';
 
 // Lucide icons (anh chốt 2026-05-22 — bộ icon đồng bộ thay MDI)
 import {
@@ -448,15 +449,17 @@ const editor = useEditor({
         }
       }
       if (event.key === 'Enter') {
-        // Chỉ Ctrl+Shift+Enter chèn xuống dòng trong composer. Tự chèn hardBreak +
+        const action = getComposerEnterAction(event);
+        // Ctrl+Shift+Enter chèn xuống dòng trong composer. Tự chèn hardBreak +
         // consume event để Tiptap/Vuetify không nuốt phím rồi đẩy focus sang ô khác.
-        if (event.ctrlKey && event.shiftKey) {
+        if (action === 'newline') {
           event.preventDefault();
           editor.value?.chain().focus().setHardBreak().run();
           return true;
         }
         // Enter thường: ô chat (submitOnEnter) → gửi. Block editor → để Tiptap xuống dòng.
-        if (props.submitOnEnter) {
+        // IME và mọi tổ hợp modifier khác đều được nhường lại cho editor.
+        if (action === 'send' && props.submitOnEnter) {
           event.preventDefault();
           emit('submit');
           return true;

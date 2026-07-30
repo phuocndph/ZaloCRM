@@ -418,7 +418,8 @@
         <button class="m-iconbtn mch-tool" aria-label="Thêm chức năng" @click="showComposerTools = true"><PlusIcon :size="24" :stroke-width="2" /></button>
         <textarea
           ref="textarea" v-model="text" rows="1" placeholder="Nhập tin nhắn..."
-          @keydown.enter.exact.prevent="send" @input="onComposerInput"
+          aria-label="Nội dung tin nhắn" aria-keyshortcuts="Enter Control+Shift+Enter"
+          @keydown="onComposerKeydown" @input="onComposerInput"
         />
         <!-- 1 nút gộp Emoji + Sticker (luôn hiện, kể cả khi đang gõ). -->
         <button type="button" class="m-iconbtn mch-emoji-btn" aria-label="Emoji và Sticker" @click="showEmojiSticker = true">
@@ -464,6 +465,7 @@ import { useChatOperations } from '@/composables/use-chat-operations';
 import { useForwardFriends, forwardFriendName } from '@/composables/use-forward-friends';
 import { useConversationContent } from '@/composables/use-conversation-content';
 import { CONVERSATION_PRIVATE_MESSAGE } from '@/composables/use-conversation-privacy';
+import { getComposerEnterAction } from '@/components/chat/composer-keyboard';
 
 const route = useRoute();
 const router = useRouter();
@@ -621,6 +623,13 @@ async function retry() {
 function onComposerInput() {
   autoGrow();
   if (convId.value) sendTypingEvent(convId.value);
+}
+
+function onComposerKeydown(event: KeyboardEvent) {
+  const action = getComposerEnterAction(event);
+  if (action !== 'send') return;
+  event.preventDefault();
+  void send();
 }
 
 // Khi đang đọc hội thoại trên thiết bị có bàn phím cứng, cho phép gõ ngay mà
