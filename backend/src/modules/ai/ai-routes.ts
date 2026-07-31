@@ -38,6 +38,7 @@ import { agentManagerRoutes } from './agent-manager-routes.js';
 import { providerConnectionRoutes } from './provider-connection-routes.js';
 import { modelConfigRoutes } from './model-config-routes.js';
 import { aiPermissions } from './ai-control-plane-permissions.js';
+import { generateConversationReply } from './reply-generator-service.js';
 
 async function assertConversationReadAccess(request: FastifyRequest, reply: FastifyReply, conversationId: string) {
   const user = request.user!;
@@ -112,6 +113,10 @@ function getStatusFromError(err: unknown, fallback: string) {
 }
 
 function sendHandledError(reply: FastifyReply, err: unknown, fallback: string) {
+  const typed = err as { message?: string; statusCode?: number; code?: string } | null;
+  if (typed && typeof typed.statusCode === 'number' && typed.statusCode >= 400 && typed.statusCode < 600) {
+    return reply.status(typed.statusCode).send({ error: typed.message || fallback, code: typed.code });
+  }
   const handled = getStatusFromError(err, fallback);
   const safeMessage = handled.status === 500 ? fallback : handled.message;
   return reply.status(handled.status).send({ error: safeMessage });
@@ -222,7 +227,14 @@ export async function aiRoutes(app: FastifyInstance) {
       const access = await assertConversationReadAccess(request, reply, body.conversationId);
       if (!access) return;
       if (!(await assertPrivacyAllowsAi(request, reply, body.conversationId))) return;
-      return await generateAiOutput({ orgId: request.user!.orgId, conversationId: body.conversationId, messageId: body.messageId, type: 'reply_draft' });
+      const privacy = await (await import('../privacy/redact.js')).buildPrivacyContext(request);
+      const output = await generateConversationReply({
+        orgId: request.user!.orgId,
+        userId: request.user!.id,
+        role: request.user!.role,
+        privacyUnlocked: privacy.privacyUnlocked,
+      }, body.conversationId, {});
+      return { ...output, content: output.reply_text };
     } catch (err) {
       logger.error('[ai] Suggest error:', err);
       return sendHandledError(reply, err, 'Failed to generate AI suggestion');

@@ -1174,8 +1174,8 @@ async function runAiSuggest() {
   }
   suggestLoading.value = true;
   try {
-    const { data } = await api.post<{ content: string }>('/ai/suggest', { conversationId: props.conversationId });
-    suggestText.value = (data?.content || '').trim();
+    const { data } = await api.post<{ reply_text: string }>(`/ai/replies/conversations/${props.conversationId}/generate`, {});
+    suggestText.value = (data?.reply_text || '').trim();
   } catch (err) {
     const msg = (err as { response?: { data?: { error?: string } } }).response?.data?.error || 'AI suggest thất bại';
     toast.error(msg);

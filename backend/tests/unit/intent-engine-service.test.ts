@@ -23,6 +23,10 @@ describe('IntentEngine', () => {
     expect(output).toMatchObject({ primary_intent: 'unknown', suggested_skill: null });
     expect(output.confidence).toBeLessThan(0.58);
   });
+  it('maps catalog intents to deployable skill keys', async () => {
+    await expect(analyzeIntentText('Sản phẩm này giá bao nhiêu')).resolves.toMatchObject({ suggested_skill: 'price_inquiry' });
+    await expect(analyzeIntentText('Tôi muốn khiếu nại vì không hài lòng')).resolves.toMatchObject({ suggested_skill: 'complaint_handling' });
+  });
   it('does not invoke a model without an explicitly selected model configuration', async () => {
     const output = await analyzeIntentText('alo');
     expect(output.primary_intent).toBe('greeting');

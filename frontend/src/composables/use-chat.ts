@@ -713,9 +713,9 @@ function buildChat() {
     aiSuggestionLoading.value = true;
     aiSuggestionError.value = '';
     try {
-      const res = await api.post('/ai/suggest', { conversationId });
+      const res = await api.post(`/ai/replies/conversations/${conversationId}/generate`, {});
       if (requestId !== aiSuggestionRequest.value || selectedConvId.value !== conversationId) return;
-      aiSuggestion.value = res.data.content || '';
+      aiSuggestion.value = res.data.reply_text || '';
       await fetchAiUsage();
     } catch (err: any) {
       if (requestId !== aiSuggestionRequest.value || selectedConvId.value !== conversationId) return;

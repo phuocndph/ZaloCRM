@@ -42,6 +42,14 @@ function embedding(value: string) {
 }
 function cosine(a: number[], b: number[]) { if (!a.length || !b.length || a.length !== b.length) return 0; return Math.max(0, a.reduce((total, item, index) => total + item * b[index], 0)); }
 function redactedPreview(value: string, length = 420) { return value.replace(/\s+/g, ' ').trim().slice(0, length); }
+function readableChunk(chunk: { contentEncrypted?: Uint8Array | null; contentRedacted?: string | null }) {
+  if (!chunk.contentEncrypted) return chunk.contentRedacted ?? '';
+  try {
+    return decryptToken(text(chunk.contentEncrypted)).replace(/\s+/g, ' ').trim().slice(0, CHUNK_CHARS + 200);
+  } catch {
+    return chunk.contentRedacted ?? '';
+  }
+}
 function chunks(value: string) {
   const normalized = value.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
   const parts: string[] = []; let start = 0;
@@ -273,12 +281,72 @@ export async function publishKnowledgeDocument(actor: KnowledgeActor, documentId
   return { id: documentId, status: 'published' };
 }
 
-export async function searchKnowledge(actor: KnowledgeActor, query: string, options: { limit?: number; includeDraft?: boolean } = {}) {
+export async function searchKnowledge(actor: KnowledgeActor, query: string, options: {
+  limit?: number;
+  includeDraft?: boolean;
+  sourceTypes?: string[];
+  tags?: string[];
+} = {}) {
   const normalized = query.trim(); if (normalized.length < 2) throw new KnowledgeBaseError('Search query must have at least 2 characters', 400, 'QUERY_TOO_SHORT');
+  const sourceTypes = new Set((options.sourceTypes ?? []).map((value) => value.trim()).filter(Boolean));
+  const requiredTags = new Set(cleanTags(options.tags));
   const now = new Date(); const queryVector = embedding(normalized); const queryTerms = tokenize(normalized); const documents = await prisma.aiKnowledgeDocument.findMany({ where: { orgId: actor.orgId, deletedAt: null, status: options.includeDraft ? { in: ['draft', 'published'] } : 'published', OR: [{ effectiveFrom: null }, { effectiveFrom: { lte: now } }] }, include: { source: true, chunks: { where: { deletedAt: null } } } });
   const results: Array<Record<string, unknown>> = [];
-  for (const document of documents) { if (!document.source || document.source.deletedAt || (!options.includeDraft && document.source.status !== 'published') || !isEffective(document.effectiveFrom ?? document.source.effectiveFrom, document.effectiveTo ?? document.source.effectiveTo, now) || !canReadScope(actor, document.source.scope) || !canReadScope(actor, document.scope)) continue; for (const chunk of document.chunks) { const semantic = cosine(queryVector, chunk.embedding); const keyword = queryTerms.length ? queryTerms.filter((term) => chunk.keywords.includes(term)).length / queryTerms.length : 0; const priority = Math.max(-0.08, Math.min(0.08, (document.priority + document.source.priority) / 1000)); const score = semantic * 0.68 + keyword * 0.28 + priority + (document.approvedAt ? 0.04 : 0); if (score < 0.05) continue; results.push({ score: Number(score.toFixed(4)), citation: { sourceId: document.sourceId, sourceName: document.source.name, sourceType: document.source.type, documentId: document.id, documentTitle: document.title, documentVersion: document.version, chunkId: chunk.id, chunkIndex: chunk.chunkIndex, effectiveFrom: document.effectiveFrom ?? document.source.effectiveFrom, effectiveTo: document.effectiveTo ?? document.source.effectiveTo }, excerpt: chunk.contentRedacted, retrieval: { semantic: Number(semantic.toFixed(4)), keyword: Number(keyword.toFixed(4)), priority: document.priority + document.source.priority } }); } }
-  const limit = Math.max(1, Math.min(20, Math.floor(options.limit ?? 6))); const ranked = results.sort((a: any, b: any) => b.score - a.score).slice(0, limit); await audit(actor, 'knowledge.search', 'success', 'knowledge_search', sha256(normalized), { queryHash: sha256(normalized), results: ranked.length, includeDraft: !!options.includeDraft }); return { query: normalized, results: ranked, diagnostics: { mode: 'hybrid_local_hash_v1', candidateDocuments: documents.length, excludedExpired: true, citationsRequired: true } };
+  for (const document of documents) {
+    if (!document.source || document.source.deletedAt || (!options.includeDraft && document.source.status !== 'published') || !isEffective(document.effectiveFrom ?? document.source.effectiveFrom, document.effectiveTo ?? document.source.effectiveTo, now) || !canReadScope(actor, document.source.scope) || !canReadScope(actor, document.scope)) continue;
+    if (sourceTypes.size && !sourceTypes.has(document.source.type)) continue;
+    const documentTags = new Set([...(document.source.tags ?? []), ...(document.tags ?? [])].map((value) => value.toLowerCase()));
+    if (requiredTags.size && ![...requiredTags].some((tag) => documentTags.has(tag))) continue;
+    for (const chunk of document.chunks) {
+      const semantic = cosine(queryVector, chunk.embedding);
+      const keyword = queryTerms.length ? queryTerms.filter((term) => chunk.keywords.includes(term)).length / queryTerms.length : 0;
+      const priority = Math.max(-0.08, Math.min(0.08, (document.priority + document.source.priority) / 1000));
+      const score = semantic * 0.68 + keyword * 0.28 + priority + (document.approvedAt ? 0.04 : 0);
+      if (score < 0.05) continue;
+      results.push({
+        score: Number(score.toFixed(4)),
+        citation: {
+          sourceId: document.sourceId,
+          sourceName: document.source.name,
+          sourceType: document.source.type,
+          documentId: document.id,
+          documentTitle: document.title,
+          documentVersion: document.version,
+          chunkId: chunk.id,
+          chunkIndex: chunk.chunkIndex,
+          effectiveFrom: document.effectiveFrom ?? document.source.effectiveFrom,
+          effectiveTo: document.effectiveTo ?? document.source.effectiveTo,
+        },
+        excerpt: readableChunk(chunk),
+        retrieval: {
+          semantic: Number(semantic.toFixed(4)),
+          keyword: Number(keyword.toFixed(4)),
+          priority: document.priority + document.source.priority,
+        },
+      });
+    }
+  }
+  const limit = Math.max(1, Math.min(20, Math.floor(options.limit ?? 6)));
+  const ranked = results.sort((a: any, b: any) => b.score - a.score).slice(0, limit);
+  await audit(actor, 'knowledge.search', 'success', 'knowledge_search', sha256(normalized), {
+    queryHash: sha256(normalized),
+    results: ranked.length,
+    includeDraft: !!options.includeDraft,
+    sourceTypes: [...sourceTypes],
+    tags: [...requiredTags],
+  });
+  return {
+    query: normalized,
+    results: ranked,
+    diagnostics: {
+      mode: 'hybrid_local_hash_v1',
+      candidateDocuments: documents.length,
+      excludedExpired: true,
+      citationsRequired: true,
+      sourceTypes: [...sourceTypes],
+      tags: [...requiredTags],
+    },
+  };
 }
 
 export async function archiveKnowledgeSource(actor: KnowledgeActor, sourceId: string) { const source = await prisma.aiKnowledgeSource.findFirst({ where: { id: sourceId, orgId: actor.orgId, deletedAt: null } }); if (!source) throw new KnowledgeBaseError('Knowledge source not found', 404, 'SOURCE_NOT_FOUND'); await prisma.aiKnowledgeSource.update({ where: { id: sourceId }, data: { status: 'archived', deletedAt: new Date() } }); await audit(actor, 'knowledge.source_archived', 'success', 'knowledge_source', sourceId); return { id: sourceId, status: 'archived' }; }

@@ -9,7 +9,23 @@ export class IntentEngineError extends Error { constructor(message: string, publ
 
 const THRESHOLD = 0.58;
 const HUMAN_INTENTS = new Set<Intent>(['complaint', 'return_or_refund', 'discount_request', 'human_request']);
-const SKILL_BY_INTENT: Partial<Record<Intent, string>> = { product_inquiry: 'product_knowledge', price_inquiry: 'price_lookup', quote_request: 'quote_assistance', product_comparison: 'product_comparison', shipping_inquiry: 'shipping_policy', warranty_inquiry: 'warranty_policy', discount_request: 'discount_policy', order_intent: 'order_handoff', complaint: 'complaint_handoff', return_or_refund: 'return_refund_handoff', payment_inquiry: 'payment_policy', follow_up_response: 'follow_up_assistance' };
+const SKILL_BY_INTENT: Partial<Record<Intent, string>> = {
+  greeting: 'general_assistant',
+  product_inquiry: 'product_advisor',
+  price_inquiry: 'price_inquiry',
+  quote_request: 'quote_assistant',
+  product_comparison: 'product_advisor',
+  shipping_inquiry: 'shipping_support',
+  warranty_inquiry: 'warranty_support',
+  discount_request: 'sales_objection',
+  order_intent: 'general_assistant',
+  complaint: 'complaint_handling',
+  return_or_refund: 'complaint_handling',
+  payment_inquiry: 'payment_reminder',
+  follow_up_response: 'follow_up',
+  not_interested: 'sales_objection',
+  human_request: 'human_handoff',
+};
 const MISSING: Partial<Record<Intent, string[]>> = { product_inquiry: ['product_or_need'], price_inquiry: ['product_or_variant'], quote_request: ['product_or_variant', 'quantity_or_scope'], product_comparison: ['products_to_compare'], shipping_inquiry: ['delivery_location'], warranty_inquiry: ['product_or_order'], discount_request: ['product_or_quote'], order_intent: ['product_or_variant', 'quantity', 'delivery_information'], complaint: ['order_or_product', 'issue_details'], return_or_refund: ['order_reference', 'return_reason'], payment_inquiry: ['order_or_invoice'] };
 const PATTERNS: Array<{ intent: Intent; score: number; patterns: RegExp[] }> = [
   { intent: 'spam', score: .96, patterns: [/https?:\/\//, /(?:kiếm tiền|vay nóng|casino|đầu tư).{0,30}(?:ngay|siêu lợi nhuận)/i] },

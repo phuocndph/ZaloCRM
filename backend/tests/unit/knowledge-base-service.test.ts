@@ -36,4 +36,22 @@ describe('KnowledgeBaseService', () => {
     const result = await searchKnowledge(actor, 'gia can ho 2pn');
     expect(result.results).toHaveLength(1); expect(result.results[0]).toMatchObject({ citation: { sourceId: 'source-1', documentId: 'doc-1', chunkId: 'chunk-1', documentVersion: 2 } });
   });
+  it('applies skill source/tag scope and returns decrypted source text', async () => {
+    mocks.prisma.aiKnowledgeDocument.findMany.mockResolvedValue([
+      document({
+        id: 'price-doc',
+        source: source({ id: 'price-source', type: 'price_list', tags: ['sales'] }),
+        chunks: [{ id: 'price-chunk', chunkIndex: 0, contentRedacted: 'redacted price', contentEncrypted: new TextEncoder().encode('enc:internal price detail'), keywords: ['warranty'], embedding: new Array(96).fill(0), deletedAt: null }],
+      }),
+      document({
+        id: 'policy-doc',
+        sourceId: 'policy-source',
+        source: source({ id: 'policy-source', type: 'policy', tags: ['support'] }),
+        chunks: [{ id: 'policy-chunk', chunkIndex: 0, contentRedacted: 'redacted policy', contentEncrypted: new TextEncoder().encode('enc:Approved warranty is 12 months'), keywords: ['warranty'], embedding: new Array(96).fill(0), deletedAt: null }],
+      }),
+    ]);
+    const result = await searchKnowledge(actor, 'warranty', { sourceTypes: ['policy'], tags: ['support'] });
+    expect(result.results).toHaveLength(1);
+    expect(result.results[0]).toMatchObject({ excerpt: 'Approved warranty is 12 months', citation: { sourceType: 'policy', documentId: 'policy-doc' } });
+  });
 });
