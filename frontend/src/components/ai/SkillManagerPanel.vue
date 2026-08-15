@@ -220,20 +220,20 @@
           <div class="detail-grid">
             <section class="detail-card">
               <h4><span class="mdi mdi-target" /> Điều kiện kích hoạt</h4>
-              <h5>Intents</h5><div class="chips"><span v-for="item in selectedDefinition.activation.intents" :key="item">{{ item }}</span><em v-if="!selectedDefinition.activation.intents.length">Chưa cấu hình</em></div>
+              <h5>Ý định khách hàng</h5><div class="chips"><span v-for="item in selectedDefinition.activation.intents" :key="item">{{ intentLabel(item) }}</span><em v-if="!selectedDefinition.activation.intents.length">Chưa cấu hình</em></div>
               <h5>Điều kiện</h5><ul><li v-for="item in selectedDefinition.activation.conditions" :key="item">{{ item }}</li></ul><p v-if="!selectedDefinition.activation.conditions.length" class="empty-line">Chưa cấu hình</p>
             </section>
             <section class="detail-card">
               <h4><span class="mdi mdi-book-open-page-variant-outline" /> Phạm vi tri thức</h4>
-              <h5>Loại nguồn</h5><div class="chips"><span v-for="item in selectedDefinition.knowledgeScope.sourceTypes" :key="item">{{ item }}</span><em v-if="!selectedDefinition.knowledgeScope.sourceTypes.length">Không giới hạn đã khai báo</em></div>
-              <h5>Tags</h5><div class="chips neutral"><span v-for="item in selectedDefinition.knowledgeScope.tags" :key="item">{{ item }}</span><em v-if="!selectedDefinition.knowledgeScope.tags?.length">Không có tags</em></div>
+              <h5>Loại nguồn</h5><div class="chips"><span v-for="item in selectedDefinition.knowledgeScope.sourceTypes" :key="item">{{ sourceTypeLabel(item) }}</span><em v-if="!selectedDefinition.knowledgeScope.sourceTypes.length">Không giới hạn đã khai báo</em></div>
+              <h5>Nhãn kiến thức</h5><div class="chips neutral"><span v-for="item in selectedDefinition.knowledgeScope.tags" :key="item">{{ tagLabel(item) }}</span><em v-if="!selectedDefinition.knowledgeScope.tags?.length">Không có nhãn</em></div>
             </section>
             <section class="detail-card wide">
               <h4><span class="mdi mdi-tools" /> Khả năng và công cụ</h4>
               <div class="capability-columns">
-                <div><h5>Công cụ được phép</h5><div class="chips tool"><span v-for="item in selectedDefinition.allowedTools" :key="item">{{ item }}</span><em v-if="!selectedDefinition.allowedTools.length">Không có công cụ</em></div></div>
-                <div><h5>Hành động được phép</h5><div class="chips action"><span v-for="item in selectedDefinition.allowedActions" :key="item">{{ item }}</span><em v-if="!selectedDefinition.allowedActions.length">Không có hành động</em></div></div>
-                <div><h5>Cần người duyệt</h5><div class="chips approval"><span v-for="item in selectedDefinition.approvalActions" :key="item">{{ item }}</span><em v-if="!selectedDefinition.approvalActions.length">Không khai báo</em></div></div>
+                <div><h5>Công cụ được phép</h5><div class="chips tool"><span v-for="item in selectedDefinition.allowedTools" :key="item">{{ toolLabel(item) }}</span><em v-if="!selectedDefinition.allowedTools.length">Không có công cụ</em></div></div>
+                <div><h5>Hành động được phép</h5><div class="chips action"><span v-for="item in selectedDefinition.allowedActions" :key="item">{{ actionLabel(item) }}</span><em v-if="!selectedDefinition.allowedActions.length">Không có hành động</em></div></div>
+                <div><h5>Cần người duyệt</h5><div class="chips approval"><span v-for="item in selectedDefinition.approvalActions" :key="item">{{ actionLabel(item) }}</span><em v-if="!selectedDefinition.approvalActions.length">Không khai báo</em></div></div>
               </div>
             </section>
             <section class="detail-card">
@@ -245,9 +245,9 @@
               <ul class="guardrails"><li v-for="item in selectedDefinition.handoffRules" :key="item">{{ item }}</li></ul><p v-if="!selectedDefinition.handoffRules.length" class="empty-line">Chưa có quy tắc bàn giao.</p>
             </section>
             <section class="detail-card wide prompt-card">
-              <div class="card-title-actions"><h4><span class="mdi mdi-message-text-outline" /> Prompt production liên kết</h4><span>{{ productionPromptCount(detail) }} phiên bản</span></div>
+              <div class="card-title-actions"><h4><span class="mdi mdi-message-text-outline" /> Hướng dẫn AI đang sử dụng</h4><span>{{ productionPromptCount(detail) }} phiên bản</span></div>
               <div v-if="detail.prompts.length" class="prompt-list">
-                <div v-for="prompt in detail.prompts" :key="prompt.id"><code>{{ prompt.key }}</code><span v-if="prompt.versions.length">Production v{{ prompt.versions.map((version) => version.version).join(', v') }}</span><span v-else class="missing">Chưa có production</span></div>
+                <div v-for="prompt in detail.prompts" :key="prompt.id"><code>{{ prompt.key }}</code><span v-if="prompt.versions.length">Bản đang dùng v{{ prompt.versions.map((version) => version.version).join(', v') }}</span><span v-else class="missing">Chưa có bản đang dùng</span></div>
               </div>
               <p v-else class="empty-line">Chưa có prompt nào được liên kết bởi backend.</p>
             </section>
@@ -355,6 +355,17 @@ function definitionFor(skill: AiSkillRecord) { return skillDefinitionOf(skill); 
 function toneLabel(tone: AiSkillTone) { return tones.find((item) => item.value === tone)?.label || tone; }
 function formatDate(value: string) { return new Date(value).toLocaleString('vi-VN'); }
 function productionPromptCount(skill: AiSkillRecord) { return skill.prompts.reduce((total, prompt) => total + prompt.versions.length, 0); }
+
+const intentLabels: Record<string, string> = { greeting: 'Chào hỏi', product_advice: 'Tư vấn sản phẩm', price_inquiry: 'Hỏi giá', complaint: 'Khiếu nại', return_or_refund: 'Đổi trả / hoàn tiền', human_handoff: 'Chuyển nhân viên' };
+const sourceTypeLabels: Record<string, string> = { product: 'Sản phẩm', price_list: 'Bảng giá', policy: 'Chính sách', faq: 'Câu hỏi thường gặp', consultation_script: 'Kịch bản tư vấn', complaint_process: 'Quy trình khiếu nại' };
+const toolLabels: Record<string, string> = { 'context.read': 'Xem ngữ cảnh hội thoại', 'knowledge.search': 'Tra cứu kho kiến thức' };
+const actionLabels: Record<string, string> = { suggest_reply: 'Đề xuất câu trả lời', create_handoff: 'Tạo yêu cầu bàn giao', send_reply: 'Gửi trả lời', refund: 'Hoàn tiền', discount: 'Giảm giá' };
+function displayLabel(value: string, labels: Record<string, string>) { return labels[value] || value.replace(/_/g, ' '); }
+function intentLabel(value: string) { return displayLabel(value, intentLabels); }
+function sourceTypeLabel(value: string) { return displayLabel(value, sourceTypeLabels); }
+function toolLabel(value: string) { return displayLabel(value, toolLabels); }
+function actionLabel(value: string) { return displayLabel(value, actionLabels); }
+function tagLabel(value: string) { return value === 'sample' ? 'Mẫu' : value.replace(/_/g, ' '); }
 
 async function loadSkills(preferredId = selectedId.value) {
   listController?.abort();
@@ -509,7 +520,7 @@ onBeforeUnmount(() => { listController?.abort(); detailController?.abort(); });
 .count-badge { padding: 2px 7px; border-radius: 999px; background: #eaf2ff; color: #1d4ed8; font-size: 10px; font-weight: 700; }
 .header-actions, .detail-actions, .form-actions { display: flex; gap: 7px; align-items: center; }
 button { font: inherit; }
-.primary, .secondary, .archive-button, .clear-filter, .list-state button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 33px; padding: 6px 10px; border-radius: 7px; font-size: 11px; font-weight: 650; cursor: pointer; }
+.primary, .secondary, .archive-button, .clear-filter, .list-state button { display: inline-flex; align-items: center; justify-content: center; gap: 5px; min-height: 36px; padding: 7px 12px; border-radius: 7px; font-size: 13px; font-weight: 650; cursor: pointer; }
 .primary { border: 1px solid #2563eb; background: #2563eb; color: #fff; }
 .secondary, .list-state button { border: 1px solid #cbd5e1; background: #fff; color: #475569; }
 .archive-button { border: 1px solid #fed7aa; background: #fff7ed; color: #c2410c; }
@@ -549,23 +560,23 @@ button:disabled { cursor: wait; opacity: .6; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .detail-header, .form-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; padding-bottom: 13px; border-bottom: 1px solid #e2e8f0; }
 .detail-title-row { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
-.detail-header h3, .form-header h3 { margin: 0; color: #172033; font-size: 18px; }
-.detail-header code { display: block; margin-top: 3px; color: #64748b; font-size: 10px; }.detail-header p, .form-header p { max-width: 660px; margin: 7px 0 0; color: #64748b; font-size: 12px; line-height: 1.5; }
-.active-pill { padding: 3px 6px; border-radius: 999px; background: #f0fdf4; }
+.detail-header h3, .form-header h3 { margin: 0; color: #172033; font-size: 22px; }
+.detail-header code { display: block; margin-top: 5px; color: #64748b; font-size: 12px; }.detail-header p, .form-header p { max-width: 660px; margin: 8px 0 0; color: #64748b; font-size: 14px; line-height: 1.55; }
+.active-pill { padding: 4px 8px; border-radius: 999px; background: #f0fdf4; font-size: 12px; }
 .readiness-warning { display: flex; align-items: flex-start; gap: 8px; margin-top: 12px; padding: 10px; border: 1px solid #fde68a; border-radius: 8px; background: #fffbeb; color: #92400e; }
 .readiness-warning p { margin: 0; font-size: 11px; line-height: 1.5; }
 .summary-cards { display: grid; grid-template-columns: repeat(4, minmax(110px, 1fr)); gap: 8px; margin: 12px 0; }
-.summary-cards article { padding: 10px; border: 1px solid #e2e8f0; border-radius: 8px; background: #fff; }
-.summary-cards span { display: block; color: #94a3b8; font-size: 9px; text-transform: uppercase; }.summary-cards strong { display: block; margin-top: 5px; color: #334155; font-size: 12px; }.summary-cards .risk-text { display: inline-block; padding: 2px 5px; border-radius: 5px; }.summary-cards .mono { overflow: hidden; font: 10px Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.summary-cards article { padding: 12px; border: 1px solid #e2e8f0; border-radius: 8px; background: #fff; }
+.summary-cards span { display: block; color: #64748b; font-size: 11px; font-weight: 650; text-transform: uppercase; }.summary-cards strong { display: block; margin-top: 6px; color: #334155; font-size: 15px; }.summary-cards .risk-text { display: inline-block; padding: 3px 6px; border-radius: 5px; }.summary-cards .mono { overflow: hidden; font: 12px Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
 .detail-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-.detail-card { min-width: 0; padding: 12px; border: 1px solid #e2e8f0; border-radius: 9px; background: #fff; }.detail-card.wide { grid-column: 1 / -1; }
-.detail-card h4 { display: flex; align-items: center; gap: 6px; margin: 0 0 10px; color: #334155; font-size: 12px; }.detail-card h4 .mdi { color: #2563eb; font-size: 16px; }.detail-card h5 { margin: 10px 0 5px; color: #64748b; font-size: 9px; letter-spacing: .04em; text-transform: uppercase; }
-.detail-card ul { margin: 5px 0 0; padding-left: 18px; color: #475569; font-size: 11px; line-height: 1.55; }
-.chips { display: flex; gap: 5px; flex-wrap: wrap; }.chips span { padding: 3px 6px; border-radius: 5px; background: #eaf2ff; color: #1d4ed8; font: 10px Consolas, monospace; }.chips.neutral span { background: #f1f5f9; color: #475569; }.chips.tool span { background: #ede9fe; color: #6d28d9; }.chips.action span { background: #ecfdf5; color: #047857; }.chips.approval span { background: #fff7ed; color: #c2410c; }.chips em, .empty-line { margin: 0; color: #94a3b8; font-size: 10px; font-style: normal; }
+.detail-card { min-width: 0; padding: 14px; border: 1px solid #e2e8f0; border-radius: 9px; background: #fff; }.detail-card.wide { grid-column: 1 / -1; }
+.detail-card h4 { display: flex; align-items: center; gap: 7px; margin: 0 0 12px; color: #1e293b; font-size: 15px; }.detail-card h4 .mdi { color: #2563eb; font-size: 19px; }.detail-card h5 { margin: 12px 0 6px; color: #475569; font-size: 11px; font-weight: 750; letter-spacing: .04em; text-transform: uppercase; }
+.detail-card ul { margin: 6px 0 0; padding-left: 20px; color: #334155; font-size: 14px; line-height: 1.6; }
+.chips { display: flex; gap: 6px; flex-wrap: wrap; }.chips span { padding: 5px 8px; border-radius: 6px; background: #eaf2ff; color: #1d4ed8; font: 12px/1.35 system-ui, sans-serif; font-weight: 650; }.chips.neutral span { background: #f1f5f9; color: #475569; }.chips.tool span { background: #ede9fe; color: #6d28d9; }.chips.action span { background: #ecfdf5; color: #047857; }.chips.approval span { background: #fff7ed; color: #c2410c; }.chips em, .empty-line { margin: 0; color: #64748b; font-size: 12px; font-style: normal; }
 .capability-columns { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .guardrails li::marker { color: #2563eb; }
-.card-title-actions, .prompt-list > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; }.card-title-actions > span { color: #94a3b8; font-size: 10px; }.prompt-list > div { padding: 7px 0; border-top: 1px solid #f1f5f9; font-size: 10px; }.prompt-list code { color: #475569; }.prompt-list span { color: #15803d; }.prompt-list .missing { color: #b45309; }
-.detail-footer { margin-top: 12px; color: #94a3b8; font-size: 9px; text-align: right; }
+.card-title-actions, .prompt-list > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; }.card-title-actions > span { color: #64748b; font-size: 12px; }.prompt-list > div { padding: 9px 0; border-top: 1px solid #f1f5f9; font-size: 13px; }.prompt-list code { color: #475569; font-size: 12px; }.prompt-list span { color: #15803d; }.prompt-list .missing { color: #b45309; }
+.detail-footer { margin-top: 12px; color: #64748b; font-size: 11px; text-align: right; }
 .skill-form { max-width: 940px; margin: 0 auto; }.icon-button { border: 0; background: transparent; color: #64748b; font-size: 20px; cursor: pointer; }
 fieldset { margin: 12px 0; padding: 12px; border: 1px solid #dbe4f0; border-radius: 9px; background: #fff; } legend { padding: 0 5px; color: #334155; font-size: 11px; font-weight: 750; }
 .skill-form label { display: flex; flex-direction: column; gap: 5px; margin-bottom: 9px; color: #475569; font-size: 10px; font-weight: 650; }.skill-form label small { color: #94a3b8; font-weight: 400; }
