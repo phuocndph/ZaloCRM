@@ -44,8 +44,10 @@ import {
 } from 'lucide-vue-next';
 import { useChat } from '@/composables/use-chat';
 import { useMobile } from '@/composables/use-mobile';
+import { useWebPush } from '@/composables/use-web-push';
 
 const { isOnline } = useMobile();
+useWebPush().startAutoRecovery();
 // Tái dùng socket + realtime của hệ thống hiện có, KHÔNG dựng kênh riêng.
 const { initSocket, destroySocket, realtimeOffline } = useChat();
 

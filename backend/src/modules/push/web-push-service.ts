@@ -15,6 +15,7 @@
  * Không đính token, không đính dữ liệu nhạy cảm.
  */
 import webpush, { type PushSubscription as WebPushSub, WebPushError } from 'web-push';
+import { createHash } from 'node:crypto';
 import { prisma } from '../../shared/database/prisma-client.js';
 import { logger } from '../../shared/utils/logger.js';
 
@@ -54,6 +55,13 @@ export interface WebPushPayload {
   sentAt?: string;
 }
 
+function topicFor(payload: WebPushPayload): string | undefined {
+  if (!payload.conversationId) return undefined;
+  // Web Push Topic is capped at 32 URL-safe characters. One topic per conversation
+  // lets the push service retain only the newest alert while a device is offline.
+  return createHash('sha256').update(payload.conversationId).digest('base64url').slice(0, 32);
+}
+
 /** Gửi tới TẤT CẢ subscription còn sống của 1 user. Không bao giờ throw. */
 export async function sendWebPushToUser(userId: string, payload: WebPushPayload): Promise<void> {
   if (!ensureConfigured()) return;
@@ -69,7 +77,10 @@ export async function sendWebPushToUser(userId: string, payload: WebPushPayload)
       subs.map(async (s) => {
         const sub: WebPushSub = { endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } };
         try {
-          await webpush.sendNotification(sub, data, { TTL: 3600 });
+          await webpush.sendNotification(sub, data, {
+            TTL: 24 * 60 * 60,
+            topic: topicFor(payload),
+          });
           await prisma.pushSubscription
             .update({ where: { id: s.id }, data: { lastSeenAt: new Date() } })
             .catch(() => {});

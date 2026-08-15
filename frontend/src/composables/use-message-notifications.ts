@@ -19,6 +19,7 @@ import { ref } from 'vue';
 import type { Socket } from 'socket.io-client';
 import { createAppSocket } from '@/api/socket';
 import { useChat } from '@/composables/use-chat';
+import { createConversationNotificationRateLimiter } from '@/composables/conversation-notification-rate-limit';
 import { router } from '@/router';
 
 export interface NotifCard {
@@ -35,6 +36,8 @@ const ENABLED_KEY = 'desktop.notify.enabled';
 const SOUND_KEY = 'desktop.notify.sound';
 const MAX_CARDS = 4;
 const CARD_TTL_MS = 6500;
+const GROUP_NOTIFICATION_LIMIT = 3;
+const GROUP_NOTIFICATION_WINDOW_MS = 60_000;
 
 // ── State singleton (chia sẻ mọi nơi) ──
 const enabled = ref(localStorage.getItem(ENABLED_KEY) !== 'false');
@@ -49,6 +52,10 @@ const cards = ref<NotifCard[]>([]);
 let socket: Socket | null = null;
 let started = false;
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
+const groupNotificationLimiter = createConversationNotificationRateLimiter(
+  GROUP_NOTIFICATION_LIMIT,
+  GROUP_NOTIFICATION_WINDOW_MS,
+);
 let audioCtx: AudioContext | null = null;
 
 /** Nhãn preview theo loại tin (khi không phải text). */
@@ -140,6 +147,10 @@ function onSocketMessage(payload: {
   const chat = useChat();
   if (!document.hidden && onChatRoute && chat.selectedConvId?.value === convId) return;
 
+  // Group message bursts can include an album and several texts. Keep message delivery and
+  // unread state untouched, while capping visible, audible, and native notifications.
+  if (!groupNotificationLimiter.allow(convId)) return;
+
   const card: NotifCard = {
     id: String(message.id ?? `${convId}-${Date.now()}`),
     convId,
@@ -171,6 +182,7 @@ export function useMessageNotifications() {
     for (const t of timers.values()) clearTimeout(t);
     timers.clear();
     cards.value = [];
+    groupNotificationLimiter.reset();
   }
 
   /** Bật: xin quyền native (nếu hỗ trợ) + bật cờ. Thẻ nổi vẫn chạy dù không có quyền OS. */
@@ -190,6 +202,7 @@ export function useMessageNotifications() {
     enabled.value = false;
     localStorage.setItem(ENABLED_KEY, 'false');
     cards.value = [];
+    groupNotificationLimiter.reset();
   }
 
   function setSound(v: boolean) {

@@ -92,6 +92,15 @@ self.addEventListener('push', (event: PushEvent) => {
   );
 });
 
+// The browser can rotate or revoke a subscription while the PWA is not open.
+// An active client repairs it immediately; otherwise the next app launch does so.
+self.addEventListener('pushsubscriptionchange', (event: ExtendableEvent) => {
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true })
+      .then((clients) => clients.forEach((client) => client.postMessage({ type: 'push-subscription-change' }))),
+  );
+});
+
 self.addEventListener('notificationclick', (event: NotificationEvent) => {
   event.notification.close();
   const url: string = event.notification.data?.url ?? '/m';

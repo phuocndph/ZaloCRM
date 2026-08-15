@@ -11,11 +11,13 @@ import { logger } from '../../shared/utils/logger.js';
 import { prisma } from '../../shared/database/prisma-client.js';
 import { handleIncomingMessage, handleMessageUndo } from '../chat/message-handler.js';
 import { detectContentType, extractAlbumInfo, updateContactAvatar } from './zalo-message-helpers.js';
+import { isZaloBirthdayNotification } from './zalo-birthday-notification.js';
 import { handleFriendEvent } from './friend-event-handler.js';
 import { refreshGroupInfoNow } from './group-info-refresh.js';
 import { consumeIfExpected as consumeReactionEcho } from '../chat/reaction-echo-cache.js';
 import { emitChatMessage } from '../../shared/realtime/emit-chat.js';
 import { notifyNewInboundMessage } from '../push/push-service.js';
+import { zaloOps } from '../../shared/zalo-operations.js';
 
 // Map Zalo Reactions enum code → display emoji (cùng map với chat-operations-routes)
 const ZALO_REACTION_DISPLAY: Record<string, string> = {
@@ -312,6 +314,93 @@ interface ResolvedGroup {
   name: string;
   avatar: string;
   membersCount: number | null;
+  memberUids: string[];
+}
+
+const GROUP_AVATAR_PRIME_COOLDOWN_MS = 10 * 60 * 1000;
+const groupAvatarPrimeAt = new Map<string, number>();
+
+function groupMemberUids(info: any): string[] {
+  const fromVersion = Array.isArray(info?.memVerList)
+    ? info.memVerList.map((entry: unknown) => String(entry).split('_')[0])
+    : [];
+  const fromIds = Array.isArray(info?.memberIds) ? info.memberIds.map(String) : [];
+  const fromCurrent = Array.isArray(info?.currentMems)
+    ? info.currentMems.map((member: any) => String(member?.id || '')).filter(Boolean)
+    : [];
+  return [...new Set([...fromVersion, ...fromIds, ...fromCurrent].filter(Boolean))];
+}
+
+/** Lazily cache a small, stable avatar set for groups that have no group picture. */
+async function primeGroupMemberAvatars(
+  orgId: string,
+  accountId: string,
+  groupId: string,
+  memberUids: string[],
+): Promise<Array<{ uid: string; name: string | null; avatarUrl: string }>> {
+  if (!memberUids.length) return [];
+  const cacheKey = `${accountId}:${groupId}`;
+  const now = Date.now();
+  if ((groupAvatarPrimeAt.get(cacheKey) ?? 0) + GROUP_AVATAR_PRIME_COOLDOWN_MS > now) return [];
+
+  try {
+    const existing = await prisma.groupMember.findMany({
+      where: { zaloAccountId: accountId, groupId, avatarUrl: { not: null } },
+      select: { memberUid: true, displayName: true, zaloName: true, avatarUrl: true },
+      orderBy: { lastSeenAt: 'desc' },
+      take: 4,
+    });
+    if (existing.length >= 2) return [];
+
+    groupAvatarPrimeAt.set(cacheKey, now);
+    const known = new Set(existing.map((member) => member.memberUid));
+    const candidateUids = memberUids.filter((uid) => !known.has(uid)).slice(0, 12);
+    if (!candidateUids.length) return [];
+    const raw = await zaloOps.getGroupMembersInfo(accountId, candidateUids) as {
+      profiles?: Record<string, { id?: string; displayName?: string; zaloName?: string; avatar?: string | null }>;
+    };
+    const seenAt = new Date();
+    const additions: Array<{ uid: string; name: string | null; avatarUrl: string }> = [];
+    for (const [key, profile] of Object.entries(raw?.profiles ?? {})) {
+      const uid = String(profile.id || key);
+      if (!uid) continue;
+      const avatarUrl = typeof profile.avatar === 'string' && profile.avatar ? profile.avatar : null;
+      await prisma.groupMember.upsert({
+        where: { zaloAccountId_groupId_memberUid: { zaloAccountId: accountId, groupId, memberUid: uid } },
+        create: {
+          orgId, zaloAccountId: accountId, groupId, memberUid: uid,
+          displayName: profile.displayName ?? null,
+          zaloName: profile.zaloName ?? null,
+          avatarUrl,
+          lastSeenAt: seenAt,
+        },
+        update: {
+          displayName: profile.displayName ?? null,
+          zaloName: profile.zaloName ?? null,
+          avatarUrl,
+          lastSeenAt: seenAt,
+        },
+      });
+      if (avatarUrl && additions.length < 4) {
+        additions.push({ uid, name: profile.displayName || profile.zaloName || null, avatarUrl });
+      }
+    }
+    const avatars = new Map<string, { uid: string; name: string | null; avatarUrl: string }>();
+    for (const member of existing) {
+      if (member.avatarUrl) {
+        avatars.set(member.memberUid, {
+          uid: member.memberUid,
+          name: member.displayName || member.zaloName || null,
+          avatarUrl: member.avatarUrl,
+        });
+      }
+    }
+    for (const member of additions) avatars.set(member.uid, member);
+    return [...avatars.values()].slice(0, 4);
+  } catch (err) {
+    logger.debug(`[zalo:${accountId}] Group avatar cache prime failed for ${groupId}: ${(err as Error).message}`);
+    return [];
+  }
 }
 
 // Fetch group display name + avatar + member count from the zca-js API
@@ -324,10 +413,11 @@ async function resolveGroupInfo(api: any, groupId: string): Promise<ResolvedGrou
       name: info?.name || '',
       avatar: info?.avt || info?.fullAvt || info?.avatar || '',
       membersCount: Array.isArray(members) ? members.length : (info?.totalMember || null),
+      memberUids: groupMemberUids(info),
     };
   } catch (err) {
     logger.warn(`[zalo] getGroupInfo failed for ${groupId}:`, err);
-    return { name: '', avatar: '', membersCount: null };
+    return { name: '', avatar: '', membersCount: null, memberUids: [] };
   }
 }
 
@@ -621,6 +711,13 @@ export function attachZaloListener(ctx: ListenerContext): void {
       const isGroup = message.type === 1;
       const senderUid = String(message.data?.uidFrom || '');
 
+      // Zalo birthday e-cards are social reminders, not customer conversations.
+      // Drop them before resolving contacts or creating/updating the chat inbox.
+      if (isZaloBirthdayNotification(message.data?.content)) {
+        logger.debug(`[zalo:${accountId}] Ignored birthday reminder ${String(message.data?.msgId || '')}`);
+        return;
+      }
+
       // Resolve display name — prefer zaloName from API over dName.
       // Self msg gửi cho người lạ: resolve theo threadId để biết tên người NHẬN
       // → recipientName được dùng trong upsertContact thay vì 'Unknown'.
@@ -670,11 +767,13 @@ export function attachZaloListener(ctx: ListenerContext): void {
       let groupName: string | undefined;
       let groupAvatarUrl: string | undefined;
       let groupMembersCount: number | undefined;
+      let groupMemberUids: string[] = [];
       if (isGroup && message.threadId) {
         const groupInfo = await resolveGroupInfo(api, message.threadId);
         groupName = groupInfo.name || undefined;
         groupAvatarUrl = groupInfo.avatar || undefined;
         groupMembersCount = groupInfo.membersCount ?? undefined;
+        groupMemberUids = groupInfo.memberUids;
       }
 
       const rawContent = message.data?.content;
@@ -727,6 +826,16 @@ export function attachZaloListener(ctx: ListenerContext): void {
       });
 
       if (result) {
+        if (isGroup && message.threadId && !groupAvatarUrl && groupMemberUids.length) {
+          void primeGroupMemberAvatars(result.orgId, accountId, message.threadId, groupMemberUids)
+            .then((groupMemberAvatars) => {
+              if (groupMemberAvatars.length < 2) return;
+              io?.to(`org:${result.orgId}`).emit('chat:group-info-updated', {
+                conversationId: result.conversationId,
+                groupMemberAvatars,
+              });
+            });
+        }
         // PRIVACY 2026-06-11: redact server-side per-recipient + scope org (emit-chat).
         // Nick main → room org nhận bản mờ, chính chủ đã unlock nhận bản thật.
         const accInfo = await prisma.zaloAccount.findUnique({
@@ -907,14 +1016,20 @@ export function attachZaloListener(ctx: ListenerContext): void {
         let groupName: string | undefined;
         let groupAvatarUrl: string | undefined;
         let groupMembersCount: number | undefined;
+        let groupMemberUids: string[] = [];
         if (threadType === 'group' && resolvedThreadId) {
           const groupInfo = await resolveGroupInfo(api, resolvedThreadId);
           groupName = groupInfo.name || undefined;
           groupAvatarUrl = groupInfo.avatar || undefined;
           groupMembersCount = groupInfo.membersCount ?? undefined;
+          groupMemberUids = groupInfo.memberUids;
         }
 
         const rawContent = message.data?.content;
+        if (isZaloBirthdayNotification(rawContent)) {
+          logger.debug(`[zalo:${accountId}] Ignored backfill birthday reminder ${String(message.data?.msgId || '')}`);
+          continue;
+        }
         const content =
           typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent || '');
         const contentType = detectContentType(message.data?.msgType, rawContent);
@@ -948,6 +1063,16 @@ export function attachZaloListener(ctx: ListenerContext): void {
         });
 
         if (result) {
+          if (threadType === 'group' && resolvedThreadId && !groupAvatarUrl && groupMemberUids.length) {
+            void primeGroupMemberAvatars(result.orgId, accountId, resolvedThreadId, groupMemberUids)
+              .then((groupMemberAvatars) => {
+                if (groupMemberAvatars.length < 2) return;
+                io?.to(`org:${result.orgId}`).emit('chat:group-info-updated', {
+                  conversationId: result.conversationId,
+                  groupMemberAvatars,
+                });
+              });
+          }
           // PRIVACY 2026-06-11: backfill cũng qua emit-chat (redact + scope org).
           // Trước đây emit raw + THIẾU cả _privacyMeta → non-owner thấy thẳng nội dung.
           const accInfo = await prisma.zaloAccount.findUnique({

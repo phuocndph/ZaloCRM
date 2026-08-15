@@ -14,6 +14,23 @@ import { ref } from 'vue';
 import { api } from '@/api/index';
 
 const SOUND_KEY = 'mobile.notification.sound';
+const AUTO_RECOVERY_KEY = 'mobile.notification.auto-recovery';
+
+// Singleton state: mobile settings and the app lifecycle must always see the same subscription.
+const supported = ref(
+  typeof window !== 'undefined' &&
+  'serviceWorker' in navigator &&
+  'PushManager' in window &&
+  window.isSecureContext,
+);
+const enabled = ref(false);
+const busy = ref(false);
+const permission = ref<NotificationPermission>(
+  typeof Notification !== 'undefined' ? Notification.permission : 'default',
+);
+const soundEnabled = ref(localStorage.getItem(SOUND_KEY) !== 'false');
+let recoveryStarted = false;
+let recoveryPromise: Promise<{ ok: boolean; error?: string }> | null = null;
 
 /** base64url (VAPID public key) → Uint8Array cho applicationServerKey. */
 function urlBase64ToUint8Array(base64: string): Uint8Array {
@@ -67,19 +84,6 @@ async function syncSubscriptionToServer(sub: PushSubscription): Promise<void> {
 }
 
 export function useWebPush() {
-  const supported = ref(
-    typeof window !== 'undefined' &&
-    'serviceWorker' in navigator &&
-    'PushManager' in window &&
-    window.isSecureContext,
-  );
-  const enabled = ref(false);
-  const busy = ref(false);
-  const permission = ref<NotificationPermission>(
-    typeof Notification !== 'undefined' ? Notification.permission : 'default',
-  );
-  const soundEnabled = ref(localStorage.getItem(SOUND_KEY) !== 'false');
-
   function setSound(v: boolean) {
     soundEnabled.value = v;
     localStorage.setItem(SOUND_KEY, String(v));
@@ -96,6 +100,49 @@ export function useWebPush() {
     if (!supported.value) { enabled.value = false; return; }
     permission.value = Notification.permission;
     enabled.value = !!(await getSubscription()) && permission.value === 'granted';
+  }
+
+  /**
+   * Restores an opted-in device after app resume, network recovery, or a SW update.
+   * It never asks for permission: the first permission grant remains an explicit user action.
+   */
+  async function recover(): Promise<{ ok: boolean; error?: string }> {
+    if (recoveryPromise) return recoveryPromise;
+    recoveryPromise = (async () => {
+      if (!supported.value) return { ok: false, error: 'Thiết bị không hỗ trợ Web Push.' };
+      permission.value = Notification.permission;
+      if (permission.value !== 'granted') {
+        enabled.value = false;
+        return { ok: false, error: 'Quyền thông báo chưa được cấp.' };
+      }
+
+      const existing = await getSubscription();
+      if (existing) {
+        await syncSubscriptionToServer(existing);
+        localStorage.setItem(AUTO_RECOVERY_KEY, 'true');
+        enabled.value = true;
+        return { ok: true };
+      }
+
+      if (localStorage.getItem(AUTO_RECOVERY_KEY) !== 'true') {
+        enabled.value = false;
+        return { ok: false, error: 'Thông báo đã được tắt trên thiết bị này.' };
+      }
+
+      const { data } = await api.get('/push/vapid-public-key');
+      const key: string | undefined = data?.publicKey;
+      if (!key) return { ok: false, error: 'Máy chủ chưa cấu hình VAPID key.' };
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(key) as BufferSource,
+      });
+      await syncSubscriptionToServer(sub);
+      enabled.value = true;
+      return { ok: true };
+    })().catch((err: unknown) => ({ ok: false, error: pushErrorMessage(err, 'Không thể khôi phục thông báo') }))
+      .finally(() => { recoveryPromise = null; });
+    return recoveryPromise;
   }
 
   async function enable(): Promise<{ ok: boolean; error?: string }> {
@@ -116,6 +163,7 @@ export function useWebPush() {
       const existing = await reg.pushManager.getSubscription();
       if (existing) {
         await syncSubscriptionToServer(existing);
+        localStorage.setItem(AUTO_RECOVERY_KEY, 'true');
         enabled.value = true;
         return { ok: true };
       }
@@ -125,6 +173,7 @@ export function useWebPush() {
         applicationServerKey: urlBase64ToUint8Array(key) as BufferSource,
       });
       await syncSubscriptionToServer(sub);
+      localStorage.setItem(AUTO_RECOVERY_KEY, 'true');
       enabled.value = true;
       return { ok: true };
     } catch (err: any) {
@@ -143,10 +192,28 @@ export function useWebPush() {
         await sub.unsubscribe().catch(() => {});
       }
       enabled.value = false;
+      localStorage.setItem(AUTO_RECOVERY_KEY, 'false');
     } finally {
       busy.value = false;
     }
   }
 
-  return { supported, enabled, busy, permission, soundEnabled, setSound, refresh, enable, disable };
+  /** Starts one lifecycle listener set for the installed mobile app. */
+  function startAutoRecovery() {
+    if (recoveryStarted || typeof window === 'undefined') return;
+    recoveryStarted = true;
+    const repair = () => { void recover(); };
+    window.addEventListener('online', repair);
+    window.addEventListener('pageshow', repair);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') repair();
+    });
+    navigator.serviceWorker?.addEventListener('controllerchange', repair);
+    navigator.serviceWorker?.addEventListener('message', (event) => {
+      if (event.data?.type === 'push-subscription-change') repair();
+    });
+    repair();
+  }
+
+  return { supported, enabled, busy, permission, soundEnabled, setSound, refresh, recover, startAutoRecovery, enable, disable };
 }

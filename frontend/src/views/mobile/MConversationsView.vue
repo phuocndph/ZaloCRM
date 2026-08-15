@@ -63,8 +63,8 @@
         @click="open(c)"
         @keydown.enter.prevent="open(c)"
       >
-        <div class="mc-avatar" :class="{ 'mc-avatar--group': isGroup(c) && groupAvatarUrls(c).length > 0 }">
-          <template v-if="isGroup(c) && groupAvatarUrls(c).length > 0">
+        <div class="mc-avatar" :class="{ 'mc-avatar--group': usesGroupCollage(c) }">
+          <template v-if="usesGroupCollage(c)">
             <img
               v-for="(src, i) in groupAvatarUrls(c)"
               :key="src"
@@ -187,6 +187,9 @@ function groupAvatarUrls(c: MConversation): string[] {
     .map((m) => m.avatarUrl)
     .filter((src): src is string => !!src && !imgFailed.has(`${c.id}:${src}`));
   return [...new Set(urls)].slice(0, 4);
+}
+function usesGroupCollage(c: MConversation): boolean {
+  return isGroup(c) && !avatarUrl(c) && groupAvatarUrls(c).length > 0;
 }
 function extraGroupCount(c: MConversation): number {
   const count = c.groupMembersCount ?? 0;
@@ -311,6 +314,11 @@ async function onTouchEnd() {
 function onSocketMessage(payload: { conversationId: string; message: Record<string, unknown> }) {
   applyIncoming(payload, null); // ở màn danh sách thì không có hội thoại nào đang mở
 }
+function onGroupInfoUpdated(payload: { conversationId: string; groupMemberAvatars?: MConversation['groupMemberAvatars'] }) {
+  if (!payload.groupMemberAvatars) return;
+  const conversation = items.value.find((item) => item.id === payload.conversationId);
+  if (conversation) conversation.groupMemberAvatars = payload.groupMemberAvatars;
+}
 // Mở 1 chat → MChatView phát 'mobile:conv-read' → xoá badge chưa đọc NGAY (không đợi refresh).
 function onConvRead(e: Event) {
   const id = (e as CustomEvent).detail;
@@ -319,10 +327,12 @@ function onConvRead(e: Event) {
 onMounted(() => {
   void load();
   getSocket()?.on('chat:message', onSocketMessage);
+  getSocket()?.on('chat:group-info-updated', onGroupInfoUpdated);
   window.addEventListener('mobile:conv-read', onConvRead);
 });
 onUnmounted(() => {
   getSocket()?.off('chat:message', onSocketMessage);
+  getSocket()?.off('chat:group-info-updated', onGroupInfoUpdated);
   window.removeEventListener('mobile:conv-read', onConvRead);
 });
 </script>
