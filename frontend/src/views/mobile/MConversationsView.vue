@@ -426,14 +426,13 @@ onUnmounted(() => {
 
 .mc-row {
   display: flex; gap: var(--m-sp-3); width: 100%; text-align: left;
-  padding: 10px var(--m-sp-4); border: 0; background: none; cursor: pointer;
-  min-height: 72px; align-items: center;
+  padding: 13px var(--m-sp-4); border: 0; background: none; cursor: pointer;
+  min-height: 78px; align-items: center;
   /* Skip paint/layout work for rows well outside the mobile viewport. */
   content-visibility: auto;
-  contain-intrinsic-size: auto 74px;
+  contain-intrinsic-size: auto 80px;
   transition: background var(--m-dur-fast) var(--m-ease);
 }
-.mc-row + .mc-row { box-shadow: inset 0 1px 0 var(--m-border); } /* divider mảnh */
 .mc-row:active { background: var(--m-surface-2); }
 .mc-row--skel { animation: none; pointer-events: none; }
 .mc-sk-av { width: 54px; height: 54px; border-radius: var(--m-r-full); flex-shrink: 0; }
