@@ -44,6 +44,8 @@
         :conversations="conversations"
         :selected-id="selectedConvId"
         :loading="loadingConvs"
+        :loading-more="loadingMoreConvs"
+        :has-more="hasMoreConvs"
         :accounts="accountList"
         :selected-account-ids="selectedAccountIds"
         :active-tab-key="inboxFilters.state.activeTab"
@@ -58,6 +60,7 @@
         @compose-opened="onComposeOpened"
         @follow-changed="onFollowChanged"
         @privacy-changed="onPrivacyChanged"
+        @load-more="loadMoreConversations"
       >
         <template #filters="{ tags, selectedTags, tagColor, cleanTagName, isZaloManaged, toggleTag, clearTags }">
           <ConversationFilterBar
@@ -215,10 +218,10 @@ const router = useRouter();
 const {
   conversations, selectedConvId, selectedConv, messages,
   conversationPrivateBlocked,
-  loadingConvs, loadingMsgs, sendingMsg, searchQuery, accountFilter, extraFilters,
+  loadingConvs, loadingMoreConvs, hasMoreConvs, loadingMsgs, sendingMsg, searchQuery, accountFilter, extraFilters,
   aiSuggestion, aiSuggestionLoading, aiSuggestionError, aiConfig,
   aiSummary, aiSummaryLoading, aiSentiment, aiSentimentLoading,
-  fetchConversations, fetchAiConfig, fetchMessages, selectConversation, sendMessage,
+  fetchConversations, loadMoreConversations, fetchAiConfig, fetchMessages, selectConversation, sendMessage,
   generateAiSuggestion, generateAiSummary, generateAiSentiment,
   initSocket, destroySocket, getSocket,
   typingConvIds, realtimeOffline,

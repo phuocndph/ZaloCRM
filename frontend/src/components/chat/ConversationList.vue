@@ -98,6 +98,7 @@
       aria-label="Danh sách hội thoại"
       @keydown.down.prevent="moveSelection(1)"
       @keydown.up.prevent="moveSelection(-1)"
+      @scroll="onConversationScroll"
     >
       <div v-if="loading && conversations.length === 0" class="loading">Đang tải…</div>
 
@@ -279,6 +280,9 @@
       <div v-if="!loading && conversations.length === 0" class="empty-state">
         Chưa có hội thoại nào
       </div>
+      <div v-if="loadingMore" class="conv-load-more" role="status" aria-label="Đang tải thêm hội thoại">
+        <v-progress-circular indeterminate size="16" width="2" />
+      </div>
     </div>
 
     <!-- Context menu cột 2 (right-click) — clone giao diện + responsive cột 3 -->
@@ -381,6 +385,8 @@ const props = defineProps<{
   conversations: Conversation[];
   selectedId: string | null;
   loading: boolean;
+  loadingMore?: boolean;
+  hasMore?: boolean;
   search: string;
   accounts?: Array<{
     id: string;
@@ -419,6 +425,7 @@ const emit = defineEmits<{
   'follow-changed': [contactId: string, nickId: string, following: boolean];
   /** Riêng tư cấp hội thoại 2026-07-09 — bật/tắt "Chỉ mình tôi xem". */
   'privacy-changed': [conversationId: string, status: ConversationPrivacyStatus];
+  'load-more': [];
 }>();
 
 // ── Compose new message ─────────────────────────────────────────────────────
@@ -1167,6 +1174,14 @@ onMounted(async () => {
 const scrollContainer = ref<HTMLElement | null>(null);
 const rowRefs = new Map<string, HTMLElement>();
 
+function onConversationScroll(event: Event) {
+  const container = event.currentTarget as HTMLElement;
+  if (!props.hasMore || props.loadingMore) return;
+  if (container.scrollHeight - container.scrollTop - container.clientHeight < 400) {
+    emit('load-more');
+  }
+}
+
 function registerRow(id: string, el: HTMLElement | null) {
   if (el) rowRefs.set(id, el);
   else rowRefs.delete(id);
@@ -1620,6 +1635,12 @@ function truncate(s: string, n: number): string {
 .loading {
   padding: 20px; text-align: center;
   color: var(--smax-grey-700); font-size: 12px; font-style: italic;
+}
+.conv-load-more {
+  height: 40px;
+  display: grid;
+  place-items: center;
+  color: var(--cl-accent, var(--smax-primary));
 }
 
 /* ══════════════════════════════════════════════════════════════════════════

@@ -254,8 +254,9 @@ const messagesCache = new Map<string, Message[]>();
 // Stale-while-revalidate: chuyển tab → paint từ cache NGAY (0ms lag), bg fetch update.
 // Trước fix: mỗi lần chuyển tab user chờ 1-3s HTTP+DB roundtrip → loading spinner.
 // Cache key encode toàn bộ filter params (tab, threadType, accountIds, search, ...).
-const conversationsCache = new Map<string, { data: Conversation[]; fetchedAt: number }>();
+const conversationsCache = new Map<string, { data: Conversation[]; total: number; fetchedAt: number }>();
 const CONV_CACHE_MAX_ENTRIES = 16;  // ~4 tabs × ~4 filter variants
+const DESKTOP_CONVERSATION_PAGE_SIZE = 100;
 
 // Debug hook (DEV only) — expose cache state via window.__zaloCRMConvCache để
 // diagnose cache miss khi tab switch vẫn cảm giác lag. Inspect:
@@ -354,6 +355,12 @@ function buildChat() {
   // dung để che: chỉ hiện thông báo. Reset mỗi lần đổi hội thoại.
   const conversationPrivateBlocked = ref(false);
   const loadingConvs = ref(false);
+  const loadingMoreConvs = ref(false);
+  const conversationPage = ref(1);
+  const conversationTotal = ref(0);
+  const activeConversationQueryKey = ref('');
+  const hasMoreConvs = computed(() => conversations.value.length < conversationTotal.value);
+  let conversationRequestId = 0;
   const loadingMsgs = ref(false);
   const sendingMsg = ref(false);
   // Wave 1 (2026-05-21) — KH đang gõ realtime. Key = conversationId (FE map từ
@@ -431,15 +438,23 @@ function buildChat() {
 
   const extraFilters = ref<Record<string, string>>({});
 
-  async function fetchConversations(opts?: { bypassCache?: boolean }) {
-    const params = {
-      limit: 100,
+  function conversationListParams() {
+    return {
+      limit: DESKTOP_CONVERSATION_PAGE_SIZE,
       search: searchQuery.value,
       accountId: accountFilter.value || undefined,
       ...extraFilters.value,
     };
+  }
+
+  async function fetchConversations(opts?: { bypassCache?: boolean }) {
+    const params = conversationListParams();
     const cacheKey = JSON.stringify(params);
     const cached = opts?.bypassCache ? null : conversationsCache.get(cacheKey);
+    const requestId = ++conversationRequestId;
+    activeConversationQueryKey.value = cacheKey;
+    conversationPage.value = 1;
+    loadingMoreConvs.value = false;
 
     // M-tier stale-while-revalidate: cache hit → paint NGAY (no spinner flash khi
     // chuyển tab). Cache miss → spinner (loading state) trong khi chờ HTTP.
@@ -462,6 +477,7 @@ function buildChat() {
     if (cached) {
       logCacheEvent('hit', cacheKey);
       conversations.value = mergeConvListPreserveDetail(conversations.value, cached.data, preserveIds);
+      conversationTotal.value = cached.total;
     } else {
       if (!opts?.bypassCache) logCacheEvent('miss', cacheKey);
       // Spinner chỉ hiện khi state thực sự rỗng (first load). bypassCache khi
@@ -470,20 +486,59 @@ function buildChat() {
     }
 
     try {
-      const res = await api.get('/conversations', { params });
+      const res = await api.get('/conversations', { params: { ...params, page: 1 } });
+      if (requestId !== conversationRequestId) return;
       // Apply pending optimistic mutations (tag assigns chưa được BE confirm) trước khi
       // replace state — tránh fetchConversations chạy giữa lúc BE đang sync wipe UI optimistic.
       const fresh = applyPendingTags(res.data.conversations as Conversation[]);
-      conversationsCache.set(cacheKey, { data: fresh, fetchedAt: Date.now() });
+      const total = Number(res.data.total ?? fresh.length);
+      conversationsCache.set(cacheKey, { data: fresh, total, fetchedAt: Date.now() });
       logCacheEvent('set', cacheKey);
       evictOldConvCacheIfNeeded();
       // Merge để giữ detail fields (Contact full ~50 field từ /conversations/:id)
       // không bị wipe bởi narrow list response (14 field).
       conversations.value = mergeConvListPreserveDetail(conversations.value, fresh, preserveIds);
+      conversationTotal.value = total;
     } catch (err) {
       console.error('Failed to fetch conversations:', err);
     } finally {
-      loadingConvs.value = false;
+      if (requestId === conversationRequestId) loadingConvs.value = false;
+    }
+  }
+
+  async function loadMoreConversations() {
+    const params = conversationListParams();
+    const cacheKey = JSON.stringify(params);
+    if (loadingMoreConvs.value || !hasMoreConvs.value) return;
+    // Bộ lọc vừa đổi nhưng danh sách mới chưa kịp tải: không nối trang cũ vào list mới.
+    if (activeConversationQueryKey.value !== cacheKey) {
+      await fetchConversations();
+      return;
+    }
+
+    const nextPage = conversationPage.value + 1;
+    const requestId = conversationRequestId;
+    loadingMoreConvs.value = true;
+    try {
+      const res = await api.get('/conversations', { params: { ...params, page: nextPage } });
+      // Người dùng đổi tab/lọc khi request đang bay: bỏ kết quả của bộ lọc trước.
+      if (requestId !== conversationRequestId || activeConversationQueryKey.value !== cacheKey) return;
+
+      const fresh = applyPendingTags(res.data.conversations as Conversation[]);
+      const existingIds = new Set(conversations.value.map((conversation) => conversation.id));
+      const appended = fresh.filter((conversation) => !existingIds.has(conversation.id));
+      conversations.value = mergeConvListPreserveDetail(
+        conversations.value,
+        [...conversations.value, ...appended],
+      );
+      conversationPage.value = nextPage;
+      conversationTotal.value = Number(res.data.total ?? conversations.value.length);
+      // Dữ liệu có thể bị xóa/đổi trạng thái giữa hai lần tải. Trang rỗng là điểm kết thúc.
+      if (fresh.length === 0) conversationTotal.value = conversations.value.length;
+    } catch (err) {
+      console.error('Failed to load more conversations:', err);
+    } finally {
+      loadingMoreConvs.value = false;
     }
   }
 
@@ -1341,6 +1396,8 @@ function buildChat() {
     /** Riêng tư cấp hội thoại — BE trả 403, thread hiện thông báo thay vì tin nhắn. */
     conversationPrivateBlocked,
     loadingConvs,
+    loadingMoreConvs,
+    hasMoreConvs,
     loadingMsgs,
     sendingMsg,
     searchQuery,
@@ -1356,6 +1413,7 @@ function buildChat() {
     aiUsage,
     aiConfig,
     fetchConversations,
+    loadMoreConversations,
     fetchAiConfig,
     saveAiConfig,
     fetchAiUsage,
