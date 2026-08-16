@@ -245,7 +245,10 @@
               <template v-else-if="privacyVisibility.shouldBlurConv(conv)">
                 <PrivateBlur :redacted="true" mode="inline" />
               </template>
-              <template v-else>{{ lastMessagePreview(conv) }}</template>
+              <template v-else>
+                <v-icon v-if="lastMessagePreviewIcon(conv)" size="15" class="ci-preview-icon">{{ lastMessagePreviewIcon(conv) }}</v-icon>
+                {{ cleanLastMessagePreview(conv) }}
+              </template>
             </div>
           </div>
         </div>
@@ -1355,6 +1358,41 @@ function lastMessagePreview(conv: Conversation): string {
   return lastMessagePreviewResult(conv).text;
 }
 
+const LEADING_PREVIEW_SYMBOL = /^(?:🔄|📹|📞|⏰|🔗|👥|👤|💳|✨|📷|🖼️|🎴|🎥|🎤|📎|🔲|📊|📝|↪️|📍)\s*/u;
+
+function cleanLastMessagePreview(conv: Conversation): string {
+  return lastMessagePreview(conv).replace(LEADING_PREVIEW_SYMBOL, '');
+}
+
+function lastMessagePreviewIcon(conv: Conversation): string | null {
+  const msg = conv.messages?.[0];
+  if (!msg) return null;
+  if (msg.isDeleted) return 'mdi-message-off-outline';
+
+  let action = '';
+  if (msg.content?.startsWith('{')) {
+    try { action = String(JSON.parse(msg.content)?.action || '').toLowerCase(); } catch { /* ignore malformed content */ }
+  }
+  if (action.includes('calltime') || action.includes('misscall') || msg.contentType === 'call') return 'mdi-phone-outline';
+  if (action === 'recommened.user' || action === 'recommended.user' || action === 'show.profile') return 'mdi-card-account-details-outline';
+
+  switch (msg.contentType) {
+    case 'image': return 'mdi-image-outline';
+    case 'video': return 'mdi-video-outline';
+    case 'voice':
+    case 'audio': return 'mdi-microphone-outline';
+    case 'file': return 'mdi-file-document-outline';
+    case 'location': return 'mdi-map-marker-outline';
+    case 'link': return 'mdi-link-variant';
+    case 'sticker': return 'mdi-sticker-emoji';
+    case 'bank_transfer': return 'mdi-bank-outline';
+    case 'reminder': return 'mdi-bell-outline';
+    case 'poll': return 'mdi-poll';
+    case 'contact_card': return 'mdi-card-account-details-outline';
+    default: return null;
+  }
+}
+
 function lastMessagePreviewTone(conv: Conversation): 'danger' | 'muted' | undefined {
   return lastMessagePreviewResult(conv).tone;
 }
@@ -1820,6 +1858,7 @@ function truncate(s: string, n: number): string {
 /* Tin thu hồi / cuộc gọi không trả lời — chỉ LÀM NHẠT, KHÔNG in nghiêng (dễ đọc hơn). */
 .ci-preview.tone-muted { color: var(--cl-ink-3); }
 .ci-preview-private { font-style: italic; color: var(--cl-ink-3); }
+.ci-preview-icon { flex: 0 0 auto; margin-right: 3px; color: #718096; vertical-align: -2px; }
 
 /* Chip trạng thái/tag — nhỏ, tinh tế, tối đa 2 */
 .ci-chip {
@@ -2015,6 +2054,33 @@ function truncate(s: string, n: number): string {
   .conv-list { --cl-item-h: 82px; }
   .ci-name-text { font-size: 15.5px; }
   .ci-preview { font-size: 14px; }
+}
+/* Conversation list: compact Zalo-like hierarchy. Metadata remains available in the detail panel. */
+.conv-list {
+  --cl-item-h: 72px;
+  --cl-ink: #172b4d;
+  --cl-ink-content: #5e6c84;
+  --cl-ink-3: #6b778c;
+  --cl-line: #f0f2f5;
+  --cl-hover: #f7f9fc;
+  --cl-accent-soft: #eaf3ff;
+  font-family: Arial, "Segoe UI", sans-serif;
+}
+.conv-item { gap: 12px; padding-top: 8px; padding-bottom: 8px; }
+.ci-body { gap: 3px; }
+.ci-row-meta { display: none; }
+.ci-row-content { order: 1; line-height: 18px; }
+.ci-name { line-height: 19px; gap: 3px; }
+.ci-name-text { font-size: 15px; font-weight: 600; color: var(--cl-ink); }
+.conv-item.unread .ci-name-text { font-weight: 700; }
+.ci-time { font-size: 12px; color: var(--cl-ink-3); }
+.ci-preview { display: flex; align-items: center; font-size: 13.5px; line-height: 18px; color: var(--cl-ink-content); }
+.conv-item.unread .ci-preview { font-weight: 500; color: var(--cl-ink-content); }
+.ci-preview-icon { margin-right: 4px; color: #718096; }
+.ci-unread { min-width: 18px; height: 18px; padding: 0 4px; font-size: 10px; background: #d92525; }
+@media (max-width: 768px) {
+  .conv-list { --cl-item-h: 72px; }
+  .ci-preview { font-size: 13.5px; }
 }
 </style>
 
