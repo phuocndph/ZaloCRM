@@ -150,7 +150,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, reactive } from 'vue';
+import { nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref, reactive } from 'vue';
 import { useRouter } from 'vue-router';
 import { api } from '@/api/index';
 import {
@@ -245,6 +245,7 @@ async function toggleUnread() {
 }
 
 function open(c: MConversation) {
+  saveScrollPosition();
   markRead(c.id);
   router.push({ name: 'M.Chat', params: { convId: c.id } });
 }
@@ -253,16 +254,18 @@ function open(c: MConversation) {
 let searchTimer: ReturnType<typeof setTimeout>;
 function onSearch() {
   clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => load(), 350);
+  searchTimer = setTimeout(() => { resetScrollPosition(); void load(); }, 350);
 }
 function setUnread(v: boolean) {
   if (unreadOnly.value === v) return;
   unreadOnly.value = v;
+  resetScrollPosition();
   void load();
 }
 function setUnreplied(v: boolean) {
   if (unrepliedOnly.value === v) return;
   unrepliedOnly.value = v;
+  resetScrollPosition();
   void load();
 }
 async function openTagFilter() {
@@ -280,11 +283,36 @@ async function openTagFilter() {
 function setTagFilter(tag: string) {
   tagFilter.value = tag;
   tagSheet.value = false;
+  resetScrollPosition();
   void load();
 }
 
 // ── Infinite scroll ──
 const scroller = ref<HTMLElement | null>(null);
+const SCROLL_POSITION_KEY = 'zalocrm:mobile-conversations-scroll-top';
+
+function savedScrollTop(): number {
+  const value = Number(sessionStorage.getItem(SCROLL_POSITION_KEY) ?? 0);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+function saveScrollPosition() {
+  const top = scroller.value?.scrollTop ?? 0;
+  sessionStorage.setItem(SCROLL_POSITION_KEY, String(top));
+}
+function resetScrollPosition() {
+  sessionStorage.removeItem(SCROLL_POSITION_KEY);
+  scroller.value?.scrollTo({ top: 0, behavior: 'auto' });
+}
+function restoreScrollPosition() {
+  const top = savedScrollTop();
+  if (!top) return;
+  void nextTick(() => {
+    requestAnimationFrame(() => {
+      const el = scroller.value;
+      if (el) el.scrollTop = Math.min(top, Math.max(0, el.scrollHeight - el.clientHeight));
+    });
+  });
+}
 function onScroll() {
   const el = scroller.value;
   if (!el) return;
@@ -335,13 +363,17 @@ function onConvRead(e: Event) {
   const id = (e as CustomEvent).detail;
   if (typeof id === 'string') markRead(id);
 }
-onMounted(() => {
-  void load();
+onMounted(async () => {
+  await load();
+  restoreScrollPosition();
   getSocket()?.on('chat:message', onSocketMessage);
   getSocket()?.on('chat:group-info-updated', onGroupInfoUpdated);
   window.addEventListener('mobile:conv-read', onConvRead);
 });
+onActivated(restoreScrollPosition);
+onDeactivated(saveScrollPosition);
 onUnmounted(() => {
+  saveScrollPosition();
   getSocket()?.off('chat:message', onSocketMessage);
   getSocket()?.off('chat:group-info-updated', onGroupInfoUpdated);
   window.removeEventListener('mobile:conv-read', onConvRead);
