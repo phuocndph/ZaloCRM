@@ -283,12 +283,13 @@
 
     <MBottomSheet v-model="showTags" title="Gắn Tag">
       <div class="mch-tag-sheet">
-        <TagCrmBar :friend-id="selectedConv?.friendship?.id ?? null" :contact-id="selectedConv?.contact?.id ?? null" />
+        <TagCrmBar v-if="showTags" :friend-id="selectedConv?.friendship?.id ?? null" :contact-id="selectedConv?.contact?.id ?? null" />
       </div>
     </MBottomSheet>
-    <MBottomSheet v-model="showNotes" title="Ghi chú nội bộ"><NotesSection :contact-id="selectedConv?.contact?.id ?? null" :contact-name="selectedConv?.contact?.fullName ?? null" /></MBottomSheet>
+    <MBottomSheet v-model="showNotes" title="Ghi chú nội bộ"><NotesSection v-if="showNotes" :contact-id="selectedConv?.contact?.id ?? null" :contact-name="selectedConv?.contact?.fullName ?? null" /></MBottomSheet>
 
     <AppointmentEditor
+      v-if="showAppointmentEditor"
       v-model="showAppointmentEditor"
       :prefill-contact="selectedConv?.contact ? { id: selectedConv.contact.id, fullName: selectedConv.contact.fullName, phone: selectedConv.contact.phone, zaloUid: selectedConv.contact.zaloUid ?? null, zaloUsername: (selectedConv.contact as any).zaloUsername ?? null } : null"
       :current-user-id="currentUserId"
@@ -307,7 +308,7 @@
       </div>
     </MBottomSheet>
 
-    <MBottomSheet v-model="showMediaPicker" title="Kho Media"><div class="mch-media-picker-sheet"><MediaPickerPopover :conversation-id="convId" stage-before-send @close="showMediaPicker = false" @sent="onMediaSent" /></div></MBottomSheet>
+    <MBottomSheet v-model="showMediaPicker" title="Kho Media"><div class="mch-media-picker-sheet"><MediaPickerPopover v-if="showMediaPicker" :conversation-id="convId" stage-before-send @close="showMediaPicker = false" @sent="onMediaSent" /></div></MBottomSheet>
 
     <!-- Gộp Emoji + Sticker vào 1 sheet (1 nút trên thanh soạn). -->
     <MBottomSheet v-model="showEmojiSticker" title="Biểu cảm">
@@ -319,11 +320,11 @@
         <button v-for="e in EMOJI_LIST" :key="e" class="mch-emoji-cell" @click="onEmoji(e)">{{ e }}</button>
       </div>
       <div v-else class="mch-sticker-tab">
-        <StickerPicker inline @select="(s) => { onSendSticker(s); showEmojiSticker = false; }" />
+        <StickerPicker v-if="showEmojiSticker && emojiStickerTab === 'sticker'" inline @select="(s) => { onSendSticker(s); showEmojiSticker = false; }" />
       </div>
     </MBottomSheet>
 
-    <AiCopilotPanel :open="showCopilot" :conversation-id="convId" :private-blocked="conversationPrivateBlocked" @close="showCopilot = false" @feedback="onCopilotFeedback" />
+    <AiCopilotPanel v-if="showCopilot" :open="showCopilot" :conversation-id="convId" :private-blocked="conversationPrivateBlocked" @close="showCopilot = false" @feedback="onCopilotFeedback" />
 
     <!-- Lightbox ảnh + modal video (P1 — xem media toàn màn hình) -->
     <MLightbox :open="!!lightboxUrl" :url="lightboxUrl" @close="lightboxUrl = null" />
@@ -436,7 +437,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch, nextTick, defineAsyncComponent } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { api } from '@/api/index';
 import { useChat } from '@/composables/use-chat';
@@ -452,13 +453,13 @@ import Avatar from '@/components/ui/Avatar.vue';
 import MLightbox from '@/components/mobile/MLightbox.vue';
 import MBottomSheet from '@/components/mobile/MBottomSheet.vue';
 import TypingIndicator from '@/components/chat/typing-indicator.vue';
-import AppointmentEditor from '@/components/appointments/AppointmentEditor.vue';
-import NotesSection from '@/components/chat/NotesSection.vue';
-import TagCrmBar from '@/components/chat/TagCrmBar.vue';
-import StickerPicker from '@/components/chat/StickerPicker.vue';
-import AiCopilotPanel from '@/components/chat/AiCopilotPanel.vue';
-import MediaPickerPopover from '@/components/media/MediaPickerPopover.vue';
-import TemplateComposerPreview from '@/components/chat/TemplateComposerPreview.vue';
+const AppointmentEditor = defineAsyncComponent(() => import('@/components/appointments/AppointmentEditor.vue'));
+const NotesSection = defineAsyncComponent(() => import('@/components/chat/NotesSection.vue'));
+const TagCrmBar = defineAsyncComponent(() => import('@/components/chat/TagCrmBar.vue'));
+const StickerPicker = defineAsyncComponent(() => import('@/components/chat/StickerPicker.vue'));
+const AiCopilotPanel = defineAsyncComponent(() => import('@/components/chat/AiCopilotPanel.vue'));
+const MediaPickerPopover = defineAsyncComponent(() => import('@/components/media/MediaPickerPopover.vue'));
+const TemplateComposerPreview = defineAsyncComponent(() => import('@/components/chat/TemplateComposerPreview.vue'));
 import { useMessageTemplates, type MessageTemplate } from '@/composables/use-message-templates';
 import { templateToBlocks, isSimpleTextTemplate, type TemplateBlock } from '@/composables/use-template-blocks';
 import { useChatOperations } from '@/composables/use-chat-operations';
@@ -813,6 +814,7 @@ function closeVideo() { videoEl.value?.pause(); videoUrl.value = null; }
 
 // ── P1: long-press → menu hành động (tái dùng useChatOperations, quyền enforce ở backend) ──
 const { addReaction, deleteMessage, undoMessage, forwardMessage, replyingTo, setReplyTo, clearReplyTo, typingUsers, sendTypingEvent, registerSocketListeners } = useChatOperations();
+let unregisterSocketListeners: (() => void) | undefined;
 const currentTypers = computed(() => typingUsers.value.get(convId.value) || []);
 const { pin, unpin, listPinned, search: searchConversationContent, listMedia, listFiles, listLinks } = useConversationContent();
 const pinnedIds = ref(new Set<string>());
@@ -1339,7 +1341,7 @@ function notifyRead(id: string | null) {
 onMounted(async () => {
   await selectConversation(convId.value, { messageLimit: 50 });
   notifyRead(convId.value);
-  registerSocketListeners(getSocket());
+  unregisterSocketListeners = registerSocketListeners(getSocket());
   restoreDraft(convId.value);
   primeGroupAvatars();
   await scrollBottom();
@@ -1369,6 +1371,8 @@ async function resyncOpenThread() {
 }
 document.addEventListener('visibilitychange', onVisibility);
 onUnmounted(() => {
+  unregisterSocketListeners?.();
+  unregisterSocketListeners = undefined;
   document.removeEventListener('visibilitychange', onVisibility);
   stopPresence();
   clearReplyTo();

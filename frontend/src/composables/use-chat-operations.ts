@@ -95,11 +95,9 @@ export function useChatOperations() {
   function clearEditing() { editingMessage.value = null; }
 
   function registerSocketListeners(socket: Socket | null) {
-    if (!socket) return;
+    if (!socket) return () => {};
 
-    socket.on(
-      'chat:typing',
-      (data: { conversationId: string; typers: { userId: string; userName: string }[] }) => {
+    const onTyping = (data: { conversationId: string; typers: { userId: string; userName: string }[] }) => {
         try {
           typingUsers.value.set(data.conversationId, data.typers);
           // Trigger reactivity — Map mutations không tự reactive
@@ -107,15 +105,19 @@ export function useChatOperations() {
         } catch (err) {
           console.error('[chat-ops] typing event error:', err);
         }
-      },
-    );
+    };
 
-    socket.on(
-      'chat:message-edited',
-      (_data: { conversationId: string; msgId: string; content: string }) => {
-        // Caller handles update via fetchMessages or direct mutation
-      },
-    );
+    const onMessageEdited = (_data: { conversationId: string; msgId: string; content: string }) => {
+      // Caller handles update via fetchMessages or direct mutation.
+    };
+
+    socket.on('chat:typing', onTyping);
+    socket.on('chat:message-edited', onMessageEdited);
+
+    return () => {
+      socket.off('chat:typing', onTyping);
+      socket.off('chat:message-edited', onMessageEdited);
+    };
   }
 
   return {
