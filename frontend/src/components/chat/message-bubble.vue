@@ -116,8 +116,7 @@
             @click.stop="reply.msgId && emit('jump-to-reply', reply.msgId)"
           >
             <div class="reply-header">
-              <v-icon size="11" class="reply-icon">mdi-reply</v-icon>
-              <span class="reply-sender">Trả lời{{ replySenderLabel ? ' ' + replySenderLabel : '' }}</span>
+              <span class="reply-sender">{{ replySenderLabel || 'Tin nhắn đã trả lời' }}</span>
             </div>
             <div class="reply-text">{{ replyPreviewText }}</div>
           </div>
@@ -1048,11 +1047,11 @@ function onFileClick(href: string, name?: string) {
   position: relative;
   display: block;
 }
-/* Sender name giờ nằm TRONG bubble — style như header thay vì label ngoài. */
+/* Sender name nằm trong bubble, theo kiểu Zalo: chữ nhỏ, không dùng pill màu. */
 .sender-name {
   font-size: 11.5px;
-  font-weight: 600;
-  color: var(--smax-primary, #2962ff);
+  font-weight: 500;
+  color: #667085;
   margin-bottom: 4px;
   line-height: 1.2;
 }
@@ -1096,9 +1095,9 @@ function onFileClick(href: string, name?: string) {
 .message-bubble.is-other {
   background: var(--chat-bubble-in, #ffffff);
   color: var(--chat-bubble-in-text, #1f2733);
-  border-radius: 4px 16px 16px 16px;
-  border: 1px solid var(--chat-bubble-in-border, #e7ebf0);
-  box-shadow: var(--chat-bubble-shadow);
+  border-radius: 6px;
+  border: 1px solid var(--chat-bubble-in-border, #d8dee8);
+  box-shadow: none;
 }
 /* Tin GỬI (nhân viên): xanh RẤT nhạt + chữ đậm — dịu mắt, KHÔNG dùng primary đậm. */
 .message-bubble.is-self {
@@ -1165,56 +1164,54 @@ function onFileClick(href: string, name?: string) {
 }
 .message-bubble:hover :deep(.source-badge--user_crm) { opacity: 1; }
 
-/* INBOUND sender name row (Anh chốt 2026-06-03 - 3 case):
-   Pill tím pastel BAO QUANH TÊN người gửi để phân biệt với OUTBOUND.
-   Bubble nội dung giữ TRẮNG nguyên — chỉ tên ở trên có nền tím. */
+/* Tên người gửi inbound: chữ xám nhỏ, phẳng và dễ quét như Zalo desktop. */
 .message-bubble.is-other .sender-name {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 0;
-  margin-bottom: 4px;
+  margin-bottom: 5px;
   cursor: pointer;
-  background: #ede9fe; /* violet-100 pastel — nền chỉ ÔM tên */
-  border: 1px solid rgba(196, 181, 253, 0.55);
-  border-radius: 10px;
-  padding: 2px 8px;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
   line-height: 1.4;
 }
 .message-bubble.is-other .sender-name-primary {
-  color: #5b21b6; /* violet-700, contrast 7.6:1 AAA với bg pastel */
+  color: #667085;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
 }
 .message-bubble.is-other .sender-name:hover .sender-name-primary {
   text-decoration: underline;
 }
 /* CASE A khi có crmName: "Chị Lan · Lan Nguyen" — tên Zalo phụ nhỏ hơn */
 .message-bubble.is-other .sender-zalo-secondary {
-  color: #6d28d9; /* violet-700 nhạt, contrast 6.1:1 (skeptic FIX 3) */
+  color: #8a94a6;
   font-size: 11px;
   font-weight: 400;
   margin-left: 3px;
 }
-/* CASE B chip "Sale: {owner}" — solid violet để chip rõ ràng (skeptic FIX 1) */
+/* CASE B: giữ thông tin sale dưới dạng chữ phụ, không tạo thêm chip màu. */
 .message-bubble.is-other .sender-internal-chip {
-  display: inline-flex;
+  display: inline;
   align-items: center;
-  background: #5b21b6; /* solid violet */
-  color: #ffffff;       /* trắng trên violet đậm = 9:1 AAA */
-  font-size: 10.5px;
-  font-weight: 600;
-  padding: 1px 7px;
-  border-radius: 8px;
-  margin-left: 5px;
+  background: transparent;
+  color: #8a94a6;
+  font-size: 11px;
+  font-weight: 400;
+  padding: 0;
+  border-radius: 0;
+  margin-left: 3px;
   line-height: 1.45;
   letter-spacing: 0.02em;
 }
 .message-bubble.is-other .sender-name.is-internal {
-  background: #f5f3ff; /* nhạt hơn 1 cấp khi có chip Sale đặc */
+  background: transparent;
 }
 .message-bubble.is-other .sender-name.is-internal .sender-name-primary {
-  color: #4c1d95; /* violet-800 sẫm hơn để sender chính nổi với chip phụ */
+  color: #667085;
 }
 
 .bubble-time {
@@ -1284,28 +1281,27 @@ function onFileClick(href: string, name?: string) {
   background: rgba(255, 145, 0, 0.08);
 }
 .reply-card {
-  padding: 6px 10px;
-  border-radius: 8px;
-  background: rgba(33, 150, 243, 0.06);
-  border-left: 2px solid var(--smax-primary, #2962ff);
+  padding: 7px 10px;
+  border-radius: 3px;
+  background: #f0f2f5;
+  border-left: 3px solid var(--smax-primary, #2962ff);
   margin-bottom: 6px;
   transition: background-color 0.15s ease;
 }
 .reply-card.reply-clickable { cursor: pointer; }
-.reply-card.reply-clickable:hover { background: rgba(33, 150, 243, 0.16); }
+.reply-card.reply-clickable:hover { background: #e7ebf0; }
 .reply-header {
   display: flex; align-items: center; gap: 4px;
-  font-size: 10.5px;
-  color: var(--smax-primary, #2962ff);
+  font-size: 12px;
+  color: #344054;
   font-weight: 600;
-  margin-bottom: 2px;
+  margin-bottom: 3px;
 }
-.reply-icon { opacity: 0.85; }
 .reply-sender { letter-spacing: 0.2px; }
 .reply-text {
-  font-size: 12.5px;
-  color: var(--smax-text, #212121);
-  opacity: 0.78;
+  font-size: 12px;
+  color: #667085;
+  opacity: 1;
   line-height: 1.35;
   word-break: break-word;
 }
