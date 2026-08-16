@@ -466,6 +466,9 @@ export async function chatRoutes(app: FastifyInstance) {
       //   'sale_replied'→ có tin sale thật (self + user/user_native) sau lastInboundAt
       messageReplyState = '',
     } = request.query as QueryParams;
+    // Giới hạn từ khóa để tránh một query ILIKE quá dài; giữ nguyên khoảng trắng
+    // nội bộ vì người dùng có thể tìm một đoạn câu hoàn chỉnh.
+    const searchTerm = typeof search === 'string' ? search.trim().slice(0, 120) : '';
 
     // T5-A (YC2): hội thoại nick đã XÓA-có-uid hiện lại (đọc-only) → DISPLAYABLE thay archivedAt:null.
     const where: any = { orgId: user.orgId, deletedAt: null, zaloAccount: DISPLAYABLE_NICK_WHERE };
@@ -508,13 +511,41 @@ export async function chatRoutes(app: FastifyInstance) {
       where.zaloAccountId = 'EMPTY_FOLDER_NO_MATCH';
     }
 
-    // Contact-level filter — gộp vào where.contact nested
+    // Contact-level filter — gộp vào where.contact nested.
+    // Search được đặt ở top-level bên dưới để một hội thoại khớp TÊN/SĐT HOẶC
+    // NỘI DUNG TIN NHẮN. Nếu đặt search trong contactWhere, tin nhắn khớp nội dung
+    // vẫn bị loại khi tên khách không khớp.
     const contactWhere: Record<string, unknown> = {};
-    if (search) {
-      contactWhere.OR = [
-        { fullName: { contains: search, mode: 'insensitive' } },
-        { crmName: { contains: search, mode: 'insensitive' } },
-        { phone: { contains: search } },
+    if (searchTerm) {
+      const digits = searchTerm.replace(/\D/g, '');
+      const normalizedPhone = normalizePhone(searchTerm);
+      const contactSearch: Prisma.ContactWhereInput[] = [
+        { fullName: { contains: searchTerm, mode: 'insensitive' } },
+        { crmName: { contains: searchTerm, mode: 'insensitive' } },
+      ];
+      if (digits.length >= 3) {
+        contactSearch.push(
+          { phone: { contains: digits } },
+          { phone2: { contains: digits } },
+          { phone3: { contains: digits } },
+        );
+      }
+      if (normalizedPhone) contactSearch.push({ phoneNormalized: normalizedPhone });
+
+      where.OR = [
+        { contact: { OR: contactSearch } },
+        { groupName: { contains: searchTerm, mode: 'insensitive' } },
+        {
+          messages: {
+            some: {
+              isDeleted: false,
+              OR: [
+                { content: { contains: searchTerm, mode: 'insensitive' } },
+                { senderName: { contains: searchTerm, mode: 'insensitive' } },
+              ],
+            },
+          },
+        },
       ];
     }
     if (statusId) contactWhere.statusId = statusId;
