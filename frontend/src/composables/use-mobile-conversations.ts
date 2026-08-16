@@ -44,6 +44,9 @@ export function useMobileConversations() {
   const unrepliedOnly = ref(false);
   const tagFilter = ref('');
   const error = ref<string | null>(null);
+  let queryVersion = 0;
+  let loadController: AbortController | null = null;
+  let loadMoreController: AbortController | null = null;
 
   const hasMore = computed(() => items.value.length < total.value);
   const isUnread = (c: MConversation) => (c.unreadCount ?? 0) > 0 || c.userState?.isManualUnread === true;
@@ -71,26 +74,40 @@ export function useMobileConversations() {
   }
 
   async function load() {
+    const version = ++queryVersion;
+    loadController?.abort();
+    loadMoreController?.abort();
+    loadingMore.value = false;
+    const controller = new AbortController();
+    loadController = controller;
     loading.value = true;
     error.value = null;
     try {
-      const { data } = await api.get('/conversations', { params: params(1) });
+      const { data } = await api.get('/conversations', { params: params(1), signal: controller.signal });
+      if (version !== queryVersion) return;
       items.value = data.conversations ?? [];
       total.value = data.total ?? items.value.length;
       page.value = 1;
     } catch {
-      error.value = 'Không tải được danh sách hội thoại';
+      if (version === queryVersion && !controller.signal.aborted) {
+        error.value = 'Không tải được danh sách hội thoại';
+      }
     } finally {
-      loading.value = false;
+      if (version === queryVersion) loading.value = false;
+      if (loadController === controller) loadController = null;
     }
   }
 
   async function loadMore() {
     if (loadingMore.value || !hasMore.value) return;
+    const version = queryVersion;
+    const controller = new AbortController();
+    loadMoreController = controller;
     loadingMore.value = true;
     try {
       const next = page.value + 1;
-      const { data } = await api.get('/conversations', { params: params(next) });
+      const { data } = await api.get('/conversations', { params: params(next), signal: controller.signal });
+      if (version !== queryVersion) return;
       const incoming: MConversation[] = data.conversations ?? [];
       const seen = new Set(items.value.map((c) => c.id));
       items.value.push(...incoming.filter((c) => !seen.has(c.id)));
@@ -99,7 +116,8 @@ export function useMobileConversations() {
     } catch {
       // Loading the next page should not block the current list.
     } finally {
-      loadingMore.value = false;
+      if (version === queryVersion) loadingMore.value = false;
+      if (loadMoreController === controller) loadMoreController = null;
     }
   }
 
