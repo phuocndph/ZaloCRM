@@ -689,11 +689,11 @@ function selectTemplate(template: MessageTemplate) {
   templateBlocks.value = blocks; showTemplatePreview.value = true;
 }
 
-function onMediaSent() { showMediaPicker.value = false; void fetchMessages(convId.value); void scrollBottom(true); }
+function onMediaSent() { showMediaPicker.value = false; void fetchMessages(convId.value, { limit: 50 }); void scrollBottom(true); }
 function onSendSticker(sticker: { id: number; catId: number; type: number }) {
   if (!convId.value) return;
   api.post(`/conversations/${convId.value}/sticker`, { stickerId: sticker.id, cateId: sticker.catId, type: sticker.type })
-    .then(() => fetchMessages(convId.value))
+    .then(() => fetchMessages(convId.value, { limit: 50 }))
     .catch(() => toast.error('Không gửi được sticker'));
 }
 function onCopilotInsert(event: Event) {
@@ -848,6 +848,7 @@ function openActions(m: any) {
   if (!m || m.isDeleted) return;
   actionMsg.value = m;
   showActions.value = true;
+  void refreshPinned();
   if (navigator.vibrate) navigator.vibrate(10);
 }
 function closeActions() { showActions.value = false; }
@@ -1284,7 +1285,7 @@ async function sendPendingFiles(files: File[]) {
   const fd = new FormData();
   for (const file of files) fd.append('files', file, file.name);
   await api.post(`/conversations/${convId.value}/attachments`, fd, { headers: { 'Content-Type': 'multipart/form-data' } });
-  await fetchMessages(convId.value);
+  await fetchMessages(convId.value, { limit: 50 });
 }
 function queueAttachments(ev: Event) {
   const input = ev.target as HTMLInputElement;
@@ -1336,10 +1337,9 @@ function notifyRead(id: string | null) {
 
 // Mở hội thoại + auto-scroll khi có tin mới (socket đã cập nhật `messages`).
 onMounted(async () => {
-  await selectConversation(convId.value);
+  await selectConversation(convId.value, { messageLimit: 50 });
   notifyRead(convId.value);
   registerSocketListeners(getSocket());
-  void refreshPinned();
   restoreDraft(convId.value);
   primeGroupAvatars();
   await scrollBottom();
@@ -1364,7 +1364,7 @@ let resyncing = false;
 async function resyncOpenThread() {
   if (resyncing || !convId.value) return;
   resyncing = true;
-  try { await fetchMessages(convId.value); if (nearBottom.value) await scrollBottom(true); }
+  try { await fetchMessages(convId.value, { limit: 50 }); if (nearBottom.value) await scrollBottom(true); }
   finally { resyncing = false; }
 }
 document.addEventListener('visibilitychange', onVisibility);
@@ -1394,7 +1394,7 @@ watch(text, saveDraft);
 watch(realtimeOffline, (offline, was) => {
   if (was && !offline && convId.value && nearBottom.value) void resyncOpenThread();
 });
-watch(convId, async (id) => { if (id) { hasOlderMessages.value = true; unseenCount.value = 0; await selectConversation(id); notifyRead(id); void refreshPinned(); restoreDraft(id); primeGroupAvatars(); await scrollBottom(); startPresence(); } });
+watch(convId, async (id) => { if (id) { hasOlderMessages.value = true; unseenCount.value = 0; pinnedIds.value = new Set(); await selectConversation(id, { messageLimit: 50 }); notifyRead(id); restoreDraft(id); primeGroupAvatars(); await scrollBottom(); startPresence(); } });
 </script>
 
 <style scoped>

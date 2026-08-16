@@ -368,6 +368,7 @@ function buildChat() {
   // fetch always starts from the newest page; older pages are merged only on
   // an explicit request from a view that can preserve its scroll position.
   const messagePages = new Map<string, number>();
+  const messagePageSizes = new Map<string, number>();
   // Track conv mà messages.value đang chứa — để fetchMessages biết switch conv thì
   // wholesale replace (không merge tin từ conv khác), refresh cùng conv thì merge
   // (giữ tin socket đến trong lúc HTTP fly).
@@ -634,8 +635,10 @@ function buildChat() {
     return selectedConvId.value === id && messagesConvId.value === id;
   }
 
-  async function fetchMessages(convId: string) {
+  async function fetchMessages(convId: string, options?: { limit?: number }) {
+    const limit = Math.max(25, Math.min(options?.limit ?? 100, 100));
     messagePages.set(convId, 1);
+    messagePageSizes.set(convId, limit);
     // Switch conv → wholesale reset messages.value để không mix tin từ conv cũ.
     // Nếu cùng conv (refresh) → giữ messages hiện tại cho merge logic phía dưới.
     if (messagesConvId.value !== convId) {
@@ -659,7 +662,7 @@ function buildChat() {
     }
     try {
       const res = await api.get(`/conversations/${convId}/messages`, {
-        params: { limit: 100 },
+        params: { limit },
       });
       const list = (res.data.messages as RawMessage[]).map(normalizeMessage);
       // Merge thay vì wholesale replace: giữ msgs đã insert qua socket trong lúc HTTP
@@ -711,13 +714,14 @@ function buildChat() {
     }
 
     const nextPage = (messagePages.get(convId) ?? 1) + 1;
+    const limit = messagePageSizes.get(convId) ?? 100;
     try {
       const res = await api.get(`/conversations/${convId}/messages`, {
-        params: { page: nextPage, limit: 100 },
+        params: { page: nextPage, limit },
       });
       const list = (res.data.messages as RawMessage[]).map(normalizeMessage);
       const total = Number(res.data.total ?? 0);
-      const hasMore = nextPage * 100 < total;
+      const hasMore = nextPage * limit < total;
 
       // A late response must never add messages to a conversation that the
       // user has already left. De-duplicate against socket and prior pages.
@@ -831,7 +835,7 @@ function buildChat() {
     }
   }
 
-  async function selectConversation(convId: string) {
+  async function selectConversation(convId: string, options?: { messageLimit?: number }) {
     selectedConvId.value = convId;
     clearAiState();
     // Nếu conv không có trong list (filter loại ra HOẶC vừa tạo mới qua
@@ -844,7 +848,7 @@ function buildChat() {
     // detail (cột 3/4 header) + mark-read chạy SONG SONG (Promise.all) thay vì 2 round-trip
     // nối tiếp. fetchMessages gate việc paint thread; detail + mark-read KHÔNG cần cho
     // bong bóng tin nên không nên xếp hàng sau nhau. Tiết kiệm ~1 round-trip mỗi lần mở conv.
-    const messagesTask = fetchMessages(convId);
+    const messagesTask = fetchMessages(convId, { limit: options?.messageLimit });
     const detailTask = (async () => {
       try {
         const convDetail = await api.get(`/conversations/${convId}`);

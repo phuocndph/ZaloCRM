@@ -102,13 +102,13 @@
     >
       <div v-if="loading && conversations.length === 0" class="loading">Đang tải…</div>
 
-      <!-- Phase A perf fix v2 (2026-05-21) — Re-thêm TransitionGroup nhưng với
-           :key="activeTabKey" → tab switch tạo TransitionGroup INSTANCE MỚI,
-           Vue ko so sánh position cũ vs mới (vì khác instance), tab switch instant.
-           Trong cùng tab, key giữ nguyên → reorder (tin mới đến) animate mượt. -->
-      <TransitionGroup :key="activeTabKey || 'default'" name="conv-list" tag="div" class="conv-list-inner">
+      <!-- Chỉ mount các row gần viewport. Spacer giữ nguyên chiều cao cuộn nên danh sách
+           vẫn có thể tải toàn bộ hội thoại mà không làm DOM nặng dần. -->
+      <div class="conv-list-inner">
+      <div class="conv-virtual-spacer" :style="{ height: `${virtualTopHeight}px` }" aria-hidden="true"></div>
+      <TransitionGroup :key="activeTabKey || 'default'" name="conv-list" tag="div" class="conv-list-items">
       <div
-        v-for="conv in displayConversations"
+        v-for="conv in virtualConversations"
         :key="conv.id"
         :ref="(el) => registerRow(conv.id, el as HTMLElement | null)"
         class="conv-item"
@@ -276,6 +276,8 @@
         </div>
       </div>
       </TransitionGroup>
+      <div class="conv-virtual-spacer" :style="{ height: `${virtualBottomHeight}px` }" aria-hidden="true"></div>
+      </div>
 
       <div v-if="!loading && conversations.length === 0" class="empty-state">
         Chưa có hội thoại nào
@@ -1173,9 +1175,28 @@ onMounted(async () => {
  * Ref map: convId → row HTMLElement (registerRow gọi mỗi lần Vue mount row). */
 const scrollContainer = ref<HTMLElement | null>(null);
 const rowRefs = new Map<string, HTMLElement>();
+const VIRTUAL_ROW_HEIGHT = 80;
+const VIRTUAL_OVERSCAN = 10;
+const virtualScrollTop = ref(0);
+const virtualViewportHeight = ref(640);
+
+const virtualStart = computed(() => Math.max(0, Math.floor(virtualScrollTop.value / VIRTUAL_ROW_HEIGHT) - VIRTUAL_OVERSCAN));
+const virtualEnd = computed(() => Math.min(
+  displayConversations.value.length,
+  Math.ceil((virtualScrollTop.value + virtualViewportHeight.value) / VIRTUAL_ROW_HEIGHT) + VIRTUAL_OVERSCAN,
+));
+const virtualConversations = computed(() => displayConversations.value.slice(virtualStart.value, virtualEnd.value));
+const virtualTopHeight = computed(() => virtualStart.value * VIRTUAL_ROW_HEIGHT);
+const virtualBottomHeight = computed(() => (displayConversations.value.length - virtualEnd.value) * VIRTUAL_ROW_HEIGHT);
+
+function syncVirtualViewport(container: HTMLElement) {
+  virtualScrollTop.value = container.scrollTop;
+  virtualViewportHeight.value = container.clientHeight;
+}
 
 function onConversationScroll(event: Event) {
   const container = event.currentTarget as HTMLElement;
+  syncVirtualViewport(container);
   if (!props.hasMore || props.loadingMore) return;
   if (container.scrollHeight - container.scrollTop - container.clientHeight < 400) {
     emit('load-more');
@@ -1189,9 +1210,21 @@ function registerRow(id: string, el: HTMLElement | null) {
 
 function scrollSelectedIntoView() {
   if (!props.selectedId) return;
-  const row = rowRefs.get(props.selectedId);
   const container = scrollContainer.value;
-  if (!row || !container) return;
+  if (!container) return;
+  const selectedIndex = displayConversations.value.findIndex((conversation) => conversation.id === props.selectedId);
+  if (selectedIndex >= 0) {
+    const rowTop = selectedIndex * VIRTUAL_ROW_HEIGHT;
+    const rowBottom = rowTop + VIRTUAL_ROW_HEIGHT;
+    const viewportBottom = container.scrollTop + container.clientHeight;
+    if (rowTop < container.scrollTop || rowBottom > viewportBottom) {
+      container.scrollTop = Math.max(0, rowTop - Math.max(0, (container.clientHeight - VIRTUAL_ROW_HEIGHT) / 2));
+      syncVirtualViewport(container);
+      return;
+    }
+  }
+  const row = rowRefs.get(props.selectedId);
+  if (!row) return;
   const rowRect = row.getBoundingClientRect();
   const ctnRect = container.getBoundingClientRect();
   if (rowRect.top < ctnRect.top || rowRect.bottom > ctnRect.bottom) {
@@ -1203,6 +1236,12 @@ watch(() => props.selectedId, async () => {
   await nextTick();
   scrollSelectedIntoView();
 }, { immediate: true });
+
+onMounted(() => {
+  nextTick(() => {
+    if (scrollContainer.value) syncVirtualViewport(scrollContainer.value);
+  });
+});
 
 // ── Utility functions ───────────────────────────────────────────────────────
 // Tone gắn vào preview để CSS render màu theo trạng thái:
@@ -1627,6 +1666,8 @@ function truncate(s: string, n: number): string {
 
 .conv-scroll { flex: 1; overflow-y: auto; }
 .conv-list-inner { display: flex; flex-direction: column; }
+.conv-list-items { display: flex; flex-direction: column; }
+.conv-virtual-spacer { flex: 0 0 auto; pointer-events: none; }
 /* Reorder animation Phase A v2 (2026-05-21) — rút 0.25s → 0.15s cho feel snappier.
    Enter/leave vẫn none vì conv mới (filter match) ko cần animate fade-in. */
 .conv-list-move { transition: transform 0.15s ease; }
