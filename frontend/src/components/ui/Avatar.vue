@@ -11,7 +11,7 @@
     <div
       v-if="showCollage"
       class="av-collage"
-      :class="`av-collage--${groupMemberAvatarUrls.length}`"
+      :class="`av-collage--${collageCellCount}`"
     >
       <img
         v-for="url in groupMemberAvatarUrls"
@@ -24,6 +24,9 @@
         referrerpolicy="no-referrer"
         @error="onMemberAvatarError(url)"
       />
+      <span v-if="extraGroupMembers > 0" class="av-collage-extra">
+        +{{ extraGroupMembers > 99 ? '99+' : extraGroupMembers }}
+      </span>
     </div>
     <!-- Ảnh đơn (user, hoặc nhóm có avatar riêng) — fallback initials khi lỗi/thiếu -->
     <img
@@ -38,30 +41,20 @@
     <span v-else class="av-initials" :style="initialsStyle">{{ initials }}</span>
 
     <!-- +N thành viên vượt quá số ô hiển thị trong lưới -->
-    <span
-      v-if="showCollage && extraGroupMembers > 0"
-      class="av-collage-extra"
-      :style="membersBadgeStyle"
-    >+{{ extraGroupMembers > 99 ? '99+' : extraGroupMembers }}</span>
-
     <!-- Group sticker (góc phải trên) — Material "group" icon. Ẩn khi đã ghép lưới (mặt
          thành viên đã đủ báo "nhóm"), tránh rối. -->
     <span
-      v-if="isGroup && !showCollage"
+      v-if="false"
       class="av-group-sticker"
       :style="stickerStyle"
       aria-label="Nhóm hội thoại"
     >
-      <svg viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <svg viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
         <path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/>
       </svg>
     </span>
 
     <!-- Group member count badge (optional) -->
-    <span v-if="isGroup && groupMembersCount && !groupMemberAvatarUrls.length" class="av-members" :style="membersBadgeStyle">
-      {{ groupMembersCount > 99 ? '99+' : groupMembersCount }}
-    </span>
-
     <!-- Gender badge (chỉ cho user thread, không group) -->
     <span
       v-if="!isGroup && gender && (gender === 'male' || gender === 'female')"
@@ -125,7 +118,7 @@ const groupMemberAvatarUrls = computed(() => {
   const urls = (props.groupMemberAvatars || [])
     .map((m) => m.avatarUrl)
     .filter((url): url is string => !!url && !failedMemberAvatars.value.has(url));
-  return [...new Set(urls)].slice(0, 4);
+  return [...new Set(urls)].slice(0, 3);
 });
 /**
  * Ghép lưới khi: là nhóm + nhóm CHƯA có avatar riêng (hoặc ảnh lỗi) + có ≥2 avatar thành
@@ -139,6 +132,9 @@ const extraGroupMembers = computed(() => {
   const visible = groupMemberAvatarUrls.value.length;
   return count > visible ? count - visible : 0;
 });
+const collageCellCount = computed(() =>
+  groupMemberAvatarUrls.value.length + (extraGroupMembers.value > 0 ? 1 : 0),
+);
 function onMemberAvatarError(url: string) {
   const next = new Set(failedMemberAvatars.value);
   next.add(url);
@@ -186,9 +182,9 @@ const initialsStyle = computed(() => ({
 
 const stickerStyle = computed(() => {
   // Tăng 10% so với bản trước (0.34 → 0.374)
-  const sz = Math.round(props.size * 0.374);
+  const sz = Math.max(13, Math.round(props.size * 0.3));
   // 2/3 sticker DÍNH VÀO trong vòng tròn avatar, 1/3 nhô ra ngoài
-  const offset = Math.round(sz * 0.33);
+  const offset = Math.round(sz * 0.16);
   return {
     width: `${sz}px`,
     height: `${sz}px`,
@@ -196,12 +192,6 @@ const stickerStyle = computed(() => {
     right: `-${offset}px`,
   };
 });
-const membersBadgeStyle = computed(() => ({
-  fontSize: `${Math.max(8, Math.round(props.size * 0.25))}px`,
-  minWidth: `${Math.round(props.size * 0.46)}px`,
-  height: `${Math.round(props.size * 0.46)}px`,
-  lineHeight: `${Math.round(props.size * 0.46)}px`,
-}));
 const genderBadgeStyle = computed(() => {
   const sz = Math.max(14, Math.round(props.size * 0.4));
   return {
@@ -251,9 +241,6 @@ const platformBadgeStyle = computed(() => {
 .smax-av.is-group .av-initials,
 .smax-av.is-group .av-collage {
   /* Vòng viền xanh đậm — đặc trưng cho group */
-  outline: 2px solid #0D47A1;
-  outline-offset: -1px;
-  box-shadow: 0 0 0 1px var(--smax-bg, white);
 }
 
 /* ════════ Group collage — ghép avatar thành viên (co giãn theo size) ════════ */
@@ -281,18 +268,14 @@ const platformBadgeStyle = computed(() => {
 
 /* +N thành viên còn lại — badge nhỏ góc dưới-phải */
 .av-collage-extra {
-  position: absolute;
-  bottom: -3px; right: -3px;
+  min-width: 0;
+  min-height: 0;
   background: var(--smax-grey-200, #e5e7eb);
   color: var(--smax-grey-800, #374151);
-  border-radius: 999px;
   font-weight: 700;
   text-align: center;
-  border: 2px solid var(--smax-bg, white);
-  padding: 0 4px;
-  box-sizing: content-box;
-  display: inline-flex; align-items: center; justify-content: center;
-  z-index: 3;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 28%;
   pointer-events: none;
 }
 
@@ -300,18 +283,16 @@ const platformBadgeStyle = computed(() => {
    Position: 2/3 outside avatar circle, 1/3 overlapping — set inline qua stickerStyle. */
 .av-group-sticker {
   position: absolute;
-  background: #0D47A1;
-  border-radius: 50%;
-  border: 1.5px solid var(--smax-bg, white);
+  color: #64748b;
   box-sizing: border-box;
   z-index: 2;
   pointer-events: none;
   display: inline-flex; align-items: center; justify-content: center;
-  overflow: hidden;
+  overflow: visible;
   padding: 0;
 }
 .av-group-sticker svg {
-  width: 78%; height: 78%;
+  width: 100%; height: 100%;
   display: block;
 }
 

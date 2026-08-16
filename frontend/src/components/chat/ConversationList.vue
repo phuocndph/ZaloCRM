@@ -161,7 +161,7 @@
                 class="ci-icon ci-pin"
                 title="Đã ghim (cá nhân)"
               >mdi-pin</v-icon>
-              <span v-if="conv.threadType === 'group'" class="ci-icon ci-group" title="Nhóm">👥</span>
+              <v-icon v-if="conv.threadType === 'group' && !!avatarSrcOf(conv)" size="14" class="ci-icon ci-group" title="Nhóm">mdi-account-group</v-icon>
               <span class="ci-name-text">{{ displayName(conv) }}</span>
               <!-- Priority tinh tế cạnh tên -->
               <span v-if="priorityFlags(conv).hot" class="ci-icon ci-hot" title="Khách HOT">🔥</span>
@@ -1755,7 +1755,8 @@ function truncate(s: string, n: number): string {
 /* Icon phụ cạnh tên — tinh tế, KHÔNG lấn tên */
 .ci-icon { flex-shrink: 0; line-height: 1; }
 .ci-pin { color: var(--cl-ink-3); transform: rotate(40deg); }
-.ci-group, .ci-hot, .ci-vip { font-size: 11px; }
+.ci-group { color: #64748b; }
+.ci-hot, .ci-vip { font-size: 11px; }
 .ci-virtual { color: #f97316; }
 .ci-follow { color: #f59e0b; }
 .ci-lock { color: var(--cl-ink-3); }

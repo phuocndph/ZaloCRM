@@ -63,28 +63,36 @@
         @click="open(c)"
         @keydown.enter.prevent="open(c)"
       >
-        <div class="mc-avatar" :class="{ 'mc-avatar--group': usesGroupCollage(c) }">
+        <div
+          class="mc-avatar"
+          :class="[
+            usesGroupCollage(c) ? 'mc-avatar--group' : '',
+            usesGroupCollage(c) ? `mc-avatar--group-${groupAvatarCellCount(c)}` : '',
+          ]"
+        >
           <template v-if="usesGroupCollage(c)">
             <img
-              v-for="(src, i) in groupAvatarUrls(c)"
+              v-for="src in groupAvatarUrls(c)"
               :key="src"
               class="mc-group-img"
-              :class="`mc-group-img--${groupAvatarUrls(c).length}-${i}`"
               :src="src"
               alt=""
               loading="lazy"
               referrerpolicy="no-referrer"
               @error="markAvatarFailed(c.id, src)"
             />
-            <span v-if="extraGroupCount(c) > 0" class="mc-group-extra">{{ extraGroupCount(c) > 99 ? '99+' : extraGroupCount(c) }}</span>
+            <span v-if="extraGroupCount(c) > 0" class="mc-group-extra">+{{ extraGroupCount(c) > 99 ? '99+' : extraGroupCount(c) }}</span>
           </template>
           <img v-else-if="avatarUrl(c) && !imgFailed.has(c.id)" :src="avatarUrl(c)!" alt="" loading="lazy" referrerpolicy="no-referrer" @error="imgFailed.add(c.id)" />
           <span v-else>{{ initial(c) }}</span>
+          <svg v-if="false" class="mc-group-icon" viewBox="0 0 24 24" aria-label="Nhóm hội thoại">
+            <path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z" />
+          </svg>
           <span v-if="c.zaloAccount" class="mc-ch" title="Zalo">Z</span>
         </div>
         <div class="mc-body">
           <div class="mc-line1">
-            <span class="mc-name"><PinIcon v-if="isPinned(c)" class="mc-pin" :size="13" :stroke-width="2.4" />{{ name(c) }}</span>
+            <span class="mc-name"><PinIcon v-if="isPinned(c)" class="mc-pin" :size="13" :stroke-width="2.4" /><UsersIcon v-if="isGroup(c) && !!avatarUrl(c)" class="mc-group-title-icon" :size="14" :stroke-width="2.3" />{{ name(c) }}</span>
             <span class="mc-time">{{ shortTime(c.lastMessageAt) }}</span>
           </div>
           <div class="mc-line2">
@@ -149,7 +157,7 @@ import {
   Settings as SettingsIcon, Search as SearchIcon, Lock as LockIcon,
   AlertTriangle as AlertTriangleIcon, MessageCircle as MessageCircleIcon,
   SquarePen as PenSquareIcon, Pin as PinIcon, PinOff as PinOffIcon,
-  Mail as MailIcon, MailOpen as MailOpenIcon, MoreHorizontal as MoreHorizontalIcon,
+  Mail as MailIcon, MailOpen as MailOpenIcon, MoreHorizontal as MoreHorizontalIcon, UsersRound as UsersIcon,
 } from 'lucide-vue-next';
 import { useChat } from '@/composables/use-chat';
 import {
@@ -186,15 +194,18 @@ function groupAvatarUrls(c: MConversation): string[] {
   const urls = (c.groupMemberAvatars ?? [])
     .map((m) => m.avatarUrl)
     .filter((src): src is string => !!src && !imgFailed.has(`${c.id}:${src}`));
-  return [...new Set(urls)].slice(0, 4);
+  return [...new Set(urls)].slice(0, 3);
 }
 function usesGroupCollage(c: MConversation): boolean {
-  return isGroup(c) && !avatarUrl(c) && groupAvatarUrls(c).length > 0;
+  return isGroup(c) && !avatarUrl(c) && groupAvatarUrls(c).length >= 2;
 }
 function extraGroupCount(c: MConversation): number {
   const count = c.groupMembersCount ?? 0;
   const visible = groupAvatarUrls(c).length;
   return count > visible ? count - visible : 0;
+}
+function groupAvatarCellCount(c: MConversation): number {
+  return groupAvatarUrls(c).length + (extraGroupCount(c) > 0 ? 1 : 0);
 }
 function initial(c: MConversation) {
   return (name(c) || '?').trim().charAt(0).toUpperCase();
@@ -400,27 +411,21 @@ onUnmounted(() => {
   display: flex; align-items: center; justify-content: center; font-weight: var(--m-fw-semibold); font-size: 20px;
 }
 .mc-avatar img { width: 100%; height: 100%; border-radius: var(--m-r-full); object-fit: cover; }
-.mc-avatar--group { background: transparent; display: block; overflow: visible; }
+.mc-avatar--group { background: var(--m-surface); display: grid; overflow: hidden; gap: 1.5px; }
 .mc-group-img {
-  position: absolute; width: 27px; height: 27px; border-radius: var(--m-r-full); object-fit: cover;
-  border: 2px solid var(--m-surface); background: var(--m-surface-2);
+  width: 100%; height: 100%; border-radius: 0; object-fit: cover; background: var(--m-surface-2);
 }
-.mc-group-img--1-0 { width: 54px; height: 54px; inset: 0; }
-.mc-group-img--2-0 { left: 3px; top: 13px; }
-.mc-group-img--2-1 { right: 3px; top: 13px; }
-.mc-group-img--3-0 { left: 14px; top: 1px; }
-.mc-group-img--3-1 { left: 3px; bottom: 2px; }
-.mc-group-img--3-2 { right: 3px; bottom: 2px; }
-.mc-group-img--4-0 { left: 2px; top: 2px; }
-.mc-group-img--4-1 { right: 2px; top: 2px; }
-.mc-group-img--4-2 { left: 2px; bottom: 2px; }
-.mc-group-img--4-3 { right: 2px; bottom: 2px; }
+.mc-avatar--group-2 { grid-template-columns: 1fr 1fr; }
+.mc-avatar--group-3 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+.mc-avatar--group-3 .mc-group-img:first-child { grid-row: 1 / span 2; }
+.mc-avatar--group-4 { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
 .mc-group-extra {
-  position: absolute; right: -2px; bottom: -2px; min-width: 22px; height: 22px; padding: 0 5px;
-  border-radius: var(--m-r-full); display: flex; align-items: center; justify-content: center;
-  background: #eef2f7; color: var(--m-text-2); border: 2px solid var(--m-surface);
+  display: flex; align-items: center; justify-content: center;
+  background: #eef2f7; color: var(--m-text-2);
   font-size: 11px; font-weight: var(--m-fw-semibold);
 }
+.mc-group-icon { position: absolute; width: 16px; height: 16px; top: -1px; right: -2px; fill: #64748b; }
+.mc-group-title-icon { flex-shrink: 0; color: #64748b; }
 .mc-ch {
   position: absolute; right: -1px; bottom: -1px; width: 19px; height: 19px; border-radius: var(--m-r-full);
   background: #0068ff; color: #fff; font-size: 10px; font-weight: var(--m-fw-bold);
