@@ -248,7 +248,28 @@ function compareMessages(a: Message, b: Message): number {
 }
 
 // In-memory cache per-conv messages — quay lại conv cũ render ngay, fetch fresh background.
+// LRU có trần để PWA không giữ hàng trăm lịch sử (100 tin/hội thoại) trong RAM sau
+// một ngày mở chat liên tục. 40 hội thoại gần nhất đủ cho thao tác qua lại thường ngày.
 const messagesCache = new Map<string, Message[]>();
+const MESSAGE_CACHE_MAX_ENTRIES = 40;
+
+function getCachedMessages(conversationId: string): Message[] | undefined {
+  const cached = messagesCache.get(conversationId);
+  if (!cached) return undefined;
+  messagesCache.delete(conversationId);
+  messagesCache.set(conversationId, cached);
+  return cached;
+}
+
+function setCachedMessages(conversationId: string, messages: Message[]) {
+  messagesCache.delete(conversationId);
+  messagesCache.set(conversationId, messages);
+  while (messagesCache.size > MESSAGE_CACHE_MAX_ENTRIES) {
+    const oldestConversationId = messagesCache.keys().next().value;
+    if (!oldestConversationId) break;
+    messagesCache.delete(oldestConversationId);
+  }
+}
 
 // M-tier tab-switch fix (2026-05-21) — per-filter-key conversation list cache.
 // Stale-while-revalidate: chuyển tab → paint từ cache NGAY (0ms lag), bg fetch update.
@@ -627,7 +648,7 @@ function buildChat() {
     // user thấy giao diện tin nhắn lập tức; rồi fetch fresh in background.
     // 2026-06-12: guard theo messagesConvId (vừa set ở trên) — nếu trong lúc await ngầm
     // conv đã đổi (re-entrant fast switch) thì KHÔNG paint cache của conv cũ vào thread.
-    const cached = messagesCache.get(convId);
+    const cached = getCachedMessages(convId);
     if (cached) {
       if (messagesConvId.value === convId) {
         messages.value = cached;
@@ -665,7 +686,7 @@ function buildChat() {
       // (cập nhật deliveredAt/seenAt in-place trên object) vẫn phản ánh đúng vào cache.
       // KHÔNG deep-clone: sẽ cắt object chung → vỡ dấu "đã nhận/đã xem" + tốn bộ nhớ ×100×50.
       if (isConvCurrent(convId)) {
-        messagesCache.set(convId, [...messages.value]);
+        setCachedMessages(convId, [...messages.value]);
       }
     } catch (err) {
       // Hội thoại riêng tư của người khác → BE chặn từ tầng dữ liệu (403). Dọn sạch mọi
@@ -705,7 +726,7 @@ function buildChat() {
       const older = list.filter((message) => !existingIds.has(message.id));
       if (older.length > 0) {
         messages.value = [...older, ...messages.value].sort(compareMessages);
-        messagesCache.set(convId, [...messages.value]);
+        setCachedMessages(convId, [...messages.value]);
       }
       messagePages.set(convId, nextPage);
       return { added: older.length, hasMore };
@@ -823,7 +844,7 @@ function buildChat() {
     // detail (cột 3/4 header) + mark-read chạy SONG SONG (Promise.all) thay vì 2 round-trip
     // nối tiếp. fetchMessages gate việc paint thread; detail + mark-read KHÔNG cần cho
     // bong bóng tin nên không nên xếp hàng sau nhau. Tiết kiệm ~1 round-trip mỗi lần mở conv.
-    await fetchMessages(convId);
+    const messagesTask = fetchMessages(convId);
     const detailTask = (async () => {
       try {
         const convDetail = await api.get(`/conversations/${convId}`);
@@ -867,14 +888,13 @@ function buildChat() {
         // Ignore mark-read errors
       }
     })();
-    await Promise.all([detailTask, markReadTask]);
+    await Promise.all([messagesTask, detailTask, markReadTask]);
     // Note: Auto-sync Zalo profile được xử lý ở MessageThread.touchConversationProfile
     // (gọi POST /conversations/:id/touch-profile, cooldown 5min server-side). KHÔNG
     // duplicate ở đây để tránh spam SDK + 404 lên endpoint /contacts/:id/sync-zalo-profile
     // (legacy, đã bỏ).
     // AI summary + sentiment KHÔNG auto-fire mỗi lần đổi conv — user bấm nút refresh khi cần.
-    // Trước đây 2 LLM call awaited mỗi switch = 2-10s + tốn quota.
-    void fetchAiUsage();
+    // AI usage cũng không cần đổi theo hội thoại; tránh thêm một request cho mỗi click.
   }
 
   async function sendMessage(content: string, replyMessageId?: string | null, styles?: Array<{ st: string; start: number; len: number }>, mentions?: Array<{ uid: string; pos: number; len: number }>) {
@@ -918,7 +938,7 @@ function buildChat() {
       added += 1;
     }
     if (added > 0 && messagesConvId.value) {
-      messagesCache.set(messagesConvId.value, [...messages.value]);
+      setCachedMessages(messagesConvId.value, [...messages.value]);
     }
     return added;
   }
@@ -1326,7 +1346,7 @@ function buildChat() {
         }
       }
       // Patch persistent cache (lần sau quay lại conv vẫn thấy status đúng)
-      const cached = messagesCache.get(data.conversationId);
+      const cached = getCachedMessages(data.conversationId);
       if (cached) {
         const msg = cached.find(
           m => m.id === data.messageId || (data.zaloMsgId && m.zaloMsgId === data.zaloMsgId),

@@ -1485,6 +1485,11 @@ type AccountLabelView = {
 
 const allLabels = ref<AccountLabelView[]>([]);
 const loadingAllLabels = ref(false);
+let labelsRequestId = 0;
+const lastLabelTouchAt = new Map<string, number>();
+const lastProfileTouchAt = new Map<string, number>();
+const LABEL_TOUCH_COOLDOWN_MS = 30_000;
+const PROFILE_TOUCH_COOLDOWN_MS = 5 * 60_000;
 
 // currentLabel: tìm label có assignedTo=true (do BE trả về khi pass threadId).
 // Fallback: nếu allLabels chưa load, dùng friendship.zaloLabels[0] (chỉ cho user threads).
@@ -1507,27 +1512,32 @@ const currentLabel = computed<AccountLabelView | null>(() => {
 
 async function fetchAllLabels(accountId: string, threadId?: string | null) {
   if (!accountId) return;
+  const requestId = ++labelsRequestId;
   loadingAllLabels.value = true;
   try {
     const { api: apiClient } = await import('@/api/index');
     const query = threadId ? `?threadId=${encodeURIComponent(threadId)}` : '';
     const { data } = await apiClient.get(`/zalo-accounts/${accountId}/labels${query}`);
-    allLabels.value = (data.labels || []) as AccountLabelView[];
+    if (requestId === labelsRequestId) {
+      allLabels.value = (data.labels || []) as AccountLabelView[];
+    }
   } catch (err) {
     console.error('[zalo-labels] fetch all error', err);
   } finally {
-    loadingAllLabels.value = false;
+    if (requestId === labelsRequestId) loadingAllLabels.value = false;
   }
 }
 
-/* Sync-on-demand: khi đổi conversation → touch endpoint (cooldown 5s server-side).
- * Sau touch xong → re-fetch master list với threadId hiện tại để có assignedTo flag. */
-async function touchAccountSync(accountId: string, threadId?: string | null) {
+/* Sync-on-demand: limit cả phía client để đổi chat nhanh không tạo request thừa.
+ * Danh sách labels hiện tại đã được fetch riêng cho đúng thread, nên không fetch lần hai. */
+async function touchAccountSync(accountId: string) {
   if (!accountId) return;
+  const now = Date.now();
+  if (now - (lastLabelTouchAt.get(accountId) ?? 0) < LABEL_TOUCH_COOLDOWN_MS) return;
+  lastLabelTouchAt.set(accountId, now);
   try {
     const { api: apiClient } = await import('@/api/index');
     await apiClient.post(`/zalo-accounts/${accountId}/labels/touch`);
-    await fetchAllLabels(accountId, threadId);
     window.dispatchEvent(new CustomEvent('zalo-labels-synced', { detail: { accountId } }));
   } catch (err) {
     // Silent — touch luôn 200 ngay cả khi error
@@ -1539,6 +1549,9 @@ async function touchAccountSync(accountId: string, threadId?: string | null) {
  * Patch chỉ field còn NULL trong DB — không đè giá trị sale đã chỉnh. */
 async function touchConversationProfile(convId: string) {
   if (!convId) return;
+  const now = Date.now();
+  if (now - (lastProfileTouchAt.get(convId) ?? 0) < PROFILE_TOUCH_COOLDOWN_MS) return;
+  lastProfileTouchAt.set(convId, now);
   try {
     const { api: apiClient } = await import('@/api/index');
     await apiClient.post(`/conversations/${convId}/touch-profile`);
@@ -1547,7 +1560,7 @@ async function touchConversationProfile(convId: string) {
   }
 }
 
-// Watch conversation switch → sync labels (cooldown 5s server-side) + fetch master list cho thread hiện tại
+// Watch conversation switch → fetch labels đúng thread; đồng bộ/profile chạy nền có cooldown client.
 watch(() => props.conversation?.id, (newId, oldId) => {
   if (!newId || newId === oldId) return;
   // Xoá nhãn Zalo của nick CŨ ngay lập tức. Nếu không, allLabels vẫn giữ list của
@@ -1559,8 +1572,8 @@ watch(() => props.conversation?.id, (newId, oldId) => {
   const threadId = props.conversation?.externalThreadId;
   if (accId) {
     void fetchAllLabels(accId, threadId);  // BE trả assignedTo flag cho thread hiện tại
-    void touchAccountSync(accId, threadId);
-    void touchConversationProfile(newId);  // refresh contact profile from SDK
+    void touchAccountSync(accId);
+    if (props.conversation?.threadType !== 'group') void touchConversationProfile(newId);
   }
 }, { immediate: true });
 
@@ -3154,15 +3167,18 @@ function getImageUrl(msg: Message): string | null {
 }
 
 /** Scroll xuống đáy (tin nhắn mới nhất). Retry sau khi images load. */
+const scrollRetryTimers: ReturnType<typeof setTimeout>[] = [];
+
 function scrollToBottom(immediate = false) {
   if (!messagesContainer.value) return;
+  while (scrollRetryTimers.length) clearTimeout(scrollRetryTimers.pop());
   const el = messagesContainer.value;
   el.scrollTop = el.scrollHeight;
   if (!immediate) {
     // Retry vài lần vì image load async — đảm bảo cuộn xuống tận cùng sau khi hình rendered
-    setTimeout(() => { if (el) el.scrollTop = el.scrollHeight; }, 100);
-    setTimeout(() => { if (el) el.scrollTop = el.scrollHeight; }, 400);
-    setTimeout(() => { if (el) el.scrollTop = el.scrollHeight; }, 1000);
+    for (const delay of [100, 400, 1000]) {
+      scrollRetryTimers.push(setTimeout(() => { el.scrollTop = el.scrollHeight; }, delay));
+    }
   }
 }
 
@@ -3179,7 +3195,7 @@ watch(() => props.messages.length, async () => {
 watch(() => props.conversation?.id, async (newId) => {
   if (!newId) return;
   await nextTick();
-  scrollToBottom();
+  scrollToBottom(true);
   // Auto-focus editor — skip mobile (window.innerWidth < 768) tránh bật keyboard
   if (typeof window !== 'undefined' && window.innerWidth >= 768) {
     setTimeout(() => editorRef.value?.focus(), 80);
@@ -3208,6 +3224,9 @@ watch(() => props.editingMessage?.id, async (id) => {
     await nextTick();
     editorRef.value?.focus();
   }
+});
+onBeforeUnmount(() => {
+  while (scrollRetryTimers.length) clearTimeout(scrollRetryTimers.pop());
 });
 </script>
 
