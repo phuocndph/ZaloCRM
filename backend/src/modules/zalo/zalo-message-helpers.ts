@@ -33,6 +33,9 @@ export function detectContentType(msgType: string | undefined, content: any): st
     const action = typeof content.action === 'string' ? content.action : '';
     if (action.includes('calltime') || action.includes('misscall')) return 'call';
     if (action === 'zinstant.bankcard') return 'bank_transfer';
+    // Danh thiếp Zalo thường có QR kèm theo, nhưng action recommened.user mới là
+    // tín hiệu quyết định. Ưu tiên nó để không biến danh thiếp thành QR thuần.
+    if (action === 'recommened.user' || action === 'recommended.user') return 'contact_card';
     if (typeof content.description === 'string' && content.description.includes('qrCodeUrl')) {
       return 'qr_code';
     }
@@ -75,6 +78,7 @@ export function detectContentType(msgType: string | undefined, content: any): st
     // Zalo dùng action "recommened.calltime" (gọi thành công) / "recommened.misscall" (nhỡ)
     // Lưu ý typo "recommened" thay vì "recommended" — match cả 2.
     if (action.includes('calltime') || action.includes('misscall')) return 'call';
+    if (action === 'recommened.user' || action === 'recommended.user') return 'contact_card';
     if (action === 'msginfo.actionlist' || action === 'rtf') {
       // rtf = rich-text-format (bot Smax/Zalo gửi) — vẫn rich
       if (action === 'msginfo.actionlist') return 'reminder';

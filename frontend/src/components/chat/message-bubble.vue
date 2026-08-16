@@ -448,7 +448,9 @@ function parseContent(content: string | null): unknown {
  *   khác (incl recall)→ giữ nguyên contentType (rich fallback)
  */
 function resolveSpecialType(msg: Message): string {
-  if (msg.contentType !== 'contact_card') return msg.contentType;
+  // Bản cũ từng lưu danh thiếp recommened.user là qr_code vì description có
+  // qrCodeUrl. Luôn đọc action để các tin lịch sử cũng lên đúng giao diện.
+  if (msg.contentType !== 'contact_card' && msg.contentType !== 'qr_code') return msg.contentType;
   try {
     const p = safeParse(msg.content);
     const action = String(p?.action || '').toLowerCase();

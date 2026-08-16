@@ -102,13 +102,17 @@
       class="profile-card"
       :class="{ 'is-suggest': type === 'user_suggest' }"
     >
-      <div class="profile-card-topline">
+      <div v-if="!isZaloNameCard" class="profile-card-topline">
         <span class="profile-card-label">
           <v-icon size="12">{{ type === 'user_suggest' ? 'mdi-account-plus-outline' : 'mdi-card-account-details-outline' }}</v-icon>
           {{ type === 'user_suggest' ? 'Gợi ý kết bạn' : 'Danh thiếp Zalo' }}
         </span>
       </div>
-      <div class="profile-body">
+      <div
+        class="profile-body"
+        :class="{ 'profile-body--zalo-card': isZaloNameCard }"
+        :style="profileCardStyle"
+      >
         <div class="profile-avatar">
           <img v-if="profileAvatar" :src="profileAvatar" alt="avatar" class="profile-avatar-img" />
           <v-icon v-else size="32" color="primary">mdi-account</v-icon>
@@ -116,7 +120,11 @@
         <div class="profile-info">
           <div class="profile-name">{{ profileName || 'Người liên hệ' }}</div>
           <div v-if="profilePhone" class="profile-phone">
-            <v-icon size="12">mdi-phone</v-icon> {{ profilePhone }}
+            <v-icon size="12">mdi-phone</v-icon>
+            <span>{{ profilePhone }}</span>
+            <button type="button" class="profile-copy-phone" title="Sao chép số điện thoại" @click="copyAccount(profilePhone)">
+              <v-icon size="13">mdi-content-copy</v-icon>
+            </button>
           </div>
           <div v-else-if="profileSubtitle" class="profile-phone">{{ profileSubtitle }}</div>
           <div class="profile-subtitle">Danh thiếp Zalo</div>
@@ -133,7 +141,7 @@
           @click="onOpenProfile"
         >
           <v-icon size="13">{{ type === 'user_suggest' ? 'mdi-account-plus-outline' : 'mdi-message-outline' }}</v-icon>
-          {{ type === 'user_suggest' ? 'Xem thông tin' : 'Gửi tin nhắn' }}
+          {{ type === 'user_suggest' ? 'Xem hồ sơ' : 'Gửi tin nhắn' }}
         </button>
         <button
           type="button"
@@ -385,11 +393,21 @@ function formatDuration(seconds: number): string {
 const title = computed<string>(() => props.content?.title || props.content?.name || '');
 
 // ── E21/E22 Profile card (action='show.profile' hoặc 'recommened.user') ──
-// Zalo lưu danh thiếp dưới contact_card với params chứa userInfo. Best-effort extract.
+// Zalo name card: UID ở params, còn phone/QR/avatar nằm trong description JSON.
+const profileDescription = computed<Record<string, unknown> | null>(() => {
+  const raw = props.content?.description;
+  if (typeof raw !== 'string') return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+});
 const profileUid = computed<string>(() => {
   const p = paramsObj.value;
   return String(
-    p?.uid || p?.userId || props.content?.uid || props.content?.userId || '',
+    p?.uid || p?.userId || props.content?.uid || props.content?.userId || props.content?.params || '',
   );
 });
 const profileName = computed<string>(() => {
@@ -400,17 +418,29 @@ const profileName = computed<string>(() => {
 });
 const profileAvatar = computed<string>(() => {
   const p = paramsObj.value;
-  const a = p?.avatar || p?.avatarUrl || props.content?.thumb;
+  const d = profileDescription.value;
+  const a = p?.avatar || p?.avatarUrl || d?.avatar || d?.avatarUrl || props.content?.thumb;
   return typeof a === 'string' && a.startsWith('http') ? a : '';
 });
 const profilePhone = computed<string>(() => {
   const p = paramsObj.value;
-  return String(p?.phone || p?.phoneNumber || '').trim();
+  const d = profileDescription.value;
+  return String(p?.phone || p?.phoneNumber || d?.phone || d?.phoneNumber || '').trim();
 });
 const profileQrImage = computed<string>(() => {
   const p = paramsObj.value;
-  const q = p?.qrCodeUrl || p?.qrUrl || p?.qrcode || p?.qr || props.content?.qrCodeUrl;
+  const d = profileDescription.value;
+  const q = p?.qrCodeUrl || p?.qrUrl || p?.qrcode || p?.qr || d?.qrCodeUrl || props.content?.qrCodeUrl;
   return typeof q === 'string' && q.startsWith('http') ? q : '';
+});
+const isZaloNameCard = computed(() => props.type === 'user_suggest' && !!profilePhone.value);
+const profileCardStyle = computed(() => {
+  if (!isZaloNameCard.value) return undefined;
+  const bg = profileDescription.value?.cardBackground;
+  const image = typeof bg === 'string' && bg.startsWith('http') ? `url("${bg}")` : undefined;
+  return {
+    backgroundImage: image,
+  };
 });
 const profileSubtitle = computed<string>(() => {
   const desc = props.content?.description;
@@ -885,6 +915,25 @@ const linkDescription = computed<string>(() => {
   align-items: center;
   gap: 10px;
 }
+.profile-body--zalo-card {
+  min-height: 96px;
+  margin: -10px -10px 0;
+  padding: 16px 14px;
+  color: #fff;
+  background-color: #1473df;
+  background-size: cover;
+  background-position: center;
+}
+.profile-body--zalo-card .profile-avatar {
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  box-shadow: none;
+}
+.profile-body--zalo-card .profile-name,
+.profile-body--zalo-card .profile-phone,
+.profile-body--zalo-card .profile-subtitle {
+  color: #fff;
+}
+.profile-body--zalo-card .profile-phone { font-weight: 600; }
 .profile-avatar {
   width: 52px;
   height: 52px;
@@ -920,6 +969,20 @@ const linkDescription = computed<string>(() => {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.profile-copy-phone {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+.profile-copy-phone:hover { background: rgba(255, 255, 255, 0.18); }
 .profile-subtitle {
   margin-top: 3px;
   font-size: 11.5px;
