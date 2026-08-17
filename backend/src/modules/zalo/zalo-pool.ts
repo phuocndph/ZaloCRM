@@ -77,6 +77,24 @@ function defaultReason(status: ZaloStatus): StatusReason {
   }
 }
 
+// Only explicit authentication failures may require another QR scan. Network,
+// proxy and SDK transport errors retain the saved session and retry later.
+const SESSION_INVALID_PATTERNS = [
+  'session expired',
+  'session has expired',
+  'not logged in',
+  'login required',
+  'cookie expired',
+  'cookie is invalid',
+  'invalid session',
+  'invalid token',
+];
+
+function isSessionInvalidError(err: unknown): boolean {
+  const message = String((err as any)?.message || err || '').toLowerCase();
+  return SESSION_INVALID_PATTERNS.some((pattern) => message.includes(pattern));
+}
+
 class ZaloAccountPool {
   private instances = new Map<string, ZaloInstance>();
   private io: Server | null = null;
@@ -448,8 +466,17 @@ class ZaloAccountPool {
     } catch (err) {
       const instance = this.instances.get(accountId);
       if (instance) instance.status = 'disconnected';
-      await this.updateAccountDB(accountId, 'qr_pending', null, 'reconnect_failed');
-      void this.emitAccountEventToOrg(accountId, 'zalo:reconnect-failed', { accountId, error: String(err) });
+      if (isSessionInvalidError(err)) {
+        await this.updateAccountDB(accountId, 'qr_pending', null, 'reconnect_failed');
+        void this.emitAccountEventToOrg(accountId, 'zalo:reconnect-failed', { accountId, error: String(err) });
+      } else {
+        // Do not turn a temporary proxy/network failure into a forced QR login.
+        // The saved credentials remain untouched and autoReconnect reuses its proxy.
+        await this.updateAccountDB(accountId, 'disconnected', null, 'disconnect');
+        logger.warn(`[zalo:${accountId}] reconnect deferred; retaining saved session: ${String(err)}`);
+        void this.emitAccountEventToOrg(accountId, 'zalo:reconnect-deferred', { accountId, error: String(err) });
+        setTimeout(() => void this.autoReconnect(accountId), 120_000).unref();
+      }
     } finally {
       // Fix flap 2026-06-06: luôn nhả in-flight guard dù thành công hay lỗi.
       this.reconnecting.delete(accountId);
@@ -534,12 +561,13 @@ class ZaloAccountPool {
         this.disconnectHistory.set(key, history);
 
         if (history.length >= 5) {
-          // >5 disconnects in 5 min → stop reconnecting, require QR re-login
-          logger.error(`[zalo:${id}] Circuit breaker: ${history.length} disconnects in 5 min — stopping auto-reconnect. QR re-login required.`);
-          this.updateAccountDB(id, 'qr_pending', null, 'session_expired');
-          void this.emitAccountEventToOrg(id, 'zalo:reconnect-failed', { accountId: id, error: 'Session không ổn định, cần đăng nhập QR lại' });
+          // >5 disconnects in 5 min: keep the session and retry with a longer backoff.
+          logger.warn(`[zalo:${id}] Circuit breaker: ${history.length} disconnects in 5 min; retaining session and backing off reconnect.`);
+          this.updateAccountDB(id, 'disconnected', null, 'disconnect');
+          void this.emitAccountEventToOrg(id, 'zalo:reconnect-deferred', { accountId: id, error: 'Kết nối không ổn định, hệ thống sẽ thử lại sau ít phút' });
           this.disconnectHistory.delete(key);
-          return; // DON'T reconnect
+          setTimeout(() => this.autoReconnect(id), 5 * 60_000).unref();
+          return;
         }
 
         // Normal auto-reconnect after 30 seconds.

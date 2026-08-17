@@ -3,7 +3,8 @@
 /**
  * zalo-health-check.ts — Cron-based health monitor for Zalo account connections.
  * Runs every 5 minutes to detect disconnected accounts and auto-reconnect them.
- * Also runs a daily session refresh at 04:00 UTC to keep cookies fresh.
+ * Healthy sessions are never force-refreshed because that creates avoidable
+ * login activity and can trigger Zalo's risk checks.
  */
 import cron from 'node-cron';
 import { Prisma } from '@prisma/client';
@@ -13,6 +14,9 @@ import { logger } from '../../shared/utils/logger.js';
 import { runSystemQuery } from '../../shared/tenant/tenant-context.js';
 
 export function startZaloHealthCheck(): void {
+  // Emergency compatibility switch only. Default is disabled: healthy accounts
+  // must not be disconnected merely to refresh cookies.
+  const legacyForcedRefreshEnabled = process.env.ZALO_FORCE_SESSION_REFRESH === '1';
   // Every 5 minutes: check all accounts with saved sessions
   cron.schedule('*/5 * * * *', async () => {
     try {
@@ -56,7 +60,8 @@ export function startZaloHealthCheck(): void {
   });
 
   // Daily at 04:00 UTC (11:00 AM VN): refresh all sessions to keep cookies alive
-  cron.schedule('0 4 * * *', async () => {
+  if (legacyForcedRefreshEnabled) {
+    cron.schedule('0 4 * * *', async () => {
     logger.info('[health-check] Daily session refresh starting...');
     try {
       // Cross-org admin sweep (account theo sessionData, không gắn 1 org) → runSystemQuery.
@@ -89,7 +94,10 @@ export function startZaloHealthCheck(): void {
     } catch (err) {
       logger.error('[health-check] Error during daily refresh:', err);
     }
-  });
+    });
+  } else {
+    logger.info('[health-check] Daily forced session refresh is disabled');
+  }
 
   // FIX 3 nick-ghost (Anh chốt 2026-06-13): mỗi giờ dọn thẻ ma qr_pending cũ bằng cách ẩn
   // (archivedAt). T4b (2026-06-20): đổi ngưỡng 15 phút → 24h — nick-ma phải HIỆN 24h ở UI
@@ -104,5 +112,5 @@ export function startZaloHealthCheck(): void {
     }
   });
 
-  logger.info('[health-check] Zalo health check started (every 5 min + daily refresh 04:00 UTC + ghost cleanup hourly)');
+  logger.info('[health-check] Zalo health check started (every 5 min + ghost cleanup hourly)');
 }
