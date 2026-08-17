@@ -91,6 +91,10 @@ export interface HandleMessageResult {
   conversationId: string;
   orgId: string;
   contactId: string | null;
+  privacyMode: string;
+  ownerUserId: string | null;
+  conversationIsPrivate: boolean;
+  conversationPrivateOwnerUserId: string | null;
 }
 
 // ── v3.3 mirror inbound media — copy Zalo CDN URL về MinIO/S3/R2 ───────────
@@ -284,6 +288,50 @@ async function mirrorInboundMediaContent(
   return JSON.stringify(parsed);
 }
 
+/**
+ * Keep the Zalo CDN URL on the realtime path, then mirror it after the message
+ * is visible. A slow CDN or image compression must never delay a chat event.
+ */
+function mirrorInboundMediaInBackground(args: {
+  msg: IncomingMessage;
+  messageId: string;
+  orgId: string;
+  accountId: string;
+  conversationId: string;
+  createdAt: Date;
+}): void {
+  if (!MIRROR_CONTENT_TYPES.has(args.msg.contentType) || !args.msg.content) return;
+
+  void (async () => {
+    const uploads: Array<{ upload: UploadResult; purpose: string }> = [];
+    try {
+      const mirroredContent = await mirrorInboundMediaContent(args.msg, uploads);
+      if (mirroredContent !== args.msg.content) {
+        await prisma.message.update({
+          where: { id: args.messageId },
+          data: { content: mirroredContent },
+        });
+      }
+      if (uploads.length) {
+        await recordMessageStorageReferences({
+          orgId: args.orgId,
+          zaloAccountId: args.accountId,
+          conversationId: args.conversationId,
+          messageId: args.messageId,
+          uploads,
+          createdAt: args.createdAt,
+        });
+      }
+    } catch (err) {
+      logger.warn('[message-handler] background inbound media mirror failed', {
+        messageId: args.messageId,
+        contentType: args.msg.contentType,
+        err: (err as Error).message,
+      });
+    }
+  })();
+}
+
 export async function handleIncomingMessage(
   msg: IncomingMessage,
 ): Promise<HandleMessageResult | null> {
@@ -295,6 +343,7 @@ export async function handleIncomingMessage(
       select: {
         orgId: true,
         ownerUserId: true,
+        privacyMode: true,
         displayName: true,
         owner: { select: { fullName: true } },
       },
@@ -393,13 +442,12 @@ export async function handleIncomingMessage(
     }
 
     let message;
-    const mirroredUploads: Array<{ upload: UploadResult; purpose: string }> = [];
     try {
       // zaloMsgIdNum = numeric form của Snowflake — primary sort key match Zalo Web.
       // Parse fail → null (CRM-sent in-flight messages chưa có msgId).
       const zaloMsgIdNum = msg.msgId && /^\d+$/.test(msg.msgId) ? BigInt(msg.msgId) : null;
-      // v3.3 mirror Zalo CDN → object storage (image/video/voice/file/gif)
-      const storedContent = await mirrorInboundMediaContent(msg, mirroredUploads);
+      // Mirror runs in the background after persistence so a slow CDN cannot hold up the inbox.
+      const storedContent = msg.content || '';
       // ── M11 Source Badge writer (Anh chốt 2026-06-02) ──
       // Tin sale gõ trên app Zalo (mobile/web) → SDK echo về CRM ở đây.
       // Set sentVia='user_native' + metadata.sender.syncedFromNative=true
@@ -477,18 +525,16 @@ export async function handleIncomingMessage(
       throw err;
     }
 
-    if (mirroredUploads.length) {
-      await recordMessageStorageReferences({
-        orgId: account.orgId,
-        zaloAccountId: msg.accountId,
-        conversationId: conversation.id,
-        messageId: message.id,
-        uploads: mirroredUploads,
-        createdAt: sentAt,
-      }).catch((err) => logger.error('[storage-ledger] inbound message reference failed', { messageId: message.id, err }));
-    }
-
     await updateConversationAfterMessage(conversation.id, sentAt, msg.isSelf);
+
+    mirrorInboundMediaInBackground({
+      msg,
+      messageId: message.id,
+      orgId: account.orgId,
+      accountId: msg.accountId,
+      conversationId: conversation.id,
+      createdAt: sentAt,
+    });
 
     // 2026-06-18 — Cầu Telegram (Phase 0): phát sự kiện hậu-commit để bridge mirror sang
     // Telegram. Fire-and-forget; subscriber (Phase 1) tự lọc nick bắc cầu + chống lặp theo msgId.
@@ -635,6 +681,10 @@ export async function handleIncomingMessage(
         conversationId: conversation.id,
         orgId: account.orgId,
         contactId,
+        privacyMode: account.privacyMode,
+        ownerUserId: account.ownerUserId,
+        conversationIsPrivate: conversation.isPrivate,
+        conversationPrivateOwnerUserId: conversation.privateOwnerUserId,
       };
     }
 
@@ -828,6 +878,10 @@ export async function handleIncomingMessage(
       conversationId: conversation.id,
       orgId: account.orgId,
       contactId,
+      privacyMode: account.privacyMode,
+      ownerUserId: account.ownerUserId,
+      conversationIsPrivate: conversation.isPrivate,
+      conversationPrivateOwnerUserId: conversation.privateOwnerUserId,
     };
   } catch (err) {
     logger.error('[message-handler] handleIncomingMessage error:', err);
@@ -1016,7 +1070,14 @@ async function findOrCreateConversation(
 
   const existing = await prisma.conversation.findFirst({
     where: { zaloAccountId: msg.accountId, externalThreadId },
-    select: { id: true, groupName: true, groupAvatarUrl: true, groupMembersCount: true },
+    select: {
+      id: true,
+      groupName: true,
+      groupAvatarUrl: true,
+      groupMembersCount: true,
+      isPrivate: true,
+      privateOwnerUserId: true,
+    },
   });
 
   if (existing) {
@@ -1040,7 +1101,11 @@ async function findOrCreateConversation(
         await prisma.conversation.update({ where: { id: existing.id }, data: updates });
       }
     }
-    return { id: existing.id };
+    return {
+      id: existing.id,
+      isPrivate: existing.isPrivate,
+      privateOwnerUserId: existing.privateOwnerUserId,
+    };
   }
 
   // CHỐNG XÉ globalId-aware (anh chốt 2026-06-22): NGAY lúc tạo, check globalId + UID per-nick →
@@ -1050,7 +1115,13 @@ async function findOrCreateConversation(
     const existingId = await findExistingUserConversation({
       orgId, nickId: msg.accountId, externalThreadId, contactId, globalId: msg.contactGlobalId,
     });
-    if (existingId) return { id: existingId };
+    if (existingId) {
+      const existing = await prisma.conversation.findUnique({
+        where: { id: existingId },
+        select: { id: true, isPrivate: true, privateOwnerUserId: true },
+      });
+      if (existing) return existing;
+    }
   }
 
   return prisma.conversation.create({
@@ -1068,7 +1139,7 @@ async function findOrCreateConversation(
       unreadCount: msg.isSelf ? 0 : 1,
       isReplied: msg.isSelf,
     },
-    select: { id: true },
+    select: { id: true, isPrivate: true, privateOwnerUserId: true },
   });
 }
 

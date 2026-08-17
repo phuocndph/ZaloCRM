@@ -412,7 +412,6 @@ function buildChat() {
   const aiUsage = ref({ usedToday: 0, maxDaily: 500, remaining: 500, enabled: true });
   const aiConfig = ref<AiConfig>({ provider: 'anthropic', model: 'claude-sonnet-4-6', maxDaily: 500, enabled: true });
   let socket: Socket | null = null;
-  let convSyncTimer: ReturnType<typeof setTimeout> | null = null;
   // work-scope 2026-06-15 — badge "N tin nick khác": đếm tin OUT-OF-SCOPE per nick.
   // CHỈ đếm nick CÓ QUYỀN (server đã lọc nên accountId tới đây luôn trong quyền). Reset
   // khi đổi scope sang nick đó (T7). Bounded bởi số nick (≤50).
@@ -425,19 +424,6 @@ function buildChat() {
   // > GRACE (4s) → ẩn nháy lúc reconnect nhanh, vẫn báo khi mất kết nối thật sự. Ẩn NGAY khi nối lại.
   const realtimeOffline = ref(false);
   let offlineGraceTimer: ReturnType<typeof setTimeout> | null = null;
-
-  // Debounce server-side reconcile: chỉ fetch full list sau 3s không có tin mới
-  // → tránh lag khi nhận burst (chat group nhiều người gửi liên tiếp).
-  function scheduleConvSync() {
-    if (convSyncTimer) clearTimeout(convSyncTimer);
-    convSyncTimer = setTimeout(() => {
-      // bypassCache: socket đã optimistic move conv lên top. Nếu apply cache cũ
-      // (data trước khi socket fires) sẽ ghi đè state → conv "tụt xuống xíu rồi
-      // nhảy lên top" flicker. Đi thẳng server lấy fresh thay cache.
-      void fetchConversations({ bypassCache: true });
-      convSyncTimer = null;
-    }, 3000);
-  }
 
   // 2026-06-12 (anh báo "conv đang mở dính qua tab khác") — bản sao conv đang chọn.
   // Mục đích: cho phép GỠ conv khỏi list cột 2 khi nó không thuộc tab/filter hiện tại
@@ -481,9 +467,8 @@ function buildChat() {
     // M-tier stale-while-revalidate: cache hit → paint NGAY (no spinner flash khi
     // chuyển tab). Cache miss → spinner (loading state) trong khi chờ HTTP.
     //
-    // bypassCache=true cho socket-triggered refresh (scheduleConvSync sau khi
-    // socket optimistic move conv lên top). Lý do: nếu apply cache cũ sẽ ghi đè
-    // state đã được socket update → conv "tụt xuống xíu rồi nhảy lên top" flicker.
+    // bypassCache=true cho reconnect/socket event buộc phải đồng bộ lại. Lý do: nếu apply
+    // cache cũ sẽ ghi đè state đã được socket update → conv "tụt xuống xíu rồi nhảy lên top" flicker.
     // Fix 2026-05-29: preserve conv đang được select (vd stub từ Lead Pool,
     // lastMessageAt=null không vào top 100 → bị wipe → UI blank).
     // Fix 2026-06-10 (#1): KHI đang lọc theo tag → KHÔNG ép giữ conv đang mở nếu
@@ -1093,7 +1078,7 @@ function buildChat() {
         const m = new Map(outOfScopeCounts.value);
         m.set(data.accountId, (m.get(data.accountId) ?? 0) + 1);
         outOfScopeCounts.value = m;
-        return; // KHÔNG optimistic cột-2, KHÔNG scheduleConvSync, KHÔNG dispatch
+        return; // KHÔNG optimistic cột-2, KHÔNG dispatch
       }
       // Tin in-scope nhưng không updateColumn2 (vd thread đang mở out-of-scope): cũng dừng
       // optimistic cột-2 để không kéo conv ngoài scope lên list.
@@ -1143,9 +1128,6 @@ function buildChat() {
           conversations.value.splice(idx, 1, conv);
         }
       }
-      // Debounce sync from server: chỉ fetch sau 3s im lặng → reconcile state
-      // (tránh chạy mỗi tin → lag list khi nhận burst).
-      scheduleConvSync();
       // 2026-06-12 (anh báo: tab "Ưu tiên" có tin mới mà badge KHÔNG tăng tới khi reload).
       // Gốc: conv thuộc tab Ưu tiên KHÔNG nằm trong conversations.value (list tab hiện tại)
       // → idx=-1 → optimistic update bỏ qua, VÀ badge priorityUnreadCount chỉ refresh lúc

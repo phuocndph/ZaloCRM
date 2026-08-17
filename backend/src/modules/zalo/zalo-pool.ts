@@ -14,7 +14,7 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../../shared/database/prisma-client.js';
 import { runSystemQuery } from '../../shared/tenant/tenant-context.js';
 import { logger } from '../../shared/utils/logger.js';
-import { attachZaloListener, type UserInfoCacheEntry } from './zalo-listener-factory.js';
+import { attachZaloListener, type GroupInfoCacheEntry, type UserInfoCacheEntry } from './zalo-listener-factory.js';
 import { emitWebhook } from '../api/webhook-service.js';
 import { startMessageSync, stopMessageSync } from './zalo-message-sync.js';
 import { backfillIfEmpty } from './zalo-history-backfill.js';
@@ -100,6 +100,7 @@ class ZaloAccountPool {
   private io: Server | null = null;
   // Shared user-info cache passed into each listener context
   private userInfoCache = new Map<string, UserInfoCacheEntry>();
+  private groupInfoCache = new Map<string, GroupInfoCacheEntry>();
   // Circuit breaker: track disconnect timestamps per account
   private disconnectHistory = new Map<string, number[]>();
 
@@ -516,6 +517,7 @@ class ZaloAccountPool {
       api,
       io: this.io,
       userInfoCache: this.userInfoCache,
+      groupInfoCache: this.groupInfoCache,
       onDisconnected: (id) => {
         if (this.isShuttingDown) {
           logger.info(`[zalo:${id}] listener closed during application shutdown`);

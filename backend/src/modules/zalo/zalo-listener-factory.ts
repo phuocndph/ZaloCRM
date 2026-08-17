@@ -317,6 +317,12 @@ interface ResolvedGroup {
   memberUids: string[];
 }
 
+export interface GroupInfoCacheEntry extends ResolvedGroup {
+  cachedAt: number;
+}
+
+const GROUP_INFO_CACHE_TTL_MS = 5 * 60 * 1000;
+
 const GROUP_AVATAR_PRIME_COOLDOWN_MS = 10 * 60 * 1000;
 const groupAvatarPrimeAt = new Map<string, number>();
 
@@ -404,17 +410,27 @@ async function primeGroupMemberAvatars(
 }
 
 // Fetch group display name + avatar + member count from the zca-js API
-async function resolveGroupInfo(api: any, groupId: string): Promise<ResolvedGroup> {
+async function resolveGroupInfo(
+  api: any,
+  groupId: string,
+  cache: Map<string, GroupInfoCacheEntry>,
+): Promise<ResolvedGroup> {
+  const cached = cache.get(groupId);
+  if (cached && Date.now() - cached.cachedAt < GROUP_INFO_CACHE_TTL_MS) {
+    return cached;
+  }
   try {
     const result = await api.getGroupInfo(groupId);
     const info = result?.gridInfoMap?.[groupId];
     const members = info?.memVerList || info?.memList || info?.members;
-    return {
+    const resolved = {
       name: info?.name || '',
       avatar: info?.avt || info?.fullAvt || info?.avatar || '',
       membersCount: Array.isArray(members) ? members.length : (info?.totalMember || null),
       memberUids: groupMemberUids(info),
     };
+    cache.set(groupId, { ...resolved, cachedAt: Date.now() });
+    return resolved;
   } catch (err) {
     logger.warn(`[zalo] getGroupInfo failed for ${groupId}:`, err);
     return { name: '', avatar: '', membersCount: null, memberUids: [] };
@@ -471,6 +487,7 @@ export interface ListenerContext {
   api: any;
   io: Server | null;
   userInfoCache: Map<string, UserInfoCacheEntry>;
+  groupInfoCache: Map<string, GroupInfoCacheEntry>;
   onDisconnected: (accountId: string) => void;
 }
 
@@ -479,7 +496,7 @@ export interface ListenerContext {
  * Calls listener.start() with retryOnClose at the end.
  */
 export function attachZaloListener(ctx: ListenerContext): void {
-  const { accountId, api, io, userInfoCache, onDisconnected } = ctx;
+  const { accountId, api, io, userInfoCache, groupInfoCache, onDisconnected } = ctx;
   const listener = api.listener;
 
   // PRIVACY 2026-06-11: orgId của nick (cache 1 lần) để scope MỌI socket event theo
@@ -769,7 +786,7 @@ export function attachZaloListener(ctx: ListenerContext): void {
       let groupMembersCount: number | undefined;
       let groupMemberUids: string[] = [];
       if (isGroup && message.threadId) {
-        const groupInfo = await resolveGroupInfo(api, message.threadId);
+        const groupInfo = await resolveGroupInfo(api, message.threadId, groupInfoCache);
         groupName = groupInfo.name || undefined;
         groupAvatarUrl = groupInfo.avatar || undefined;
         groupMembersCount = groupInfo.membersCount ?? undefined;
@@ -838,25 +855,16 @@ export function attachZaloListener(ctx: ListenerContext): void {
         }
         // PRIVACY 2026-06-11: redact server-side per-recipient + scope org (emit-chat).
         // Nick main → room org nhận bản mờ, chính chủ đã unlock nhận bản thật.
-        const accInfo = await prisma.zaloAccount.findUnique({
-          where: { id: accountId },
-          select: { privacyMode: true, ownerUserId: true },
-        });
-        // Riêng tư cấp hội thoại 2026-07-09 — fail-closed nếu không đọc được conv.
-        const convPriv = await prisma.conversation.findUnique({
-          where: { id: result.conversationId },
-          select: { isPrivate: true, privateOwnerUserId: true },
-        });
         await emitChatMessage({
           io,
           orgId: result.orgId,
           accountId,
           conversationId: result.conversationId,
           message: result.message,
-          privacyMode: accInfo?.privacyMode ?? 'sub',
-          ownerUserId: accInfo?.ownerUserId ?? null,
-          isPrivate: convPriv?.isPrivate ?? true,
-          privateOwnerUserId: convPriv?.privateOwnerUserId ?? null,
+          privacyMode: result.privacyMode,
+          ownerUserId: result.ownerUserId,
+          isPrivate: result.conversationIsPrivate,
+          privateOwnerUserId: result.conversationPrivateOwnerUserId,
         });
 
         // Push mobile (FCM/APNs) — CHỈ tin KHÁCH gửi đến (inbound). Tin tự gửi/self bỏ qua.
@@ -866,12 +874,12 @@ export function attachZaloListener(ctx: ListenerContext): void {
             orgId: result.orgId,
             conversationId: result.conversationId,
             zaloAccountId: accountId,
-            privacyMode: accInfo?.privacyMode ?? 'sub',
-            ownerUserId: accInfo?.ownerUserId ?? null,
+            privacyMode: result.privacyMode,
+            ownerUserId: result.ownerUserId,
             // Riêng tư cấp hội thoại 2026-07-09 — fail-closed: không đọc được conv thì
             // coi như riêng tư + không có chủ → không ai nhận thông báo.
-            conversationIsPrivate: convPriv?.isPrivate ?? true,
-            conversationPrivateOwnerUserId: convPriv?.privateOwnerUserId ?? null,
+            conversationIsPrivate: result.conversationIsPrivate,
+            conversationPrivateOwnerUserId: result.conversationPrivateOwnerUserId,
             message: result.message,
             senderName,
           }).catch((err) =>
@@ -1018,7 +1026,7 @@ export function attachZaloListener(ctx: ListenerContext): void {
         let groupMembersCount: number | undefined;
         let groupMemberUids: string[] = [];
         if (threadType === 'group' && resolvedThreadId) {
-          const groupInfo = await resolveGroupInfo(api, resolvedThreadId);
+          const groupInfo = await resolveGroupInfo(api, resolvedThreadId, groupInfoCache);
           groupName = groupInfo.name || undefined;
           groupAvatarUrl = groupInfo.avatar || undefined;
           groupMembersCount = groupInfo.membersCount ?? undefined;
@@ -1075,25 +1083,16 @@ export function attachZaloListener(ctx: ListenerContext): void {
           }
           // PRIVACY 2026-06-11: backfill cũng qua emit-chat (redact + scope org).
           // Trước đây emit raw + THIẾU cả _privacyMeta → non-owner thấy thẳng nội dung.
-          const accInfo = await prisma.zaloAccount.findUnique({
-            where: { id: accountId },
-            select: { privacyMode: true, ownerUserId: true },
-          });
-          // Riêng tư cấp hội thoại 2026-07-09 — fail-closed nếu không đọc được conv.
-          const convPriv = await prisma.conversation.findUnique({
-            where: { id: result.conversationId },
-            select: { isPrivate: true, privateOwnerUserId: true },
-          });
           await emitChatMessage({
             io,
             orgId: result.orgId,
             accountId,
             conversationId: result.conversationId,
             message: result.message,
-            privacyMode: accInfo?.privacyMode ?? 'sub',
-            ownerUserId: accInfo?.ownerUserId ?? null,
-            isPrivate: convPriv?.isPrivate ?? true,
-            privateOwnerUserId: convPriv?.privateOwnerUserId ?? null,
+            privacyMode: result.privacyMode,
+            ownerUserId: result.ownerUserId,
+            isPrivate: result.conversationIsPrivate,
+            privateOwnerUserId: result.conversationPrivateOwnerUserId,
           });
         }
       } catch (err) {
