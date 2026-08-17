@@ -604,6 +604,8 @@ async function bootstrap() {
         await stopGroupScanWorker().catch((e) => logger.warn('[shutdown] stopGroupScanWorker lỗi:', e));
         await stopOutreachWorker().catch((e) => logger.warn('[shutdown] stopOutreachWorker lỗi:', e));
         await stopFollowupWorker().catch((e) => logger.warn('[shutdown] stopFollowupWorker lỗi:', e));
+        // Close Zalo listeners before Docker replaces the process. Credentials stay in DB.
+        zaloPool.shutdown();
         await app.close().catch((e) => logger.warn('[shutdown] app.close lỗi:', e));
         logger.info('[shutdown] đóng gọn xong.');
       } finally {
@@ -625,19 +627,23 @@ async function bootstrap() {
     // động server → tránh tranh chấp session với nick thật ngay sau boot.
     const accounts = await prisma.zaloAccount.findMany({
       where: { sessionData: { not: Prisma.JsonNull }, archivedAt: null, zaloUid: { not: null } },
-      select: { id: true, sessionData: true },
+      select: { id: true, sessionData: true, proxyUrl: true },
     });
-    logger.info(`Attempting reconnect for ${accounts.length} Zalo account(s)`);
-    for (const account of accounts) {
+    const BOOT_RECONNECT_STAGGER_MS = 7_000;
+    logger.info(`Scheduling reconnect for ${accounts.length} Zalo account(s), staggered by ${BOOT_RECONNECT_STAGGER_MS}ms`);
+    for (const [index, account] of accounts.entries()) {
       const session = account.sessionData as {
         cookie: any;
         imei: string;
         userAgent: string;
       } | null;
       if (session?.imei) {
-        zaloPool.reconnect(account.id, session).catch((err) => {
-          logger.warn(`Auto-reconnect failed for account ${account.id}:`, err);
-        });
+        const timer = setTimeout(() => {
+          zaloPool.reconnect(account.id, session, account.proxyUrl).catch((err) => {
+            logger.warn(`Boot reconnect failed for account ${account.id}:`, err);
+          });
+        }, index * BOOT_RECONNECT_STAGGER_MS);
+        timer.unref();
       }
     }
   } catch (err) {

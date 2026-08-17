@@ -91,6 +91,7 @@ class ZaloAccountPool {
   // reconnecting: in-flight guard per account — chặn 2 luồng (autoReconnect 30s timer +
   // health-check cron) cùng vào reconnect() tạo WS chồng nhau.
   private reconnecting = new Set<string>();
+  private isShuttingDown = false;
 
   // ── Sprint v3 (2026-06-03) — Sticky 24h Hold notification timers ──
   // Mỗi nick disconnect tạo 3 setTimeout (T+2 phút, T+6h, T+23h). Khi nick
@@ -328,6 +329,10 @@ class ZaloAccountPool {
 
   // Reconnect using previously saved session credentials
   async reconnect(accountId: string, credentials: ZaloCredentials, proxyUrl?: string | null): Promise<void> {
+    if (this.isShuttingDown) {
+      logger.info(`[zalo:${accountId}] reconnect() skipped during application shutdown`);
+      return;
+    }
     // FIX 2 nick-ghost (Anh chốt 2026-06-13): GUARD eligibility GOM 1 CHỖ. Mọi đường
     // reconnect (boot app.ts, health-check cron, route /reconnect tay, autoReconnect
     // timer) đều đi qua đây → đặt điều kiện "thẻ ma KHÔNG reconnect" tại nguồn duy nhất.
@@ -485,6 +490,10 @@ class ZaloAccountPool {
       io: this.io,
       userInfoCache: this.userInfoCache,
       onDisconnected: (id) => {
+        if (this.isShuttingDown) {
+          logger.info(`[zalo:${id}] listener closed during application shutdown`);
+          return;
+        }
         // Fix flap 2026-06-06: nếu instance hiện tại có epoch khác → listener này đã bị
         // thay thế bởi 1 reconnect mới hơn. Bỏ qua 'closed' của nó để không set
         // disconnected oan + không dồn circuit breaker bằng disconnect ma.
@@ -729,6 +738,7 @@ class ZaloAccountPool {
   // `expectedEpoch`: epoch của instance lúc lên lịch timer. Nếu instance hiện tại có epoch
   // khác → đã bị thay thế (vd: user quét QR lại) → KHÔNG auto-reconnect đè lên.
   private async autoReconnect(accountId: string, expectedEpoch?: number): Promise<void> {
+    if (this.isShuttingDown) return;
     const inst = this.instances.get(accountId);
     // Skip if already reconnected or manually disconnected
     if (inst?.status === 'connected') return;
@@ -778,6 +788,18 @@ class ZaloAccountPool {
     }
     stopMessageSync(accountId);
     this.instances.delete(accountId);
+  }
+
+  // Deploy/restart: close live listeners without clearing persisted credentials or
+  // marking accounts disconnected. The next process reconnects with the same session.
+  shutdown(): void {
+    this.isShuttingDown = true;
+    logger.info(`[zalo-pool] graceful shutdown for ${this.instances.size} live account(s)`);
+    for (const accountId of [...this.instances.keys()]) this.disconnect(accountId);
+    this.reconnecting.clear();
+    this.disconnectHistory.clear();
+    for (const timers of this.stickyHoldNotificationTimers.values()) timers.forEach(clearTimeout);
+    this.stickyHoldNotificationTimers.clear();
   }
 
   getStatus(accountId: string): string {

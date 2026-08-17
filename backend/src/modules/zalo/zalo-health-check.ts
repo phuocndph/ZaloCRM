@@ -28,19 +28,25 @@ export function startZaloHealthCheck(): void {
             sessionData: { not: Prisma.JsonNull }, archivedAt: null, zaloUid: { not: null },
             NOT: { disconnectReason: 'manual' },
           },
-          select: { id: true, displayName: true, sessionData: true },
+          select: { id: true, displayName: true, sessionData: true, proxyUrl: true },
         }),
       );
 
+      const HEALTH_RECONNECT_STAGGER_MS = 7_000;
+      let reconnectCount = 0;
       for (const acc of accounts) {
         const status = zaloPool.getStatus(acc.id);
         if (status !== 'connected' && status !== 'connecting' && status !== 'qr_pending') {
           const session = acc.sessionData as any;
           if (session?.imei) {
             logger.info(`[health-check] Reconnecting ${acc.displayName || acc.id}...`);
-            zaloPool.reconnect(acc.id, session).catch((err) => {
+            await zaloPool.reconnect(acc.id, session, acc.proxyUrl).catch((err) => {
               logger.warn(`[health-check] Reconnect failed for ${acc.id}:`, err);
             });
+            reconnectCount++;
+            if (reconnectCount < accounts.length) {
+              await new Promise((resolve) => setTimeout(resolve, HEALTH_RECONNECT_STAGGER_MS));
+            }
           }
         }
       }
@@ -63,7 +69,7 @@ export function startZaloHealthCheck(): void {
             sessionData: { not: Prisma.JsonNull }, archivedAt: null, zaloUid: { not: null },
             NOT: { disconnectReason: 'manual' },
           },
-          select: { id: true, sessionData: true },
+          select: { id: true, sessionData: true, proxyUrl: true },
         }),
       );
 
@@ -73,7 +79,7 @@ export function startZaloHealthCheck(): void {
           // Disconnect then reconnect to force cookie refresh
           zaloPool.disconnect(acc.id);
           await new Promise((r) => setTimeout(r, 5000));
-          zaloPool.reconnect(acc.id, session).catch((err) => {
+          zaloPool.reconnect(acc.id, session, acc.proxyUrl).catch((err) => {
             logger.warn(`[health-check] Daily refresh failed for ${acc.id}:`, err);
           });
         }
