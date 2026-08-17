@@ -1714,7 +1714,7 @@ function truncate(s: string, n: number): string {
   display: flex; gap: 10px;
   align-items: center;
   cursor: pointer;
-  border-bottom: 1px solid var(--cl-line);
+  border-bottom: 0;
   position: relative;
   user-select: none;
   min-height: var(--cl-item-h);
@@ -2119,7 +2119,7 @@ function truncate(s: string, n: number): string {
 }
 /* Conversation list: compact Zalo-like hierarchy. Metadata remains available in the detail panel. */
 .conv-list {
-  --cl-item-h: 72px;
+  --cl-item-h: 80px;
   --cl-ink: #172b4d;
   --cl-ink-content: #5e6c84;
   --cl-ink-3: #6b778c;
@@ -2128,7 +2128,7 @@ function truncate(s: string, n: number): string {
   --cl-accent-soft: #eaf3ff;
   font-family: Arial, "Segoe UI", sans-serif;
 }
-.conv-item { gap: 12px; padding-top: 8px; padding-bottom: 8px; }
+.conv-item { gap: 12px; padding-top: 10px; padding-bottom: 10px; }
 .ci-body { gap: 3px; }
 .ci-row-meta { display: none; }
 .ci-row-content { order: 1; line-height: 18px; }
@@ -2141,7 +2141,7 @@ function truncate(s: string, n: number): string {
 .ci-preview-icon { margin-right: 4px; color: #718096; }
 .ci-unread { min-width: 18px; height: 18px; padding: 0 4px; font-size: 10px; background: #d92525; }
 @media (max-width: 768px) {
-  .conv-list { --cl-item-h: 72px; }
+  .conv-list { --cl-item-h: 80px; }
   .ci-preview { font-size: 13.5px; }
 }
 </style>
