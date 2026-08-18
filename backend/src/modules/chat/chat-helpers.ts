@@ -71,6 +71,8 @@ export interface CreateMediaMessageInput {
   metadata?: Record<string, unknown>;
   /** 'user' cho image/video (đường gửi mới). file legacy để mặc định (undefined). */
   sentVia?: string;
+  /** Stable per-file key used to make attachment retries idempotent. */
+  clientEchoId?: string | null;
 }
 
 export async function createMediaMessage(input: CreateMediaMessageInput) {
@@ -90,6 +92,7 @@ export async function createMediaMessage(input: CreateMediaMessageInput) {
     contentType: input.contentType,
     sentAt: new Date(),
     repliedByUserId: input.repliedByUserId,
+    clientEchoId: input.clientEchoId ?? null,
   });
 
   try {

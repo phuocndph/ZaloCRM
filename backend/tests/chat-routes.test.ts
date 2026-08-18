@@ -26,6 +26,13 @@ vi.mock('../src/modules/zalo/zalo-access-middleware.js', () => ({
 }));
 vi.mock('../src/modules/zalo/zalo-pool.js', () => ({ zaloPool: zaloPoolMock }));
 vi.mock('../src/modules/zalo/zalo-rate-limiter.js', () => ({ zaloRateLimiter: zaloRateLimiterMock }));
+vi.mock('../src/shared/zalo-operations.js', () => ({
+  zaloOps: { sendMessage: sendMessageMock },
+  ZaloOpError: class ZaloOpError extends Error {
+    code = 'API_ERROR';
+    statusCode = 500;
+  },
+}));
 
 const { chatRoutes } = await import('../src/modules/chat/chat-routes.js');
 
@@ -78,6 +85,9 @@ describe('POST /api/v1/conversations/:id/messages', () => {
 
     expect(res.statusCode).toBe(200);
     expect(sendMessageMock).toHaveBeenCalledWith(
+      'za-1',
+      'ext-1',
+      0,
       expect.objectContaining({
         msg: 'thanks',
         quote: expect.objectContaining({
@@ -87,8 +97,6 @@ describe('POST /api/v1/conversations/:id/messages', () => {
           propertyExt: {},
         }),
       }),
-      'ext-1',
-      0,
     );
     expect(prismaMock.message.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ quote: expect.objectContaining({ msgId: 'zalo-reply-1' }) }),

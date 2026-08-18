@@ -587,6 +587,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
                 try {
                   sendResult = await sendNativeVideo({
                     api: instance.api as any,
+                    accountId: targetAccountId,
                     threadId,
                     threadType,
                     videoPath: paths[0],

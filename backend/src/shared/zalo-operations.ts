@@ -44,7 +44,7 @@ export type OpCategory =
   | 'query';        // getUserInfo, getGroupInfo — read-only
 
 // ── Types ───────────────────────────────────────────────────────────────────
-interface ExecOptions {
+export interface ExecOptions {
   accountId: string;
   category: OpCategory;
   operation: string;           // human-readable name for logging
@@ -162,7 +162,7 @@ function isMalformedJsonResponseError(err: any): boolean {
  *     (api) => api.sendMessage({ msg: 'hello' }, threadId, 0)
  *   );
  */
-async function exec<T>(opts: ExecOptions, fn: (api: any) => Promise<T>): Promise<T> {
+export async function exec<T>(opts: ExecOptions, fn: (api: any) => Promise<T>): Promise<T> {
   const { accountId, category, operation } = opts;
 
   // 1. Check connection

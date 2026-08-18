@@ -26,7 +26,7 @@ import { attachContactCollaboratorByUser } from '../contacts/contact-scope.js';
 // Fix 2026-06-03 — M11 optimistic badge cache (Anh báo "Sale CRM · Staff")
 import { getUserFullName } from './chat-helpers.js';
 // 2026-06-07 — Gửi Khối Marketing thẳng vào hội thoại (cột 4 tab Automation).
-import { zaloOps } from '../../shared/zalo-operations.js';
+import { zaloOps, ZaloOpError } from '../../shared/zalo-operations.js';
 import { sendNativeVideo } from '../../shared/video-processor.js';
 import { downloadMediaToTemp, extractZaloMsgId } from './chat-media-helpers.js';
 import { resolveBlockContent } from '../../shared/ee-registry/automation.js';
@@ -1772,11 +1772,6 @@ export async function chatRoutes(app: FastifyInstance) {
     }
 
     // Rate limit check — prevent account blocking
-    const limits = await zaloRateLimiter.checkLimits(conversation.zaloAccountId);
-    if (!limits.allowed) {
-      return reply.status(429).send({ error: limits.reason });
-    }
-
     try {
       // 2026-06-15 IDEMPOTENCY pre-check: nếu echoId đã tồn tại cho conversation này
       // → tin đã gửi Zalo thành công ở lần trước (app retry vì mất response). KHÔNG
@@ -1814,7 +1809,6 @@ export async function chatRoutes(app: FastifyInstance) {
         }
       }
 
-      zaloRateLimiter.recordSend(conversation.zaloAccountId);
       // 2026-05-21 RTF: nếu có styles từ FE rich-text-editor → pass vào zca-js MessageContent.
       // zca-js sendMessage signature: { msg, styles?, quote?, ... } → Zalo server encode + broadcast format.
       const sendPayload: Record<string, unknown> = { msg: content };
@@ -1834,7 +1828,12 @@ export async function chatRoutes(app: FastifyInstance) {
       let zaloMsgId = '';
       let sendFail: { reason: string; code: string | null } | null = null;
       try {
-        const sendResult = await instance.api.sendMessage(sendPayload, threadId, threadType);
+        const sendResult = await zaloOps.sendMessage(
+          conversation.zaloAccountId,
+          threadId,
+          threadType as 0 | 1,
+          sendPayload,
+        );
         // zca-js trả về { message: { msgId } | null, attachment: [{ msgId }] }
         // Extract zaloMsgId từ message (text) hoặc attachment[0] (media) để dedup với selfListen
         const sr = sendResult as unknown as { message?: { msgId?: number | string } | null; attachment?: Array<{ msgId?: number | string }> };
@@ -1977,6 +1976,9 @@ export async function chatRoutes(app: FastifyInstance) {
       // Lỗi Zalo có message tiếng Việt sẵn → trả 422 + message thật để sale HIỂU
       // (KHÔNG còn toast 500 "Máy chủ lỗi" che mất lý do). Lỗi khác giữ 500.
       const e = err as { name?: string; message?: string };
+      if (e instanceof ZaloOpError && e.code !== 'API_ERROR') {
+        return reply.status(e.statusCode).send({ error: e.message, code: e.code });
+      }
       const isZaloError =
         e?.name === 'ZaloApiError' ||
         e?.name === 'ZcaApiError' ||
@@ -2182,7 +2184,7 @@ export async function chatRoutes(app: FastifyInstance) {
           cleanups.push(dl.cleanup);
           let sdkResult: unknown;
           try {
-            sdkResult = await sendNativeVideo({ api: instance.api as any, threadId, threadType, videoPath: dl.path });
+            sdkResult = await sendNativeVideo({ api: instance.api as any, accountId: zaloAccountId, threadId, threadType, videoPath: dl.path });
           } catch (vErr) {
             logger.warn('[send-block] native video lỗi, fallback sendFile:', vErr);
             sdkResult = await zaloOps.sendFile(zaloAccountId, threadId, threadType, [dl.path], io, caption);

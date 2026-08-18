@@ -692,7 +692,7 @@ export async function mediaRoutes(app: FastifyInstance) {
           try {
             if (!instance?.api) throw new Error('nick api null');
             const sendResult: any = await sendNativeVideo({
-              api: instance.api as any, videoPath: tmp.path, thumbnailPath: thumbPath,
+              api: instance.api as any, accountId: conversation.zaloAccountId, videoPath: tmp.path, thumbnailPath: thumbPath,
               threadId, threadType: threadType as 0 | 1, message: caption,
             });
             zaloMsgId = extractZaloMsgId(sendResult);

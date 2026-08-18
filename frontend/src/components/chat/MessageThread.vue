@@ -696,6 +696,9 @@
                 </span>
               </template>
             </div>
+            <div v-if="uploadingAttachments" class="composer-upload-progress" role="status">
+              {{ uploadStatus || 'Đang gửi tệp…' }}<template v-if="uploadProgress > 0"> {{ uploadProgress }}%</template>
+            </div>
             <div class="composer-send-hint" aria-label="Enter để gửi; Control Shift Enter để xuống dòng">
               <span><kbd>Enter</kbd> Gửi</span>
               <span class="composer-hint-separator" aria-hidden="true">·</span>
@@ -963,7 +966,7 @@
 
 <script setup lang="ts">
 import { ref, watch, nextTick, computed, onMounted, onBeforeUnmount } from 'vue';
-import type { Conversation, Message } from '@/composables/use-chat';
+import { useChat, type Conversation, type Message } from '@/composables/use-chat';
 import { formatInOrgTz, weekdayInOrgTz, getOrgParts } from '@/composables/use-org-timezone';
 import { api } from '@/api/index';
 import { saveFromChat, saveFromChatBatch, toggleFavorite } from '@/api/media';
@@ -1180,6 +1183,11 @@ const emit = defineEmits<{
 }>();
 
 const toast = useToast();
+const {
+  addOptimisticMessages,
+  reconcileOptimisticMessages,
+  removeOptimisticMessages,
+} = useChat();
 const notificationsMuted = computed(() => isConversationNotificationMuted(props.conversation?.userState));
 async function toggleThreadNotifications() {
   const conversation = props.conversation;
@@ -2432,6 +2440,9 @@ const imageInputRef = ref<HTMLInputElement | null>(null);
 const fileInputRef = ref<HTMLInputElement | null>(null);
 const pendingAttachments = ref<File[]>([]);
 const uploadingAttachments = ref(false);
+const attachmentEchoIds = new WeakMap<File, string>();
+const uploadProgress = ref(0);
+const uploadStatus = ref('');
 const hasDraftContent = computed(() => !!inputText.value.trim() || pendingAttachments.value.length > 0);
 // 2026-06-12: showMediaPicker + MediaPickerPopover đã GỠ — nút "Chèn từ kho" giờ mở
 // tab Media ở cột 4 (emit 'open-media-tab'). Logic kho dời sang MediaTabPanel.
@@ -2444,12 +2455,15 @@ function onPickFile() { fileInputRef.value?.click(); }
 
 const attachmentPreviewUrls = new Map<string, string>();
 function attachmentKey(file: File) { return `${file.name}:${file.size}:${file.lastModified}`; }
-function attachmentPreview(file: File): string | null {
-  if (!file.type.startsWith('image/')) return null;
+function attachmentObjectUrl(file: File): string {
   const key = attachmentKey(file);
   let url = attachmentPreviewUrls.get(key);
   if (!url) { url = URL.createObjectURL(file); attachmentPreviewUrls.set(key, url); }
   return url;
+}
+function attachmentPreview(file: File): string | null {
+  if (!file.type.startsWith('image/')) return null;
+  return attachmentObjectUrl(file);
 }
 function revokeAttachmentPreview(file: File) {
   const key = attachmentKey(file);
@@ -2535,23 +2549,95 @@ async function onDropFiles(event: DragEvent) {
   queueAttachments(files);
 }
 
-async function sendAttachments(files: File[]) {
+async function sendAttachments(files: File[], caption = '') {
   if (!props.conversation?.id || !files.length) return false;
+  const conversationId = props.conversation.id;
   uploadingAttachments.value = true;
+  uploadProgress.value = 0;
+  uploadStatus.value = 'Đang tải tệp lên máy chủ…';
   toast.push(`Đang gửi ${files.length} tệp đính kèm…`);
   try {
     const fd = new FormData();
+    if (caption) fd.append('caption', caption);
     for (const file of files) fd.append('files', file, file.name);
-    await api.post(`/conversations/${props.conversation.id}/attachments`, fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+    let requestEchoId = attachmentEchoIds.get(files[0]);
+    if (!requestEchoId) {
+      requestEchoId = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      files.forEach((file) => attachmentEchoIds.set(file, requestEchoId!));
+    }
+    const sentAt = new Date().toISOString();
+    const optimisticMessages: Message[] = files.map((file, index) => {
+      const temporaryId = `pending:${requestEchoId}:${index}`;
+      const contentType = file.type.startsWith('image/')
+        ? 'image'
+        : file.type.startsWith('video/') ? 'video' : 'file';
+      const previewUrl = contentType === 'file' ? '' : attachmentObjectUrl(file);
+      const content = contentType === 'file'
+        ? JSON.stringify({ href: '', name: file.name, size: file.size, mime: file.type, title: caption })
+        : JSON.stringify({ href: previewUrl, thumb: previewUrl, size: file.size, title: caption });
+      return {
+        id: temporaryId,
+        content,
+        contentType,
+        senderType: 'self',
+        senderName: 'Staff',
+        senderUid: null,
+        sentAt,
+        isDeleted: false,
+        zaloMsgId: null,
+        zaloMsgIdNum: null,
+        albumKey: null,
+        albumIndex: null,
+        albumTotal: null,
+        reply: null,
+        reactions: [],
+        reactionDetails: [],
+        isPending: true,
+        clientEchoId: `${requestEchoId}:${index}`,
+        echoId: `${requestEchoId}:${index}`,
+        sentVia: 'user',
+        metadata: { sender: { kind: 'user_crm', name: 'Staff' } },
+      };
+    });
+    const temporaryIds = optimisticMessages.map((message) => message.id);
+    addOptimisticMessages(conversationId, optimisticMessages);
+    fd.append('echoId', requestEchoId);
+    const response = await api.post(`/conversations/${conversationId}/attachments`, fd, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+        'X-Attachment-Echo-Id': requestEchoId,
+        'X-Attachment-Count': String(files.length),
+      },
+      timeout: 120000,
+      onUploadProgress: (event) => {
+        if (event.total) uploadProgress.value = Math.min(100, Math.round((event.loaded / event.total) * 100));
+        uploadStatus.value = event.total && event.loaded >= event.total
+          ? 'Đang gửi qua Zalo…'
+          : 'Đang tải tệp lên máy chủ…';
+      },
+    });
+    reconcileOptimisticMessages(conversationId, temporaryIds, response.data.messages ?? []);
+    files.forEach((file) => attachmentEchoIds.delete(file));
     toast.success(`Đã gửi ${files.length} tệp đính kèm`);
     emit('refresh-thread');
     return true;
   } catch (err) {
+    const requestEchoId = attachmentEchoIds.get(files[0]);
+    if (requestEchoId) {
+      removeOptimisticMessages(
+        conversationId,
+        files.map((_, index) => `pending:${requestEchoId}:${index}`),
+      );
+    }
     const detail = (err as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Upload thất bại';
     toast.error(`Lỗi gửi tệp: ${detail}`);
     console.error('[upload-attachments]', err);
     return false;
-  } finally { uploadingAttachments.value = false; }
+  } finally {
+    uploadingAttachments.value = false;
+    uploadProgress.value = 0;
+    uploadStatus.value = '';
+  }
 }
 
 // ── Format toggle: T icon bật/tắt format toolbar (B I U S list code) trong editor.
@@ -3115,12 +3201,14 @@ async function handleSend() {
   const hasText = !!inputText.value.trim();
   const attachmentsToSend = [...pendingAttachments.value];
   if (!hasText && !attachmentsToSend.length) return;
+  let attachmentCaption = '';
   if (hasText) {
     const rich = (editorRef.value as any)?.getRichPayload?.() || { text: inputText.value, styles: [], mentions: [] };
     const textToSend = rich.text || inputText.value;
     const styles = Array.isArray(rich.styles) && rich.styles.length > 0 ? rich.styles : undefined;
     const mentions = Array.isArray(rich.mentions) && rich.mentions.length > 0 ? rich.mentions : undefined;
-    if (props.editingMessage) emit('edit-message', props.editingMessage.id, textToSend);
+    if (attachmentsToSend.length && !props.editingMessage) attachmentCaption = textToSend;
+    else if (props.editingMessage) emit('edit-message', props.editingMessage.id, textToSend);
     else emit('send', textToSend, props.replyingTo?.id ?? null, styles, mentions);
     inputText.value = '';
     editorRef.value?.clear();
@@ -3128,7 +3216,7 @@ async function handleSend() {
   }
   if (attachmentsToSend.length) {
     pendingAttachments.value = pendingAttachments.value.filter((file) => !attachmentsToSend.includes(file));
-    const sent = await sendAttachments(attachmentsToSend);
+    const sent = await sendAttachments(attachmentsToSend, attachmentCaption);
     if (sent) attachmentsToSend.forEach(revokeAttachmentPreview);
     else pendingAttachments.value = [...attachmentsToSend, ...pendingAttachments.value];
   }
@@ -4332,6 +4420,7 @@ onBeforeUnmount(() => {
 .ai-btn-unavailable { color: #a16207 !important; background: #fffbeb !important; }
 .ai-config-dot { position: absolute; top: 4px; right: 4px; width: 7px; height: 7px; border: 1px solid #fff; border-radius: 50%; background: #f59e0b; }
 .pending-attachments { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 8px 0; }
+.composer-upload-progress { padding: 5px 8px 0; color: var(--smax-primary, #1976d2); font-size: 12px; font-weight: 600; }
 .pending-image-preview { position: relative; width: 64px; height: 64px; overflow: hidden; border: 1px solid var(--smax-grey-200, #dbe3ec); border-radius: 9px; background: #f5f8fb; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.08); }
 .pending-image-preview img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .pending-preview-remove { position: absolute; top: 3px; right: 3px; display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; padding: 0; border: 1px solid rgba(255, 255, 255, 0.75); border-radius: 50%; color: #fff; background: rgba(20, 32, 45, 0.72); cursor: pointer; }

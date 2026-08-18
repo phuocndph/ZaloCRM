@@ -46,7 +46,13 @@ vi.mock('../src/modules/contacts/contact-aggregate.js', () => ({
 vi.mock('../src/modules/ai/ai-virtual-chat-service.js', () => ({ triggerVirtualChatAiReply: vi.fn() }));
 vi.mock('../src/modules/contacts/contact-scope.js', () => ({ attachContactCollaboratorByUser: vi.fn() }));
 vi.mock('../src/modules/chat/chat-helpers.js', () => ({ getUserFullName: vi.fn().mockResolvedValue('Sale A') }));
-vi.mock('../src/shared/zalo-operations.js', () => ({ zaloOps: {} }));
+vi.mock('../src/shared/zalo-operations.js', () => ({
+  zaloOps: { sendMessage: sendMessageMock },
+  ZaloOpError: class ZaloOpError extends Error {
+    code = 'API_ERROR';
+    statusCode = 500;
+  },
+}));
 vi.mock('../src/shared/video-processor.js', () => ({ sendNativeVideo: vi.fn() }));
 vi.mock('../src/modules/chat/chat-media-helpers.js', () => ({ downloadMediaToTemp: vi.fn(), extractZaloMsgId: vi.fn() }));
 vi.mock('../src/modules/automation/blocks/resolve-block-content.js', () => ({ resolveBlockContent: vi.fn() }));

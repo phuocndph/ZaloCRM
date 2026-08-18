@@ -202,6 +202,10 @@ export interface Message {
   repliedBy?: { id: string; fullName: string | null; email: string | null } | null;
   /** M55 — virtual chat indicators */
   isLocal?: boolean;
+  /** Client key used to reconcile an immediate optimistic bubble. */
+  clientEchoId?: string | null;
+  echoId?: string | null;
+  isPending?: boolean;
   /** Anh chốt 2026-06-03 — Persist Zalo SDK TGroupMessage.mentions để FE
    *  render mention theo pos+len thay vì đoán regex. Chỉ group có. */
   mentions?: Array<{ uid: string; pos: number; len: number; type: 0 | 1 }> | null;
@@ -911,6 +915,52 @@ function buildChat() {
     arr.splice(lo, 0, msg);
   }
 
+  function messageEchoId(message: Message): string | null {
+    return message.clientEchoId || message.echoId || null;
+  }
+
+  function replaceOptimisticMessage(conversationId: string, echoId: string, incoming: Message): boolean {
+    if (!isConvCurrent(conversationId)) return false;
+    const index = messages.value.findIndex((message) =>
+      message.id === `pending:${echoId}` || messageEchoId(message) === echoId,
+    );
+    if (index < 0) return false;
+    messages.value.splice(index, 1, incoming);
+    setCachedMessages(conversationId, [...messages.value]);
+    return true;
+  }
+
+  function addOptimisticMessages(conversationId: string, optimistic: Message[]): void {
+    if (!isConvCurrent(conversationId)) return;
+    for (const message of optimistic) {
+      if (!messages.value.some((existing) => existing.id === message.id)) insertMessageSorted(message);
+    }
+    setCachedMessages(conversationId, [...messages.value]);
+  }
+
+  function reconcileOptimisticMessages(
+    conversationId: string,
+    temporaryIds: string[],
+    confirmedMessages: Message[],
+  ): void {
+    if (!isConvCurrent(conversationId)) return;
+    const temporary = new Set(temporaryIds);
+    messages.value = messages.value.filter((message) => !temporary.has(message.id));
+    for (const raw of confirmedMessages) {
+      const confirmed = normalizeMessage(raw as RawMessage);
+      confirmed.isPending = false;
+      if (!messages.value.some((message) => message.id === confirmed.id)) insertMessageSorted(confirmed);
+    }
+    setCachedMessages(conversationId, [...messages.value]);
+  }
+
+  function removeOptimisticMessages(conversationId: string, temporaryIds: string[]): void {
+    if (!isConvCurrent(conversationId)) return;
+    const temporary = new Set(temporaryIds);
+    messages.value = messages.value.filter((message) => !temporary.has(message.id));
+    setCachedMessages(conversationId, [...messages.value]);
+  }
+
   /**
    * Merge một loạt tin (vd context window khi "nhảy tới tin gốc") vào thread hiện tại,
    * GIỮ đúng thứ tự sort + KHÔNG trùng id. Tin đã có giữ nguyên (không ghi đè trạng thái
@@ -955,21 +1005,61 @@ function buildChat() {
 
   async function sendMessageTo(conversationId: string, content: string, replyMessageId?: string | null, styles?: Array<{ st: string; start: number; len: number }>, mentions?: Array<{ uid: string; pos: number; len: number }>) {
     if (!content.trim()) return;
+    const echoId = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const hasStyles = Array.isArray(styles) && styles.length > 0;
+    const optimisticContent = hasStyles
+      ? JSON.stringify({ title: content, action: 'rtf', params: JSON.stringify({ styles }) })
+      : content;
+    const optimisticMessage: Message = {
+      id: `pending:${echoId}`,
+      content: optimisticContent,
+      contentType: hasStyles ? 'rich' : 'text',
+      senderType: 'self',
+      senderName: authStore.user?.fullName || 'Staff',
+      senderUid: null,
+      sentAt: new Date().toISOString(),
+      isDeleted: false,
+      zaloMsgId: null,
+      zaloMsgIdNum: null,
+      albumKey: null,
+      albumIndex: null,
+      albumTotal: null,
+      reply: null,
+      reactions: [],
+      reactionDetails: [],
+      repliedByUserId: authStore.user?.id ?? null,
+      repliedBy: authStore.user
+        ? { id: authStore.user.id, fullName: authStore.user.fullName, email: authStore.user.email }
+        : null,
+      sentVia: 'user',
+      clientEchoId: echoId,
+      echoId,
+      isPending: true,
+      metadata: { sender: { kind: 'user_crm', name: authStore.user?.fullName || 'Staff' } },
+    };
+    if (isConvCurrent(conversationId)) {
+      insertMessageSorted(optimisticMessage);
+      setCachedMessages(conversationId, [...messages.value]);
+    }
     sendingMsg.value = true;
     try {
       // 2026-05-21 RTF: gắn styles vào payload nếu user format bold/italic/underline/strike.
-      const payload: Record<string, unknown> = { content };
+      const payload: Record<string, unknown> = { content, echoId };
       if (replyMessageId) payload.replyMessageId = replyMessageId;
       if (styles && styles.length > 0) payload.styles = styles;
       // 2026-06-24: @mention thành viên nhóm — server đẩy thẳng sang zca-js.
       if (mentions && mentions.length > 0) payload.mentions = mentions;
       const res = await api.post(`/conversations/${conversationId}/messages`, payload);
       if (conversationId === selectedConvId.value) {
-        if (!messages.value.find(m => m.id === res.data.id)) {
+        const confirmed = normalizeMessage(res.data as RawMessage);
+        confirmed.isPending = false;
+        confirmed.clientEchoId = confirmed.clientEchoId || echoId;
+        confirmed.echoId = confirmed.echoId || echoId;
+        if (!replaceOptimisticMessage(conversationId, echoId, confirmed) && !messages.value.find(m => m.id === confirmed.id)) {
           // FIX reply preview (Lỗi 1): normalize để map quote→reply NGAY khi gửi. Trước đây
           // chèn res.data THÔ nên tin vừa gửi (nhất là tin Trả lời) không hiện khối trích dẫn
           // cho tới khi reload. Đường ĐỌC (fetch/context) vốn đã .map(normalizeMessage).
-          insertMessageSorted(normalizeMessage(res.data as RawMessage));
+          insertMessageSorted(confirmed);
         }
       }
     } catch (err) {
@@ -981,8 +1071,19 @@ function buildChat() {
       // để sale thấy lý do thay vì gửi vào hư không.
       const e = err as { response?: { status?: number; data?: { error?: string } } };
       const status = e?.response?.status;
+      const reason = e?.response?.data?.error || 'Không gửi được tin nhắn, vui lòng thử lại.';
+      const pending = messages.value.find((message) => messageEchoId(message) === echoId);
+      if (pending?.isPending) {
+        pending.isPending = false;
+        pending.metadata = {
+          ...(pending.metadata ?? {}),
+          sendStatus: 'failed',
+          failReason: reason,
+        };
+        setCachedMessages(conversationId, [...messages.value]);
+      }
       if (status !== 403 && !(status && status >= 500)) {
-        useToast().error(e?.response?.data?.error || 'Không gửi được tin nhắn, vui lòng thử lại.');
+        useToast().error(reason);
       }
       throw err;
     } finally {
@@ -1031,7 +1132,7 @@ function buildChat() {
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('online', onOnline);
 
-    socket.on('chat:message', (data: { message: Message; conversationId: string; accountId?: string; _privacyMeta?: { privacyMode?: string; ownerUserId?: string | null } }) => {
+    socket.on('chat:message', (data: { message: Message; conversationId: string; accountId?: string; echoId?: string; _privacyMeta?: { privacyMode?: string; ownerUserId?: string | null } }) => {
       // PRIVACY 2026-06-11 — Server GIỜ redact server-side trước khi emit (emit-chat.ts):
       // non-owner nhận bản đã blur, chính chủ đã unlock nhận bản thật ở room riêng.
       // Đoạn dưới chỉ còn là LỚP 2 (safety belt) đánh dấu redacted để UI blur — KHÔNG
@@ -1064,11 +1165,18 @@ function buildChat() {
       // (a) THREAD ĐANG MỞ: LUÔN nhận tin (kể cả nick ngoài scope — vd vừa nav sang chưa
       // reload). KHÔNG bị guard chặn → không mất tin (fix bug v1.2).
       if (cls.insertThread) {
-        if (!messages.value.find(m => m.id === data.message.id)) {
+        const incoming = normalizeMessage(data.message as RawMessage);
+        const echoId = data.echoId || messageEchoId(incoming);
+        if (echoId) {
+          incoming.clientEchoId = incoming.clientEchoId || echoId;
+          incoming.echoId = incoming.echoId || echoId;
+          incoming.isPending = false;
+        }
+        if (!(echoId && replaceOptimisticMessage(data.conversationId, echoId, incoming)) && !messages.value.find(m => m.id === incoming.id)) {
           // INSERT theo sortedBy sentAt thay vì push cuối array. Lý do: socket có
           // thể giao messages KHÔNG theo chronological order (vd old_messages backfill
           // delivers reverse, hoặc 2 msg cùng giây tới khác thứ tự server vs client).
-          insertMessageSorted(normalizeMessage(data.message as RawMessage));
+          insertMessageSorted(incoming);
         }
       }
 
@@ -1431,6 +1539,9 @@ function buildChat() {
     patchContactProfile,
     sendMessage,
     sendMessageTo,
+    addOptimisticMessages,
+    reconcileOptimisticMessages,
+    removeOptimisticMessages,
     generateAiSuggestion,
     generateAiSummary,
     generateAiSentiment,

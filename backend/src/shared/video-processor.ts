@@ -11,6 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { logger } from './utils/logger.js';
+import { exec as executeZaloOperation } from './zalo-operations.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -171,6 +172,7 @@ function pickThumbnailUrl(uploaded: unknown): string {
 export interface SendNativeVideoParams {
   /** zca-js api instance */
   api: any;
+  accountId: string;
   threadId: string;
   threadType: 0 | 1;
   videoPath: string;
@@ -193,22 +195,26 @@ export async function sendNativeVideo(params: SendNativeVideoParams): Promise<un
   }
 
   try {
-    const [uploadedVideoArr, uploadedThumbArr] = await Promise.all([
-      params.api.uploadAttachment([params.videoPath], params.threadId, params.threadType) as Promise<unknown[]>,
-      params.api.uploadAttachment([thumbPath], params.threadId, params.threadType) as Promise<unknown[]>,
-    ]);
-
-    return await params.api.sendVideo(
-      {
-        msg: params.message ?? '',
-        videoUrl: pickVideoUrl(uploadedVideoArr[0]),
-        thumbnailUrl: pickThumbnailUrl(uploadedThumbArr[0]),
-        duration: metadata.durationMs,
-        width: metadata.width,
-        height: metadata.height,
+    return await executeZaloOperation(
+      { accountId: params.accountId, category: 'message', operation: 'sendNativeVideo' },
+      async (api) => {
+        const [uploadedVideoArr, uploadedThumbArr] = await Promise.all([
+          api.uploadAttachment([params.videoPath], params.threadId, params.threadType) as Promise<unknown[]>,
+          api.uploadAttachment([thumbPath], params.threadId, params.threadType) as Promise<unknown[]>,
+        ]);
+        return api.sendVideo(
+          {
+            msg: params.message ?? '',
+            videoUrl: pickVideoUrl(uploadedVideoArr[0]),
+            thumbnailUrl: pickThumbnailUrl(uploadedThumbArr[0]),
+            duration: metadata.durationMs,
+            width: metadata.width,
+            height: metadata.height,
+          },
+          params.threadId,
+          params.threadType,
+        );
       },
-      params.threadId,
-      params.threadType,
     );
   } finally {
     await generated?.cleanup();

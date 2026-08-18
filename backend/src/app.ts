@@ -568,6 +568,8 @@ async function bootstrap() {
     if (config.nodeEnv !== 'test') {
       const { startMediaTrashGcCron } = await import('./modules/media/media-trash-gc-cron.js');
       startMediaTrashGcCron();
+      const { startChatUploadTempGcCron } = await import('./modules/chat/chat-upload-temp-gc-cron.js');
+      startChatUploadTempGcCron();
     }
     // Facebook Lead Ads workers (outbox dispatch, pull worker, form ingestion,
     // token refresh) → started by extension bundle (startExtensionJobs).
