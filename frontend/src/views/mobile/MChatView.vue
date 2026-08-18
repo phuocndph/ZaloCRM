@@ -97,7 +97,7 @@
           :is-group-end="isGroupEnd(i)"
           :sender-avatar-url="resolveSenderAvatar(m)"
           :current-user-id="currentUserId"
-          @preview-image="onPreviewImage"
+          @preview-image="onPreviewImage($event, m)"
           @preview-video="onPreviewVideo"
           @preview-file="onPreviewFile"
           @jump-to-reply="jumpToReply"
@@ -327,7 +327,13 @@
     <AiCopilotPanel v-if="showCopilot" :open="showCopilot" :conversation-id="convId" :private-blocked="conversationPrivateBlocked" @close="showCopilot = false" @feedback="onCopilotFeedback" />
 
     <!-- Lightbox ảnh + modal video (P1 — xem media toàn màn hình) -->
-    <MLightbox :open="!!lightboxUrl" :url="lightboxUrl" @close="lightboxUrl = null" />
+    <MLightbox
+      :open="!!lightboxUrl"
+      :url="lightboxUrl"
+      :urls="lightboxUrls"
+      @select="lightboxUrl = $event"
+      @close="closeImageLightbox"
+    />
     <Teleport to="body">
       <div v-if="filePreview" class="mch-file-preview" @click.self="closeFilePreview">
         <div class="mch-file-preview-panel" role="dialog" aria-modal="true" :aria-label="`Xem trước ${filePreview.name}`">
@@ -722,6 +728,7 @@ function onEmoji(e: string) {
 
 // ── P1: xem media toàn màn hình (tái dùng event MessageBubble desktop) ──
 const lightboxUrl = ref<string | null>(null);
+const lightboxUrls = ref<string[]>([]);
 const videoUrl = ref<string | null>(null);
 const filePreview = ref<{
   url: string;
@@ -731,7 +738,34 @@ const filePreview = ref<{
   loading?: boolean;
 } | null>(null);
 const videoEl = ref<HTMLVideoElement | null>(null);
-function onPreviewImage(url: string) { if (url) lightboxUrl.value = url; }
+function imageUrlForMessage(message: any): string | null {
+  if (message?.contentType !== 'image' || !message?.content) return null;
+  if (String(message.content).startsWith('http')) return String(message.content);
+  try {
+    const parsed = JSON.parse(String(message.content));
+    return parsed.hdUrl || parsed.href || parsed.normalUrl || parsed.thumbUrl || parsed.thumb || null;
+  } catch {
+    return null;
+  }
+}
+function onPreviewImage(url: string, message?: any) {
+  if (!url) return;
+  lightboxUrls.value = message?.albumKey
+    ? messages.value
+        .filter((candidate: any) =>
+          candidate.albumKey === message.albumKey &&
+          candidate.senderType === message.senderType &&
+          candidate.isDeleted === message.isDeleted,
+        )
+        .sort((a: any, b: any) => (a.albumIndex ?? 0) - (b.albumIndex ?? 0))
+        .map(imageUrlForMessage)
+        .filter((candidateUrl: string | null, index: number, all: Array<string | null>) =>
+          !!candidateUrl && all.indexOf(candidateUrl) === index,
+        ) as string[]
+    : [];
+  lightboxUrl.value = url;
+}
+function closeImageLightbox() { lightboxUrl.value = null; lightboxUrls.value = []; }
 function onPreviewVideo(url: string) { if (url) videoUrl.value = url; }
 async function onPreviewFile(url: string, name: string) {
   if (!url) return;

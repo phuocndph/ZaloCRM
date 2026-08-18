@@ -514,7 +514,7 @@
               :sender-avatar-url="resolveSenderAvatar(item.msg)"
               :current-user-id="currentUserId"
               @contextmenu="onContextMenu($event, item.msg)"
-              @preview-image="openImageLightbox($event, [])"
+              @preview-image="openMessageImageLightbox($event, item.msg)"
               @preview-video="onPreviewVideo"
               @toggle-reaction="onToggleReaction(item.msg, $event)"
               @sender-click="onSenderClick(item.msg)"
@@ -1235,6 +1235,24 @@ function openImageLightbox(url: string, list: string[] = []): void {
   lightboxList.value = list;
   lightboxIndex.value = Math.max(0, list.indexOf(url));
   previewImageUrl.value = url;
+}
+
+function openMessageImageLightbox(url: string, message: Message): void {
+  if (!message.albumKey) {
+    openImageLightbox(url);
+    return;
+  }
+  const urls = props.messages
+    .filter((candidate) =>
+      candidate.albumKey === message.albumKey &&
+      candidate.senderType === message.senderType &&
+      candidate.isDeleted === message.isDeleted &&
+      !!getImageUrl(candidate),
+    )
+    .sort((a, b) => (a.albumIndex ?? 0) - (b.albumIndex ?? 0))
+    .map((candidate) => getImageUrl(candidate)!)
+    .filter((candidateUrl, index, all) => all.indexOf(candidateUrl) === index);
+  openImageLightbox(url, urls.length > 1 ? urls : []);
 }
 function lightboxPrev(): void {
   if (lightboxIndex.value > 0) {

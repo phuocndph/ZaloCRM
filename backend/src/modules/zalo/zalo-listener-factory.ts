@@ -18,6 +18,7 @@ import { consumeIfExpected as consumeReactionEcho } from '../chat/reaction-echo-
 import { emitChatMessage } from '../../shared/realtime/emit-chat.js';
 import { notifyNewInboundMessage } from '../push/push-service.js';
 import { zaloOps } from '../../shared/zalo-operations.js';
+import { hasActivePrivacySession } from '../privacy/session-service.js';
 
 // Map Zalo Reactions enum code → display emoji (cùng map với chat-operations-routes)
 const ZALO_REACTION_DISPLAY: Record<string, string> = {
@@ -912,12 +913,69 @@ export function attachZaloListener(ctx: ListenerContext): void {
     // FIX B1 round-2: emit MULTIPLE messageId nếu match nhiều rows (event broadcast tới mọi nick).
     // FE composable matches by zaloMsgId/messageId → update isDeleted live ở cột 3.
     const zaloMsgIdStr = globalMsgId ? String(globalMsgId) : (cliMsgIdNum ? String(cliMsgIdNum) : null);
+    const recalledMessages = updatedIds.length
+      ? await prisma.message.findMany({
+          where: { id: { in: updatedIds } },
+          select: {
+            id: true,
+            conversationId: true,
+            content: true,
+            contentType: true,
+            attachments: true,
+            conversation: {
+              select: {
+                orgId: true,
+                isPrivate: true,
+                privateOwnerUserId: true,
+                zaloAccount: { select: { privacyMode: true, ownerUserId: true } },
+              },
+            },
+          },
+        })
+      : [];
+    const recalledById = new Map(recalledMessages.map((message) => [message.id, message]));
     for (const messageId of updatedIds) {
-      await emitOrg('chat:deleted', {
+      const recalled = recalledById.get(messageId);
+      const basePayload = {
         accountId,
         messageId,
         zaloMsgId: zaloMsgIdStr,
-      });
+        conversationId: recalled?.conversationId,
+      };
+      const fullPayload = {
+        ...basePayload,
+        content: recalled?.content,
+        contentType: recalled?.contentType,
+        attachments: recalled?.attachments,
+      };
+      const conversation = recalled?.conversation;
+      if (!io || !conversation) {
+        await emitOrg('chat:deleted', basePayload);
+        continue;
+      }
+      if (conversation.isPrivate) {
+        if (conversation.privateOwnerUserId) {
+          io.to(`user:${conversation.privateOwnerUserId}`).emit('chat:deleted', fullPayload);
+        }
+        continue;
+      }
+      if (conversation.zaloAccount.privacyMode !== 'main') {
+        io.to(`org:${conversation.orgId}`).emit('chat:deleted', fullPayload);
+        continue;
+      }
+      // Main/private nick: the org receives only identifiers. The unlocked owner
+      // receives the durable media URL through their private user room.
+      io.to(`org:${conversation.orgId}`).emit('chat:deleted', basePayload);
+      const ownerUserId = conversation.zaloAccount.ownerUserId;
+      if (ownerUserId) {
+        try {
+          if (await hasActivePrivacySession(ownerUserId)) {
+            io.to(`user:${ownerUserId}`).emit('chat:deleted', fullPayload);
+          }
+        } catch (err) {
+          logger.warn(`[zalo:${accountId}] Cannot verify privacy session for recalled media:`, err);
+        }
+      }
     }
     // Fallback emit bằng zaloMsgId nếu không update được row nào (FE tự match ở cache).
     if (updatedIds.length === 0 && zaloMsgIdStr) {
