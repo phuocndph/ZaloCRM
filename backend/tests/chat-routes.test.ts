@@ -97,9 +97,47 @@ describe('POST /api/v1/conversations/:id/messages', () => {
           propertyExt: {},
         }),
       }),
+      undefined,
+      { maxAttempts: 1 },
     );
     expect(prismaMock.message.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ quote: expect.objectContaining({ msgId: 'zalo-reply-1' }) }),
+    }));
+  });
+
+  it('reuses the listener echo when it wins the database insert race', async () => {
+    const listenerMessage = {
+      id: 'listener-msg-1',
+      content: 'thanks',
+      contentType: 'text',
+      zaloMsgId: 'zalo-msg-race',
+      zaloMsgIdNum: BigInt(123),
+      sentAt: new Date(),
+      senderType: 'self',
+    };
+    sendMessageMock.mockResolvedValueOnce({ message: { msgId: 'zalo-msg-race' } });
+    prismaMock.message.create.mockRejectedValueOnce({ code: 'P2002' });
+    prismaMock.message.findUnique.mockResolvedValueOnce(null);
+    prismaMock.message.findFirst.mockResolvedValueOnce({ id: listenerMessage.id });
+    prismaMock.message.update.mockResolvedValueOnce(listenerMessage);
+
+    const app = buildApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/conversations/conv-1/messages',
+      payload: { content: 'thanks', echoId: 'echo-race-1' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual(expect.objectContaining({
+      id: listenerMessage.id,
+      zaloMsgId: 'zalo-msg-race',
+      zaloMsgIdNum: '123',
+      echoId: 'echo-race-1',
+    }));
+    expect(prismaMock.message.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: listenerMessage.id },
+      data: expect.objectContaining({ clientEchoId: 'echo-race-1', sentVia: 'user' }),
     }));
   });
 });

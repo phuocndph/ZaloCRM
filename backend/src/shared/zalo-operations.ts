@@ -53,6 +53,7 @@ export interface ExecOptions {
   socketRoom?: string;         // room to emit to (default: org-level)
   socketPayload?: any;         // data to emit (merged with result)
   suppressErrorLog?: (err: any) => boolean;
+  maxAttempts?: number;        // reduce for non-idempotent operations that must not be sent twice
 }
 
 interface ZaloCredentials {
@@ -183,7 +184,7 @@ export async function exec<T>(opts: ExecOptions, fn: (api: any) => Promise<T>): 
 
   // 3. Execute with retry on session expiry + transient network blip.
   //    MAX_ATTEMPTS=3 để lỗi socket tạm thời (album nhiều ảnh) có cơ hội thử lại.
-  const MAX_ATTEMPTS = 3;
+  const MAX_ATTEMPTS = Math.max(1, Math.min(3, opts.maxAttempts ?? 3));
   let lastError: any;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     try {
@@ -274,8 +275,15 @@ export async function exec<T>(opts: ExecOptions, fn: (api: any) => Promise<T>): 
 // ── Pre-built operations ────────────────────────────────────────────────────
 
 // ─── Messaging ──────────────────────────────────────────────────────────────
-async function sendMessage(accountId: string, threadId: string, threadType: 0 | 1, msg: any, io?: Server | null) {
-  return exec({ accountId, category: 'message', operation: 'sendMessage', io, socketEvent: 'chat:message' },
+async function sendMessage(
+  accountId: string,
+  threadId: string,
+  threadType: 0 | 1,
+  msg: any,
+  io?: Server | null,
+  options?: Pick<ExecOptions, 'maxAttempts'>,
+) {
+  return exec({ accountId, category: 'message', operation: 'sendMessage', io, socketEvent: 'chat:message', ...options },
     (api) => api.sendMessage(msg, threadId, threadType));
 }
 

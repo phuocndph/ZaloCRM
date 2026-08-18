@@ -1833,6 +1833,10 @@ export async function chatRoutes(app: FastifyInstance) {
           threadId,
           threadType as 0 | 1,
           sendPayload,
+          undefined,
+          // A timeout can happen after Zalo accepted the message. Retrying a manual
+          // send would make the user wait and can deliver a duplicate message.
+          { maxAttempts: 1 },
         );
         // zca-js trả về { message: { msgId } | null, attachment: [{ msgId }] }
         // Extract zaloMsgId từ message (text) hoặc attachment[0] (media) để dedup với selfListen
@@ -1893,7 +1897,7 @@ export async function chatRoutes(app: FastifyInstance) {
             // 2026-06-15 IDEMPOTENCY: lưu echoId để dedup retry lần sau (null nếu app cũ).
             clientEchoId: echoId,
             metadata: {
-              sender: { kind: 'user_crm', name: await getUserFullName(user.id) },
+              sender: { kind: 'user_crm', name: userFullName },
               // 2026-06-24 — tin gửi THẤT BẠI (Zalo từ chối): lưu theo schema Bug B 2026-06-22
               // (message-bubble đọc metadata.sendStatus + failReason) → hiện "Gửi thất bại: <lý do>".
               ...(sendFail
@@ -1907,20 +1911,49 @@ export async function chatRoutes(app: FastifyInstance) {
         // 2026-06-15 IDEMPOTENCY RACE: 2 request cùng echoId chạy ~đồng thời → create
         // thứ 2 ném P2002 (unique violation conversationId_clientEchoId). Đã gửi Zalo
         // rồi nhưng tin đã được request kia lưu → query lại tin đó & trả về, KHÔNG 500.
-        if (echoId && (createErr as { code?: string })?.code === 'P2002') {
-          const winner = await prisma.message.findUnique({
-            where: { conversationId_clientEchoId: { conversationId: id, clientEchoId: echoId } },
-            include: { repliedBy: { select: { id: true, fullName: true, email: true } } },
+        if ((createErr as { code?: string })?.code !== 'P2002') throw createErr;
+
+        const includeRepliedBy = { repliedBy: { select: { id: true, fullName: true, email: true } } };
+        const echoWinner = echoId
+          ? await prisma.message.findUnique({
+              where: { conversationId_clientEchoId: { conversationId: id, clientEchoId: echoId } },
+              include: includeRepliedBy,
+            })
+          : null;
+
+        if (echoWinner) {
+          message = echoWinner;
+        } else if (zaloMsgId) {
+          // selfListen can persist Zalo's echo before this request reaches create().
+          // Adopt that row instead of returning a false HTTP 500 after a successful send.
+          const listenerEcho = await prisma.message.findFirst({
+            where: { conversationId: id, zaloMsgId },
+            select: { id: true },
           });
-          if (winner) {
-            return {
-              ...winner,
-              zaloMsgIdNum: winner.zaloMsgIdNum?.toString() ?? null,
-              echoId,
-            };
+          if (listenerEcho) {
+            message = await prisma.message.update({
+              where: { id: listenerEcho.id },
+              data: {
+                content: persistedContent,
+                contentType: persistedContentType,
+                quote: quote ?? undefined,
+                repliedByUserId: user.id,
+                sentVia: 'user',
+                clientEchoId: echoId,
+                metadata: {
+                  sender: { kind: 'user_crm', name: userFullName },
+                  ...(sendFail
+                    ? { sendStatus: 'failed', failReason: sendFail.reason, failCode: sendFail.code, failedAt: new Date().toISOString() }
+                    : {}),
+                },
+              },
+              include: includeRepliedBy,
+            });
           }
         }
-        throw createErr;
+
+        if (!message) throw createErr;
+        logger.debug(`[chat] Reused message persisted by a concurrent sender/listener: ${message.id}`);
       }
 
       await prisma.conversation.update({
