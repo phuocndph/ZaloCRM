@@ -376,7 +376,8 @@
       />
 
       <!-- ════════ Messages ════════ -->
-      <div v-if="!privateBlocked" ref="messagesContainer" class="messages chat-messages-area" :class="{ 'is-virtual-mode': isVirtualConv }">
+      <div v-if="!privateBlocked" ref="messagesContainer" class="messages chat-messages-area" :class="{ 'is-virtual-mode': isVirtualConv }" @scroll.passive="onMessagesScroll">
+        <v-progress-linear v-if="loadingOlder" indeterminate color="primary" class="mb-2" />
         <v-progress-linear v-if="loading" indeterminate color="primary" class="mb-2" />
 
         <template v-for="item in displayItems" :key="item.key">
@@ -1130,6 +1131,8 @@ const props = defineProps<{
   conversation: Conversation | null;
   messages: Message[];
   loading: boolean;
+  loadingOlder?: boolean;
+  hasOlderMessages?: boolean;
   sending: boolean;
   showContactPanel?: boolean;
   aiSuggestion: string;
@@ -1168,6 +1171,7 @@ const emit = defineEmits<{
   'cancel-reply-edit': [];
   'typing': [];
   'refresh-thread': [];
+  'load-older': [];
   // 2026-06-12 (anh chốt): nút "Chèn từ kho" → mở tab Media ở cột 4 (bỏ popover nổi).
   'open-media-tab': [];
   'care-status-changed': [value: string];
@@ -2808,7 +2812,18 @@ function scrollToMessage(messageId: string): boolean {
   }
   return true;
 }
-defineExpose({ scrollToMessage });
+function captureScrollAnchor() {
+  const el = messagesContainer.value;
+  return el ? { top: el.scrollTop, height: el.scrollHeight } : null;
+}
+
+function restoreScrollAnchor(anchor: { top: number; height: number } | null) {
+  const el = messagesContainer.value;
+  if (!el || !anchor) return;
+  el.scrollTop = anchor.top + (el.scrollHeight - anchor.height);
+}
+
+defineExpose({ scrollToMessage, captureScrollAnchor, restoreScrollAnchor });
 
 function onReply() { if (contextMsg.value) emit('set-reply-to', contextMsg.value); }
 function onEdit() {
@@ -3256,6 +3271,18 @@ function getImageUrl(msg: Message): string | null {
 
 /** Scroll xuống đáy (tin nhắn mới nhất). Retry sau khi images load. */
 const scrollRetryTimers: ReturnType<typeof setTimeout>[] = [];
+let olderRequestPending = false;
+
+function onMessagesScroll() {
+  const el = messagesContainer.value;
+  if (!el || el.scrollTop >= 64 || props.loading || props.loadingOlder || !props.hasOlderMessages || olderRequestPending) return;
+  olderRequestPending = true;
+  emit('load-older');
+}
+
+watch(() => props.loadingOlder, (loading) => {
+  if (!loading) olderRequestPending = false;
+});
 
 function scrollToBottom(immediate = false) {
   if (!messagesContainer.value) return;
@@ -3271,7 +3298,8 @@ function scrollToBottom(immediate = false) {
 }
 
 // Khi messages thêm (tin mới đến) → scroll mượt
-watch(() => props.messages.length, async () => {
+watch(() => props.messages.at(-1)?.id, async (newLastId, oldLastId) => {
+  if (!newLastId || newLastId === oldLastId) return;
   await nextTick();
   scrollToBottom();
 });

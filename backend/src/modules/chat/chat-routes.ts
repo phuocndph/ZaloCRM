@@ -1389,6 +1389,8 @@ export async function chatRoutes(app: FastifyInstance) {
     const user = request.user!;
     const { id } = request.params as { id: string };
     const { page = '1', limit = '50' } = request.query as QueryParams;
+    const requestedPage = Math.max(1, parseInt(page) || 1);
+    const requestedLimit = Math.max(25, Math.min(parseInt(limit) || 50, 100));
 
     const conversation = await prisma.conversation.findFirst({
       where: { id, orgId: user.orgId },
@@ -1415,8 +1417,8 @@ export async function chatRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: CONVERSATION_PRIVATE_MESSAGE, code: CONVERSATION_PRIVATE_CODE });
     }
 
-    const [messages, total] = await Promise.all([
-      prisma.message.findMany({
+    // Fetch one extra row instead of counting the entire history on every chat switch.
+    const messageRows = await prisma.message.findMany({
         where: { conversationId: id },
         // Primary sort by Zalo Snowflake (zaloMsgIdNum) — match Zalo Web order.
         // FIX 2026-07-13 (ảnh gửi đi không hiện): nulls phải đứng ĐẦU trong thứ tự DESC.
@@ -1425,8 +1427,8 @@ export async function chatRoutes(app: FastifyInstance) {
         // khung chat ở hội thoại dài. FE vẫn tự sắp lại đúng vị trí (compareMessages:
         // snowflake trước, sentAt fallback) nên thứ tự hiển thị không đổi.
         orderBy: [{ zaloMsgIdNum: { sort: 'desc', nulls: 'first' } }, { sentAt: 'desc' }],
-        skip: (parseInt(page) - 1) * parseInt(limit),
-        take: parseInt(limit),
+        skip: (requestedPage - 1) * requestedLimit,
+        take: requestedLimit + 1,
         select: {
           id: true,
           zaloMsgId: true,
@@ -1467,9 +1469,10 @@ export async function chatRoutes(app: FastifyInstance) {
           // FE dùng pos+len bôi đúng 100%, không cần đoán regex.
           mentions: true,
         },
-      }),
-      prisma.message.count({ where: { conversationId: id } }),
-    ]);
+      });
+    const hasMore = messageRows.length > requestedLimit;
+    if (hasMore) messageRows.pop();
+    const messages = messageRows;
 
     const ordered = messages.reverse();
 
@@ -1622,7 +1625,9 @@ export async function chatRoutes(app: FastifyInstance) {
         senderResolved: isRedacted ? null : resolveSender(m),
       };
     });
-    return { messages: redacted, total, page: parseInt(page), limit: parseInt(limit) };
+    // Lower-bound total keeps older clients compatible; new clients use hasMore.
+    const total = (requestedPage - 1) * requestedLimit + messages.length + (hasMore ? 1 : 0);
+    return { messages: redacted, total, hasMore, page: requestedPage, limit: requestedLimit };
   });
 
   // ── Send message ─────────────────────────────────────────────────────────

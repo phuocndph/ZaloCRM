@@ -388,6 +388,8 @@ function buildChat() {
   const hasMoreConvs = computed(() => conversations.value.length < conversationTotal.value);
   let conversationRequestId = 0;
   const loadingMsgs = ref(false);
+  const hasOlderMessages = ref(false);
+  const loadingOlderMessages = ref(false);
   const sendingMsg = ref(false);
   // Wave 1 (2026-05-21) — KH đang gõ realtime. Key = conversationId (FE map từ
   // threadId qua selectedConv). Value = timestamp ms cuối cùng nhận typing event.
@@ -625,14 +627,18 @@ function buildChat() {
   }
 
   async function fetchMessages(convId: string, options?: { limit?: number }) {
-    const limit = Math.max(25, Math.min(options?.limit ?? 100, 100));
-    messagePages.set(convId, 1);
+    const limit = Math.max(25, Math.min(options?.limit ?? 50, 100));
+    const hasCachedHistory = messagesCache.has(convId);
+    if (!hasCachedHistory || messagePageSizes.get(convId) !== limit) {
+      messagePages.set(convId, 1);
+    }
     messagePageSizes.set(convId, limit);
     // Switch conv → wholesale reset messages.value để không mix tin từ conv cũ.
     // Nếu cùng conv (refresh) → giữ messages hiện tại cho merge logic phía dưới.
     if (messagesConvId.value !== convId) {
       messages.value = [];
       messagesConvId.value = convId;
+      hasOlderMessages.value = false;
       // Đổi hội thoại → bỏ màn chặn riêng tư của hội thoại trước.
       conversationPrivateBlocked.value = false;
     }
@@ -654,6 +660,9 @@ function buildChat() {
         params: { limit },
       });
       const list = (res.data.messages as RawMessage[]).map(normalizeMessage);
+      const hasMore = typeof res.data.hasMore === 'boolean'
+        ? res.data.hasMore
+        : list.length < Number(res.data.total ?? list.length);
       // Merge thay vì wholesale replace: giữ msgs đã insert qua socket trong lúc HTTP
       // bay (BE replication lag có thể chưa thấy msg socket vừa nhận). CHỈ merge khi
       // messagesConvId.value === convId — đảm bảo socket items thuộc conv hiện tại,
@@ -678,6 +687,7 @@ function buildChat() {
       // (cập nhật deliveredAt/seenAt in-place trên object) vẫn phản ánh đúng vào cache.
       // KHÔNG deep-clone: sẽ cắt object chung → vỡ dấu "đã nhận/đã xem" + tốn bộ nhớ ×100×50.
       if (isConvCurrent(convId)) {
+        hasOlderMessages.value = hasMore;
         setCachedMessages(convId, [...messages.value]);
       }
     } catch (err) {
@@ -698,19 +708,21 @@ function buildChat() {
   }
 
   async function loadOlderMessages(convId: string): Promise<{ added: number; hasMore: boolean }> {
-    if (!isConvCurrent(convId) || conversationPrivateBlocked.value) {
+    if (!isConvCurrent(convId) || conversationPrivateBlocked.value || loadingOlderMessages.value) {
       return { added: 0, hasMore: false };
     }
 
     const nextPage = (messagePages.get(convId) ?? 1) + 1;
-    const limit = messagePageSizes.get(convId) ?? 100;
+    const limit = messagePageSizes.get(convId) ?? 50;
+    loadingOlderMessages.value = true;
     try {
       const res = await api.get(`/conversations/${convId}/messages`, {
         params: { page: nextPage, limit },
       });
       const list = (res.data.messages as RawMessage[]).map(normalizeMessage);
-      const total = Number(res.data.total ?? 0);
-      const hasMore = nextPage * limit < total;
+      const hasMore = typeof res.data.hasMore === 'boolean'
+        ? res.data.hasMore
+        : nextPage * limit < Number(res.data.total ?? 0);
 
       // A late response must never add messages to a conversation that the
       // user has already left. De-duplicate against socket and prior pages.
@@ -722,6 +734,7 @@ function buildChat() {
         setCachedMessages(convId, [...messages.value]);
       }
       messagePages.set(convId, nextPage);
+      hasOlderMessages.value = hasMore;
       return { added: older.length, hasMore };
     } catch (err) {
       if (isConversationPrivateError(err)) {
@@ -734,6 +747,8 @@ function buildChat() {
         console.error('Failed to load older messages:', err);
       }
       return { added: 0, hasMore: false };
+    } finally {
+      loadingOlderMessages.value = false;
     }
   }
 
@@ -1513,6 +1528,8 @@ function buildChat() {
     loadingMoreConvs,
     hasMoreConvs,
     loadingMsgs,
+    hasOlderMessages,
+    loadingOlderMessages,
     sendingMsg,
     searchQuery,
     accountFilter,

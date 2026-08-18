@@ -88,6 +88,8 @@
       :messages="messages"
       :pinned-ids="pinnedIds"
       :loading="loadingMsgs"
+      :loading-older="loadingOlderMessages"
+      :has-older-messages="hasOlderMessages"
       :sending="sendingMsg"
       :ai-suggestion="aiSuggestion"
       :ai-suggestion-loading="aiSuggestionLoading"
@@ -116,6 +118,7 @@
       @cancel-reply-edit="onCancelReplyEdit"
       @typing="onTyping"
       @refresh-thread="selectedConvId && fetchMessages(selectedConvId)"
+      @load-older="onLoadOlderMessages"
       @switch-conversation="onSwitchToNickConv"
       @profile-synced="patchContactProfile"
       @open-content-panel="onOpenContentPanel"
@@ -218,10 +221,10 @@ const router = useRouter();
 const {
   conversations, selectedConvId, selectedConv, messages,
   conversationPrivateBlocked,
-  loadingConvs, loadingMoreConvs, hasMoreConvs, loadingMsgs, sendingMsg, searchQuery, accountFilter, extraFilters,
+  loadingConvs, loadingMoreConvs, hasMoreConvs, loadingMsgs, hasOlderMessages, loadingOlderMessages, sendingMsg, searchQuery, accountFilter, extraFilters,
   aiSuggestion, aiSuggestionLoading, aiSuggestionError, aiConfig,
   aiSummary, aiSummaryLoading, aiSentiment, aiSentimentLoading,
-  fetchConversations, loadMoreConversations, fetchAiConfig, fetchMessages, selectConversation, sendMessage,
+  fetchConversations, loadMoreConversations, fetchAiConfig, fetchMessages, loadOlderMessages, selectConversation, sendMessage,
   generateAiSuggestion, generateAiSummary, generateAiSentiment,
   initSocket, destroySocket, getSocket,
   typingConvIds, realtimeOffline,
@@ -659,7 +662,12 @@ async function onOpenMediaTab() {
 // ════════ Conversation Content Library 2026-07-11 ════════
 // Ghim tin nhắn, tin đã ghim, tìm trong hội thoại, tab Ảnh/File/Link, "nhảy tới tin gốc".
 const contentApi = useConversationContent();
-const messageThreadRef = ref<{ scrollToMessage: (id: string) => boolean } | null>(null);
+type MessageThreadHandle = {
+  scrollToMessage: (id: string) => boolean;
+  captureScrollAnchor: () => { top: number; height: number } | null;
+  restoreScrollAnchor: (anchor: { top: number; height: number } | null) => void;
+};
+const messageThreadRef = ref<MessageThreadHandle | null>(null);
 const contentPanelRef = ref<{ openTab: (t: string) => void; reloadPinned: () => void } | null>(null);
 const showContentPanel = ref(false);
 const contentPanelInitialTab = ref<'pinned' | 'search' | 'media' | 'files' | 'links'>('search');
@@ -672,6 +680,15 @@ async function loadPinnedIds(convId: string) {
   } catch {
     pinnedIds.value = [];
   }
+}
+
+async function onLoadOlderMessages() {
+  const convId = selectedConvId.value;
+  if (!convId || loadingOlderMessages.value || !hasOlderMessages.value) return;
+  const anchor = messageThreadRef.value?.captureScrollAnchor() ?? null;
+  await loadOlderMessages(convId);
+  await nextTick();
+  if (selectedConvId.value === convId) messageThreadRef.value?.restoreScrollAnchor(anchor);
 }
 
 async function onOpenContentPanel(tab: string) {
