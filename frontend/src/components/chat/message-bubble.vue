@@ -104,7 +104,24 @@
             <span class="recall-icon">🔂</span>
             <span class="recall-label">Tin nhắn đã thu hồi</span>
           </div>
-          <div v-if="message.content" class="recall-body">{{ message.content }}</div>
+          <div v-if="getImageUrl(message)" class="recall-media">
+            <div v-if="imgFailed" class="chat-image-failed">
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+              <span>Ảnh không tải được</span>
+            </div>
+            <img
+              v-else
+              :src="getImageUrl(message)!"
+              alt="Ảnh đã thu hồi"
+              class="recall-image"
+              loading="lazy"
+              decoding="async"
+              @click="emit('preview-image', getImageUrl(message)!)"
+              @error="imgFailed = true"
+            />
+            <div v-if="messageCaption" class="recall-caption">{{ messageCaption }}</div>
+          </div>
+          <div v-else-if="message.content" class="recall-body">{{ parseDisplayContent(message.content) }}</div>
         </div>
 
         <template v-else>
@@ -1557,6 +1574,26 @@ function onFileClick(href: string, name?: string) {
 }
 .recall-icon { font-size: 14px; }
 .recall-label { font-style: normal; }
+.recall-media {
+  margin-top: 7px;
+}
+.recall-image {
+  display: block;
+  width: auto;
+  max-width: min(320px, 100%);
+  max-height: 360px;
+  border-radius: 6px;
+  object-fit: contain;
+  cursor: zoom-in;
+  opacity: 1;
+}
+.recall-caption {
+  margin-top: 5px;
+  color: var(--smax-grey-700, #5a6478);
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 /* Tin đã thu hồi (2026-07-13, anh chốt): BỎ gạch ngang + in nghiêng — khó đọc.
    Chỉ LÀM NHẠT nội dung; dấu hiệu nhận biết đã có ở .recall-header (🔂 "Tin nhắn đã thu hồi"). */
 .recall-body {
