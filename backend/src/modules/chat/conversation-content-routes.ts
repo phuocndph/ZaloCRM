@@ -237,7 +237,7 @@ export async function registerConversationContentRoutes(app: FastifyInstance): P
       if (!gate) return;
 
       const pins = await prisma.messagePin.findMany({
-        where: { conversationId: id, unpinnedAt: null },
+        where: { conversationId: id, unpinnedAt: null, message: { hiddenAt: null } },
         orderBy: { pinnedAt: 'desc' },
         select: {
           id: true,
@@ -322,6 +322,7 @@ export async function registerConversationContentRoutes(app: FastifyInstance): P
 
       const where: Prisma.MessageWhereInput = {
         conversationId: id,
+        hiddenAt: null,
         contentType: { in: ['image', 'video'] },
         isDeleted: false,
       };
@@ -361,6 +362,7 @@ export async function registerConversationContentRoutes(app: FastifyInstance): P
 
       const where: Prisma.MessageWhereInput = {
         conversationId: id,
+        hiddenAt: null,
         contentType: 'file',
         isDeleted: false,
       };
@@ -402,6 +404,7 @@ export async function registerConversationContentRoutes(app: FastifyInstance): P
 
       const where: Prisma.MessageWhereInput = {
         conversationId: id,
+        hiddenAt: null,
         isDeleted: false,
         OR: [{ contentType: 'link' }, { content: { contains: 'http', mode: 'insensitive' } }],
       };
@@ -444,7 +447,7 @@ export async function registerConversationContentRoutes(app: FastifyInstance): P
       const after = clampInt(q.after, 20, 0, 50);
 
       const target = await prisma.message.findFirst({
-        where: { id: messageId, conversationId: id },
+        where: { id: messageId, conversationId: id, hiddenAt: null },
         select: { id: true, sentAt: true },
       });
       if (!target) {
@@ -454,13 +457,13 @@ export async function registerConversationContentRoutes(app: FastifyInstance): P
       // Cửa sổ theo sentAt (ổn định, không phụ thuộc zaloMsgIdNum có thể null cho tin CRM in-flight).
       const [olderDesc, newerAsc] = await Promise.all([
         prisma.message.findMany({
-          where: { conversationId: id, sentAt: { lt: target.sentAt } },
+          where: { conversationId: id, hiddenAt: null, sentAt: { lt: target.sentAt } },
           orderBy: { sentAt: 'desc' },
           take: before,
           select: CONTENT_MSG_SELECT,
         }),
         prisma.message.findMany({
-          where: { conversationId: id, sentAt: { gte: target.sentAt } },
+          where: { conversationId: id, hiddenAt: null, sentAt: { gte: target.sentAt } },
           orderBy: { sentAt: 'asc' },
           take: after + 1, // +1 để bao gồm chính target
           select: CONTENT_MSG_SELECT,

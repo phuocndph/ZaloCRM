@@ -12,6 +12,13 @@ import { useWorkScope } from '@/composables/use-work-scope';
 import { classifyIncoming } from '@/composables/work-scope-logic';
 import { useToast } from '@/composables/use-toast';
 import { isConversationPrivateError } from '@/composables/use-conversation-privacy';
+import {
+  isSameMessageIdentity,
+  messageEchoIdOf,
+  replaceMessageByEchoId,
+  resolveClientEchoId,
+  upsertMessageByIdentity,
+} from '@/composables/chat-outbox';
 
 interface ZaloAccount {
   id: string;
@@ -239,17 +246,21 @@ export interface Message {
   } | null;
 }
 
-/** Sort comparator: primary by zaloMsgIdNum (Zalo Snowflake), fallback sentAt cho row chưa echo */
+/** Keep the same timestamp/Snowflake/id order as the message history API. */
 function compareMessages(a: Message, b: Message): number {
+  const sentDiff = new Date(a.sentAt).getTime() - new Date(b.sentAt).getTime();
+  if (sentDiff !== 0) return sentDiff;
   const aNum = a.zaloMsgIdNum;
   const bNum = b.zaloMsgIdNum;
   if (aNum && bNum) {
     // Compare BigInt từ string — chính xác cho mọi length (lex sort không work nếu length khác)
     const diff = BigInt(aNum) - BigInt(bNum);
-    return diff > 0n ? 1 : diff < 0n ? -1 : 0;
+    if (diff !== 0n) return diff > 0n ? 1 : -1;
   }
-  // 1 trong 2 chưa có zaloMsgIdNum → fallback sentAt
-  return new Date(a.sentAt).getTime() - new Date(b.sentAt).getTime();
+  if (aNum && !bNum) return -1;
+  if (!aNum && bNum) return 1;
+  // The API reverses DESC NULLS FIRST pages, so a null Snowflake displays last.
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
 // In-memory cache per-conv messages — quay lại conv cũ render ngay, fetch fresh background.
@@ -280,7 +291,7 @@ function setCachedMessages(conversationId: string, messages: Message[]) {
 // Stale-while-revalidate: chuyển tab → paint từ cache NGAY (0ms lag), bg fetch update.
 // Trước fix: mỗi lần chuyển tab user chờ 1-3s HTTP+DB roundtrip → loading spinner.
 // Cache key encode toàn bộ filter params (tab, threadType, accountIds, search, ...).
-const conversationsCache = new Map<string, { data: Conversation[]; total: number; fetchedAt: number }>();
+const conversationsCache = new Map<string, { data: Conversation[]; total: number; hasMore: boolean; nextCursor: string | null; fetchedAt: number }>();
 const CONV_CACHE_MAX_ENTRIES = 16;  // ~4 tabs × ~4 filter variants
 const DESKTOP_CONVERSATION_PAGE_SIZE = 100;
 
@@ -374,6 +385,9 @@ function buildChat() {
   // an explicit request from a view that can preserve its scroll position.
   const messagePages = new Map<string, number>();
   const messagePageSizes = new Map<string, number>();
+  const messageNextCursors = new Map<string, string | null>();
+  const messageHistoryExpanded = new Map<string, boolean>();
+  const messageHasMoreByConv = new Map<string, boolean>();
   // Track conv mà messages.value đang chứa — để fetchMessages biết switch conv thì
   // wholesale replace (không merge tin từ conv khác), refresh cùng conv thì merge
   // (giữ tin socket đến trong lúc HTTP fly).
@@ -385,12 +399,15 @@ function buildChat() {
   const loadingMoreConvs = ref(false);
   const conversationPage = ref(1);
   const conversationTotal = ref(0);
+  const conversationHasMore = ref(false);
+  const conversationNextCursor = ref<string | null>(null);
   const activeConversationQueryKey = ref('');
-  const hasMoreConvs = computed(() => conversations.value.length < conversationTotal.value);
+  const hasMoreConvs = computed(() => conversationHasMore.value);
   let conversationRequestId = 0;
   const loadingMsgs = ref(false);
   const hasOlderMessages = ref(false);
   const loadingOlderMessages = ref(false);
+  let activeMessageController: AbortController | null = null;
   const sendingMsg = ref(false);
   // Wave 1 (2026-05-21) — KH đang gõ realtime. Key = conversationId (FE map từ
   // threadId qua selectedConv). Value = timestamp ms cuối cùng nhận typing event.
@@ -469,6 +486,7 @@ function buildChat() {
     const requestId = ++conversationRequestId;
     activeConversationQueryKey.value = cacheKey;
     conversationPage.value = 1;
+    conversationNextCursor.value = null;
     loadingMoreConvs.value = false;
 
     // M-tier stale-while-revalidate: cache hit → paint NGAY (no spinner flash khi
@@ -492,11 +510,13 @@ function buildChat() {
       logCacheEvent('hit', cacheKey);
       conversations.value = mergeConvListPreserveDetail(conversations.value, cached.data, preserveIds);
       conversationTotal.value = cached.total;
+      conversationHasMore.value = cached.hasMore;
+      conversationNextCursor.value = cached.nextCursor;
     } else {
       if (!opts?.bypassCache) logCacheEvent('miss', cacheKey);
-      // Spinner chỉ hiện khi state thực sự rỗng (first load). bypassCache khi
-      // state đã có data từ socket → không hiện spinner để tránh blink.
-      if (conversations.value.length === 0) loadingConvs.value = true;
+      // Cache miss khi đổi bộ lọc: giữ list cũ để tránh màn trắng nhưng hiện
+      // progress mảnh ở đầu danh sách. bypassCache nền không làm giao diện nháy.
+      if (!opts?.bypassCache) loadingConvs.value = true;
     }
 
     try {
@@ -506,13 +526,17 @@ function buildChat() {
       // replace state — tránh fetchConversations chạy giữa lúc BE đang sync wipe UI optimistic.
       const fresh = applyPendingTags(res.data.conversations as Conversation[]);
       const total = Number(res.data.total ?? fresh.length);
-      conversationsCache.set(cacheKey, { data: fresh, total, fetchedAt: Date.now() });
+      const hasMore = typeof res.data.hasMore === 'boolean' ? res.data.hasMore : fresh.length < total;
+      const nextCursor = typeof res.data.nextCursor === 'string' ? res.data.nextCursor : null;
+      conversationsCache.set(cacheKey, { data: fresh, total, hasMore, nextCursor, fetchedAt: Date.now() });
       logCacheEvent('set', cacheKey);
       evictOldConvCacheIfNeeded();
       // Merge để giữ detail fields (Contact full ~50 field từ /conversations/:id)
       // không bị wipe bởi narrow list response (14 field).
       conversations.value = mergeConvListPreserveDetail(conversations.value, fresh, preserveIds);
       conversationTotal.value = total;
+      conversationHasMore.value = hasMore;
+      conversationNextCursor.value = nextCursor;
     } catch (err) {
       console.error('Failed to fetch conversations:', err);
     } finally {
@@ -534,7 +558,12 @@ function buildChat() {
     const requestId = conversationRequestId;
     loadingMoreConvs.value = true;
     try {
-      const res = await api.get('/conversations', { params: { ...params, page: nextPage } });
+      const res = await api.get('/conversations', {
+        params: {
+          ...params,
+          ...(conversationNextCursor.value ? { cursor: conversationNextCursor.value } : { page: nextPage }),
+        },
+      });
       // Người dùng đổi tab/lọc khi request đang bay: bỏ kết quả của bộ lọc trước.
       if (requestId !== conversationRequestId || activeConversationQueryKey.value !== cacheKey) return;
 
@@ -546,9 +575,24 @@ function buildChat() {
         [...conversations.value, ...appended],
       );
       conversationPage.value = nextPage;
-      conversationTotal.value = Number(res.data.total ?? conversations.value.length);
+      if (res.data.total != null) conversationTotal.value = Number(res.data.total);
+      conversationHasMore.value = typeof res.data.hasMore === 'boolean'
+        ? res.data.hasMore
+        : fresh.length >= Number(params.limit ?? DESKTOP_CONVERSATION_PAGE_SIZE);
+      conversationNextCursor.value = typeof res.data.nextCursor === 'string' ? res.data.nextCursor : null;
       // Dữ liệu có thể bị xóa/đổi trạng thái giữa hai lần tải. Trang rỗng là điểm kết thúc.
-      if (fresh.length === 0) conversationTotal.value = conversations.value.length;
+      if (fresh.length === 0) {
+        conversationTotal.value = conversations.value.length;
+        conversationHasMore.value = false;
+      }
+      conversationsCache.set(cacheKey, {
+        data: [...conversations.value],
+        total: conversationTotal.value,
+        hasMore: conversationHasMore.value,
+        nextCursor: conversationNextCursor.value,
+        fetchedAt: Date.now(),
+      });
+      evictOldConvCacheIfNeeded();
     } catch (err) {
       console.error('Failed to load more conversations:', err);
     } finally {
@@ -628,10 +672,15 @@ function buildChat() {
   }
 
   async function fetchMessages(convId: string, options?: { limit?: number }) {
+    activeMessageController?.abort();
+    const controller = new AbortController();
+    activeMessageController = controller;
     const limit = Math.max(25, Math.min(options?.limit ?? 50, 100));
     const hasCachedHistory = messagesCache.has(convId);
     if (!hasCachedHistory || messagePageSizes.get(convId) !== limit) {
       messagePages.set(convId, 1);
+      messageNextCursors.delete(convId);
+      messageHistoryExpanded.set(convId, false);
     }
     messagePageSizes.set(convId, limit);
     // Switch conv → wholesale reset messages.value để không mix tin từ conv cũ.
@@ -659,23 +708,28 @@ function buildChat() {
     try {
       const res = await api.get(`/conversations/${convId}/messages`, {
         params: { limit },
+        signal: controller.signal,
       });
       const list = (res.data.messages as RawMessage[]).map(normalizeMessage);
       const hasMore = typeof res.data.hasMore === 'boolean'
         ? res.data.hasMore
         : list.length < Number(res.data.total ?? list.length);
+      const nextCursor = typeof res.data.nextCursor === 'string' ? res.data.nextCursor : null;
       // Merge thay vì wholesale replace: giữ msgs đã insert qua socket trong lúc HTTP
       // bay (BE replication lag có thể chưa thấy msg socket vừa nhận). CHỈ merge khi
       // messagesConvId.value === convId — đảm bảo socket items thuộc conv hiện tại,
       // không phải tin từ conv khác bị tích luỹ.
       if (isConvCurrent(convId)) {
-        const beIds = new Set(list.map(m => m.id));
-        const socketOnly = messages.value.filter(m => !beIds.has(m.id));
+        const socketOnly = messages.value.filter((message) => {
+          return !list.some((confirmed) => isSameMessageIdentity(message, confirmed));
+        });
         if (socketOnly.length === 0) {
           messages.value = list;
         } else {
-          const merged = [...list, ...socketOnly];
-          merged.sort(compareMessages);
+          let merged = [...list];
+          for (const message of socketOnly) {
+            merged = upsertMessageByIdentity(merged, message);
+          }
           messages.value = merged;
         }
       }
@@ -688,10 +742,18 @@ function buildChat() {
       // (cập nhật deliveredAt/seenAt in-place trên object) vẫn phản ánh đúng vào cache.
       // KHÔNG deep-clone: sẽ cắt object chung → vỡ dấu "đã nhận/đã xem" + tốn bộ nhớ ×100×50.
       if (isConvCurrent(convId)) {
-        hasOlderMessages.value = hasMore;
+        const hasExpandedHistory = messageHistoryExpanded.get(convId) === true;
+        if (!hasExpandedHistory) {
+          messageNextCursors.set(convId, nextCursor);
+          messageHasMoreByConv.set(convId, hasMore);
+        }
+        hasOlderMessages.value = hasExpandedHistory
+          ? (messageHasMoreByConv.get(convId) ?? hasMore)
+          : hasMore;
         setCachedMessages(convId, [...messages.value]);
       }
     } catch (err) {
+      if (controller.signal.aborted) return;
       // Hội thoại riêng tư của người khác → BE chặn từ tầng dữ liệu (403). Dọn sạch mọi
       // thứ đang hiện + bật cờ để thread hiện đúng câu thông báo (yêu cầu 4).
       if (isConversationPrivateError(err)) {
@@ -704,7 +766,9 @@ function buildChat() {
         console.error('Failed to fetch messages:', err);
       }
     } finally {
-      if (selectedConvId.value === convId) loadingMsgs.value = false;
+      const ownsLoadingState = activeMessageController === controller;
+      if (ownsLoadingState) activeMessageController = null;
+      if (ownsLoadingState && selectedConvId.value === convId) loadingMsgs.value = false;
     }
   }
 
@@ -715,10 +779,11 @@ function buildChat() {
 
     const nextPage = (messagePages.get(convId) ?? 1) + 1;
     const limit = messagePageSizes.get(convId) ?? 50;
+    const cursor = messageNextCursors.get(convId);
     loadingOlderMessages.value = true;
     try {
       const res = await api.get(`/conversations/${convId}/messages`, {
-        params: { page: nextPage, limit },
+        params: { limit, ...(cursor ? { cursor } : { page: nextPage }) },
       });
       const list = (res.data.messages as RawMessage[]).map(normalizeMessage);
       const hasMore = typeof res.data.hasMore === 'boolean'
@@ -728,13 +793,20 @@ function buildChat() {
       // A late response must never add messages to a conversation that the
       // user has already left. De-duplicate against socket and prior pages.
       if (!isConvCurrent(convId)) return { added: 0, hasMore: false };
-      const existingIds = new Set(messages.value.map((message) => message.id));
-      const older = list.filter((message) => !existingIds.has(message.id));
+      const older = list.filter((message) =>
+        !messages.value.some((existing) => isSameMessageIdentity(existing, message)),
+      );
       if (older.length > 0) {
         messages.value = [...older, ...messages.value].sort(compareMessages);
         setCachedMessages(convId, [...messages.value]);
       }
       messagePages.set(convId, nextPage);
+      messageNextCursors.set(
+        convId,
+        typeof res.data.nextCursor === 'string' ? res.data.nextCursor : null,
+      );
+      messageHistoryExpanded.set(convId, true);
+      messageHasMoreByConv.set(convId, hasMore);
       hasOlderMessages.value = hasMore;
       return { added: older.length, hasMore };
     } catch (err) {
@@ -847,7 +919,9 @@ function buildChat() {
     // ensure-conversation từ dialog) → refresh list để MessageThread render được.
     // selectedConv = computed find trong list — list rỗng = blank UI.
     if (!conversations.value.find(c => c.id === convId)) {
-      await fetchConversations();
+      // Không chặn mở thread bằng request danh sách 100 hội thoại. Detail và messages
+      // phía dưới đủ để dựng màn hình; list tự đồng bộ nền.
+      void fetchConversations();
     }
     // 2026-06-12 (anh báo load chậm 5-10s admin 50 nick) — paint tin nhắn TRƯỚC, rồi
     // detail (cột 3/4 header) + mark-read chạy SONG SONG (Promise.all) thay vì 2 round-trip
@@ -906,9 +980,15 @@ function buildChat() {
     // AI usage cũng không cần đổi theo hội thoại; tránh thêm một request cho mỗi click.
   }
 
-  async function sendMessage(content: string, replyMessageId?: string | null, styles?: Array<{ st: string; start: number; len: number }>, mentions?: Array<{ uid: string; pos: number; len: number }>) {
+  async function sendMessage(
+    content: string,
+    replyMessageId?: string | null,
+    styles?: Array<{ st: string; start: number; len: number }>,
+    mentions?: Array<{ uid: string; pos: number; len: number }>,
+    retryEchoId?: string,
+  ) {
     if (!selectedConvId.value || !content.trim()) return;
-    await sendMessageTo(selectedConvId.value, content, replyMessageId, styles, mentions);
+    await sendMessageTo(selectedConvId.value, content, replyMessageId, styles, mentions, retryEchoId);
   }
 
   /** Insert message vào messages.value đúng vị trí — primary key zaloMsgIdNum (Zalo Snowflake),
@@ -932,18 +1012,38 @@ function buildChat() {
   }
 
   function messageEchoId(message: Message): string | null {
-    return message.clientEchoId || message.echoId || null;
+    return messageEchoIdOf(message);
+  }
+
+  function cachedMessageList(conversationId: string): Message[] | null {
+    return messagesCache.get(conversationId) ?? null;
   }
 
   function replaceOptimisticMessage(conversationId: string, echoId: string, incoming: Message): boolean {
-    if (!isConvCurrent(conversationId)) return false;
-    const index = messages.value.findIndex((message) =>
-      message.id === `pending:${echoId}` || messageEchoId(message) === echoId,
-    );
-    if (index < 0) return false;
-    messages.value.splice(index, 1, incoming);
-    setCachedMessages(conversationId, [...messages.value]);
+    if (isConvCurrent(conversationId)) {
+      const next = replaceMessageByEchoId(messages.value, echoId, incoming);
+      if (next) {
+        messages.value = next;
+        setCachedMessages(conversationId, [...messages.value]);
+        return true;
+      }
+      // The open thread is authoritative. A stale cached pending item must not
+      // suppress the confirmed realtime message from the visible thread.
+      return false;
+    }
+
+    const cached = cachedMessageList(conversationId);
+    if (!cached) return false;
+    const next = replaceMessageByEchoId(cached, echoId, incoming);
+    if (!next) return false;
+    setCachedMessages(conversationId, next);
     return true;
+  }
+
+  function insertIntoMessageCache(conversationId: string, incoming: Message): void {
+    const cached = cachedMessageList(conversationId);
+    if (!cached) return;
+    setCachedMessages(conversationId, upsertMessageByIdentity(cached, incoming));
   }
 
   function addOptimisticMessages(conversationId: string, optimistic: Message[]): void {
@@ -959,22 +1059,67 @@ function buildChat() {
     temporaryIds: string[],
     confirmedMessages: Message[],
   ): void {
-    if (!isConvCurrent(conversationId)) return;
     const temporary = new Set(temporaryIds);
-    messages.value = messages.value.filter((message) => !temporary.has(message.id));
-    for (const raw of confirmedMessages) {
-      const confirmed = normalizeMessage(raw as RawMessage);
-      confirmed.isPending = false;
-      if (!messages.value.some((message) => message.id === confirmed.id)) insertMessageSorted(confirmed);
+    const confirmed = confirmedMessages.map((raw) => {
+      const message = normalizeMessage(raw as RawMessage);
+      message.isPending = false;
+      return message;
+    });
+
+    if (isConvCurrent(conversationId)) {
+      messages.value = messages.value.filter((message) => !temporary.has(message.id));
+      for (const message of confirmed) {
+        messages.value = upsertMessageByIdentity(messages.value, message);
+      }
+      setCachedMessages(conversationId, [...messages.value]);
+      return;
     }
-    setCachedMessages(conversationId, [...messages.value]);
+
+    const cached = cachedMessageList(conversationId);
+    if (!cached) return;
+    let next = cached.filter((message) => !temporary.has(message.id));
+    for (const message of confirmed) {
+      next = upsertMessageByIdentity(next, message);
+    }
+    setCachedMessages(conversationId, next);
   }
 
   function removeOptimisticMessages(conversationId: string, temporaryIds: string[]): void {
-    if (!isConvCurrent(conversationId)) return;
     const temporary = new Set(temporaryIds);
-    messages.value = messages.value.filter((message) => !temporary.has(message.id));
-    setCachedMessages(conversationId, [...messages.value]);
+    if (isConvCurrent(conversationId)) {
+      messages.value = messages.value.filter((message) => !temporary.has(message.id));
+      setCachedMessages(conversationId, [...messages.value]);
+      return;
+    }
+    const cached = cachedMessageList(conversationId);
+    if (cached) setCachedMessages(conversationId, cached.filter((message) => !temporary.has(message.id)));
+  }
+
+  function markOptimisticMessageFailed(conversationId: string, echoId: string, reason: string): void {
+    const mark = (message: Message) => {
+      message.isPending = false;
+      message.metadata = {
+        ...(message.metadata ?? {}),
+        sendStatus: 'failed',
+        failReason: reason,
+      };
+    };
+
+    if (isConvCurrent(conversationId)) {
+      const pending = messages.value.find((message) => messageEchoId(message) === echoId);
+      if (pending?.isPending) {
+        mark(pending);
+        setCachedMessages(conversationId, [...messages.value]);
+        return;
+      }
+    }
+    const cached = cachedMessageList(conversationId);
+    const pending = cached?.find((message) => messageEchoId(message) === echoId);
+    if (pending?.isPending) {
+      const next = [...cached!];
+      mark(next[next.indexOf(pending)]);
+      setCachedMessages(conversationId, next);
+    }
   }
 
   /**
@@ -984,11 +1129,9 @@ function buildChat() {
    */
   function mergeMessages(list: Message[]): number {
     if (!list?.length) return 0;
-    const existing = new Set(messages.value.map((m) => m.id));
     let added = 0;
     for (const m of list) {
-      if (existing.has(m.id)) continue;
-      existing.add(m.id);
+      if (messages.value.some((existing) => isSameMessageIdentity(existing, m))) continue;
       insertMessageSorted(m);
       added += 1;
     }
@@ -1019,9 +1162,16 @@ function buildChat() {
     }
   }
 
-  async function sendMessageTo(conversationId: string, content: string, replyMessageId?: string | null, styles?: Array<{ st: string; start: number; len: number }>, mentions?: Array<{ uid: string; pos: number; len: number }>) {
+  async function sendMessageTo(
+    conversationId: string,
+    content: string,
+    replyMessageId?: string | null,
+    styles?: Array<{ st: string; start: number; len: number }>,
+    mentions?: Array<{ uid: string; pos: number; len: number }>,
+    retryEchoId?: string,
+  ) {
     if (!content.trim()) return;
-    const echoId = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const echoId = resolveClientEchoId(retryEchoId);
     const hasStyles = Array.isArray(styles) && styles.length > 0;
     const optimisticContent = hasStyles
       ? JSON.stringify({ title: content, action: 'rtf', params: JSON.stringify({ styles }) })
@@ -1057,27 +1207,34 @@ function buildChat() {
       insertMessageSorted(optimisticMessage);
       setCachedMessages(conversationId, [...messages.value]);
     }
+    const payload: Record<string, unknown> = { content, echoId };
+    if (replyMessageId) payload.replyMessageId = replyMessageId;
+    if (styles && styles.length > 0) payload.styles = styles;
+    if (mentions && mentions.length > 0) payload.mentions = mentions;
+
+    const reconcileConfirmed = (raw: RawMessage): void => {
+      const confirmed = normalizeMessage(raw);
+      confirmed.isPending = false;
+      confirmed.clientEchoId = confirmed.clientEchoId || echoId;
+      confirmed.echoId = confirmed.echoId || echoId;
+      if (!replaceOptimisticMessage(conversationId, echoId, confirmed) && isConvCurrent(conversationId)) {
+        messages.value = upsertMessageByIdentity(messages.value, confirmed);
+        setCachedMessages(conversationId, [...messages.value]);
+      } else if (!isConvCurrent(conversationId)) {
+        insertIntoMessageCache(conversationId, confirmed);
+      }
+    };
+
     sendingMsg.value = true;
     try {
       // 2026-05-21 RTF: gắn styles vào payload nếu user format bold/italic/underline/strike.
-      const payload: Record<string, unknown> = { content, echoId };
-      if (replyMessageId) payload.replyMessageId = replyMessageId;
-      if (styles && styles.length > 0) payload.styles = styles;
       // 2026-06-24: @mention thành viên nhóm — server đẩy thẳng sang zca-js.
-      if (mentions && mentions.length > 0) payload.mentions = mentions;
-      const res = await api.post(`/conversations/${conversationId}/messages`, payload);
-      if (conversationId === selectedConvId.value) {
-        const confirmed = normalizeMessage(res.data as RawMessage);
-        confirmed.isPending = false;
-        confirmed.clientEchoId = confirmed.clientEchoId || echoId;
-        confirmed.echoId = confirmed.echoId || echoId;
-        if (!replaceOptimisticMessage(conversationId, echoId, confirmed) && !messages.value.find(m => m.id === confirmed.id)) {
-          // FIX reply preview (Lỗi 1): normalize để map quote→reply NGAY khi gửi. Trước đây
-          // chèn res.data THÔ nên tin vừa gửi (nhất là tin Trả lời) không hiện khối trích dẫn
-          // cho tới khi reload. Đường ĐỌC (fetch/context) vốn đã .map(normalizeMessage).
-          insertMessageSorted(confirmed);
-        }
-      }
+      const res = await api.post(
+        `/conversations/${conversationId}/messages`,
+        payload,
+        { timeout: 120000, _skipGlobalErrorToast: true },
+      );
+      reconcileConfirmed(res.data as RawMessage);
     } catch (err) {
       console.error('Failed to send message:', err);
       // 2026-06-24 (anh báo bug): gửi fail mà UI im lặng — sale không biết vì sao.
@@ -1087,18 +1244,25 @@ function buildChat() {
       // để sale thấy lý do thay vì gửi vào hư không.
       const e = err as { response?: { status?: number; data?: { error?: string } } };
       const status = e?.response?.status;
-      const reason = e?.response?.data?.error || 'Không gửi được tin nhắn, vui lòng thử lại.';
-      const pending = messages.value.find((message) => messageEchoId(message) === echoId);
-      if (pending?.isPending) {
-        pending.isPending = false;
-        pending.metadata = {
-          ...(pending.metadata ?? {}),
-          sendStatus: 'failed',
-          failReason: reason,
-        };
-        setCachedMessages(conversationId, [...messages.value]);
+      if (!status || status >= 500) {
+        try {
+          // A response can be lost after Zalo accepts a message. Reusing this
+          // echo id only reads or continues the same durable outbox entry.
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          const reconciliation = await api.post(
+            `/conversations/${conversationId}/messages`,
+            payload,
+            { timeout: 15000, _skipGlobalErrorToast: true },
+          );
+          reconcileConfirmed(reconciliation.data as RawMessage);
+          return;
+        } catch (reconcileError) {
+          console.warn('Failed to reconcile outgoing message:', reconcileError);
+        }
       }
-      if (status !== 403 && !(status && status >= 500)) {
+      const reason = e?.response?.data?.error || 'Không gửi được tin nhắn, vui lòng thử lại.';
+      markOptimisticMessageFailed(conversationId, echoId, reason);
+      if (status !== 403) {
         useToast().error(reason);
       }
       throw err;
@@ -1141,7 +1305,9 @@ function buildChat() {
       // Reconnect sau 1 khoảng chết → kéo lại tin cột 2 đã lỡ (socket không backfill).
       // bypassCache đảm bảo lấy fresh, không apply cache cũ trước lúc chết.
       onReconnect: () => {
+        const conversationId = selectedConvId.value;
         void fetchConversations({ bypassCache: true });
+        if (conversationId) void fetchMessages(conversationId);
       },
     });
     // FIX 2 — wake reconnect khi quay lại tab / có mạng lại.
@@ -1178,21 +1344,26 @@ function buildChat() {
         scope: workScope.accountIds.value,
       });
 
+      const incoming = normalizeMessage(data.message as RawMessage);
+      const incomingEchoId = data.echoId || messageEchoId(incoming);
+      if (incomingEchoId) {
+        incoming.clientEchoId = incoming.clientEchoId || incomingEchoId;
+        incoming.echoId = incoming.echoId || incomingEchoId;
+        incoming.isPending = false;
+      }
+      const reconciledOptimistic = incomingEchoId
+        ? replaceOptimisticMessage(data.conversationId, incomingEchoId, incoming)
+        : false;
+
       // (a) THREAD ĐANG MỞ: LUÔN nhận tin (kể cả nick ngoài scope — vd vừa nav sang chưa
       // reload). KHÔNG bị guard chặn → không mất tin (fix bug v1.2).
       if (cls.insertThread) {
-        const incoming = normalizeMessage(data.message as RawMessage);
-        const echoId = data.echoId || messageEchoId(incoming);
-        if (echoId) {
-          incoming.clientEchoId = incoming.clientEchoId || echoId;
-          incoming.echoId = incoming.echoId || echoId;
-          incoming.isPending = false;
-        }
-        if (!(echoId && replaceOptimisticMessage(data.conversationId, echoId, incoming)) && !messages.value.find(m => m.id === incoming.id)) {
+        if (!reconciledOptimistic) {
           // INSERT theo sortedBy sentAt thay vì push cuối array. Lý do: socket có
           // thể giao messages KHÔNG theo chronological order (vd old_messages backfill
           // delivers reverse, hoặc 2 msg cùng giây tới khác thứ tự server vs client).
-          insertMessageSorted(incoming);
+          messages.value = upsertMessageByIdentity(messages.value, incoming);
+          setCachedMessages(data.conversationId, [...messages.value]);
         }
       }
 
@@ -1208,6 +1379,10 @@ function buildChat() {
       // optimistic cột-2 để không kéo conv ngoài scope lên list.
       if (!cls.updateColumn2) {
         return;
+      }
+
+      if (!cls.insertThread && !reconciledOptimistic) {
+        insertIntoMessageCache(data.conversationId, incoming);
       }
 
       // Optimistic update conversation list — tránh fetch full HTTP mỗi message
@@ -1270,7 +1445,26 @@ function buildChat() {
       content?: string | null;
       contentType?: string;
       attachments?: unknown;
+      mode?: 'local_delete' | 'recalled';
     }) => {
+      if (data.mode === 'local_delete') {
+        const activeIndex = messages.value.findIndex(
+          m => m.id === data.messageId || m.zaloMsgId === data.zaloMsgId,
+        );
+        if (activeIndex >= 0) messages.value.splice(activeIndex, 1);
+
+        const previewIndex = conversations.value.findIndex((conv) => {
+          if (data.conversationId && conv.id !== data.conversationId) return false;
+          const preview = conv.messages?.[0];
+          return !!preview && (preview.id === data.messageId || preview.zaloMsgId === data.zaloMsgId);
+        });
+        if (previewIndex >= 0) {
+          const conv = conversations.value[previewIndex];
+          conversations.value.splice(previewIndex, 1, { ...conv, messages: [] } as typeof conv);
+          void fetchConversations({ bypassCache: true });
+        }
+        return;
+      }
       // Cột 3: update message bubble trong thread đang mở
       const msg = messages.value.find(m => m.id === data.messageId || m.zaloMsgId === data.zaloMsgId);
       if (msg) {
@@ -1533,6 +1727,8 @@ function buildChat() {
     window.removeEventListener('online', onOnline);
     socket?.disconnect();
     socket = null;
+    activeMessageController?.abort();
+    activeMessageController = null;
   }
 
   return {

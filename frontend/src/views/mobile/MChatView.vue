@@ -58,7 +58,15 @@
 
     <!-- is-direct: chat 1-1 → ẩn tên người gửi trong bubble (đã có ở header, hiện lại là thừa).
          Chỉ áp cho mobile; desktop giữ nguyên quyết định cũ (hiện tên ở cả 1-1 lẫn nhóm). -->
-    <div ref="scroller" class="mch-msgs" :class="{ 'is-direct': !isGroupThread }" @scroll.passive="onScroll" @contextmenu.prevent>
+    <div
+      ref="scroller"
+      class="mch-msgs"
+      :class="{ 'is-direct': !isGroupThread }"
+      @scroll.passive="onScroll"
+      @load.capture="onMessageMediaLayout"
+      @loadedmetadata.capture="onMessageMediaLayout"
+      @contextmenu.prevent
+    >
       <div v-if="loadingOlder" class="mch-history-status">Đang tải tin cũ...</div>
       <div v-else-if="historyError" class="mch-history-status mch-history-status--err">
         Không tải được tin cũ. <button class="mch-history-retry" @click="retryHistory">Thử lại</button>
@@ -71,7 +79,13 @@
 
       <div v-for="(m, i) in (conversationPrivateBlocked ? [] : messages)" :key="m.id">
         <div v-if="showDateDivider(i)" class="mch-day">{{ dateLabel(m.sentAt) }}</div>
+        <div v-if="parseFriendAcceptedNotice(m.content)" class="mch-friend-notice">
+          <UserCheckIcon :size="15" :stroke-width="2" aria-hidden="true" />
+          <span>{{ parseFriendAcceptedNotice(m.content)!.label }}</span>
+          <time>{{ compactMessageTime(m.sentAt) }}</time>
+        </div>
         <div
+          v-else
           class="mch-row"
           :data-msg-id="m.id"
           :class="{ 'mch-row--swiping': swipeId === m.id && swipeX > 0, 'is-self': m.senderType === 'self', 'is-cluster-end': isGroupEnd(i) }"
@@ -152,7 +166,7 @@
               <RotateCcwIcon :size="24" :stroke-width="1.7" /><span>Thu hồi</span>
             </button>
             <button class="mch-ov-act danger" @click="onDelete">
-              <Trash2Icon :size="24" :stroke-width="1.7" /><span>Xóa</span>
+              <Trash2Icon :size="24" :stroke-width="1.7" /><span>Xóa ở phía tôi</span>
             </button>
           </template>
         </div>
@@ -421,6 +435,10 @@
           </span>
         </template>
       </div>
+      <div v-if="uploadingFiles" class="mch-upload-status">
+        <span>{{ uploadStatus }}</span><b>{{ uploadProgress }}%</b>
+        <i><span :style="{ width: `${uploadProgress}%` }"></span></i>
+      </div>
       <div class="mch-composer-row">
         <button class="m-iconbtn mch-tool" aria-label="Thêm chức năng" @click="showComposerTools = true"><PlusIcon :size="24" :stroke-width="2" /></button>
         <textarea
@@ -432,8 +450,8 @@
         <button type="button" class="m-iconbtn mch-emoji-btn" aria-label="Emoji và Sticker" @click="showEmojiSticker = true">
           <SmileIcon :size="23" :stroke-width="1.9" />
         </button>
-        <button class="mch-send" :class="{ ready: (text.trim() || pendingFiles.length) && !sendingMsg }" :disabled="(!text.trim() && !pendingFiles.length) || sendingMsg" aria-label="Gửi" @click="send">
-          <LoaderIcon v-if="sendingMsg" :size="20" :stroke-width="2.4" class="mch-spin" />
+        <button class="mch-send" :class="{ ready: (text.trim() || pendingFiles.length) && !sendingMsg && !uploadingFiles }" :disabled="(!text.trim() && !pendingFiles.length) || sendingMsg || uploadingFiles" aria-label="Gửi" @click="send">
+          <LoaderIcon v-if="sendingMsg || uploadingFiles" :size="20" :stroke-width="2.4" class="mch-spin" />
           <SendIcon v-else :size="20" :stroke-width="2" />
         </button>
         <input ref="imageInput" type="file" accept="image/*" multiple hidden @change="queueAttachments" />
@@ -446,13 +464,13 @@
 import { ref, computed, onMounted, onUnmounted, watch, nextTick, defineAsyncComponent } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { api } from '@/api/index';
-import { useChat } from '@/composables/use-chat';
+import { useChat, type Message } from '@/composables/use-chat';
 import { useAuthStore } from '@/stores/auth';
 import { useToast } from '@/composables/use-toast';
 import { groupAvatarStore } from '@/composables/use-group-avatar-cache';
 import {
   ChevronLeft as ChevronLeftIcon, Image as ImageIcon, Send as SendIcon, Loader2 as LoaderIcon, Reply as ReplyIcon, Paperclip as PaperclipIcon, CalendarClock as CalendarClockIcon, StickyNote as StickyNoteIcon, Sparkles as SparklesIcon, BookOpen as BookOpenIcon, Plus as PlusIcon,
-  X as XIcon, Copy as CopyIcon, Download as DownloadIcon, FileText as FileTextIcon, RotateCcw as RotateCcwIcon, Trash2 as Trash2Icon, Pin as PinIcon, PinOff as PinOffIcon, Forward as ForwardIcon, Search as SearchIcon, FolderOpen as FolderOpenIcon, Link as LinkIcon, MoreVertical as MoreVerticalIcon, Heart as HeartIcon, Smile as SmileIcon, ChevronUp as ChevronUpIcon, ChevronDown as ChevronDownIcon, User as UserIcon, Tag as TagIcon,
+  X as XIcon, Copy as CopyIcon, Download as DownloadIcon, FileText as FileTextIcon, RotateCcw as RotateCcwIcon, Trash2 as Trash2Icon, Pin as PinIcon, PinOff as PinOffIcon, Forward as ForwardIcon, Search as SearchIcon, FolderOpen as FolderOpenIcon, Link as LinkIcon, MoreVertical as MoreVerticalIcon, Heart as HeartIcon, Smile as SmileIcon, ChevronUp as ChevronUpIcon, ChevronDown as ChevronDownIcon, User as UserIcon, UserCheck as UserCheckIcon, Tag as TagIcon,
 } from 'lucide-vue-next';
 import MessageBubble from '@/components/chat/message-bubble.vue';
 import Avatar from '@/components/ui/Avatar.vue';
@@ -473,6 +491,7 @@ import { useForwardFriends, forwardFriendName } from '@/composables/use-forward-
 import { useConversationContent } from '@/composables/use-conversation-content';
 import { CONVERSATION_PRIVATE_MESSAGE } from '@/composables/use-conversation-privacy';
 import { getComposerEnterAction } from '@/components/chat/composer-keyboard';
+import { parseFriendAcceptedNotice } from '@/composables/zalo-system-notice';
 
 const route = useRoute();
 const router = useRouter();
@@ -481,15 +500,21 @@ const auth = useAuthStore();
 const {
   conversations, messages, selectedConv, loadingMsgs, sendingMsg, conversationPrivateBlocked,
   selectConversation, sendMessage, fetchMessages, fetchConversations, loadOlderMessages, loadMessageContext, getSocket, realtimeOffline,
+  addOptimisticMessages, reconcileOptimisticMessages, removeOptimisticMessages,
 } = useChat();
 
 const text = ref('');
 const keyboardOffset = ref(0);
-const sendError = ref<string | null>(null);
+type TextSendAttempt = { body: string; echoId: string; replyMessageId: string | null };
+const sendError = ref<TextSendAttempt | null>(null);
 const scroller = ref<HTMLElement | null>(null);
 const textarea = ref<HTMLTextAreaElement | null>(null);
 const imageInput = ref<HTMLInputElement | null>(null);
 const pendingFiles = ref<File[]>([]);
+const uploadingFiles = ref(false);
+const uploadProgress = ref(0);
+const uploadStatus = ref('Đang tải lên...');
+const attachmentEchoIds = new WeakMap<File, string>();
 const currentUserId = computed(() => auth.user?.id || undefined);
 const unseenCount = ref(0);
 const nearBottom = ref(true);
@@ -564,6 +589,12 @@ function onScroll() {
     void loadOlder();
   }
 }
+async function onMessageMediaLayout() {
+  if (!nearBottom.value) return;
+  await nextTick();
+  const el = scroller.value;
+  if (el) el.scrollTop = el.scrollHeight;
+}
 async function loadOlder() {
   const el = scroller.value;
   if (!el || loadingOlder.value || !hasOlderMessages.value) return;
@@ -588,6 +619,10 @@ function retryHistory() { historyError.value = false; void loadOlder(); }
 function jumpLatest() { unseenCount.value = 0; nearBottom.value = true; void scrollBottom(true); }
 function showDateDivider(index: number) { const current = messages.value[index]?.sentAt; const previous = messages.value[index - 1]?.sentAt; return !!current && (!previous || new Date(current).toDateString() !== new Date(previous).toDateString()); }
 function dateLabel(value?: string) { if (!value) return ''; const date = new Date(value); const now = new Date(); if (date.toDateString() === now.toDateString()) return 'Hôm nay'; const yesterday = new Date(now.getTime() - 86_400_000); if (date.toDateString() === yesterday.toDateString()) return 'Hôm qua'; return date.toLocaleDateString('vi-VN'); }
+function compactMessageTime(value?: string) {
+  if (!value) return '';
+  return new Date(value).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' });
+}
 
 function autoGrow() {
   const el = textarea.value;
@@ -596,35 +631,61 @@ function autoGrow() {
   el.style.height = Math.min(el.scrollHeight, 120) + 'px';
 }
 
-let lastSent = '';
-async function send() {
-  const body = text.value.trim();
-  if ((!body && !pendingFiles.value.length) || sendingMsg.value) return;
-  lastSent = body;
+function newClientEchoId(): string {
+  return crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+async function performSend(retryAttempt: TextSendAttempt | null = null) {
+  const body = retryAttempt?.body ?? text.value.trim();
+  if ((!body && !pendingFiles.value.length) || sendingMsg.value || uploadingFiles.value) return;
+  const textAttempt = body
+    ? retryAttempt ?? {
+        body,
+        echoId: newClientEchoId(),
+        replyMessageId: replyingTo.value?.id ?? null,
+      }
+    : null;
   text.value = '';
   saveDraft();
   sendError.value = null;
   autoGrow();
-  const replyMessageId = replyingTo.value?.id ?? null;
   const filesToSend = [...pendingFiles.value];
+  let textSent = false;
   try {
-    if (body) { await sendMessage(body, replyMessageId); clearReplyTo(); }
-    if (filesToSend.length) await sendPendingFiles(filesToSend);
-    for (const f of filesToSend) revokePreview(f);
-    pendingFiles.value = pendingFiles.value.filter((file) => !filesToSend.includes(file));
+    if (textAttempt) {
+      await sendMessage(textAttempt.body, textAttempt.replyMessageId, undefined, undefined, textAttempt.echoId);
+      textSent = true;
+      clearReplyTo();
+    }
+    const failedFiles = filesToSend.length ? await sendPendingFiles(filesToSend) : [];
+    const failedSet = new Set(failedFiles);
+    for (const file of filesToSend) {
+      if (!failedSet.has(file)) revokePreview(file);
+    }
+    pendingFiles.value = [
+      ...failedFiles,
+      ...pendingFiles.value.filter((file) => !filesToSend.includes(file)),
+    ];
     await scrollBottom(true);
   } catch {
-    sendError.value = lastSent;
-    text.value = lastSent; // trả chữ lại cho user, không mất công gõ
-    saveDraft();
+    // Nếu text đã gửi nhưng media lỗi, không đưa text trở lại ô soạn vì bấm
+    // thử lại sẽ gửi trùng. Các file lỗi vẫn còn nguyên trong hàng chờ.
+    if (!textSent && textAttempt) {
+      sendError.value = textAttempt;
+      text.value = textAttempt.body;
+      saveDraft();
+    }
   }
 }
+async function send() {
+  await performSend();
+}
 async function retry() {
-  const body = sendError.value;
-  if (!body) return;
+  const attempt = sendError.value;
+  if (!attempt) return;
   sendError.value = null;
-  text.value = body;
-  await send();
+  text.value = attempt.body;
+  await performSend(attempt);
 }
 
 function onComposerInput() {
@@ -1217,9 +1278,10 @@ async function submitForward() {
     const targets = [...new Set([...forwardTargetIds.value, ...friendConvIds])];
     if (!targets.length) { toast.error('Không mở được hội thoại đích'); return; }
 
-    await forwardMessage(convId.value, message.id, targets);
+    const result = await forwardMessage(convId.value, message.id, targets);
     showForward.value = false;
-    toast.push(`Đã chuyển tiếp đến ${targets.length} hội thoại`);
+    if (result.pendingConfirmation) toast.push('Zalo đang xác nhận một số tệp, không cần gửi lại');
+    else toast.push(`Đã chuyển tiếp đến ${result.forwarded} hội thoại`);
   } catch (error: any) {
     toast.error(error?.response?.data?.error || 'Chuyển tiếp thất bại');
   } finally { forwarding.value = false; }
@@ -1308,20 +1370,109 @@ async function onCopy() {
 async function onRecall() {
   const m = actionMsg.value; showActions.value = false;
   if (!m || !convId.value) return;
-  try { await undoMessage(convId.value, m.id); } catch (e: any) { toast.push(e?.response?.data?.error || 'Thu hồi thất bại'); }
+  try {
+    await undoMessage(convId.value, m.id);
+    await fetchMessages(convId.value);
+  } catch (e: any) { toast.push(e?.response?.data?.error || 'Thu hồi thất bại'); }
 }
 async function onDelete() {
   const m = actionMsg.value; showActions.value = false;
   if (!m || !convId.value) return;
-  try { await deleteMessage(convId.value, m.id); } catch (e: any) { toast.push(e?.response?.data?.error || 'Xóa thất bại'); }
+  try {
+    await deleteMessage(convId.value, m.id);
+    toast.push('Đã xóa tin nhắn ở phía bạn');
+    await fetchMessages(convId.value);
+  } catch (e: any) { toast.push(e?.response?.data?.error || 'Xóa thất bại'); }
 }
 
-async function sendPendingFiles(files: File[]) {
-  if (!convId.value || !files.length) return;
+async function sendPendingFiles(files: File[]): Promise<File[]> {
+  if (!convId.value || !files.length) return files;
+  const conversationId = convId.value;
+  const makeEchoId = () => crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const fileEchoIds = files.map((file) => {
+    const existing = attachmentEchoIds.get(file);
+    if (existing) return existing;
+    const created = makeEchoId();
+    attachmentEchoIds.set(file, created);
+    return created;
+  });
   const fd = new FormData();
   for (const file of files) fd.append('files', file, file.name);
-  await api.post(`/conversations/${convId.value}/attachments`, fd, { headers: { 'Content-Type': 'multipart/form-data' } });
-  await fetchMessages(convId.value, { limit: 50 });
+  const requestEchoId = makeEchoId();
+  fd.append('echoId', requestEchoId);
+  fd.append('echoIds', JSON.stringify(fileEchoIds));
+
+  const sentAt = new Date().toISOString();
+  const optimisticMessages: Message[] = files.map((file, index) => {
+    const contentType = file.type.startsWith('image/') ? 'image' : file.type.startsWith('video/') ? 'video' : 'file';
+    const href = contentType === 'file' ? '' : localMediaUrl(file);
+    const content = contentType === 'file'
+      ? JSON.stringify({ href: '', name: file.name, size: file.size, mime: file.type })
+      : JSON.stringify({ href, thumb: href, size: file.size });
+    return {
+      id: `pending:${fileEchoIds[index]}`,
+      content,
+      contentType,
+      senderType: 'self',
+      senderName: auth.user?.fullName || 'Staff',
+      senderUid: null,
+      sentAt,
+      isDeleted: false,
+      zaloMsgId: null,
+      zaloMsgIdNum: null,
+      albumKey: null,
+      albumIndex: null,
+      albumTotal: null,
+      reply: null,
+      reactions: [],
+      reactionDetails: [],
+      isPending: true,
+      clientEchoId: fileEchoIds[index],
+      echoId: fileEchoIds[index],
+      sentVia: 'user',
+      metadata: { sender: { kind: 'user_crm', name: auth.user?.fullName || 'Staff' } },
+    };
+  });
+  const temporaryIds = optimisticMessages.map((message) => message.id);
+  addOptimisticMessages(conversationId, optimisticMessages);
+  uploadingFiles.value = true;
+  uploadProgress.value = 0;
+  uploadStatus.value = 'Đang tải lên...';
+  try {
+    const response = await api.post(`/conversations/${conversationId}/attachments`, fd, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+        'X-Attachment-Echo-Id': requestEchoId,
+        'X-Attachment-Echo-Ids': JSON.stringify(fileEchoIds),
+        'X-Attachment-Count': String(files.length),
+      },
+      timeout: 120000,
+      onUploadProgress: (event) => {
+        if (event.total) uploadProgress.value = Math.min(100, Math.round((event.loaded / event.total) * 100));
+        uploadStatus.value = event.total && event.loaded >= event.total ? 'Đang gửi qua Zalo...' : 'Đang tải lên...';
+      },
+    });
+    const failedIndices = new Set<number>(
+      Array.isArray(response.data.failedIndices) ? response.data.failedIndices : [],
+    );
+    const successfulTemporaryIds = temporaryIds.filter((_, index) => !failedIndices.has(index));
+    const failedTemporaryIds = temporaryIds.filter((_, index) => failedIndices.has(index));
+    reconcileOptimisticMessages(conversationId, successfulTemporaryIds, response.data.messages ?? []);
+    removeOptimisticMessages(conversationId, failedTemporaryIds);
+    const failedFiles = files.filter((_, index) => failedIndices.has(index));
+    files.forEach((file) => {
+      if (!failedFiles.includes(file)) attachmentEchoIds.delete(file);
+    });
+    if (failedFiles.length) toast.push(`Đã gửi ${files.length - failedFiles.length}/${files.length} tệp. Chạm gửi để thử lại phần còn lỗi.`);
+    return failedFiles;
+  } catch (error) {
+    removeOptimisticMessages(conversationId, temporaryIds);
+    toast.push((error as any)?.response?.data?.error || 'Không gửi được tệp. Tệp vẫn được giữ để thử lại.');
+    return files;
+  } finally {
+    uploadingFiles.value = false;
+    uploadProgress.value = 0;
+  }
 }
 function queueAttachments(ev: Event) {
   const input = ev.target as HTMLInputElement;
@@ -1339,6 +1490,9 @@ const previewUrls = new Map<string, string>();
 function fileKey(f: File) { return `${f.name}:${f.size}:${f.lastModified}`; }
 function previewUrl(f: File): string | null {
   if (!f.type.startsWith('image/')) return null;
+  return localMediaUrl(f);
+}
+function localMediaUrl(f: File): string {
   const k = fileKey(f);
   let u = previewUrls.get(k);
   if (!u) { u = URL.createObjectURL(f); previewUrls.set(k, u); }
@@ -1488,6 +1642,24 @@ watch(convId, async (id) => { if (id) { hasOlderMessages.value = true; unseenCou
    nếu để 2px cho tất cả thì mắt không tách được ai đang nói. */
 .mch-row { position: relative; margin-bottom: 2px; border-radius: var(--m-r-md); contain: layout paint; }
 .mch-row.is-cluster-end { margin-bottom: 10px; }
+.mch-friend-notice {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  width: fit-content;
+  max-width: 92%;
+  margin: 7px auto 10px;
+  padding: 5px 10px;
+  border: 1px solid rgba(22, 163, 74, 0.14);
+  border-radius: var(--m-r-full);
+  background: rgba(22, 163, 74, 0.06);
+  color: #237a46;
+  font-size: var(--m-fs-xs);
+  line-height: 1.35;
+}
+.mch-friend-notice span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mch-friend-notice time { flex: 0 0 auto; color: var(--m-text-3); font-size: var(--m-fs-2xs); }
 /* Chat 1-1: tên người gửi trong bubble trùng với tên ở header → ẩn (nhóm vẫn hiện). */
 .mch-msgs.is-direct :deep(.sender-name) { display: none; }
 /* Vuốt-để-trả-lời: snap-back mượt khi thả (chỉ transition khi KHÔNG đang kéo). */
@@ -1679,6 +1851,10 @@ watch(convId, async (id) => { if (id) { hasOlderMessages.value = true; unseenCou
 .mch-media-picker-sheet :deep(.seg span) { min-height: 36px; display: inline-flex; align-items: center; }
 .mch-media-picker-sheet :deep(.mp-grid), .mch-media-picker-sheet :deep(.mp-list) { min-height: 0; flex: 1; overscroll-behavior: contain; touch-action: pan-y; -webkit-overflow-scrolling: touch; }
 .mch-attachment-queue { display: flex; width: 100%; max-width: 100%; gap: 6px; overflow-x: auto; overflow-y: hidden; overscroll-behavior-x: contain; touch-action: pan-x; padding: 2px 0; }
+.mch-upload-status { display: grid; grid-template-columns: 1fr auto; gap: 3px 8px; width: 100%; color: var(--m-text-2); font-size: var(--m-fs-xs); }
+.mch-upload-status b { color: var(--m-brand-strong); }
+.mch-upload-status i { grid-column: 1 / -1; height: 3px; overflow: hidden; border-radius: 2px; background: var(--m-surface-2); }
+.mch-upload-status i span { display: block; height: 100%; background: var(--m-brand); transition: width 120ms linear; }
 .mch-attachment-chip { display: inline-flex; align-items: center; gap: 4px; max-width: 180px; padding: 5px 8px; border-radius: 999px; background: var(--m-surface-2); color: var(--m-text-2); font-size: var(--m-fs-xs); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mch-attachment-chip button { border: 0; background: none; color: var(--m-text-3); padding: 0; }
 /* Thumbnail ảnh chờ gửi (thấy trước ảnh, có nút xoá góc). */

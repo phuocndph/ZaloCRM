@@ -14,23 +14,23 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { Server } from 'socket.io';
 import { Prisma } from '@prisma/client';
-import { extractZaloMsgId } from '../chat/chat-media-helpers.js';
+import { downloadMediaBatch, downloadMediaToTemp, extractZaloMsgId } from '../chat/chat-media-helpers.js';
 import { prisma } from '../../shared/database/prisma-client.js';
 import { authMiddleware } from '../auth/auth-middleware.js';
 import { requireGrant } from '../rbac/rbac-middleware.js';
 import { userHasGrant } from '../rbac/permission-group-service.js';
 import { zaloPool } from '../zalo/zalo-pool.js';
-import { zaloOps } from '../../shared/zalo-operations.js';
+import { isZaloDeliveryUncertain, zaloOps } from '../../shared/zalo-operations.js';
 import { zaloRateLimiter } from '../zalo/zalo-rate-limiter.js';
 import { registerAsset, bumpUsage, resolveSavedVisibility, generateWatermarkVariant, disableWatermark, logMediaUsage, normalizeTags, type MediaKind } from './media-service.js';
-import { downloadMediaToTemp } from '../chat/chat-media-helpers.js';
-import { createMediaMessage, getUserFullName } from '../chat/chat-helpers.js';
+import { acquireMediaOutbox, createMediaMessage, getUserFullName } from '../chat/chat-helpers.js';
 import { emitChatMessage } from '../../shared/realtime/emit-chat.js';
-import { generateThumbnail, sendNativeVideo } from '../../shared/video-processor.js';
-import { uploadBuffer, getObjectBuffer, keyFromPublicUrl, type UploadResult } from '../../shared/storage/minio-client.js';
+import { sendNativeVideo } from '../../shared/video-processor.js';
+import { getObjectBuffer, keyFromPublicUrl } from '../../shared/storage/minio-client.js';
 import { recordMessageStorageReferences, uploadResultFromBlob } from '../../shared/storage/storage-ledger.js';
 import { scanOrPass } from '../../shared/security/clamav-client.js';
 import { readFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
 import { logger } from '../../shared/utils/logger.js';
 
 const ALLOWED_IMAGE = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
@@ -590,7 +590,13 @@ export async function mediaRoutes(app: FastifyInstance) {
       const user = request.user!;
       const userId = (user as any).userId ?? user.id;
       const { id } = request.params as { id: string };
-      const body = request.body as { conversationId: string; caption?: string; addTags?: string[] };
+      const body = request.body as {
+        conversationId: string;
+        caption?: string;
+        addTags?: string[];
+        echoId?: string;
+        clientMessageId?: string;
+      };
       if (!body?.conversationId) return reply.status(400).send({ error: 'conversationId required' });
 
       // Asset phải thuộc org + (của mình HOẶC public HOẶC có view_all).
@@ -649,10 +655,67 @@ export async function mediaRoutes(app: FastifyInstance) {
       const io = (app as any).io as Server;
       const userFullName = await getUserFullName(user.id);
       const caption = body.caption ?? '';
+      const clientEchoId = String(body.echoId || body.clientMessageId || '').trim() || randomUUID();
+      const pendingContent = asset.kind === 'image'
+        ? JSON.stringify({ href: blob.publicUrl, thumb: blob.publicUrl, size: blob.sizeBytes, title: caption })
+        : asset.kind === 'video'
+          ? JSON.stringify({
+              href: blob.publicUrl,
+              thumb: asset.thumbnailUrl ?? blob.publicUrl,
+              thumbUrl: asset.thumbnailUrl ?? blob.publicUrl,
+              thumbnail: asset.thumbnailUrl ?? blob.publicUrl,
+              size: blob.sizeBytes,
+              title: caption,
+            })
+          : JSON.stringify({ href: blob.publicUrl, name: asset.name, size: blob.sizeBytes, mime: blob.mimeType, title: caption });
+      const senderMetadata = {
+        sender: { kind: 'user_crm', name: userFullName },
+        sendStatus: 'sending',
+        outboundAttachment: { status: 'submitting', source: 'media_library' },
+      };
+      const acquired = await acquireMediaOutbox({
+        conversationId: conversation.id,
+        zaloAccount: conversation.zaloAccount,
+        repliedByUserId: user.id,
+        zaloMsgId: '',
+        contentType: asset.kind as 'image' | 'video' | 'file',
+        content: pendingContent,
+        metadata: senderMetadata,
+        sentVia: 'user',
+        clientEchoId,
+      });
+      if (acquired.state !== 'acquired') {
+        const pendingConfirmation = acquired.state === 'in_progress' || acquired.state === 'uncertain';
+        return reply.status(pendingConfirmation ? 202 : 200).send({
+          message: acquired.message,
+          deduplicated: true,
+          pendingConfirmation,
+        });
+      }
 
-      // GĐ1: tải object kho về temp → gửi từ local path (như chat hiện tại).
-      // (GĐ3 sẽ tối ưu forward/cache per-nick — chưa làm ở GĐ1.)
+      await Promise.all([
+        emitChatMessage({
+          io,
+          orgId: user.orgId,
+          accountId: conversation.zaloAccountId,
+          conversationId: conversation.id,
+          message: acquired.message,
+          privacyMode: conversation.zaloAccount.privacyMode,
+          ownerUserId: conversation.zaloAccount.ownerUserId,
+          isPrivate: conversation.isPrivate,
+          privateOwnerUserId: conversation.privateOwnerUserId,
+        }),
+        prisma.conversation.update({
+          where: { id: conversation.id },
+          data: { lastMessageAt: new Date(), isReplied: true, unreadCount: 0 },
+        }),
+      ]).catch((err) => logger.warn('[media] could not publish library outbox immediately', err));
+
+      // Stream object kho về temp để zca-js nhận local path mà không giữ cả file trong RAM.
       let tmp: { path: string; cleanup: () => Promise<void> } | null = null;
+      let attemptedDelivery = false;
+      let deliveryAccepted = false;
+      let zaloMsgId = '';
       try {
         // ẢNH/VIDEO: KHÔNG truyền filename (name "Lưu từ chat" không đuôi → temp mất đuôi →
         // Zalo coi ảnh thành FILE). Để downloadMediaToTemp lấy đuôi .webp/.mp4 từ URL.
@@ -660,57 +723,53 @@ export async function mediaRoutes(app: FastifyInstance) {
         // nhìn thấy từ basename temp; thiếu đuôi → "file lỗi". (anh báo 2026-06-12.)
         const sendName = asset.kind === 'file' ? buildSendFileName(asset, blob) : undefined;
         tmp = await downloadMediaToTemp({ url: blob.publicUrl, filename: sendName }, asset.kind);
-        zaloRateLimiter.recordSend(conversation.zaloAccountId);
 
         // Guard nick connected ở trên. Gửi qua zaloOps (check status + reconnect).
-        let zaloMsgId = '';
-        let content = '';
-        let generatedThumbUpload: UploadResult | null = null;
+        let content = pendingContent;
         if (asset.kind === 'image') {
           // ẢNH: sendImage (đã fix có msg) → temp CÓ đuôi .webp → Zalo nhận ẢNH INLINE.
+          attemptedDelivery = true;
           const sendResult: any = await zaloOps.sendImage(
             conversation.zaloAccountId, threadId, threadType as 0 | 1, [tmp.path], io, caption,
+            { maxAttempts: 1 },
           );
+          deliveryAccepted = true;
           zaloMsgId = extractZaloMsgId(sendResult);
-          content = JSON.stringify({ href: blob.publicUrl, thumb: blob.publicUrl, size: blob.sizeBytes });
         } else if (asset.kind === 'video') {
           // VIDEO: gửi NATIVE (player + thumbnail + duration) như chat thường — KHÔNG sendFile
           // (sendFile làm video thành "file .mp4 tải về", mất player). Sinh thumbnail bằng ffmpeg,
           // mirror lên MinIO để lưu vào content. Native lỗi → fallback sendFile (vẫn gửi được).
           // (anh chốt 2026-06-12: video gửi từ kho phải đẹp như chat.)
           let thumbUrl: string = asset.thumbnailUrl ?? blob.publicUrl;
-          let thumbPath: string | undefined;
-          try {
-            const gen = await generateThumbnail(tmp.path);
-            thumbPath = gen.path;
-            const thumbBuf = await readFile(gen.path);
-            const up = await uploadBuffer(thumbBuf, 'image/jpeg', `${asset.name || 'video'}-thumb.jpg`);
-            thumbUrl = up.url;
-          } catch (e) {
-            logger.warn('[media] video thumbnail gen failed (gửi từ kho):', (e as Error)?.message ?? e);
-          }
           try {
             if (!instance?.api) throw new Error('nick api null');
+            attemptedDelivery = true;
             const sendResult: any = await sendNativeVideo({
-              api: instance.api as any, accountId: conversation.zaloAccountId, videoPath: tmp.path, thumbnailPath: thumbPath,
-              threadId, threadType: threadType as 0 | 1, message: caption,
+              api: instance.api as any, accountId: conversation.zaloAccountId, videoPath: tmp.path,
+              threadId, threadType: threadType as 0 | 1, message: caption, maxAttempts: 1,
             });
+            deliveryAccepted = true;
             zaloMsgId = extractZaloMsgId(sendResult);
           } catch (e) {
+            if (isZaloDeliveryUncertain(e)) throw e;
             logger.warn('[media] sendNativeVideo lỗi → fallback sendFile:', (e as Error)?.message ?? e);
             const sendResult: any = await zaloOps.sendFile(
               conversation.zaloAccountId, threadId, threadType as 0 | 1, [tmp.path], io, caption,
+              { maxAttempts: 1 },
             );
+            deliveryAccepted = true;
             zaloMsgId = extractZaloMsgId(sendResult);
           }
-          content = JSON.stringify({ href: blob.publicUrl, thumb: thumbUrl, thumbUrl, thumbnail: thumbUrl, size: blob.sizeBytes });
+          content = JSON.stringify({ href: blob.publicUrl, thumb: thumbUrl, thumbUrl, thumbnail: thumbUrl, size: blob.sizeBytes, title: caption });
         } else {
           // FILE (pdf/excel/doc/zip): sendFile (zca-js đọc local path → đính kèm file).
+          attemptedDelivery = true;
           const sendResult: any = await zaloOps.sendFile(
             conversation.zaloAccountId, threadId, threadType as 0 | 1, [tmp.path], io, caption,
+            { maxAttempts: 1 },
           );
+          deliveryAccepted = true;
           zaloMsgId = extractZaloMsgId(sendResult);
-          content = JSON.stringify({ href: blob.publicUrl, name: asset.name, size: blob.sizeBytes, mime: blob.mimeType });
         }
 
         const msg = await createMediaMessage({
@@ -720,38 +779,13 @@ export async function mediaRoutes(app: FastifyInstance) {
           zaloMsgId,
           contentType: asset.kind as 'image' | 'video' | 'file',
           content,
-          metadata: { sender: { kind: 'user_crm', name: userFullName } },
+          metadata: {
+            sender: { kind: 'user_crm', name: userFullName },
+            sendStatus: 'sent',
+            outboundAttachment: { status: 'mirrored', source: 'media_library' },
+          },
           sentVia: 'user',
-        });
-
-        await recordMessageStorageReferences({
-          orgId: user.orgId,
-          zaloAccountId: conversation.zaloAccountId,
-          conversationId: conversation.id,
-          messageId: msg.id,
-          createdAt: msg.sentAt,
-          uploads: [
-            { upload: uploadResultFromBlob(blob), purpose: 'library-primary', storageDriver: blob.storageDriver === 'r2' ? 'r2' : 'local' },
-            ...(generatedThumbUpload ? [{ upload: generatedThumbUpload, purpose: 'thumbnail' }] : []),
-          ],
-        }).catch((err) => logger.error('[storage-ledger] media library send reference failed', { messageId: msg.id, err }));
-        await prisma.conversation.update({
-          where: { id: conversation.id },
-          data: { lastMessageAt: new Date(), isReplied: true, unreadCount: 0 },
-        });
-        await bumpUsage(asset.id);
-        // Gắn tag/dự án LÚC GỬI (anh chốt 2026-06-15): sale bấm chip gợi ý → tag dính vào ảnh,
-        // bữa sau tìm lại dễ. Ghi tag TỰ DO (ai gửi cũng thêm được, kể cả ảnh công khai của
-        // sale khác — Anh chốt ưu tiên tag phong phú cho ảnh dùng chung, KHÁC scope owner của
-        // PATCH /:id và /bulk; CHỈ áp cho addTags lúc gửi, KHÔNG nới quyền sửa tên/visibility).
-        if (Array.isArray(body.addTags) && body.addTags.length) {
-          const merged = normalizeTags([...(asset.tagIds ?? []), ...body.addTags]);
-          await prisma.mediaAsset.update({ where: { id: asset.id }, data: { tagIds: merged } });
-        }
-        await logMediaUsage({
-          orgId: user.orgId, mediaAssetId: asset.id, eventType: 'sent_chat',
-          userId, conversationId: conversation.id,
-          meta: { watermarked: blob.variantType === 'watermarked', taggedOnSend: (body.addTags?.length ?? 0) > 0 },
+          clientEchoId,
         });
 
         await emitChatMessage({
@@ -765,10 +799,101 @@ export async function mediaRoutes(app: FastifyInstance) {
           isPrivate: conversation.isPrivate,
           privateOwnerUserId: conversation.privateOwnerUserId,
         });
+
+        // Các tác vụ thống kê không ảnh hưởng việc khách nhận tin. Chạy hậu kỳ để nút
+        // gửi được nhả ngay sau khi Zalo và outbox đã xác nhận.
+        void Promise.all([
+          recordMessageStorageReferences({
+            orgId: user.orgId,
+            zaloAccountId: conversation.zaloAccountId,
+            conversationId: conversation.id,
+            messageId: msg.id,
+            createdAt: msg.sentAt,
+            uploads: [{
+              upload: uploadResultFromBlob(blob),
+              purpose: 'library-primary',
+              storageDriver: blob.storageDriver === 'r2' ? 'r2' : 'local',
+            }],
+          }),
+          bumpUsage(asset.id),
+          Array.isArray(body.addTags) && body.addTags.length
+            ? prisma.mediaAsset.update({
+                where: { id: asset.id },
+                data: { tagIds: normalizeTags([...(asset.tagIds ?? []), ...body.addTags]) },
+              })
+            : Promise.resolve(),
+          logMediaUsage({
+            orgId: user.orgId,
+            mediaAssetId: asset.id,
+            eventType: 'sent_chat',
+            userId,
+            conversationId: conversation.id,
+            meta: { watermarked: blob.variantType === 'watermarked', taggedOnSend: (body.addTags?.length ?? 0) > 0 },
+          }),
+        ]).catch((err) => logger.error('[media] send post-processing failed', { messageId: msg.id, err }));
         return { message: msg };
       } catch (err: any) {
         logger.error('[media] send error:', err);
-        return reply.status(500).send({ error: err?.message ?? 'send failed' });
+        const pendingConfirmation = deliveryAccepted
+          || (attemptedDelivery && isZaloDeliveryUncertain(err));
+        const current = await prisma.message.findUnique({
+          where: {
+            conversationId_clientEchoId: {
+              conversationId: conversation.id,
+              clientEchoId,
+            },
+          },
+        }).catch(() => acquired.message);
+        const currentMetadata = current?.metadata && typeof current.metadata === 'object' && !Array.isArray(current.metadata)
+          ? current.metadata as Record<string, unknown>
+          : {};
+        const settled = current
+          ? await prisma.message.update({
+              where: { id: current.id },
+              data: {
+                ...(deliveryAccepted && zaloMsgId
+                  ? {
+                      zaloMsgId,
+                      zaloMsgIdNum: /^\d+$/.test(zaloMsgId) ? BigInt(zaloMsgId) : null,
+                    }
+                  : {}),
+                deliveryState: deliveryAccepted ? 'accepted' : pendingConfirmation ? 'uncertain' : 'failed',
+                deliveryLeaseId: null,
+                deliveryLeaseUntil: null,
+                metadata: {
+                  ...currentMetadata,
+                  sendStatus: pendingConfirmation ? 'sending' : 'failed',
+                  outboundAttachment: {
+                    status: deliveryAccepted ? 'accepted_pending_mirror' : pendingConfirmation ? 'uncertain' : 'failed',
+                    source: 'media_library',
+                  },
+                  ...(pendingConfirmation ? {} : { failReason: err?.message ?? 'media send failed' }),
+                },
+              },
+            }).catch(() => current)
+          : acquired.message;
+        await emitChatMessage({
+          io,
+          orgId: user.orgId,
+          accountId: conversation.zaloAccountId,
+          conversationId: conversation.id,
+          message: settled,
+          privacyMode: conversation.zaloAccount.privacyMode,
+          ownerUserId: conversation.zaloAccount.ownerUserId,
+          isPrivate: conversation.isPrivate,
+          privateOwnerUserId: conversation.privateOwnerUserId,
+        }).catch(() => {});
+        if (pendingConfirmation) {
+          return reply.status(202).send({
+            message: settled,
+            pendingConfirmation: true,
+            code: 'MEDIA_SEND_IN_PROGRESS',
+          });
+        }
+        const statusCode = Number.isInteger(err?.statusCode) && err.statusCode >= 400 && err.statusCode < 600
+          ? err.statusCode
+          : 500;
+        return reply.status(statusCode).send({ error: err?.message ?? 'send failed' });
       } finally {
         await tmp?.cleanup().catch(() => {});
       }
@@ -1393,20 +1518,27 @@ export async function mediaRoutes(app: FastifyInstance) {
       const io = (app as any).io as Server;
       // (Bỏ placeholder album → không cần userFullName/createMediaMessage ở đây nữa.)
 
-      // download tất cả ảnh về temp → gửi 1 lần (sendFile nhiều path).
+      const sendable = assets
+        .map((asset) => ({ asset, blob: pickBlob(asset) }))
+        .filter((item): item is { asset: typeof assets[number]; blob: NonNullable<ReturnType<typeof pickBlob>> } => !!item.blob);
+      if (sendable.length === 0) return reply.status(400).send({ error: 'Album không còn dữ liệu ảnh để gửi' });
+
+      // Tải song song có giới hạn. Storage nội bộ không cần chờ tuần tự từng ảnh.
       const tmps: Array<{ path: string; cleanup: () => Promise<void> }> = [];
       try {
-        for (const a of assets) {
-          const blob = pickBlob(a);
-          if (!blob) continue;
-          // KHÔNG truyền filename (name mất đuôi → file lạ). Để lấy đuôi .webp từ URL.
-          const tmp = await downloadMediaToTemp({ url: blob.publicUrl }, 'image');
-          tmps.push(tmp);
-        }
-        zaloRateLimiter.recordSend(conversation.zaloAccountId);
+        tmps.push(...await downloadMediaBatch(sendable.map(({ blob }) => ({
+          media: { url: blob.publicUrl },
+          contentType: 'image',
+        }))));
         // sendImage (KHÔNG sendFile) → album ảnh inline, không thành file.
         const sendResult: any = await zaloOps.sendImage(
-          conversation.zaloAccountId, threadId, threadType as 0 | 1, tmps.map((t) => t.path), io, body.caption ?? '',
+          conversation.zaloAccountId,
+          threadId,
+          threadType as 0 | 1,
+          tmps.map((t) => t.path),
+          io,
+          body.caption ?? '',
+          { maxAttempts: 1 },
         );
         // FIX 2026-06-12 (anh chốt — bug album hiển thị 8+1 rời realtime):
         // KHÔNG tạo placeholder 1-dòng cho album. Placeholder cũ (albumKey=null) hiện RỜI
@@ -1415,19 +1547,36 @@ export async function mediaRoutes(app: FastifyInstance) {
         // KHÔNG bao giờ lệch. Tradeoff: sale chờ ~1-2s thấy album (chấp nhận được).
         // KHÔNG bumpUsage/log ở đây nữa — chuyển sang khi echo về (tránh đếm khi gửi lỗi).
         // Vẫn đếm usage NGAY vì gửi đã thành công (sendImage không throw):
-        await prisma.conversation.update({ where: { id: conversation.id }, data: { lastMessageAt: new Date(), isReplied: true, unreadCount: 0 } });
-        for (const a of assets) {
-          await bumpUsage(a.id);
-          await logMediaUsage({
-            orgId: user.orgId, mediaAssetId: a.id, eventType: 'sent_album',
-            userId, conversationId: conversation.id, meta: { albumCount: assets.length },
-          });
-        }
+        void Promise.all([
+          prisma.conversation.update({
+            where: { id: conversation.id },
+            data: { lastMessageAt: new Date(), isReplied: true, unreadCount: 0 },
+          }),
+          ...sendable.flatMap(({ asset }) => [
+            bumpUsage(asset.id),
+            logMediaUsage({
+              orgId: user.orgId,
+              mediaAssetId: asset.id,
+              eventType: 'sent_album',
+              userId,
+              conversationId: conversation.id,
+              meta: { albumCount: sendable.length },
+            }),
+          ]),
+        ]).catch((err) => logger.error('[media] album post-processing failed', err));
         const zaloMsgId = extractZaloMsgId(sendResult);
-        return { sent: assets.length, zaloMsgId, viaEcho: true };
+        return { sent: sendable.length, zaloMsgId, viaEcho: true };
       } catch (err: any) {
         logger.error('[media] album send error:', err);
-        // Lỗi mạng tạm thời khi upload nhiều ảnh (đã retry 3 lần vẫn fail) → báo rõ cho sale.
+        if (isZaloDeliveryUncertain(err)) {
+          return reply.status(202).send({
+            sent: sendable.length,
+            pendingConfirmation: true,
+            code: 'ALBUM_SEND_IN_PROGRESS',
+            message: 'Zalo đang xác nhận album. Không cần bấm gửi lại.',
+          });
+        }
+        // Lỗi xác định (Zalo từ chối thật) mới báo thất bại; lỗi mạng mơ hồ đã trả 202 ở trên.
         const raw = String(err?.message ?? '');
         const isNet = /fetch failed|other side closed|socket|econnreset|und_err/i.test(raw);
         return reply.status(isNet ? 503 : 500).send({

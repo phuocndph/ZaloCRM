@@ -941,6 +941,7 @@ export function attachZaloListener(ctx: ListenerContext): void {
         messageId,
         zaloMsgId: zaloMsgIdStr,
         conversationId: recalled?.conversationId,
+        mode: 'recalled',
       };
       const fullPayload = {
         ...basePayload,
@@ -979,7 +980,7 @@ export function attachZaloListener(ctx: ListenerContext): void {
     }
     // Fallback emit bằng zaloMsgId nếu không update được row nào (FE tự match ở cache).
     if (updatedIds.length === 0 && zaloMsgIdStr) {
-      await emitOrg('chat:deleted', { accountId, zaloMsgId: zaloMsgIdStr });
+      await emitOrg('chat:deleted', { accountId, zaloMsgId: zaloMsgIdStr, mode: 'recalled' });
     }
   });
 

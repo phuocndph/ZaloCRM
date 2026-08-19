@@ -211,8 +211,9 @@ async function doSend() {
   sending.value = true;
   try {
     // Tag đã lưu sẵn ở trên (không cần addTags lúc gửi nữa) → chỉ gửi.
-    await sendMediaToConversation(props.asset.id, props.conversationId);
-    toast.success(`Đã gửi "${local.value.name}"`);
+    const res = await sendMediaToConversation(props.asset.id, props.conversationId);
+    if (res.pendingConfirmation) toast.warning('Zalo đang xác nhận, không cần gửi lại');
+    else toast.success(`Đã gửi "${local.value.name}"`);
     emit('sent');
   } catch (e: any) {
     toast.warning(e?.response?.data?.error || 'Gửi thất bại');

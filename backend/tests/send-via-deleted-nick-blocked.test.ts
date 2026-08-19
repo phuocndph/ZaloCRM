@@ -45,9 +45,13 @@ vi.mock('../src/modules/contacts/contact-aggregate.js', () => ({
 }));
 vi.mock('../src/modules/ai/ai-virtual-chat-service.js', () => ({ triggerVirtualChatAiReply: vi.fn() }));
 vi.mock('../src/modules/contacts/contact-scope.js', () => ({ attachContactCollaboratorByUser: vi.fn() }));
-vi.mock('../src/modules/chat/chat-helpers.js', () => ({ getUserFullName: vi.fn().mockResolvedValue('Sale A') }));
+vi.mock('../src/modules/chat/chat-helpers.js', async (importOriginal) => ({
+  ...await importOriginal<typeof import('../src/modules/chat/chat-helpers.js')>(),
+  getUserFullName: vi.fn().mockResolvedValue('Sale A'),
+}));
 vi.mock('../src/shared/zalo-operations.js', () => ({
   zaloOps: { sendMessage: sendMessageMock },
+  isZaloDeliveryUncertain: vi.fn().mockReturnValue(false),
   ZaloOpError: class ZaloOpError extends Error {
     code = 'API_ERROR';
     statusCode = 500;
@@ -94,6 +98,12 @@ beforeEach(() => {
   vi.clearAllMocks();
   prismaMock.message.findUnique.mockResolvedValue(null);
   prismaMock.message.create.mockImplementation(async ({ data }: any) => ({ ...data, repliedBy: null }));
+  prismaMock.message.update.mockImplementation(async ({ where, data }: any) => ({
+    id: where.id,
+    sentAt: new Date(),
+    ...data,
+    repliedBy: null,
+  }));
   prismaMock.conversation.update.mockResolvedValue({});
 });
 

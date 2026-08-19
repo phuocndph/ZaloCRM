@@ -51,7 +51,7 @@ export function useChatOperations() {
 
   async function deleteMessage(convId: string, msgId: string): Promise<void> {
     try {
-      await api.delete(`/conversations/${convId}/messages/${msgId}`);
+      await api.delete(`/conversations/${convId}/messages/${msgId}`, { data: { onlyMe: true } });
     } catch (err) {
       console.error('Failed to delete message:', err);
       throw err;
@@ -76,12 +76,17 @@ export function useChatOperations() {
     }
   }
 
-  async function forwardMessage(convId: string, msgId: string, targetIds: string[]): Promise<void> {
+  async function forwardMessage(
+    convId: string,
+    msgId: string,
+    targetIds: string[],
+  ): Promise<{ forwarded: number; failed: number; pendingConfirmation?: number }> {
     try {
-      await api.post(`/conversations/${convId}/forward`, {
+      const { data } = await api.post(`/conversations/${convId}/forward`, {
         msgId,
         targetConversationIds: targetIds,
       });
+      return data;
     } catch (err) {
       console.error('Failed to forward message:', err);
       throw err;

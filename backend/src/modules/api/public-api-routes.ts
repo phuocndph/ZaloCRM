@@ -189,7 +189,7 @@ export async function publicApiRoutes(app: FastifyInstance): Promise<void> {
       }
 
       const messages = await prisma.message.findMany({
-        where: { conversationId: id, isDeleted: false },
+        where: { conversationId: id, isDeleted: false, hiddenAt: null },
         orderBy: { sentAt: 'desc' },
         take: Math.min(parseInt(limit) || 50, 200),
         select: {

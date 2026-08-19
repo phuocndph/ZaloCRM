@@ -220,9 +220,10 @@ async function confirmSend() {
   try {
     // Gửi qua đúng conversation → đúng nick (externalThreadId buộc nick).
     const addTags = [...pickedTags.value];
-    await sendMediaToConversation(props.assetId, c.id, undefined, addTags.length ? addTags : undefined);
+    const res = await sendMediaToConversation(props.assetId, c.id, undefined, addTags.length ? addTags : undefined);
     const nick = c.zaloAccount?.displayName ? ` (nick ${c.zaloAccount.displayName})` : '';
-    toast.success(`Đã gửi cho ${c.contact?.displayName || 'khách'}${nick}`);
+    if (res.pendingConfirmation) toast.warning('Zalo đang xác nhận, không cần gửi lại');
+    else toast.success(`Đã gửi cho ${c.contact?.displayName || 'khách'}${nick}`);
     emit('sent');
   } catch (e: any) {
     toast.warning(e?.response?.data?.error || 'Gửi thất bại');

@@ -100,6 +100,23 @@ describe('video-processor: parseVideoProbeOutput', () => {
   });
 });
 
+describe('Zalo delivery error classification', () => {
+  it('allows fallback for a deterministic native-video rejection', async () => {
+    const { isDeterministicZaloRejection, isZaloDeliveryUncertain } = await import('../src/shared/zalo-operations.js');
+    const rejected = Object.assign(new Error('Tham số không hợp lệ'), { code: 113 });
+
+    expect(isDeterministicZaloRejection(rejected)).toBe(true);
+    expect(isZaloDeliveryUncertain(rejected)).toBe(false);
+  });
+
+  it('blocks replay when the native-video response is ambiguous', async () => {
+    const { isZaloDeliveryUncertain, ZaloDeliveryUncertainError } = await import('../src/shared/zalo-operations.js');
+    const uncertain = new ZaloDeliveryUncertainError('VIDEO_SEND_UNCERTAIN: socket timeout');
+
+    expect(isZaloDeliveryUncertain(uncertain)).toBe(true);
+  });
+});
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // voice-sender.ts unit tests
 // ═══════════════════════════════════════════════════════════════════════════════

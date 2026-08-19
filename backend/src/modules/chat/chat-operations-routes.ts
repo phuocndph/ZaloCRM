@@ -10,7 +10,7 @@ import type { Server } from 'socket.io';
 import { prisma } from '../../shared/database/prisma-client.js';
 import { authMiddleware } from '../auth/auth-middleware.js';
 import { requireZaloAccess } from '../zalo/zalo-access-middleware.js';
-import { zaloOps, ZaloOpError } from '../../shared/zalo-operations.js';
+import { isZaloDeliveryUncertain, zaloOps, ZaloOpError } from '../../shared/zalo-operations.js';
 import { zaloPool } from '../zalo/zalo-pool.js';
 import { eventBuffer } from '../../shared/event-buffer.js';
 import { logger } from '../../shared/utils/logger.js';
@@ -18,7 +18,7 @@ import { sendNativeVideo } from '../../shared/video-processor.js';
 import { applyContactAggregateFromMessage, applyContactInteraction, applyFriendAggregate } from '../contacts/contact-aggregate.js';
 import { markExpected as markReactionEchoExpected } from './reaction-echo-cache.js';
 import { getUserFullName } from './chat-helpers.js';
-import { downloadMediaToTemp, extractZaloMsgId } from './chat-media-helpers.js';
+import { downloadMediaBatch, extractZaloMsgId } from './chat-media-helpers.js';
 import { getSocketAuth } from '../../shared/realtime/socket-auth.js';
 import { setViewing, clearViewing } from '../push/presence.js';
 
@@ -33,6 +33,8 @@ interface ResolvedMessageRefs {
   contentType: string;
   sentAt: Date;
   albumKey: string | null;       // ảnh gửi theo cụm (Zalo group_layout_id) — forward phải gửi cả cụm
+  isDeleted: boolean;
+  hiddenAt: Date | null;
 }
 
 async function resolveMessageRefs(conversationId: string, messageId: string, userOrgId: string): Promise<ResolvedMessageRefs | null> {
@@ -45,6 +47,7 @@ async function resolveMessageRefs(conversationId: string, messageId: string, use
     select: {
       id: true, zaloMsgId: true, zaloCliMsgId: true, senderUid: true, senderType: true,
       repliedByUserId: true, content: true, contentType: true, sentAt: true, albumKey: true,
+      isDeleted: true, hiddenAt: true,
     },
   });
 
@@ -60,6 +63,8 @@ async function resolveMessageRefs(conversationId: string, messageId: string, use
     contentType: message.contentType,
     sentAt: message.sentAt,
     albumKey: message.albumKey,
+    isDeleted: message.isDeleted,
+    hiddenAt: message.hiddenAt,
   };
 }
 
@@ -332,24 +337,35 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
   app.delete('/api/v1/conversations/:id/messages/:msgId', chatAccess, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = request.user!;
     const { id, msgId } = request.params as { id: string; msgId: string };
-    const { onlyMe = false } = (request.body ?? {}) as { onlyMe?: boolean };
+    // "Xoa" la xoa o phia tai khoan/ZCRM. Thu hoi cho ca hai phia co route /undo rieng.
+    const { onlyMe = true } = (request.body ?? {}) as { onlyMe?: boolean };
 
     const conv = await getConversation(id, user.orgId, reply, user.id);
     if (!conv) return;
 
     const refs = await resolveMessageRefs(id, msgId, user.orgId);
     if (!refs) return reply.status(404).send({ error: 'Message not found' });
+    if (onlyMe && refs.hiddenAt) return { success: true, deduplicated: true };
 
     try {
       const threadType = conv.threadType === 'group' ? 1 : 0;
       await zaloOps.deleteMessage(conv.zaloAccountId, refs.zaloMsgId, refs.cliMsgId ?? refs.zaloMsgId, refs.ownerId, conv.externalThreadId || '', threadType, onlyMe);
 
-      if (!onlyMe) {
-        await prisma.message.update({ where: { id: refs.messageId }, data: { isDeleted: true, deletedAt: new Date() } });
-      }
+      const now = new Date();
+      await prisma.message.update({
+        where: { id: refs.messageId },
+        data: onlyMe
+          ? { hiddenAt: now }
+          : { isDeleted: true, deletedAt: now },
+      });
 
       const io = (app as any).io as Server;
-      io?.emit('chat:deleted', { conversationId: id, messageId: refs.messageId, zaloMsgId: refs.zaloMsgId });
+      io?.emit('chat:deleted', {
+        conversationId: id,
+        messageId: refs.messageId,
+        zaloMsgId: refs.zaloMsgId,
+        mode: onlyMe ? 'local_delete' : 'recalled',
+      });
       return { success: true };
     } catch (err) { return handleError(err, reply); }
   });
@@ -364,6 +380,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
 
     const refs = await resolveMessageRefs(id, msgId, user.orgId);
     if (!refs) return reply.status(404).send({ error: 'Message not found' });
+    if (refs.isDeleted) return { success: true, deduplicated: true };
 
     try {
       // 2026-05-21 ownership + cliMsgId checks:
@@ -384,7 +401,12 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
       await prisma.message.update({ where: { id: refs.messageId }, data: { isDeleted: true, deletedAt: new Date() } });
 
       const io = (app as any).io as Server;
-      io?.emit('chat:deleted', { conversationId: id, messageId: refs.messageId, zaloMsgId: refs.zaloMsgId });
+      io?.emit('chat:deleted', {
+        conversationId: id,
+        messageId: refs.messageId,
+        zaloMsgId: refs.zaloMsgId,
+        mode: 'recalled',
+      });
       return { success: true };
     } catch (err) { return handleError(err, reply); }
   });
@@ -501,6 +523,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
       type FwdResp = { success?: unknown[]; fail?: unknown[] };
       let succeeded = 0;
       let failed = 0;
+      let pendingConfirmation = 0;
       const io = (app as any).io as Server;
 
       if (['text', 'rich'].includes(refs.contentType)) {
@@ -526,7 +549,14 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
         const forwardText = async (threads: string[], type: 0 | 1) => {
           if (!threads.length) return;
           try {
-            const res = (await (zaloOps.forwardMessage as any)(conv.zaloAccountId, textToForward, threads, type, reference)) as FwdResp;
+            const res = (await (zaloOps.forwardMessage as any)(
+              conv.zaloAccountId,
+              textToForward,
+              threads,
+              type,
+              reference,
+              { maxAttempts: 1 },
+            )) as FwdResp;
             const okCount = Array.isArray(res?.success) ? res.success.length : undefined;
             const failCount = Array.isArray(res?.fail) ? res.fail.length : 0;
             if (okCount === undefined && failCount === 0) {
@@ -540,7 +570,8 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
             failed += failCount;
             if (failCount > 0) logger.warn('[chat-ops] forward text: một số đích thất bại', { fail: res?.fail });
           } catch (err) {
-            failed += threads.length;
+            if (isZaloDeliveryUncertain(err)) pendingConfirmation += threads.length;
+            else failed += threads.length;
             logger.error('[chat-ops] forward text thất bại:', { type, threads: threads.length, err: (err as Error).message });
           }
         };
@@ -568,9 +599,9 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
 
         const downloads: Array<{ path: string; cleanup: () => Promise<void> }> = [];
         try {
-          for (const entry of resolved) {
-            downloads.push(await downloadMediaToTemp(entry.media, entry.item.contentType));
-          }
+          downloads.push(...await downloadMediaBatch(
+            resolved.map((entry) => ({ media: entry.media, contentType: entry.item.contentType })),
+          ));
           const paths = downloads.map((d) => d.path);
           const isAlbum = paths.length > 1;
 
@@ -582,7 +613,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
             let sendResult: unknown;
             try {
               if (isAlbum) {
-                sendResult = await zaloOps.sendFile(targetAccountId, threadId, threadType, paths, io);
+                sendResult = await zaloOps.sendFile(targetAccountId, threadId, threadType, paths, io, '', { maxAttempts: 1 });
               } else if (refs.contentType === 'video' && instance?.api) {
                 try {
                   sendResult = await sendNativeVideo({
@@ -591,21 +622,24 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
                     threadId,
                     threadType,
                     videoPath: paths[0],
+                    maxAttempts: 1,
                   });
                 } catch (err) {
+                  if (isZaloDeliveryUncertain(err)) throw err;
                   logger.warn('[chat-ops] native forward video failed, falling back to attachment:', err);
-                  sendResult = await zaloOps.sendFile(targetAccountId, threadId, threadType, paths, io);
+                  sendResult = await zaloOps.sendFile(targetAccountId, threadId, threadType, paths, io, '', { maxAttempts: 1 });
                 }
               } else if (refs.contentType === 'voice' || refs.contentType === 'audio') {
                 try {
-                  sendResult = await zaloOps.sendVoice(targetAccountId, threadId, threadType, paths[0]);
+                  sendResult = await zaloOps.sendVoice(targetAccountId, threadId, threadType, paths[0], undefined, { maxAttempts: 1 });
                 } catch (err) {
+                  if (isZaloDeliveryUncertain(err)) throw err;
                   logger.warn('[chat-ops] forward voice failed, falling back to attachment:', err);
-                  sendResult = await zaloOps.sendFile(targetAccountId, threadId, threadType, paths, io);
+                  sendResult = await zaloOps.sendFile(targetAccountId, threadId, threadType, paths, io, '', { maxAttempts: 1 });
                 }
               } else {
                 // image / gif / file — sendFile lo cả 3.
-                sendResult = await zaloOps.sendFile(targetAccountId, threadId, threadType, paths, io);
+                sendResult = await zaloOps.sendFile(targetAccountId, threadId, threadType, paths, io, '', { maxAttempts: 1 });
               }
 
               // Album trả về mảng attachment (1 msgId / tấm); tin đơn trả về 1 msgId.
@@ -669,11 +703,15 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
               });
               succeeded += 1;
             } catch (err) {
-              failed += 1;
+              const uncertain = isZaloDeliveryUncertain(err)
+                || String((err as Error)?.message || err).includes('VIDEO_SEND_UNCERTAIN');
+              if (uncertain) pendingConfirmation += 1;
+              else failed += 1;
               logger.error('[chat-ops] forward media target failed:', {
                 targetConversationId: target.id,
                 contentType: refs.contentType,
                 album: isAlbum ? resolved.length : 0,
+                uncertain,
                 err: (err as Error).message,
               });
             }
@@ -687,7 +725,24 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
         });
       }
 
-      io?.emit('chat:forwarded', { conversationId: id, messageId: refs.messageId, succeeded, failed });
+      io?.emit('chat:forwarded', {
+        conversationId: id,
+        messageId: refs.messageId,
+        succeeded,
+        failed,
+        pendingConfirmation,
+      });
+
+      if (pendingConfirmation > 0) {
+        return reply.status(202).send({
+          success: false,
+          forwarded: succeeded,
+          failed,
+          pendingConfirmation,
+          code: 'FORWARD_IN_PROGRESS',
+          message: 'Zalo đang xác nhận một số tệp. Không cần chuyển tiếp lại.',
+        });
+      }
 
       // TRẢ ĐÚNG SỰ THẬT. Trước đây luôn `success: true` kể cả khi MỌI đích đều fail → FE hiện
       // toast xanh "Đã chuyển tiếp" mà khách không hề nhận được. Giờ: fail hết → báo lỗi.
@@ -699,7 +754,7 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
           failed,
         });
       }
-      return { success: failed === 0, forwarded: succeeded, failed };
+      return { success: failed === 0, forwarded: succeeded, failed, pendingConfirmation: 0 };
     } catch (err) { return handleError(err, reply); }
   });
 

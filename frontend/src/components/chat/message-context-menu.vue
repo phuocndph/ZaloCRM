@@ -134,7 +134,7 @@
             <svg class="ctx-item__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/>
             </svg>
-            <span class="ctx-item__label">Xóa</span>
+            <span class="ctx-item__label">Xóa ở phía tôi</span>
           </button>
         </template>
       </div>

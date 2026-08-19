@@ -271,8 +271,9 @@ async function send(a: MediaAssetItem) {
   if (sending.value) return;
   sending.value = a.id;
   try {
-    await sendMediaToConversation(a.id, props.conversationId);
-    toast.success(`Đã gửi "${a.name}"`);
+    const res = await sendMediaToConversation(a.id, props.conversationId);
+    if (res.pendingConfirmation) toast.warning('Zalo đang xác nhận, không cần gửi lại');
+    else toast.success(`Đã gửi "${a.name}"`);
     emit('sent');
     emit('close');
   } catch (e: any) {
@@ -288,7 +289,8 @@ async function sendAlbum() {
   try {
     const ids = [...picked.value];
     const res = await sendAlbumToConversation(ids, props.conversationId);
-    toast.success(`Đã gửi album ${res.sent} ảnh`);
+    if (res.pendingConfirmation) toast.warning('Zalo đang xác nhận album, không cần gửi lại');
+    else toast.success(`Đã gửi album ${res.sent} ảnh`);
     emit('sent');
     emit('close');
   } catch (e: any) {

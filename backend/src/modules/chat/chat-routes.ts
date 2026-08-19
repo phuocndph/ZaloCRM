@@ -24,9 +24,9 @@ import { triggerVirtualChatAiReply } from '../ai/ai-virtual-chat-service.js';
 // M55 2026-05-30 — Auto-attach collaborator khi sale gửi tin virtual conv
 import { attachContactCollaboratorByUser } from '../contacts/contact-scope.js';
 // Fix 2026-06-03 — M11 optimistic badge cache (Anh báo "Sale CRM · Staff")
-import { getUserFullName } from './chat-helpers.js';
+import { acquireTextOutbox, finalizeTextOutbox, getUserFullName, outboundDeliveryState } from './chat-helpers.js';
 // 2026-06-07 — Gửi Khối Marketing thẳng vào hội thoại (cột 4 tab Automation).
-import { zaloOps, ZaloOpError } from '../../shared/zalo-operations.js';
+import { isZaloDeliveryUncertain, zaloOps, ZaloOpError } from '../../shared/zalo-operations.js';
 import { sendNativeVideo } from '../../shared/video-processor.js';
 import { downloadMediaToTemp, extractZaloMsgId } from './chat-media-helpers.js';
 import { resolveBlockContent } from '../../shared/ee-registry/automation.js';
@@ -450,6 +450,7 @@ export async function chatRoutes(app: FastifyInstance) {
       ready = '',               // 'true' → score >= 80
       zaloLabels = '',          // CSV: filter by Zalo Real labels
       engagementPattern = '',   // Phase 8 — CSV: hot,champion,stable,cooling,cold
+      cursor = '',              // keyset cursor — ổn định khi tin mới làm list đổi thứ tự
       // 2026-06-08 — Cột 1 sidebar deep filter (trước đây BE bỏ qua → "nút chết").
       stages = '',              // CSV statusId: lọc theo Trạng thái KH (Status table)
       stuckDuration = '',       // '>3d'|'>7d'|'>14d'|'>30d' → Friend.stuckSince cũ hơn ngưỡng
@@ -532,21 +533,27 @@ export async function chatRoutes(app: FastifyInstance) {
       }
       if (normalizedPhone) contactSearch.push({ phoneNormalized: normalizedPhone });
 
-      where.OR = [
+      const conversationSearch: Prisma.ConversationWhereInput[] = [
         { contact: { OR: contactSearch } },
         { groupName: { contains: searchTerm, mode: 'insensitive' } },
-        {
+      ];
+      // Nội dung một hoặc hai ký tự cho kết quả rất nhiễu và buộc DB quét lượng
+      // lớn tin nhắn. Tên vẫn tìm ngay; nội dung/sender bắt đầu từ 3 ký tự.
+      if (searchTerm.length >= 3) {
+        conversationSearch.push({
           messages: {
             some: {
               isDeleted: false,
+              hiddenAt: null,
               OR: [
                 { content: { contains: searchTerm, mode: 'insensitive' } },
                 { senderName: { contains: searchTerm, mode: 'insensitive' } },
               ],
             },
           },
-        },
-      ];
+        });
+      }
+      where.OR = conversationSearch;
     }
     if (statusId) contactWhere.statusId = statusId;
     if (assignedUserId) contactWhere.assignedUserId = assignedUserId;
@@ -829,10 +836,45 @@ export async function chatRoutes(app: FastifyInstance) {
     // (ensure-conversation từ Lead Pool / Friend click tạo conv với lastMessageAt=null).
     const orderByClause: any =
       sortMode === 'unread-first'
-        ? [{ unreadCount: 'desc' }, { lastMessageAt: { sort: 'desc', nulls: 'last' } }]
-        : { lastMessageAt: { sort: 'desc', nulls: 'last' } };
+        ? [{ unreadCount: 'desc' }, { lastMessageAt: { sort: 'desc', nulls: 'last' } }, { id: 'desc' }]
+        : [{ lastMessageAt: { sort: 'desc', nulls: 'last' } }, { id: 'desc' }];
 
-    const [conversations, total] = await Promise.all([
+    type ConversationCursor = { id: string; lastMessageAt: string | null; unreadCount?: number };
+    let decodedCursor: ConversationCursor | null = null;
+    if (cursor) {
+      try {
+        const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as ConversationCursor;
+        if (parsed?.id && (parsed.lastMessageAt === null || !Number.isNaN(Date.parse(parsed.lastMessageAt)))) {
+          decodedCursor = parsed;
+        }
+      } catch {
+        decodedCursor = null;
+      }
+    }
+    if (decodedCursor) {
+      const dateCursor = decodedCursor.lastMessageAt
+        ? {
+            OR: [
+              { lastMessageAt: { lt: new Date(decodedCursor.lastMessageAt) } },
+              { lastMessageAt: new Date(decodedCursor.lastMessageAt), id: { lt: decodedCursor.id } },
+              { lastMessageAt: null },
+            ],
+          }
+        : { lastMessageAt: null, id: { lt: decodedCursor.id } };
+      const cursorWhere = sortMode === 'unread-first'
+        ? {
+            OR: [
+              { unreadCount: { lt: decodedCursor.unreadCount ?? 0 } },
+              { unreadCount: decodedCursor.unreadCount ?? 0, AND: [dateCursor] },
+            ],
+          }
+        : dateCursor;
+      where.AND = [...(Array.isArray(where.AND) ? where.AND : []), cursorWhere];
+    }
+
+    const requestedListPage = Math.max(1, Number.parseInt(page, 10) || 1);
+    const requestedListLimit = Math.max(1, Math.min(Number.parseInt(limit, 10) || 50, 200));
+    const [conversationRows, total] = await Promise.all([
       prisma.conversation.findMany({
         where,
         include: {
@@ -876,10 +918,15 @@ export async function chatRoutes(app: FastifyInstance) {
           zaloAccount: { select: { id: true, displayName: true, avatarUrl: true, zaloUid: true, privacyMode: true, ownerUserId: true, archivedAt: true } },
           pins: { select: { id: true } },
           messages: {
+            where: { hiddenAt: null },
             take: 1,
             // Primary sort by Zalo Snowflake numeric (match 100% Zalo Web), sentAt fallback
             // cho CRM-sent in-flight messages chưa nhận echo zaloMsgId.
-            orderBy: [{ zaloMsgIdNum: { sort: 'desc', nulls: 'last' } }, { sentAt: 'desc' }],
+            orderBy: [
+              { sentAt: 'desc' },
+              { zaloMsgIdNum: { sort: 'desc', nulls: 'first' } },
+              { id: 'desc' },
+            ],
             // 2026-07-11 (redesign cột 2): +metadata +repliedByUserId — CHỈ BỔ SUNG field
             // read-only cho preview "Người trả lời cuối" (👤 Phước / 🤖 AI / 🤖 Bot). Không đổi
             // logic/permission/realtime; metadata.sender.{kind,name} vốn đã lưu sẵn khi gửi.
@@ -887,11 +934,24 @@ export async function chatRoutes(app: FastifyInstance) {
           },
         },
         orderBy: orderByClause,
-        skip: (parseInt(page) - 1) * Math.min(parseInt(limit), 200),
-        take: Math.min(parseInt(limit), 200),
+        skip: decodedCursor ? 0 : (requestedListPage - 1) * requestedListLimit,
+        take: requestedListLimit + 1,
       }),
-      prisma.conversation.count({ where }),
+      // Chỉ trang đầu cần tổng chính xác cho badge. Các trang sau lấy dư một row
+      // để biết hasMore, tránh lặp lại truy vấn count nặng trên toàn bộ bộ lọc.
+      requestedListPage === 1 && !decodedCursor ? prisma.conversation.count({ where }) : Promise.resolve(null),
     ]);
+    const hasMore = conversationRows.length > requestedListLimit;
+    if (hasMore) conversationRows.pop();
+    const conversations = conversationRows;
+    const lastConversation = conversations.at(-1);
+    const nextCursor = hasMore && lastConversation
+      ? Buffer.from(JSON.stringify({
+          id: lastConversation.id,
+          lastMessageAt: lastConversation.lastMessageAt?.toISOString() ?? null,
+          ...(sortMode === 'unread-first' ? { unreadCount: lastConversation.unreadCount } : {}),
+        })).toString('base64url')
+      : null;
 
 
     const groupPairsRaw = conversations
@@ -1069,9 +1129,11 @@ export async function chatRoutes(app: FastifyInstance) {
         }
         return redactedConv;
       }),
-      total,
-      page: parseInt(page),
-      limit: Math.min(parseInt(limit), 200),
+      ...(total != null ? { total } : {}),
+      hasMore,
+      nextCursor,
+      page: requestedListPage,
+      limit: requestedListLimit,
     };
   });
 
@@ -1388,9 +1450,19 @@ export async function chatRoutes(app: FastifyInstance) {
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const user = request.user!;
     const { id } = request.params as { id: string };
-    const { page = '1', limit = '50' } = request.query as QueryParams;
+    const { page = '1', limit = '50', cursor = '' } = request.query as QueryParams;
     const requestedPage = Math.max(1, parseInt(page) || 1);
     const requestedLimit = Math.max(25, Math.min(parseInt(limit) || 50, 100));
+    type MessageCursor = { id: string; sentAt: string; zaloMsgIdNum: string | null };
+    let decodedMessageCursor: MessageCursor | null = null;
+    if (cursor) {
+      try {
+        const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as MessageCursor;
+        if (parsed?.id && !Number.isNaN(Date.parse(parsed.sentAt))) decodedMessageCursor = parsed;
+      } catch {
+        decodedMessageCursor = null;
+      }
+    }
 
     const conversation = await prisma.conversation.findFirst({
       where: { id, orgId: user.orgId },
@@ -1417,17 +1489,49 @@ export async function chatRoutes(app: FastifyInstance) {
       return reply.status(403).send({ error: CONVERSATION_PRIVATE_MESSAGE, code: CONVERSATION_PRIVATE_CODE });
     }
 
+    const cursorSentAt = decodedMessageCursor ? new Date(decodedMessageCursor.sentAt) : null;
+    const cursorZaloMsgIdNum = decodedMessageCursor?.zaloMsgIdNum && /^\d+$/.test(decodedMessageCursor.zaloMsgIdNum)
+      ? BigInt(decodedMessageCursor.zaloMsgIdNum)
+      : null;
+    const sameTimestampCursor: Prisma.MessageWhereInput | null = decodedMessageCursor
+      ? cursorZaloMsgIdNum === null
+        ? {
+            OR: [
+              { zaloMsgIdNum: null, id: { lt: decodedMessageCursor.id } },
+              { zaloMsgIdNum: { not: null } },
+            ],
+          }
+        : {
+            OR: [
+              { zaloMsgIdNum: { lt: cursorZaloMsgIdNum } },
+              { zaloMsgIdNum: cursorZaloMsgIdNum, id: { lt: decodedMessageCursor.id } },
+            ],
+          }
+      : null;
+    const messageWhere: Prisma.MessageWhereInput = {
+      conversationId: id,
+      hiddenAt: null,
+      ...(decodedMessageCursor && cursorSentAt && sameTimestampCursor
+        ? {
+            OR: [
+              { sentAt: { lt: cursorSentAt } },
+              { sentAt: cursorSentAt, AND: [sameTimestampCursor] },
+            ],
+          }
+        : {}),
+    };
+
     // Fetch one extra row instead of counting the entire history on every chat switch.
     const messageRows = await prisma.message.findMany({
-        where: { conversationId: id },
-        // Primary sort by Zalo Snowflake (zaloMsgIdNum) — match Zalo Web order.
-        // FIX 2026-07-13 (ảnh gửi đi không hiện): nulls phải đứng ĐẦU trong thứ tự DESC.
-        // Tin CRM vừa gửi chưa có echo zaloMsgId (null) là tin MỚI NHẤT; với nulls:'last'
-        // chúng bị coi là CŨ NHẤT → rớt khỏi cửa sổ `take` (100 tin mới nhất) → mất khỏi
-        // khung chat ở hội thoại dài. FE vẫn tự sắp lại đúng vị trí (compareMessages:
-        // snowflake trước, sentAt fallback) nên thứ tự hiển thị không đổi.
-        orderBy: [{ zaloMsgIdNum: { sort: 'desc', nulls: 'first' } }, { sentAt: 'desc' }],
-        skip: (requestedPage - 1) * requestedLimit,
+        where: messageWhere,
+        // sentAt stays primary so an outbound row without a Snowflake cannot
+        // displace newer messages. The remaining keys preserve Zalo album order.
+        orderBy: [
+          { sentAt: 'desc' },
+          { zaloMsgIdNum: { sort: 'desc', nulls: 'first' } },
+          { id: 'desc' },
+        ],
+        skip: decodedMessageCursor ? 0 : (requestedPage - 1) * requestedLimit,
         take: requestedLimit + 1,
         select: {
           id: true,
@@ -1473,6 +1577,14 @@ export async function chatRoutes(app: FastifyInstance) {
     const hasMore = messageRows.length > requestedLimit;
     if (hasMore) messageRows.pop();
     const messages = messageRows;
+    const oldestMessage = messages.at(-1);
+    const nextCursor = hasMore && oldestMessage
+      ? Buffer.from(JSON.stringify({
+          id: oldestMessage.id,
+          sentAt: oldestMessage.sentAt.toISOString(),
+          zaloMsgIdNum: oldestMessage.zaloMsgIdNum?.toString() ?? null,
+        })).toString('base64url')
+      : null;
 
     const ordered = messages.reverse();
 
@@ -1491,13 +1603,20 @@ export async function chatRoutes(app: FastifyInstance) {
           .map((m) => m.senderUid as string),
       ),
     );
+    const reactorZaloUids = new Set<string>();
+    for (const message of ordered) {
+      for (const reaction of message.reactions || []) {
+        if (reaction.reactorId && reaction.reactorSource !== 'crm') reactorZaloUids.add(reaction.reactorId);
+      }
+    }
+    const friendLookupUids = Array.from(new Set([...inboundUids, ...reactorZaloUids]));
     let resolverMaps: {
       internalNicks: Map<string, { displayName: string | null; ownerId: string | null; ownerFullName: string | null; avatarUrl: string | null }>;
       contacts: Map<string, { id: string; crmName: string | null; fullName: string | null; avatarUrl: string | null }>;
       friends: Map<string, { aliasInNick: string | null; zaloDisplayName: string | null; zaloAvatarUrl: string | null }>;
     } = { internalNicks: new Map(), contacts: new Map(), friends: new Map() };
 
-    if (inboundUids.length > 0) {
+    if (friendLookupUids.length > 0) {
       const [internalNickRows, contactRows, friendRows] = await Promise.all([
         prisma.zaloAccount.findMany({
           where: { orgId: user.orgId, zaloUid: { in: inboundUids } },
@@ -1516,7 +1635,7 @@ export async function chatRoutes(app: FastifyInstance) {
         prisma.friend.findMany({
           where: {
             orgId: user.orgId,
-            zaloUidInNick: { in: inboundUids },
+            zaloUidInNick: { in: friendLookupUids },
           },
           select: { zaloUidInNick: true, aliasInNick: true, zaloDisplayName: true, zaloAvatarUrl: true },
         }),
@@ -1581,22 +1700,14 @@ export async function chatRoutes(app: FastifyInstance) {
     // Batch Friend 0 N+1, chỉ chạy khi có reaction zalo.
     const nickName = conversation.zaloAccount?.displayName || null;
     const nickAvatar = conversation.zaloAccount?.avatarUrl || null;
-    const reactorZaloUids = new Set<string>();
-    for (const m of ordered) {
-      for (const rx of ((m as { reactions?: Array<{ reactorId: string; reactorSource: string | null }> }).reactions || [])) {
-        if (rx.reactorId && rx.reactorSource !== 'crm') reactorZaloUids.add(rx.reactorId);
-      }
-    }
     const reactorMap = new Map<string, { name: string | null; avatar: string | null }>();
-    if (reactorZaloUids.size > 0) {
-      const frx = await prisma.friend.findMany({
-        where: { orgId: user.orgId, zaloUidInNick: { in: [...reactorZaloUids] } },
-        select: { zaloUidInNick: true, aliasInNick: true, zaloDisplayName: true, zaloAvatarUrl: true },
-      });
-      for (const f of frx) {
-        if (!reactorMap.has(f.zaloUidInNick)) {
-          reactorMap.set(f.zaloUidInNick, { name: f.aliasInNick || f.zaloDisplayName || null, avatar: f.zaloAvatarUrl || null });
-        }
+    for (const uid of reactorZaloUids) {
+      const friend = resolverMaps.friends.get(uid);
+      if (friend) {
+        reactorMap.set(uid, {
+          name: friend.aliasInNick || friend.zaloDisplayName || null,
+          avatar: friend.zaloAvatarUrl || null,
+        });
       }
     }
 
@@ -1627,7 +1738,7 @@ export async function chatRoutes(app: FastifyInstance) {
     });
     // Lower-bound total keeps older clients compatible; new clients use hasMore.
     const total = (requestedPage - 1) * requestedLimit + messages.length + (hasMore ? 1 : 0);
-    return { messages: redacted, total, hasMore, page: requestedPage, limit: requestedLimit };
+    return { messages: redacted, total, hasMore, nextCursor, page: requestedPage, limit: requestedLimit };
   });
 
   // ── Send message ─────────────────────────────────────────────────────────
@@ -1651,9 +1762,10 @@ export async function chatRoutes(app: FastifyInstance) {
     // 2026-06-15 IDEMPOTENCY: app outbox offline retry → khách nhận tin trùng.
     // echoId (uuid app tự sinh) dedup TRƯỚC khi gửi Zalo. Field chính `echoId`,
     // fallback `clientMessageId` cho app cũ. Null khi không gửi → backward compat.
-    const echoId = (typeof echoIdRaw === 'string' && echoIdRaw.trim())
+    const echoId = ((typeof echoIdRaw === 'string' && echoIdRaw.trim())
       ? echoIdRaw.trim()
-      : (typeof clientMessageId === 'string' && clientMessageId.trim() ? clientMessageId.trim() : null);
+      : (typeof clientMessageId === 'string' && clientMessageId.trim() ? clientMessageId.trim() : randomUUID()))
+      .slice(0, 180);
 
     const conversation = await prisma.conversation.findFirst({
       where: { id, orgId: user.orgId },
@@ -1681,6 +1793,13 @@ export async function chatRoutes(app: FastifyInstance) {
     // Skip rate-limit + privacy check + SDK send. Anh chốt Approach A — sale dùng làm nhật ký.
     if (conversation.isVirtual) {
       try {
+        const existingLocal = await prisma.message.findUnique({
+          where: { conversationId_clientEchoId: { conversationId: id, clientEchoId: echoId } },
+          include: { repliedBy: { select: { id: true, fullName: true, email: true } } },
+        });
+        if (existingLocal) {
+          return { ...existingLocal, zaloMsgIdNum: null, echoId };
+        }
         const localMsgId = `local:${randomUUID()}`;
         const message = await prisma.message.create({
           data: {
@@ -1697,6 +1816,8 @@ export async function chatRoutes(app: FastifyInstance) {
             repliedByUserId: user.id,
             isLocal: true,
             sentVia: 'user',
+            clientEchoId: echoId,
+            deliveryState: 'completed',
             // Fix 2026-06-03 (Anh báo): optimistic badge "Sale CRM · Staff"
             metadata: {
               sender: { kind: 'user_crm', name: await getUserFullName(user.id) },
@@ -1710,7 +1831,7 @@ export async function chatRoutes(app: FastifyInstance) {
           data: { lastMessageAt: new Date(), isReplied: true, unreadCount: 0 },
         });
 
-        const safeMessage = { ...message, zaloMsgIdNum: null as string | null };
+        const safeMessage = { ...message, zaloMsgIdNum: null as string | null, echoId };
         const io = (app as any).io as Server;
         // PRIVACY 2026-06-11: qua emit-chat (redact + scope org). Virtual conv vẫn
         // theo privacy của nick để nhất quán (kèm cờ _virtual).
@@ -1724,7 +1845,7 @@ export async function chatRoutes(app: FastifyInstance) {
           ownerUserId: conversation.zaloAccount.ownerUserId,
           isPrivate: conversation.isPrivate,
           privateOwnerUserId: conversation.privateOwnerUserId,
-          extra: { _virtual: true },
+          extra: { _virtual: true, echoId },
         });
 
         // M53 AI Trợ Lý — fire-and-forget, KHÔNG block response
@@ -1747,6 +1868,15 @@ export async function chatRoutes(app: FastifyInstance) {
 
         return safeMessage;
       } catch (err) {
+        if ((err as { code?: string })?.code === 'P2002') {
+          const existingLocal = await prisma.message.findUnique({
+            where: { conversationId_clientEchoId: { conversationId: id, clientEchoId: echoId } },
+            include: { repliedBy: { select: { id: true, fullName: true, email: true } } },
+          });
+          if (existingLocal) {
+            return { ...existingLocal, zaloMsgIdNum: null, echoId };
+          }
+        }
         logger.error('[chat] Virtual message save error:', err);
         return reply.status(500).send({ error: 'Failed to save virtual message' });
       }
@@ -1778,23 +1908,6 @@ export async function chatRoutes(app: FastifyInstance) {
 
     // Rate limit check — prevent account blocking
     try {
-      // 2026-06-15 IDEMPOTENCY pre-check: nếu echoId đã tồn tại cho conversation này
-      // → tin đã gửi Zalo thành công ở lần trước (app retry vì mất response). KHÔNG
-      // gửi lại → trả về tin cũ (cùng shape) kèm echoId, coi như success.
-      if (echoId) {
-        const existing = await prisma.message.findUnique({
-          where: { conversationId_clientEchoId: { conversationId: id, clientEchoId: echoId } },
-          include: { repliedBy: { select: { id: true, fullName: true, email: true } } },
-        });
-        if (existing) {
-          return {
-            ...existing,
-            zaloMsgIdNum: existing.zaloMsgIdNum?.toString() ?? null,
-            echoId,
-          };
-        }
-      }
-
       const threadId = conversation.externalThreadId || '';
       // zca-js sendMessage(message, threadId, type) — type: 0=User, 1=Group
       const threadType = conversation.threadType === 'group' ? 1 : 0;
@@ -1826,12 +1939,45 @@ export async function chatRoutes(app: FastifyInstance) {
         sendPayload.mentions = mentions;
       }
       if (quote) sendPayload.quote = quote;
+      const hasStyles = Array.isArray(styles) && styles.length > 0;
+      const persistedContent = hasStyles
+        ? JSON.stringify({ title: content, action: 'rtf', params: JSON.stringify({ styles }) })
+        : content;
+      const persistedContentType = hasStyles ? 'rich' : 'text';
+      const textOutbox = await acquireTextOutbox({
+        conversationId: id,
+        zaloAccount: conversation.zaloAccount,
+        repliedByUserId: user.id,
+        content: persistedContent,
+        contentType: persistedContentType,
+        quote: quote ?? undefined,
+        metadata: {
+          sender: { kind: 'user_crm', name: userFullName },
+          sendStatus: 'sending',
+          outboundText: { status: 'submitting' },
+        },
+        sentVia: 'user',
+        clientEchoId: echoId,
+      });
+      if (textOutbox.state !== 'acquired') {
+        const safeExisting = {
+          ...textOutbox.message,
+          zaloMsgIdNum: textOutbox.message.zaloMsgIdNum?.toString() ?? null,
+          echoId,
+          pendingConfirmation: textOutbox.state === 'in_progress' || textOutbox.state === 'uncertain',
+        };
+        if (textOutbox.state === 'accepted') return safeExisting;
+        return reply.status(202).send(safeExisting);
+      }
+      const outboxMessageId = textOutbox.message.id as string;
       // 2026-06-24 (anh chốt): Zalo TỪ CHỐI gửi (vd KH chặn tin người lạ, 119, 127...) →
       // KHÔNG fail cứng 422/toast nữa. Thay vào đó LƯU tin dạng "gửi thất bại" + lý do để
       // hiện ngay trong đoạn chat (như Zalo/Messenger). Lỗi hệ thống thật (non-Zalo) vẫn
       // ném ra ngoài → outer catch → 500.
       let zaloMsgId = '';
       let sendFail: { reason: string; code: string | null } | null = null;
+      let listenerAcceptedMessageId: string | null = null;
+      let sendUncertainReason: string | null = null;
       try {
         const sendResult = await zaloOps.sendMessage(
           conversation.zaloAccountId,
@@ -1845,8 +1991,12 @@ export async function chatRoutes(app: FastifyInstance) {
         );
         // zca-js trả về { message: { msgId } | null, attachment: [{ msgId }] }
         // Extract zaloMsgId từ message (text) hoặc attachment[0] (media) để dedup với selfListen
-        const sr = sendResult as unknown as { message?: { msgId?: number | string } | null; attachment?: Array<{ msgId?: number | string }> };
-        const rawId = sr?.message?.msgId ?? sr?.attachment?.[0]?.msgId ?? '';
+        const sr = sendResult as unknown as {
+          msgId?: number | string;
+          message?: { msgId?: number | string } | null;
+          attachment?: Array<{ msgId?: number | string }>;
+        };
+        const rawId = sr?.msgId ?? sr?.message?.msgId ?? sr?.attachment?.[0]?.msgId ?? '';
         zaloMsgId = String(rawId || '');
         if (!zaloMsgId) {
           logger.warn(`[chat] sendMessage không trả msgId — shape=${JSON.stringify(sendResult).slice(0, 200)}`);
@@ -1858,23 +2008,108 @@ export async function chatRoutes(app: FastifyInstance) {
           se?.name === 'ZaloApiError' || se?.name === 'ZcaApiError' ||
           /ZaloApiError|ZcaApiError/.test(String(se?.name || '')) ||
           /chặn không nhận tin|người lạ|chưa thể gửi tin|không muốn nhận tin|Không thể nhận tin nhắn|Tham số không hợp lệ|\[zalo:\d+\]/i.test(raw);
-        if (!isZaloBusiness) throw sendErr; // lỗi hệ thống thật → outer catch → 500
+        if (!isZaloBusiness) {
+          // The listener claims this exact durable placeholder. Poll by id/echo,
+          // never by content, so two consecutive "Ok" messages stay distinct.
+          for (let attempt = 0; attempt < 8 && !listenerAcceptedMessageId; attempt++) {
+            if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 500));
+            const accepted = await prisma.message.findUnique({
+              where: { id: outboxMessageId },
+              select: { id: true, zaloMsgId: true, deliveryState: true },
+            }).catch(() => null);
+            if (accepted?.zaloMsgId || outboundDeliveryState(accepted ?? {}) === 'accepted') {
+              listenerAcceptedMessageId = accepted?.id ?? null;
+              zaloMsgId = accepted?.zaloMsgId || '';
+            }
+          }
+          if (listenerAcceptedMessageId) {
+            logger.warn(`[chat] SDK response lost but self-listener confirmed message=${listenerAcceptedMessageId}`);
+          } else if (isZaloDeliveryUncertain(sendErr)) {
+            sendUncertainReason = raw || 'Zalo chưa trả kết quả gửi';
+          } else {
+            await prisma.message.updateMany({
+              where: { id: outboxMessageId, deliveryLeaseId: textOutbox.leaseId },
+              data: {
+                deliveryState: 'failed',
+                deliveryLeaseId: null,
+                deliveryLeaseUntil: null,
+                metadata: {
+                  sender: { kind: 'user_crm', name: userFullName },
+                  sendStatus: 'failed',
+                  failReason: raw || 'Không gửi được tin nhắn',
+                  outboundText: { status: 'failed' },
+                },
+              },
+            });
+            throw sendErr;
+          }
+        } else {
         const codeMatch = raw.match(/\[zalo:(\d+)\]/);
         const reason =
           raw.replace(/^sendMessage failed:\s*/i, '').replace(/\s*\[zalo:\d+\]\s*$/i, '').trim() ||
           'Zalo từ chối gửi tin này';
         sendFail = { reason, code: codeMatch ? codeMatch[1] : null };
         logger.warn(`[chat] send rejected → lưu tin failed: reason="${reason}" code=${sendFail.code ?? '-'}`);
+        }
+      }
+
+      if (sendUncertainReason) {
+        await prisma.message.updateMany({
+          where: {
+            id: outboxMessageId,
+            zaloMsgId: null,
+            deliveryState: 'submitting',
+            deliveryLeaseId: textOutbox.leaseId,
+          },
+          data: {
+            deliveryState: 'uncertain',
+            deliveryLeaseId: null,
+            deliveryLeaseUntil: null,
+            metadata: {
+              sender: { kind: 'user_crm', name: userFullName },
+              sendStatus: 'sending',
+              outboundText: { status: 'uncertain', reason: sendUncertainReason },
+            },
+          },
+        });
+        const pendingMessage = await prisma.message.findUnique({
+          where: { id: outboxMessageId },
+          include: { repliedBy: { select: { id: true, fullName: true, email: true } } },
+        });
+        if (pendingMessage?.zaloMsgId) {
+          listenerAcceptedMessageId = pendingMessage.id;
+          zaloMsgId = pendingMessage.zaloMsgId;
+          sendUncertainReason = null;
+        } else if (pendingMessage) {
+          await prisma.conversation.update({
+            where: { id },
+            data: { lastMessageAt: pendingMessage.sentAt, isReplied: true, unreadCount: 0 },
+          });
+          const safePending = {
+            ...pendingMessage,
+            zaloMsgIdNum: pendingMessage.zaloMsgIdNum?.toString() ?? null,
+            echoId,
+            pendingConfirmation: true,
+          };
+          await emitChatMessage({
+            io: (app as any).io as Server,
+            orgId: user.orgId,
+            accountId: conversation.zaloAccountId,
+            conversationId: id,
+            message: safePending,
+            privacyMode: conversation.zaloAccount.privacyMode,
+            ownerUserId: conversation.zaloAccount.ownerUserId,
+            isPrivate: conversation.isPrivate,
+            privateOwnerUserId: conversation.privateOwnerUserId,
+            extra: { echoId },
+          });
+          return reply.status(202).send(safePending);
+        }
       }
 
       // 2026-05-21 RTF: nếu có styles → lưu content dạng JSON rich (matches Zalo echo format)
       // + contentType='rich' để special-message-renderer render đúng bold/italic. Listener echo
       // sau dedup sẽ update content theo Zalo echo (cùng shape) → vẫn đẹp.
-      const hasStyles = Array.isArray(styles) && styles.length > 0;
-      const persistedContent = hasStyles
-        ? JSON.stringify({ title: content, action: 'rtf', params: JSON.stringify({ styles }) })
-        : content;
-      const persistedContentType = hasStyles ? 'rich' : 'text';
 
       // ── Fix 2026-06-03 (Anh báo bug optimistic Sale CRM · Staff) ──
       // Set metadata.sender.name = user.fullName (M11 explicit) để socket
@@ -1882,84 +2117,51 @@ export async function chatRoutes(app: FastifyInstance) {
       // optimistic, KHÔNG cần đợi reload page.
       // Include repliedBy relation trong response → defense in depth nếu
       // FE đọc theo repliedBy.fullName.
-      let message;
-      try {
-        message = await prisma.message.create({
-          data: {
-            id: randomUUID(),
+      const messageData = {
+        ...(zaloMsgId
+          ? {
+              zaloMsgId,
+              zaloMsgIdNum: /^\d+$/.test(zaloMsgId) ? BigInt(zaloMsgId) : null,
+            }
+          : {}),
+        content: persistedContent,
+        contentType: persistedContentType,
+        quote: quote ?? undefined,
+        repliedByUserId: user.id,
+        sentVia: 'user',
+        clientEchoId: echoId,
+        deliveryState: sendFail ? 'failed' : 'completed',
+        deliveryLeaseId: null,
+        deliveryLeaseUntil: null,
+        metadata: {
+          sender: { kind: 'user_crm', name: userFullName },
+          ...(sendFail
+            ? {
+                sendStatus: 'failed',
+                failReason: sendFail.reason,
+                failCode: sendFail.code,
+                failedAt: new Date().toISOString(),
+                outboundText: { status: 'failed' },
+              }
+            : { sendStatus: 'sent', outboundText: { status: 'completed' } }),
+        },
+      } as const;
+      const targetMessageId = listenerAcceptedMessageId || outboxMessageId;
+      const message = targetMessageId === outboxMessageId
+        ? await finalizeTextOutbox({
             conversationId: id,
-            zaloMsgId: zaloMsgId || null,
-            zaloMsgIdNum: zaloMsgId && /^\d+$/.test(zaloMsgId) ? BigInt(zaloMsgId) : null,
-            senderType: 'self',
-            senderUid: conversation.zaloAccount.zaloUid || '',
-            senderName: 'Staff',
-            content: persistedContent,
-            contentType: persistedContentType,
-            quote: quote ?? undefined,
-            sentAt: new Date(),
-            repliedByUserId: user.id,
-            sentVia: 'user',
-            // 2026-06-15 IDEMPOTENCY: lưu echoId để dedup retry lần sau (null nếu app cũ).
-            clientEchoId: echoId,
-            metadata: {
-              sender: { kind: 'user_crm', name: userFullName },
-              // 2026-06-24 — tin gửi THẤT BẠI (Zalo từ chối): lưu theo schema Bug B 2026-06-22
-              // (message-bubble đọc metadata.sendStatus + failReason) → hiện "Gửi thất bại: <lý do>".
-              ...(sendFail
-                ? { sendStatus: 'failed', failReason: sendFail.reason, failCode: sendFail.code, failedAt: new Date().toISOString() }
-                : {}),
-            },
-          },
-          include: { repliedBy: { select: { id: true, fullName: true, email: true } } },
-        });
-      } catch (createErr) {
-        // 2026-06-15 IDEMPOTENCY RACE: 2 request cùng echoId chạy ~đồng thời → create
-        // thứ 2 ném P2002 (unique violation conversationId_clientEchoId). Đã gửi Zalo
-        // rồi nhưng tin đã được request kia lưu → query lại tin đó & trả về, KHÔNG 500.
-        if ((createErr as { code?: string })?.code !== 'P2002') throw createErr;
-
-        const includeRepliedBy = { repliedBy: { select: { id: true, fullName: true, email: true } } };
-        const echoWinner = echoId
-          ? await prisma.message.findUnique({
-              where: { conversationId_clientEchoId: { conversationId: id, clientEchoId: echoId } },
-              include: includeRepliedBy,
-            })
-          : null;
-
-        if (echoWinner) {
-          message = echoWinner;
-        } else if (zaloMsgId) {
-          // selfListen can persist Zalo's echo before this request reaches create().
-          // Adopt that row instead of returning a false HTTP 500 after a successful send.
-          const listenerEcho = await prisma.message.findFirst({
-            where: { conversationId: id, zaloMsgId },
-            select: { id: true },
-          });
-          if (listenerEcho) {
-            message = await prisma.message.update({
-              where: { id: listenerEcho.id },
-              data: {
-                content: persistedContent,
-                contentType: persistedContentType,
-                quote: quote ?? undefined,
-                repliedByUserId: user.id,
-                sentVia: 'user',
-                clientEchoId: echoId,
-                metadata: {
-                  sender: { kind: 'user_crm', name: userFullName },
-                  ...(sendFail
-                    ? { sendStatus: 'failed', failReason: sendFail.reason, failCode: sendFail.code, failedAt: new Date().toISOString() }
-                    : {}),
-                },
-              },
-              include: includeRepliedBy,
+            outboxMessageId,
+            zaloMsgId,
+            data: messageData,
+          })
+        : await prisma.$transaction(async (tx) => {
+            await tx.message.delete({ where: { id: outboxMessageId } }).catch(() => {});
+            return tx.message.update({
+              where: { id: targetMessageId },
+              data: messageData,
+              include: { repliedBy: { select: { id: true, fullName: true, email: true } } },
             });
-          }
-        }
-
-        if (!message) throw createErr;
-        logger.debug(`[chat] Reused message persisted by a concurrent sender/listener: ${message.id}`);
-      }
+          });
 
       await prisma.conversation.update({
         where: { id },

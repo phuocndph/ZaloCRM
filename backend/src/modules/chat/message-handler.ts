@@ -364,10 +364,10 @@ export async function handleIncomingMessage(
 
     const sentAt = new Date(msg.timestamp);
 
-    // Dedup guard for self messages: if a self message exists in the last 30s, this is likely a selfListen echo of a CRM-sent message
+    // Reconcile self echoes with durable CRM outbox rows before inserting native sends.
     if (msg.isSelf && msg.msgId) {
-      // For text: match by content. For attachments (image/video/file): match by contentType only —
-      // CRM persists with our MinIO URL while Zalo echo carries Zalo CDN URL, so content strings differ.
+      // Attachments use their pending type/order because CRM and Zalo URLs differ.
+      // Text uses pending outbox content only; equal completed text is never a dedup key.
       const isAttachment = msg.contentType && ['image', 'video', 'file'].includes(msg.contentType);
       const dupNum = /^\d+$/.test(msg.msgId) ? BigInt(msg.msgId) : null;
 
@@ -375,67 +375,178 @@ export async function handleIncomingMessage(
         // FIX 2026-06-12 (album drop): echo ảnh album về N tin riêng (mỗi sibling 1 zaloMsgId).
         // CRM gửi album chỉ tạo 1 placeholder (zaloMsgId=null). Bộ lọc cũ findFirst→update
         // KHÔNG nguyên tử: nhiều echo cùng khớp 1 placeholder null (race) → bỏ nhầm sibling.
-        // Sửa: CLAIM placeholder NGUYÊN TỬ bằng updateMany (compare-and-swap trên zaloMsgId=null).
-        //   • Đúng 1 echo claim được (count=1) → suppress (đó là tin đã hiện sẵn cho sale).
-        //   • Các sibling còn lại claim trượt (count=0) → CHO QUA, insert như tin album bình thường.
-        const claimed = await prisma.message.updateMany({
-          where: {
+        // Claim exactly one placeholder. updateMany on the broad predicate would
+        // assign one Zalo msgId to every image in a pending album.
+        let claimedRow: any = null;
+        for (let claimAttempt = 0; claimAttempt < 4 && !claimedRow; claimAttempt += 1) {
+          const candidates = await prisma.message.findMany({
+            where: {
+              conversationId: conversation.id,
+              senderType: 'self',
+              contentType: msg.contentType,
+              zaloMsgId: null,
+              deliveryState: { in: ['submitting', 'uncertain'] },
+            },
+            orderBy: [{ sentAt: 'asc' }, { id: 'asc' }],
+            take: 12,
+            select: { id: true, metadata: true },
+          });
+          const candidate = candidates.find((row) => {
+            const metadata = row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata)
+              ? row.metadata as Record<string, unknown>
+              : null;
+            const outbound = metadata?.outboundAttachment;
+            const status = outbound && typeof outbound === 'object' && !Array.isArray(outbound)
+              ? (outbound as { status?: unknown }).status
+              : null;
+            return status === 'submitting' || status === 'sending' || status === 'uncertain';
+          });
+          if (!candidate) break;
+          const claimed = await prisma.message.updateMany({
+            where: {
+              id: candidate.id,
+              zaloMsgId: null,
+              deliveryState: { in: ['submitting', 'uncertain'] },
+            },
+            data: {
+              zaloMsgId: msg.msgId,
+              zaloMsgIdNum: dupNum,
+              content: msg.content || '',
+              attachments: msg.attachments ?? [],
+              ...(msg.cliMsgId ? { zaloCliMsgId: msg.cliMsgId } : {}),
+              ...(msg.albumKey ? { albumKey: msg.albumKey, albumIndex: msg.albumIndex ?? 0, albumTotal: msg.albumTotal ?? null } : {}),
+              deliveryState: 'accepted',
+              deliveryLeaseId: null,
+              deliveryLeaseUntil: null,
+            },
+          });
+          if (claimed.count > 0) {
+            claimedRow = await prisma.message.findUnique({ where: { id: candidate.id } }).catch(() => null);
+          }
+        }
+        if (claimedRow) {
+          // 2026-06-19 Cầu Telegram: echo media OUTBOUND từ CRM → mirror sang Telegram.
+          const currentMetadata = claimedRow.metadata && typeof claimedRow.metadata === 'object' && !Array.isArray(claimedRow.metadata)
+            ? claimedRow.metadata as Record<string, unknown>
+            : {};
+          const reconciled = await prisma.message.update({
+            where: { id: claimedRow.id },
+            data: {
+              metadata: {
+                ...currentMetadata,
+                sendStatus: 'sent',
+                outboundAttachment: { status: 'listener_confirmed' },
+              },
+            },
+          });
+          await updateConversationAfterMessage(conversation.id, sentAt, true);
+          mirrorInboundMediaInBackground({
+            msg,
+            messageId: reconciled.id,
+            orgId: account.orgId,
+            accountId: msg.accountId,
             conversationId: conversation.id,
-            senderType: 'self',
-            contentType: msg.contentType,
-            zaloMsgId: null,
-            sentAt: { gte: new Date(Date.now() - 30_000) },
-          },
-          data: {
-            zaloMsgId: msg.msgId,
-            zaloMsgIdNum: dupNum,
-            ...(msg.cliMsgId ? { zaloCliMsgId: msg.cliMsgId } : {}),
-            // Backfill album metadata vào placeholder (lần claim đầu) để row tổng có albumKey thật.
-            ...(msg.albumKey ? { albumKey: msg.albumKey, albumIndex: msg.albumIndex ?? 0, albumTotal: msg.albumTotal ?? null } : {}),
-          },
-        });
-        if (claimed.count > 0) {
-          // 2026-06-19 Cầu Telegram: echo media OUTBOUND từ CRM → mirror sang Telegram (lấy
-          // id row vừa claim theo zaloMsgId).
-          const claimedRow = await prisma.message
-            .findFirst({ where: { conversationId: conversation.id, zaloMsgId: msg.msgId }, select: { id: true } })
-            .catch(() => null);
-          if (claimedRow) publishMessagePersisted({ messageId: claimedRow.id, conversationId: conversation.id });
+            createdAt: sentAt,
+          });
+          publishMessagePersisted({ messageId: reconciled.id, conversationId: conversation.id });
           logger.debug(`[message-handler] Skipping self echo: claimed placeholder (album=${msg.albumKey ?? 'none'} idx=${msg.albumIndex})`);
-          return null;
+          return {
+            message: reconciled,
+            conversationId: conversation.id,
+            orgId: account.orgId,
+            contactId,
+            privacyMode: account.privacyMode,
+            ownerUserId: account.ownerUserId,
+            conversationIsPrivate: conversation.isPrivate,
+            conversationPrivateOwnerUserId: conversation.privateOwnerUserId,
+          };
         }
         // Không claim được placeholder nào → đây là sibling album (hoặc tin thật) → để insert tiếp.
       } else {
-        // Text: match theo content (giữ logic cũ — text không có album).
-        const recentDupe = await prisma.message.findFirst({
+        // Claim one durable CRM text placeholder. Matching only a pending outbox
+        // row (not any recent equal content) preserves legitimate "Ok", "Ok"
+        // sends while still reconciling a response that arrived through selfListen.
+        const pendingTextCandidates = await prisma.message.findMany({
           where: {
             conversationId: conversation.id,
             senderType: 'self',
-            content: msg.content || '',
-            sentAt: { gte: new Date(Date.now() - 30_000) },
+            zaloMsgId: null,
+            deliveryState: { in: ['submitting', 'uncertain'] },
+            contentType: { in: ['text', 'rich'] },
           },
-          orderBy: { sentAt: 'desc' },
-          select: { id: true, zaloMsgId: true },
+          orderBy: [{ sentAt: 'asc' }, { id: 'asc' }],
+          take: 12,
+          select: { id: true, metadata: true, content: true },
         });
-        if (recentDupe) {
-          if (!recentDupe.zaloMsgId && msg.msgId) {
-            await prisma.message.update({
-              where: { id: recentDupe.id },
-              data: { zaloMsgId: msg.msgId, zaloMsgIdNum: dupNum },
-            }).catch(() => {});
+        const listenerText = (() => {
+          const parsed = safeParseJsonObject(msg.content || '');
+          return typeof parsed?.title === 'string' ? parsed.title : (msg.content || '');
+        })();
+        const pendingText = pendingTextCandidates.find((candidate) => {
+          const content = candidate.content || '';
+          const parsed = safeParseJsonObject(content);
+          const comparable = typeof parsed?.title === 'string' ? parsed.title : content;
+          return comparable === listenerText;
+        });
+        if (pendingText) {
+          const pendingMetadata = pendingText.metadata && typeof pendingText.metadata === 'object' && !Array.isArray(pendingText.metadata)
+            ? pendingText.metadata as Record<string, unknown>
+            : {};
+          const claimed = await prisma.message.updateMany({
+            where: {
+              id: pendingText.id,
+              zaloMsgId: null,
+              deliveryState: { in: ['submitting', 'uncertain'] },
+            },
+            data: {
+              zaloMsgId: msg.msgId,
+              zaloMsgIdNum: dupNum,
+              ...(msg.cliMsgId ? { zaloCliMsgId: msg.cliMsgId } : {}),
+              content: msg.content || '',
+              deliveryState: 'accepted',
+              deliveryLeaseId: null,
+              deliveryLeaseUntil: null,
+              metadata: {
+                ...pendingMetadata,
+                sendStatus: 'sent',
+                outboundText: { status: 'listener_confirmed' },
+              },
+            },
+          });
+          if (claimed.count > 0) {
+            const reconciled = await prisma.message.findUnique({ where: { id: pendingText.id } });
+            if (reconciled) {
+              await updateConversationAfterMessage(conversation.id, sentAt, true);
+              publishMessagePersisted({ messageId: reconciled.id, conversationId: conversation.id });
+              logger.debug(`[message-handler] Claimed text outbox placeholder ${reconciled.id}`);
+              return {
+                message: reconciled,
+                conversationId: conversation.id,
+                orgId: account.orgId,
+                contactId,
+                privacyMode: account.privacyMode,
+                ownerUserId: account.ownerUserId,
+                conversationIsPrivate: conversation.isPrivate,
+                conversationPrivateOwnerUserId: conversation.privateOwnerUserId,
+              };
+            }
           }
+        }
+
+        // Exact remote id is the only safe generic duplicate key. Equal text is
+        // not a duplicate because users commonly send short replies repeatedly.
+        const exactRemote = await prisma.message.findFirst({
+          where: { conversationId: conversation.id, zaloMsgId: msg.msgId },
+          select: { id: true },
+        });
+        if (exactRemote) {
           if (msg.cliMsgId) {
             await prisma.message.update({
-              where: { id: recentDupe.id },
+              where: { id: exactRemote.id },
               data: { zaloCliMsgId: msg.cliMsgId },
             }).catch(() => {});
           }
-          // 2026-06-19 Cầu Telegram: đây là echo của tin OUTBOUND gửi từ CRM (sale web /
-          // automation / hệ thống / bridge). Đường này return TRƯỚC nhánh create nên phải bắn
-          // publishMessagePersisted Ở ĐÂY để cầu mirror sang Telegram. Tin sentVia='bridge'
-          // (gốc Telegram) sẽ bị forwarder bỏ qua (chống lặp).
-          publishMessagePersisted({ messageId: recentDupe.id, conversationId: conversation.id });
-          logger.debug('[message-handler] Skipping self echo: content match within 30s');
+          publishMessagePersisted({ messageId: exactRemote.id, conversationId: conversation.id });
           return null;
         }
       }

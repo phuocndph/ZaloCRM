@@ -7,6 +7,7 @@
 import { ref, computed } from 'vue';
 import { api } from '@/api/index';
 import type { ConversationState } from '@/composables/use-conversation-state';
+import { parseFriendAcceptedNotice } from '@/composables/zalo-system-notice';
 
 const PAGE_SIZE = 30;
 
@@ -39,6 +40,8 @@ export function useMobileConversations() {
   const loadingMore = ref(false);
   const page = ref(1);
   const total = ref(0);
+  const serverHasMore = ref(false);
+  const nextCursor = ref<string | null>(null);
   const search = ref('');
   const unreadOnly = ref(false);
   const unrepliedOnly = ref(false);
@@ -48,7 +51,7 @@ export function useMobileConversations() {
   let loadController: AbortController | null = null;
   let loadMoreController: AbortController | null = null;
 
-  const hasMore = computed(() => items.value.length < total.value);
+  const hasMore = computed(() => serverHasMore.value);
   const isUnread = (c: MConversation) => (c.unreadCount ?? 0) > 0 || c.userState?.isManualUnread === true;
   const displayItems = computed(() => {
     const pinned: MConversation[] = [];
@@ -87,6 +90,8 @@ export function useMobileConversations() {
       if (version !== queryVersion) return;
       items.value = data.conversations ?? [];
       total.value = data.total ?? items.value.length;
+      serverHasMore.value = typeof data.hasMore === 'boolean' ? data.hasMore : items.value.length < total.value;
+      nextCursor.value = typeof data.nextCursor === 'string' ? data.nextCursor : null;
       page.value = 1;
     } catch {
       if (version === queryVersion && !controller.signal.aborted) {
@@ -106,12 +111,19 @@ export function useMobileConversations() {
     loadingMore.value = true;
     try {
       const next = page.value + 1;
-      const { data } = await api.get('/conversations', { params: params(next), signal: controller.signal });
+      const requestParams = params(next);
+      if (nextCursor.value) {
+        requestParams.cursor = nextCursor.value;
+        delete requestParams.page;
+      }
+      const { data } = await api.get('/conversations', { params: requestParams, signal: controller.signal });
       if (version !== queryVersion) return;
       const incoming: MConversation[] = data.conversations ?? [];
       const seen = new Set(items.value.map((c) => c.id));
       items.value.push(...incoming.filter((c) => !seen.has(c.id)));
-      total.value = data.total ?? total.value;
+      if (data.total != null) total.value = data.total;
+      serverHasMore.value = typeof data.hasMore === 'boolean' ? data.hasMore : incoming.length >= PAGE_SIZE;
+      nextCursor.value = typeof data.nextCursor === 'string' ? data.nextCursor : null;
       page.value = next;
     } catch {
       // Loading the next page should not block the current list.
@@ -215,6 +227,7 @@ export function previewText(conv: MConversation): string {
   if (conv.redacted) return '🔒 Nội dung riêng tư';
   // Tin thu hồi — hiện NHÃN, không hiện nội dung gốc (đồng bộ với bản desktop).
   if (m.isDeleted) return '🔂 Tin nhắn đã thu hồi';
+  if (parseFriendAcceptedNotice(m.content)) return 'Đã đồng ý kết bạn';
   const kind = m.contentType ?? 'text';
   if (kind === 'image') return '🖼️ Hình ảnh';
   if (kind === 'video') return '🎬 Video';

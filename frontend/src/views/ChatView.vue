@@ -553,7 +553,13 @@ const toast = useToast();
 
 async function onDeleteMessage(msgId: string) {
   if (!selectedConvId.value) return;
-  await deleteMessage(selectedConvId.value, msgId);
+  try {
+    await deleteMessage(selectedConvId.value, msgId);
+    toast.success('Đã xóa tin nhắn ở phía bạn');
+    await fetchMessages(selectedConvId.value);
+  } catch (err: any) {
+    toast.error(err?.response?.data?.error || 'Không xóa được tin nhắn');
+  }
 }
 async function onUndoMessage(msgId: string) {
   if (!selectedConvId.value) return;
@@ -579,8 +585,9 @@ async function onEditMessage(msgId: string, content: string) {
 async function onForwardMessage(msgId: string, targetIds: string[]) {
   if (!selectedConvId.value) return;
   try {
-    await forwardMessage(selectedConvId.value, msgId, targetIds);
-    toast.success(`Đã chuyển tiếp tới ${targetIds.length} hội thoại`);
+    const result = await forwardMessage(selectedConvId.value, msgId, targetIds);
+    if (result.pendingConfirmation) toast.warning('Zalo đang xác nhận một số tệp, không cần gửi lại');
+    else toast.success(`Đã chuyển tiếp tới ${result.forwarded} hội thoại`);
   } catch (err: any) {
     toast.error(err?.response?.data?.error || 'Không chuyển tiếp được');
   }

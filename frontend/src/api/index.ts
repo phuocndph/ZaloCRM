@@ -173,7 +173,7 @@ api.interceptors.response.use(
     } else if (status === 404) {
       // 404 thường là logic (entity không tồn tại) — chỉ log, không toast
       console.warn(`[api] 404 Not Found: ${url}`);
-    } else if (typeof status === 'number' && status >= 500) {
+    } else if (typeof status === 'number' && status >= 500 && !original._skipGlobalErrorToast) {
       console.error(`[api] ${status} server error: ${url}`, error.response?.data);
       const now = Date.now();
       if (now - last5xxToastAt > TOAST_5XX_THROTTLE_MS) {

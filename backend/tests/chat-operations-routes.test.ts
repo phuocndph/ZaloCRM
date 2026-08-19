@@ -14,6 +14,7 @@ const eventBufferMock = mockEventBuffer();
 vi.mock('../src/shared/database/prisma-client.js', () => ({ prisma: prismaMock }));
 vi.mock('../src/shared/zalo-operations.js', () => ({
   zaloOps: zaloOpsMock,
+  isZaloDeliveryUncertain: (error: any) => error?.deliveryUncertain === true,
   ZaloOpError: class extends Error {
     code: string; statusCode: number;
     constructor(msg: string, code: string, statusCode = 400) {
@@ -135,20 +136,38 @@ describe('POST /api/v1/conversations/:id/typing', () => {
 
 // ── Delete message ────────────────────────────────────────────────────────────
 describe('DELETE /api/v1/conversations/:id/messages/:msgId', () => {
-  it('happy path — deletes and marks db row', async () => {
+  it('deletes locally by default and hides the CRM row', async () => {
     const app = buildApp();
     const res = await app.inject({ method: 'DELETE', url: '/api/v1/conversations/conv-1/messages/msg-1', payload: {} });
     expect(res.statusCode).toBe(200);
-    expect(zaloOpsMock.deleteMessage).toHaveBeenCalledWith('za-1', 'zalo-msg-1', 'cli-msg-1', 'uid-sender', 'ext-1', 0, false);
-    expect(prismaMock.message.update).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'msg-1' } }));
+    expect(zaloOpsMock.deleteMessage).toHaveBeenCalledWith('za-1', 'zalo-msg-1', 'cli-msg-1', 'uid-sender', 'ext-1', 0, true);
+    expect(prismaMock.message.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'msg-1' },
+      data: { hiddenAt: expect.any(Date) },
+    }));
   });
 
-  it('onlyMe=true skips db update', async () => {
+  it('keeps the legacy onlyMe=false mode separate from local delete', async () => {
     const app = buildApp();
-    const res = await app.inject({ method: 'DELETE', url: '/api/v1/conversations/conv-1/messages/msg-1', payload: { onlyMe: true } });
+    const res = await app.inject({ method: 'DELETE', url: '/api/v1/conversations/conv-1/messages/msg-1', payload: { onlyMe: false } });
     expect(res.statusCode).toBe(200);
-    expect(zaloOpsMock.deleteMessage).toHaveBeenCalledWith('za-1', 'zalo-msg-1', 'cli-msg-1', 'uid-sender', 'ext-1', 0, true);
-    expect(prismaMock.message.update).not.toHaveBeenCalled();
+    expect(zaloOpsMock.deleteMessage).toHaveBeenCalledWith('za-1', 'zalo-msg-1', 'cli-msg-1', 'uid-sender', 'ext-1', 0, false);
+    expect(prismaMock.message.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: { isDeleted: true, deletedAt: expect.any(Date) },
+    }));
+  });
+
+  it('deduplicates a repeated local delete without calling Zalo again', async () => {
+    prismaMock.message.findFirst.mockResolvedValueOnce({
+      id: 'msg-1', zaloMsgId: 'zalo-msg-1', zaloCliMsgId: 'cli-msg-1', senderUid: 'uid-sender',
+      senderType: 'self', repliedByUserId: 'user-1', content: 'hello', contentType: 'text',
+      sentAt: new Date(), albumKey: null, isDeleted: false, hiddenAt: new Date(),
+    });
+    const app = buildApp();
+    const res = await app.inject({ method: 'DELETE', url: '/api/v1/conversations/conv-1/messages/msg-1', payload: {} });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ success: true, deduplicated: true });
+    expect(zaloOpsMock.deleteMessage).not.toHaveBeenCalled();
   });
 });
 
@@ -160,6 +179,19 @@ describe('POST /api/v1/conversations/:id/messages/:msgId/undo', () => {
     expect(res.statusCode).toBe(200);
     expect(zaloOpsMock.undoMessage).toHaveBeenCalledWith('za-1', 'zalo-msg-1', 'cli-msg-1', 'uid-sender', 'ext-1', 0);
     expect(prismaMock.message.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ isDeleted: true }) }));
+  });
+
+  it('deduplicates a repeated recall without calling Zalo again', async () => {
+    prismaMock.message.findFirst.mockResolvedValueOnce({
+      id: 'msg-1', zaloMsgId: 'zalo-msg-1', zaloCliMsgId: 'cli-msg-1', senderUid: 'uid-sender',
+      senderType: 'self', repliedByUserId: 'user-1', content: 'hello', contentType: 'text',
+      sentAt: new Date(), albumKey: null, isDeleted: true, hiddenAt: null,
+    });
+    const app = buildApp();
+    const res = await app.inject({ method: 'POST', url: '/api/v1/conversations/conv-1/messages/msg-1/undo', payload: {} });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ success: true, deduplicated: true });
+    expect(zaloOpsMock.undoMessage).not.toHaveBeenCalled();
   });
 });
 
@@ -197,14 +229,12 @@ describe('POST /api/v1/conversations/:id/forward', () => {
       ['ext-1'],
       0,
       expect.objectContaining({ id: 'zalo-msg-1' }),
+      { maxAttempts: 1 },
     );
   });
 
   it('forwards image messages by resending the media file to targets', async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
-    });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(new Uint8Array([1, 2, 3]), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
     prismaMock.message.findFirst.mockResolvedValueOnce({
       id: 'msg-img-1',
@@ -231,7 +261,15 @@ describe('POST /api/v1/conversations/:id/forward', () => {
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toMatchObject({ success: true, forwarded: 1, failed: 0 });
     expect(fetchMock).toHaveBeenCalled();
-    expect(zaloOpsMock.sendFile).toHaveBeenCalledWith('za-1', 'ext-1', 0, [expect.stringContaining('image.jpg')], expect.anything());
+    expect(zaloOpsMock.sendFile).toHaveBeenCalledWith(
+      'za-1',
+      'ext-1',
+      0,
+      [expect.stringContaining('image.jpg')],
+      expect.anything(),
+      '',
+      { maxAttempts: 1 },
+    );
     expect(prismaMock.message.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ conversationId: 'conv-2', contentType: 'image', senderType: 'self' }),
     }));
@@ -242,6 +280,28 @@ describe('POST /api/v1/conversations/:id/forward', () => {
     const app = buildApp();
     const res = await app.inject({ method: 'POST', url: '/api/v1/conversations/conv-1/forward', payload: { msgId: 'msg-1' } });
     expect(res.statusCode).toBe(400);
+  });
+
+  it('returns pending instead of encouraging a duplicate retry when delivery is uncertain', async () => {
+    const target = { ...CONV, id: 'conv-2', zaloAccount: ACCOUNT };
+    prismaMock.conversation.findFirst.mockResolvedValueOnce(CONV);
+    prismaMock.conversation.findMany.mockResolvedValue([target]);
+    zaloOpsMock.forwardMessage.mockRejectedValueOnce(
+      Object.assign(new Error('socket closed after submit'), { deliveryUncertain: true }),
+    );
+    const app = buildApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/conversations/conv-1/forward',
+      payload: { msgId: 'msg-1', targetConversationIds: ['conv-2'] },
+    });
+    expect(res.statusCode).toBe(202);
+    expect(JSON.parse(res.body)).toMatchObject({
+      forwarded: 0,
+      failed: 0,
+      pendingConfirmation: 1,
+      code: 'FORWARD_IN_PROGRESS',
+    });
   });
 });
 

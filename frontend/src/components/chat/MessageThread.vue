@@ -376,7 +376,15 @@
       />
 
       <!-- ════════ Messages ════════ -->
-      <div v-if="!privateBlocked" ref="messagesContainer" class="messages chat-messages-area" :class="{ 'is-virtual-mode': isVirtualConv }" @scroll.passive="onMessagesScroll">
+      <div
+        v-if="!privateBlocked"
+        ref="messagesContainer"
+        class="messages chat-messages-area"
+        :class="{ 'is-virtual-mode': isVirtualConv }"
+        @scroll.passive="onMessagesScroll"
+        @load.capture="onMessageMediaLayout"
+        @loadedmetadata.capture="onMessageMediaLayout"
+      >
         <v-progress-linear v-if="loadingOlder" indeterminate color="primary" class="mb-2" />
         <v-progress-linear v-if="loading" indeterminate color="primary" class="mb-2" />
 
@@ -416,6 +424,8 @@
                       :src="getImageUrl(m)!"
                       alt="Hình ảnh"
                       class="album-tile"
+                      loading="lazy"
+                      decoding="async"
                       :data-msg-id="m.id"
                       :data-zalo-msg-id="m.zaloMsgId || ''"
                       @click="onAlbumTileClick(item, m, $event)"
@@ -446,6 +456,13 @@
                 </div>
               </div>
             </div>
+          </div>
+
+          <!-- Zalo new-friend e-card — compact timeline event, never show the raw image URL. -->
+          <div v-else-if="parseFriendAcceptedNotice(item.msg.content)" class="msg-system-event friend-accepted-notice">
+            <UserCheckIcon :size="15" :stroke-width="2" aria-hidden="true" />
+            <span class="friend-accepted-text">{{ parseFriendAcceptedNotice(item.msg.content)!.label }}</span>
+            <span class="friend-accepted-time">· {{ formatMessageTime(item.msg.sentAt) }}</span>
           </div>
 
           <!-- Reminder notice — render inline timeline event (centered, no bubble) -->
@@ -529,6 +546,10 @@
 
         <div v-if="!loading && messages.length === 0" class="text-center pa-8 text-grey">Chưa có tin nhắn</div>
       </div>
+
+      <button v-if="newMessageCount > 0" class="new-message-jump" type="button" @click="jumpToLatest">
+        {{ newMessageCount }} tin nhắn mới
+      </button>
 
       <!-- Typing indicator -->
       <TypingIndicator v-if="!privateBlocked" :typers="currentTypers" />
@@ -968,6 +989,7 @@
 <script setup lang="ts">
 import { ref, watch, nextTick, computed, onMounted, onBeforeUnmount } from 'vue';
 import { useChat, type Conversation, type Message } from '@/composables/use-chat';
+import { parseFriendAcceptedNotice } from '@/composables/zalo-system-notice';
 import { formatInOrgTz, weekdayInOrgTz, getOrgParts } from '@/composables/use-org-timezone';
 import { api } from '@/api/index';
 import { saveFromChat, saveFromChatBatch, toggleFavorite } from '@/api/media';
@@ -2572,7 +2594,7 @@ async function onDropFiles(event: DragEvent) {
 }
 
 async function sendAttachments(files: File[], caption = '') {
-  if (!props.conversation?.id || !files.length) return false;
+  if (!props.conversation?.id || !files.length) return files;
   const conversationId = props.conversation.id;
   uploadingAttachments.value = true;
   uploadProgress.value = 0;
@@ -2582,14 +2604,18 @@ async function sendAttachments(files: File[], caption = '') {
     const fd = new FormData();
     if (caption) fd.append('caption', caption);
     for (const file of files) fd.append('files', file, file.name);
-    let requestEchoId = attachmentEchoIds.get(files[0]);
-    if (!requestEchoId) {
-      requestEchoId = crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      files.forEach((file) => attachmentEchoIds.set(file, requestEchoId!));
-    }
+    const newEchoId = () => crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const fileEchoIds = files.map((file) => {
+      const existing = attachmentEchoIds.get(file);
+      if (existing) return existing;
+      const created = newEchoId();
+      attachmentEchoIds.set(file, created);
+      return created;
+    });
+    const requestEchoId = newEchoId();
     const sentAt = new Date().toISOString();
     const optimisticMessages: Message[] = files.map((file, index) => {
-      const temporaryId = `pending:${requestEchoId}:${index}`;
+      const temporaryId = `pending:${fileEchoIds[index]}`;
       const contentType = file.type.startsWith('image/')
         ? 'image'
         : file.type.startsWith('video/') ? 'video' : 'file';
@@ -2615,8 +2641,8 @@ async function sendAttachments(files: File[], caption = '') {
         reactions: [],
         reactionDetails: [],
         isPending: true,
-        clientEchoId: `${requestEchoId}:${index}`,
-        echoId: `${requestEchoId}:${index}`,
+        clientEchoId: fileEchoIds[index],
+        echoId: fileEchoIds[index],
         sentVia: 'user',
         metadata: { sender: { kind: 'user_crm', name: 'Staff' } },
       };
@@ -2624,10 +2650,12 @@ async function sendAttachments(files: File[], caption = '') {
     const temporaryIds = optimisticMessages.map((message) => message.id);
     addOptimisticMessages(conversationId, optimisticMessages);
     fd.append('echoId', requestEchoId);
+    fd.append('echoIds', JSON.stringify(fileEchoIds));
     const response = await api.post(`/conversations/${conversationId}/attachments`, fd, {
       headers: {
         'Content-Type': 'multipart/form-data',
         'X-Attachment-Echo-Id': requestEchoId,
+        'X-Attachment-Echo-Ids': JSON.stringify(fileEchoIds),
         'X-Attachment-Count': String(files.length),
       },
       timeout: 120000,
@@ -2638,23 +2666,33 @@ async function sendAttachments(files: File[], caption = '') {
           : 'Đang tải tệp lên máy chủ…';
       },
     });
-    reconcileOptimisticMessages(conversationId, temporaryIds, response.data.messages ?? []);
-    files.forEach((file) => attachmentEchoIds.delete(file));
-    toast.success(`Đã gửi ${files.length} tệp đính kèm`);
-    emit('refresh-thread');
-    return true;
-  } catch (err) {
-    const requestEchoId = attachmentEchoIds.get(files[0]);
-    if (requestEchoId) {
-      removeOptimisticMessages(
-        conversationId,
-        files.map((_, index) => `pending:${requestEchoId}:${index}`),
-      );
+    const failedIndices = new Set<number>(
+      Array.isArray(response.data.failedIndices) ? response.data.failedIndices : [],
+    );
+    const successfulTemporaryIds = temporaryIds.filter((_, index) => !failedIndices.has(index));
+    const failedTemporaryIds = temporaryIds.filter((_, index) => failedIndices.has(index));
+    reconcileOptimisticMessages(conversationId, successfulTemporaryIds, response.data.messages ?? []);
+    removeOptimisticMessages(conversationId, failedTemporaryIds);
+    const failedFiles = files.filter((_, index) => failedIndices.has(index));
+    files.forEach((file) => {
+      if (!failedFiles.includes(file)) attachmentEchoIds.delete(file);
+    });
+    if (failedFiles.length > 0) {
+      toast.warning(`Đã gửi ${files.length - failedFiles.length}/${files.length} tệp. ${failedFiles.length} tệp đang chờ thử lại.`);
+    } else {
+      toast.success(`Đã gửi ${files.length} tệp đính kèm`);
     }
+    emit('refresh-thread');
+    return failedFiles;
+  } catch (err) {
+    removeOptimisticMessages(
+      conversationId,
+      files.map((file) => `pending:${attachmentEchoIds.get(file) ?? ''}`),
+    );
     const detail = (err as { response?: { data?: { error?: string } } })?.response?.data?.error || 'Upload thất bại';
     toast.error(`Lỗi gửi tệp: ${detail}`);
     console.error('[upload-attachments]', err);
-    return false;
+    return files;
   } finally {
     uploadingAttachments.value = false;
     uploadProgress.value = 0;
@@ -3249,9 +3287,10 @@ async function handleSend() {
   }
   if (attachmentsToSend.length) {
     pendingAttachments.value = pendingAttachments.value.filter((file) => !attachmentsToSend.includes(file));
-    const sent = await sendAttachments(attachmentsToSend, attachmentCaption);
-    if (sent) attachmentsToSend.forEach(revokeAttachmentPreview);
-    else pendingAttachments.value = [...attachmentsToSend, ...pendingAttachments.value];
+    const failedFiles = await sendAttachments(attachmentsToSend, attachmentCaption);
+    const failedSet = new Set(failedFiles);
+    attachmentsToSend.filter((file) => !failedSet.has(file)).forEach(revokeAttachmentPreview);
+    if (failedFiles.length) pendingAttachments.value = [...failedFiles, ...pendingAttachments.value];
   }
 }
 
@@ -3287,12 +3326,16 @@ function getImageUrl(msg: Message): string | null {
   return null;
 }
 
-/** Scroll xuống đáy (tin nhắn mới nhất). Retry sau khi images load. */
-const scrollRetryTimers: ReturnType<typeof setTimeout>[] = [];
+/** Chỉ bám đáy khi người dùng đang đọc tin mới nhất. */
+const isNearMessageBottom = ref(true);
+const newMessageCount = ref(0);
 let olderRequestPending = false;
 
 function onMessagesScroll() {
   const el = messagesContainer.value;
+  if (!el) return;
+  isNearMessageBottom.value = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  if (isNearMessageBottom.value) newMessageCount.value = 0;
   if (!el || el.scrollTop >= 64 || props.loading || props.loadingOlder || !props.hasOlderMessages || olderRequestPending) return;
   olderRequestPending = true;
   emit('load-older');
@@ -3304,22 +3347,28 @@ watch(() => props.loadingOlder, (loading) => {
 
 function scrollToBottom(immediate = false) {
   if (!messagesContainer.value) return;
-  while (scrollRetryTimers.length) clearTimeout(scrollRetryTimers.pop());
   const el = messagesContainer.value;
-  el.scrollTop = el.scrollHeight;
-  if (!immediate) {
-    // Retry vài lần vì image load async — đảm bảo cuộn xuống tận cùng sau khi hình rendered
-    for (const delay of [100, 400, 1000]) {
-      scrollRetryTimers.push(setTimeout(() => { el.scrollTop = el.scrollHeight; }, delay));
-    }
-  }
+  el.scrollTo({ top: el.scrollHeight, behavior: immediate ? 'auto' : 'smooth' });
+  isNearMessageBottom.value = true;
+  newMessageCount.value = 0;
+}
+
+function jumpToLatest() { scrollToBottom(false); }
+
+async function onMessageMediaLayout() {
+  if (!isNearMessageBottom.value) return;
+  await nextTick();
+  const el = messagesContainer.value;
+  if (el) el.scrollTop = el.scrollHeight;
 }
 
 // Khi messages thêm (tin mới đến) → scroll mượt
 watch(() => props.messages.at(-1)?.id, async (newLastId, oldLastId) => {
   if (!newLastId || newLastId === oldLastId) return;
   await nextTick();
-  scrollToBottom();
+  const latest = props.messages.at(-1);
+  if (isNearMessageBottom.value || latest?.senderType === 'self') scrollToBottom();
+  else newMessageCount.value += 1;
 });
 
 // Khi đổi sang conv khác → reset scroll xuống đáy ngay + retry sau khi messages
@@ -3328,6 +3377,8 @@ watch(() => props.messages.at(-1)?.id, async (newLastId, oldLastId) => {
 //   (matching Zalo/Messenger native behavior). Skip mobile để tránh bật bàn phím ảo.
 watch(() => props.conversation?.id, async (newId) => {
   if (!newId) return;
+  isNearMessageBottom.value = true;
+  newMessageCount.value = 0;
   await nextTick();
   scrollToBottom(true);
   // Auto-focus editor — skip mobile (window.innerWidth < 768) tránh bật keyboard
@@ -3359,9 +3410,18 @@ watch(() => props.editingMessage?.id, async (id) => {
     editorRef.value?.focus();
   }
 });
-onBeforeUnmount(() => {
-  while (scrollRetryTimers.length) clearTimeout(scrollRetryTimers.pop());
+let messageResizeObserver: ResizeObserver | null = null;
+onMounted(async () => {
+  await nextTick();
+  if (!messagesContainer.value || typeof ResizeObserver === 'undefined') return;
+  messageResizeObserver = new ResizeObserver(() => {
+    if (isNearMessageBottom.value && messagesContainer.value) {
+      messagesContainer.value.scrollTop = messagesContainer.value.scrollHeight;
+    }
+  });
+  messageResizeObserver.observe(messagesContainer.value);
 });
+onBeforeUnmount(() => messageResizeObserver?.disconnect());
 </script>
 
 <style scoped>
@@ -4149,6 +4209,23 @@ onBeforeUnmount(() => {
   background-clip: content-box;
 }
 .messages::-webkit-scrollbar-thumb:hover { background: rgba(15, 23, 42, 0.24); background-clip: content-box; }
+.new-message-jump {
+  position: absolute;
+  right: 18px;
+  bottom: 88px;
+  z-index: 12;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid color-mix(in srgb, var(--smax-primary, #1786be) 35%, white);
+  border-radius: 7px;
+  background: var(--cl-surface, #fff);
+  color: var(--smax-primary, #1786be);
+  box-shadow: 0 3px 12px rgba(15, 23, 42, 0.14);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.new-message-jump:hover { background: var(--smax-primary-soft, #e6f1ff); }
 /* Tin CUỐI mỗi cụm chừa thêm khoảng cách → tách cụm rõ (~11px tổng). */
 .msg-bubble-wrap.group-end { margin-bottom: 8px; }
 .msg-divider {
@@ -4228,6 +4305,27 @@ onBeforeUnmount(() => {
 .msg-system-event.reminder-notice .reminder-notice-time {
   color: var(--smax-grey-700);
   font-weight: 500;
+}
+.msg-system-event.friend-accepted-notice {
+  gap: 5px;
+  margin: 7px auto;
+  padding: 5px 10px;
+  max-width: min(86%, 520px);
+  background: rgba(22, 163, 74, 0.06);
+  border-color: rgba(22, 163, 74, 0.14);
+  color: #237a46;
+  line-height: 1.35;
+}
+.friend-accepted-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.friend-accepted-time {
+  flex: 0 0 auto;
+  color: var(--chat-meta, #758195);
+  font-size: 11px;
 }
 
 /* Phase A UI fix (2026-05-21):

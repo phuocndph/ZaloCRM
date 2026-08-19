@@ -57,7 +57,7 @@ export function buildSearchWhere(params: SearchParams): Prisma.MessageWhereInput
   const type = (params.type ?? 'all').toLowerCase();
   const senderType = (params.senderType ?? 'all').toLowerCase();
 
-  const where: Prisma.MessageWhereInput = { conversationId };
+  const where: Prisma.MessageWhereInput = { conversationId, hiddenAt: null };
   if (term) where.content = { contains: term, mode: 'insensitive' };
   if (senderType === 'self' || senderType === 'contact') where.senderType = senderType;
 

@@ -129,14 +129,47 @@ export async function saveFromChatBatch(
 }
 
 /** Chèn 1 asset từ kho vào 1 hội thoại (gửi đi). addTags: gắn tag/dự án LÚC GỬI (2026-06-15). */
+export interface MediaSendResponse {
+  message: unknown;
+  deduplicated?: boolean;
+  pendingConfirmation?: boolean;
+  code?: string;
+}
+
+const pendingMediaEchoIds = new Map<string, string>();
+
+function mediaEchoId(assetId: string, conversationId: string): string {
+  const key = `${conversationId}:${assetId}`;
+  const existing = pendingMediaEchoIds.get(key);
+  if (existing) return existing;
+  const id = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  pendingMediaEchoIds.set(key, id);
+  return id;
+}
+
 export async function sendMediaToConversation(
   assetId: string,
   conversationId: string,
   caption?: string,
   addTags?: string[],
-): Promise<{ message: unknown }> {
-  const { data } = await api.post(`/media/${assetId}/send`, { conversationId, caption, addTags });
-  return data;
+  echoId?: string,
+): Promise<MediaSendResponse> {
+  const key = `${conversationId}:${assetId}`;
+  const stableEchoId = echoId || mediaEchoId(assetId, conversationId);
+  try {
+    const { data } = await api.post(`/media/${assetId}/send`, {
+      conversationId,
+      caption,
+      addTags,
+      echoId: stableEchoId,
+    });
+    if (!echoId) pendingMediaEchoIds.delete(key);
+    return data;
+  } catch (error) {
+    // Giữ echo id khi request lỗi để lần bấm thử lại không gửi trùng nếu Zalo đã nhận.
+    if (!echoId) pendingMediaEchoIds.set(key, stableEchoId);
+    throw error;
+  }
 }
 
 // ── GĐ2 ──────────────────────────────────────────────────────────────────────
@@ -241,7 +274,7 @@ export async function listFavorites(): Promise<MediaAssetItem[]> {
 /** Gửi nhiều ảnh (album) vào 1 hội thoại 1 lần. */
 export async function sendAlbumToConversation(
   assetIds: string[], conversationId: string, caption?: string,
-): Promise<{ sent: number }> {
+): Promise<{ sent: number; pendingConfirmation?: boolean; code?: string; message?: string }> {
   const { data } = await api.post('/media/album/send', { assetIds, conversationId, caption });
   return data;
 }

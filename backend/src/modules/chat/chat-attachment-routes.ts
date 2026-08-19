@@ -20,7 +20,7 @@ import { authMiddleware } from '../auth/auth-middleware.js';
 import { requireZaloAccess } from '../zalo/zalo-access-middleware.js';
 import { zaloPool } from '../zalo/zalo-pool.js';
 import { zaloRateLimiter } from '../zalo/zalo-rate-limiter.js';
-import { zaloOps } from '../../shared/zalo-operations.js';
+import { isZaloDeliveryUncertain, zaloOps } from '../../shared/zalo-operations.js';
 import { generateThumbnail, sendNativeVideo } from '../../shared/video-processor.js';
 import { uploadBuffer, type UploadResult } from '../../shared/storage/minio-client.js';
 import { recordMessageStorageReferences } from '../../shared/storage/storage-ledger.js';
@@ -28,13 +28,20 @@ import { compressImage } from '../media/media-service.js';
 import { logger } from '../../shared/utils/logger.js';
 // Fix 2026-06-03 — M11 optimistic badge cache (Anh báo "Sale CRM · Staff")
 // 2026-06-11 — createMediaMessage gộp 4 block message.create lặp (DRY, eng review E4).
-import { getUserFullName, createMediaMessage } from './chat-helpers.js';
+import {
+  acquireMediaOutbox,
+  createMediaMessage,
+  getUserFullName,
+  outboundDeliveryState,
+  renewOutboundDeliveryLease,
+} from './chat-helpers.js';
 
 export const IMAGE_MAX = 100 * 1024 * 1024;
 export const VIDEO_MAX = 500 * 1024 * 1024;
 export const FILE_MAX = 1024 * 1024 * 1024;
 const MIRROR_CONCURRENCY = 2;
 const IMAGE_BATCH_SIZE = 3;
+const DURABLE_STEP_ATTEMPTS = 3;
 let activeMirrorTasks = 0;
 const pendingMirrorTasks: Array<() => void> = [];
 
@@ -51,6 +58,21 @@ function withMirrorSlot<T>(task: () => Promise<T>): Promise<T> {
     if (activeMirrorTasks < MIRROR_CONCURRENCY) run();
     else pendingMirrorTasks.push(run);
   });
+}
+
+async function retryDurableStep<T>(label: string, task: () => Promise<T>): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= DURABLE_STEP_ATTEMPTS; attempt += 1) {
+    try {
+      return await task();
+    } catch (error) {
+      lastError = error;
+      if (attempt === DURABLE_STEP_ATTEMPTS) break;
+      logger.warn(`[chat-attachment] ${label} failed (${attempt}/${DURABLE_STEP_ATTEMPTS}), retrying`, error);
+      await new Promise((resolve) => setTimeout(resolve, attempt * 200));
+    }
+  }
+  throw lastError;
 }
 export const ALLOWED_IMAGE = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
 export const ALLOWED_VIDEO = ['video/mp4', 'video/quicktime', 'video/webm'];
@@ -84,6 +106,48 @@ function classify(mime: string): 'image' | 'video' | 'file' {
   if (ALLOWED_IMAGE.includes(mime)) return 'image';
   if (ALLOWED_VIDEO.includes(mime)) return 'video';
   return 'file';
+}
+
+export function resolveAttachmentEchoIds(
+  suppliedEchoIds: string[],
+  batchEchoId: string,
+  fileCount: number,
+): Array<string | null> {
+  return Array.from({ length: fileCount }, (_, index) =>
+    suppliedEchoIds[index] || (batchEchoId ? `${batchEchoId}:${index}` : null),
+  );
+}
+
+export function failedAttachmentIndices(fileCount: number, completedIndices: Iterable<number>): number[] {
+  const completed = new Set(completedIndices);
+  return Array.from({ length: fileCount }, (_, index) => index).filter((index) => !completed.has(index));
+}
+
+type AttachmentOutboxRow = {
+  zaloMsgId?: string | null;
+  sentAt?: Date | string;
+  metadata?: unknown;
+  deliveryState?: string | null;
+  deliveryLeaseUntil?: Date | string | null;
+};
+
+export function attachmentOutboxStatus(message: AttachmentOutboxRow): string | null {
+  const metadata = message.metadata;
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) return null;
+  const outbound = (metadata as { outboundAttachment?: unknown }).outboundAttachment;
+  if (!outbound || typeof outbound !== 'object' || Array.isArray(outbound)) return null;
+  const status = (outbound as { status?: unknown }).status;
+  return typeof status === 'string' ? status : null;
+}
+
+export function attachmentDeliveryAccepted(message: AttachmentOutboxRow): boolean {
+  const state = outboundDeliveryState(message);
+  return state === 'accepted' || state === 'completed';
+}
+
+function attachmentDeliveryPending(message: AttachmentOutboxRow): boolean {
+  const state = outboundDeliveryState(message);
+  return state === 'submitting' || state === 'uncertain';
 }
 
 export async function chatAttachmentRoutes(app: FastifyInstance) {
@@ -133,25 +197,63 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
         }
       }
 
-      const limits = await zaloRateLimiter.checkLimits(conversation.zaloAccountId);
-      if (!limits.allowed) return reply.status(429).send({ error: limits.reason });
-
       // The key/count are headers so a retry can be deduplicated before the
       // browser uploads the bytes again.
       const headerEchoId = String(request.headers['x-attachment-echo-id'] ?? '').trim().slice(0, 180);
       const headerFileCount = Number(request.headers['x-attachment-count'] ?? 0);
-      if (headerEchoId && Number.isInteger(headerFileCount) && headerFileCount > 0 && headerFileCount <= 10) {
-        const expectedEchoIds = Array.from({ length: headerFileCount }, (_, index) => `${headerEchoId}:${index}`);
+      const headerEchoIds = (() => {
+        try {
+          const parsed = JSON.parse(String(request.headers['x-attachment-echo-ids'] ?? '[]'));
+          if (!Array.isArray(parsed)) return [];
+          return parsed.map((value) => String(value).trim().slice(0, 180)).filter(Boolean).slice(0, 50);
+        } catch {
+          return [];
+        }
+      })();
+      const preflightEchoIds = headerEchoIds.length === headerFileCount
+        ? headerEchoIds
+        : headerEchoId && Number.isInteger(headerFileCount) && headerFileCount > 0 && headerFileCount <= 50
+          ? Array.from({ length: headerFileCount }, (_, index) => `${headerEchoId}:${index}`)
+          : [];
+      if (preflightEchoIds.length > 0) {
         const existing = await prisma.message.findMany({
-          where: { conversationId: id, clientEchoId: { in: expectedEchoIds } },
+          where: { conversationId: id, clientEchoId: { in: preflightEchoIds } },
           orderBy: { sentAt: 'asc' },
         });
-        if (existing.length === expectedEchoIds.length) return { messages: existing, deduplicated: true };
+        if (
+          existing.length === preflightEchoIds.length
+          && existing.every(attachmentDeliveryAccepted)
+        ) {
+          return { messages: existing, deduplicated: true };
+        }
+        const pendingIndexes = preflightEchoIds
+          .map((echoId, index) => existing.some((message) => message.clientEchoId === echoId && attachmentDeliveryPending(message)) ? index : -1)
+          .filter((index) => index >= 0);
+        if (pendingIndexes.length > 0) {
+          const resolved = new Set(existing.map((message) => message.clientEchoId).filter(Boolean));
+          const failedIndices = preflightEchoIds
+            .map((echoId, index) => resolved.has(echoId) ? -1 : index)
+            .filter((index) => index >= 0);
+          return reply.status(failedIndices.length > 0 ? 207 : 202).send({
+            messages: existing,
+            deduplicated: true,
+            pendingConfirmation: true,
+            pendingConfirmationIndices: pendingIndexes,
+            ...(failedIndices.length > 0 ? { partial: true, failedIndices } : {}),
+          });
+        }
       }
+
+      // A retry for an already accepted batch must be allowed through even if
+      // the account is currently rate-limited. Only new Zalo sends consume the
+      // limiter budget.
+      const limits = await zaloRateLimiter.checkLimits(conversation.zaloAccountId);
+      if (!limits.allowed) return reply.status(429).send({ error: limits.reason });
 
       // Parse multipart parts
       let caption = '';
       let echoId = headerEchoId;
+      let suppliedEchoIds = headerEchoIds;
       const files: ParsedFile[] = [];
       const tmpRoot = path.join(tmpdir(), 'zalocrm-upload', randomUUID());
       const tmpPaths: string[] = [];
@@ -162,6 +264,15 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
             caption = String(part.value ?? '');
           } else if (part.type === 'field' && part.fieldname === 'echoId') {
             echoId = String(part.value ?? '').trim().slice(0, 180);
+          } else if (part.type === 'field' && part.fieldname === 'echoIds') {
+            try {
+              const parsed = JSON.parse(String(part.value ?? '[]'));
+              if (Array.isArray(parsed)) {
+                suppliedEchoIds = parsed.map((value) => String(value).trim().slice(0, 180)).filter(Boolean).slice(0, 50);
+              }
+            } catch {
+              suppliedEchoIds = [];
+            }
           } else if (part.type === 'file') {
             if (!isAllowed(part.mimetype)) {
               await rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
@@ -195,18 +306,34 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
         return reply.status(400).send({ error: 'No files uploaded' });
       }
 
-      // A timeout can leave the browser unsure whether Zalo already received the
-      // upload. Reuse the same echoId on retry and return the complete prior send.
-      if (echoId) {
-        const expectedEchoIds = files.map((_, index) => `${echoId}:${index}`);
-        const existing = await prisma.message.findMany({
-          where: { conversationId: id, clientEchoId: { in: expectedEchoIds } },
-          orderBy: { sentAt: 'asc' },
+      // Mỗi file có một echoId ổn định. Khi một lô chỉ gửi thành công một phần,
+      // lần retry có thể chỉ upload các file lỗi mà không đổi danh tính/index.
+      const fileEchoIds = resolveAttachmentEchoIds(suppliedEchoIds, echoId, files.length);
+      const expectedEchoIds = fileEchoIds.filter((value): value is string => !!value);
+      const existing = expectedEchoIds.length > 0
+        ? await prisma.message.findMany({
+            where: { conversationId: id, clientEchoId: { in: expectedEchoIds } },
+            orderBy: { sentAt: 'asc' },
+          })
+        : [];
+      const acceptedExisting = existing.filter(attachmentDeliveryAccepted);
+      const pendingExisting = existing.filter(attachmentDeliveryPending);
+      const existingByEchoId = new Map(
+        [...acceptedExisting, ...pendingExisting]
+          .filter((message) => message.clientEchoId)
+          .map((message) => [message.clientEchoId!, message]),
+      );
+      if (expectedEchoIds.length === files.length && acceptedExisting.length === expectedEchoIds.length) {
+        await rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
+        return { messages: acceptedExisting, deduplicated: true };
+      }
+      if (expectedEchoIds.length === files.length && existingByEchoId.size === expectedEchoIds.length) {
+        await rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
+        return reply.status(202).send({
+          messages: files.map((_, index) => existingByEchoId.get(fileEchoIds[index] ?? '')).filter(Boolean),
+          deduplicated: true,
+          pendingConfirmation: true,
         });
-        if (existing.length === expectedEchoIds.length) {
-          await rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
-          return { messages: existing, deduplicated: true };
-        }
       }
 
       const threadId = conversation.externalThreadId || '';
@@ -215,27 +342,91 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
 
       // Files are already streamed to tmp. Mirroring can overlap with the Zalo upload.
       const mirrors: UploadResult[] = [];
+      const completedByIndex = new Map<number, any>();
+      const acceptedByIndex = new Map<number, any>();
+      const zaloAcceptedIndices = new Set<number>();
+      const acceptedZaloMsgIds = new Map<number, string>();
+      const pendingConfirmationByIndex = new Map<number, any>();
+      const acquiredIndices = new Set<number>();
+      const acquiredMessageIds: string[] = [];
+      const attemptedIndices = new Set<number>();
+      fileEchoIds.forEach((fileEchoId, index) => {
+        if (fileEchoId && existingByEchoId.has(fileEchoId)) {
+          completedByIndex.set(index, existingByEchoId.get(fileEchoId));
+        }
+      });
+      let newlyCreatedCount = 0;
+      const deliveryLeaseId = randomUUID();
+      let leaseHeartbeat: ReturnType<typeof setInterval> | null = null;
       try {
         const tmpReadyAt = Date.now();
 
+        const pendingFileContent = (index: number) => {
+          const file = files[index];
+          return file.kind === 'file'
+            ? JSON.stringify({ href: '', name: file.filename, size: file.size, mime: file.mimeType, title: caption })
+            : JSON.stringify({ href: '', thumb: '', size: file.size, name: file.filename, title: caption });
+        };
+        // Claim every per-file echo id before touching Zalo. A concurrent retry
+        // can observe the row, but only this request receives `acquired`.
+        for (let index = 0; index < files.length; index += 1) {
+          if (completedByIndex.has(index)) continue;
+          const acquired = await retryDurableStep(`acquire outbound file ${index}`, () => acquireMediaOutbox({
+            conversationId: id,
+            zaloAccount: conversation.zaloAccount,
+            repliedByUserId: user.id,
+            zaloMsgId: '',
+            contentType: files[index].kind,
+            content: pendingFileContent(index),
+            metadata: {
+              sender: { kind: 'user_crm', name: userFullName },
+              sendStatus: 'sending',
+              outboundAttachment: { status: 'submitting' },
+            },
+            sentVia: 'user',
+            clientEchoId: fileEchoIds[index],
+            sentAt: new Date(),
+            deliveryLeaseId,
+          }));
+          if (acquired.state === 'accepted') {
+            acceptedByIndex.set(index, acquired.message);
+            completedByIndex.set(index, acquired.message);
+          } else if (acquired.state === 'in_progress' || acquired.state === 'uncertain') {
+            pendingConfirmationByIndex.set(index, acquired.message);
+            completedByIndex.set(index, acquired.message);
+          } else {
+            acquiredIndices.add(index);
+            acquiredMessageIds.push(acquired.message.id);
+          }
+        }
+        if (acquiredMessageIds.length > 0) {
+          leaseHeartbeat = setInterval(() => {
+            void renewOutboundDeliveryLease(acquiredMessageIds, deliveryLeaseId)
+              .catch((error) => logger.warn('[chat-attachment] delivery lease heartbeat failed', error));
+          }, 60_000);
+          leaseHeartbeat.unref?.();
+        }
+
         // The CRM mirror is not required by the Zalo API. Running it concurrently
         // removes a full storage/nén wait from the perceived send latency.
-        const mirrorTasks = files.map((f, i) => withMirrorSlot(async () => {
+        const mirrorTasks = files.map((f, i) => {
+          if (completedByIndex.has(i)) return Promise.resolve();
+          return withMirrorSlot(() => retryDurableStep(`mirror file ${i}`, async () => {
           // 2026-06-22: NÉN ảnh trước khi LƯU mirror (R2) — giảm dung lượng. Ảnh GỬI khách dùng
           // tmpPath (bytes GỐC) nên khách vẫn nhận ảnh nét; chỉ bản lưu/hiển thị-CRM là webp nhẹ.
           // compressImage tự bỏ qua video/file + gif/định dạng lạ + fallback gốc nếu sharp lỗi.
-          const source = await readFile(tmpPaths[i]);
-          const proc = f.kind === 'image'
-            ? await compressImage(source, f.mimeType)
-            : { buffer: source, mimeType: f.mimeType };
-          mirrors[i] = await uploadBuffer(proc.buffer, proc.mimeType, f.filename);
-        }));
+            const source = await readFile(tmpPaths[i]);
+            const proc = f.kind === 'image'
+              ? await compressImage(source, f.mimeType)
+              : { buffer: source, mimeType: f.mimeType };
+            mirrors[i] = await uploadBuffer(proc.buffer, proc.mimeType, f.filename);
+          }));
+        });
         // A Zalo failure can return before a mirror task finishes. Attach a
         // rejection handler now so that such a late storage error is logged,
         // rather than becoming an unhandled promise rejection.
         void Promise.all(mirrorTasks).catch((err) => logger.error('[chat-attachment] mirror failed:', err));
 
-        const created: any[] = [];
         const recordStorage = async (
           message: { id: string; sentAt?: Date },
           uploads: Array<{ upload: UploadResult; purpose: string }>,
@@ -252,12 +443,47 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
             err,
           }));
         };
+        const completeFile = async (index: number, message: any) => {
+          completedByIndex.set(index, message);
+          newlyCreatedCount += 1;
+          await emitChatMessage({
+            io,
+            orgId: user.orgId,
+            accountId: conversation.zaloAccountId,
+            conversationId: id,
+            message,
+            privacyMode: conversation.zaloAccount.privacyMode,
+            ownerUserId: conversation.zaloAccount.ownerUserId,
+            isPrivate: conversation.isPrivate,
+            privateOwnerUserId: conversation.privateOwnerUserId,
+          });
+        };
+        const prepareAcceptedFile = async (index: number, zaloMsgId: string) => {
+          const message = await retryDurableStep(`persist accepted file ${index}`, () => createMediaMessage({
+            conversationId: id,
+            zaloAccount: conversation.zaloAccount,
+            repliedByUserId: user.id,
+            zaloMsgId,
+            contentType: files[index].kind,
+            content: pendingFileContent(index),
+            metadata: {
+              sender: { kind: 'user_crm', name: userFullName },
+              sendStatus: 'sending',
+              outboundAttachment: { status: 'zalo_accepted' },
+            },
+            sentVia: 'user',
+            clientEchoId: fileEchoIds[index],
+          }));
+          acceptedByIndex.set(index, message);
+          return message;
+        };
 
         // Split by kind — image batch vs video one-by-one vs file one-by-one
         const imageIndexes: number[] = [];
         const videoIndexes: number[] = [];
         const fileIndexes: number[] = [];
         files.forEach((f, i) => {
+          if (completedByIndex.has(i)) return;
           if (f.kind === 'image') imageIndexes.push(i);
           else if (f.kind === 'video') videoIndexes.push(i);
           else fileIndexes.push(i);
@@ -270,10 +496,13 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
           for (let start = 0; start < imageIndexes.length; start += IMAGE_BATCH_SIZE) {
             const batchIndexes = imageIndexes.slice(start, start + IMAGE_BATCH_SIZE);
             const paths = batchIndexes.map((i) => tmpPaths[i]);
+            batchIndexes.forEach((index) => {
+              attemptedIndices.add(index);
+            });
             const sendResult: any = await zaloOps.sendImage(
               conversation.zaloAccountId, threadId, threadType as 0 | 1, paths, io, caption,
+              { maxAttempts: 1 },
             );
-            await Promise.all(batchIndexes.map((i) => mirrorTasks[i]));
           // FIX 2026-07-13 — msgId PER ẢNH. Gửi lô N ảnh = 1 lệnh sendMessage, zca-js trả
           // `attachment: [{msgId}, ...]` mỗi phần tử ứng 1 ảnh. Nếu dùng CHUNG 1 msgId cho
           // mọi ảnh thì message thứ 2 vi phạm UNIQUE(conversation_id, zalo_msg_id) → create
@@ -281,28 +510,45 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
           // NULL không đụng UNIQUE).
             const attachArr: any[] = Array.isArray(sendResult?.attachment) ? sendResult.attachment : [];
             const usedMsgIds = new Set<string>();
-            for (const [k, i] of batchIndexes.entries()) {
-            let zaloMsgId = String(attachArr[k]?.msgId ?? '');
+            const batchZaloMsgIds = batchIndexes.map((_, k) => {
+              let zaloMsgId = String(attachArr[k]?.msgId ?? '');
             // Lô 1 ảnh: một số shape chỉ trả msgId ở cấp ngoài.
-            if (!zaloMsgId && batchIndexes.length === 1) zaloMsgId = extractZaloMsgId(sendResult);
+              if (!zaloMsgId && batchIndexes.length === 1) zaloMsgId = extractZaloMsgId(sendResult);
             // Chống trùng trong cùng lô (an toàn tuyệt đối với UNIQUE).
-            if (zaloMsgId && usedMsgIds.has(zaloMsgId)) zaloMsgId = '';
-            if (zaloMsgId) usedMsgIds.add(zaloMsgId);
-
-            const mirror = mirrors[i];
-            const msg = await createMediaMessage({
-              conversationId: id,
-              zaloAccount: conversation.zaloAccount,
-              repliedByUserId: user.id,
-              zaloMsgId,
-              contentType: 'image',
-              content: JSON.stringify({ href: mirror.url, thumb: mirror.url, size: mirror.size, title: caption }),
-              metadata: { sender: { kind: 'user_crm', name: userFullName } },
-              sentVia: 'user',
-              clientEchoId: echoId ? `${echoId}:${i}` : null,
+              if (zaloMsgId && usedMsgIds.has(zaloMsgId)) zaloMsgId = '';
+              if (zaloMsgId) usedMsgIds.add(zaloMsgId);
+              return zaloMsgId;
             });
-            await recordStorage(msg, [{ upload: mirror, purpose: 'primary' }]);
-            created.push(msg);
+            batchIndexes.forEach((index, position) => {
+              zaloAcceptedIndices.add(index);
+              acceptedZaloMsgIds.set(index, batchZaloMsgIds[position]);
+            });
+
+            // Persist Zalo acceptance before waiting for compression/storage.
+            // A retry can now recover this row without delivering the image twice.
+            await Promise.all(batchIndexes.map((i, k) => prepareAcceptedFile(i, batchZaloMsgIds[k])));
+            await Promise.all(batchIndexes.map((i) => mirrorTasks[i]));
+
+            for (const [k, i] of batchIndexes.entries()) {
+              const zaloMsgId = batchZaloMsgIds[k];
+              const mirror = mirrors[i];
+              const msg = await retryDurableStep(`finalize image ${i}`, () => createMediaMessage({
+                conversationId: id,
+                zaloAccount: conversation.zaloAccount,
+                repliedByUserId: user.id,
+                zaloMsgId,
+                contentType: 'image',
+                content: JSON.stringify({ href: mirror.url, thumb: mirror.url, size: mirror.size, title: caption }),
+                metadata: {
+                  sender: { kind: 'user_crm', name: userFullName },
+                  sendStatus: 'sent',
+                  outboundAttachment: { status: 'mirrored' },
+                },
+                sentVia: 'user',
+                clientEchoId: fileEchoIds[i],
+              }));
+              await recordStorage(msg, [{ upload: mirror, purpose: 'primary' }]);
+              await completeFile(i, msg);
             }
           }
         }
@@ -312,6 +558,7 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
           let generatedThumbnail: Awaited<ReturnType<typeof generateThumbnail>> | null = null;
           let thumbnailMirror: UploadResult | null = null;
           let thumbnailMirrorTask: Promise<UploadResult> | null = null;
+          let nativeDeliveryAccepted = false;
           try {
             generatedThumbnail = await generateThumbnail(tmpPaths[i]);
             thumbnailMirrorTask = withMirrorSlot(async () => {
@@ -323,6 +570,7 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
             logger.warn('[chat-attachment] Video thumbnail generation failed:', err);
           }
           try {
+            attemptedIndices.add(i);
             const sendResult: any = await sendNativeVideo({
               api: instance.api as any,
               accountId: conversation.zaloAccountId,
@@ -331,29 +579,47 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
               threadId,
               threadType: threadType as 0 | 1,
               message: caption,
+              maxAttempts: 1,
             });
-            const [, mirroredThumbnail] = await Promise.all([mirrorTasks[i], thumbnailMirrorTask]);
-            thumbnailMirror = mirroredThumbnail ?? null;
+            nativeDeliveryAccepted = true;
             const zaloMsgId = extractZaloMsgId(sendResult);
+            zaloAcceptedIndices.add(i);
+            acceptedZaloMsgIds.set(i, zaloMsgId);
+            await prepareAcceptedFile(i, zaloMsgId);
+            const [, mirroredThumbnail] = await Promise.all([mirrorTasks[i], thumbnailMirrorTask]).catch((error) => {
+              throw new Error(`VIDEO_SEND_UNCERTAIN: mirror failed after send: ${(error as Error)?.message ?? error}`);
+            });
+            thumbnailMirror = mirroredThumbnail ?? null;
             const mirror = mirrors[i];
             const thumbUrl = thumbnailMirror?.url ?? mirror.url;
-            const msg = await createMediaMessage({
+            const msg = await retryDurableStep(`finalize video ${i}`, () => createMediaMessage({
               conversationId: id,
               zaloAccount: conversation.zaloAccount,
               repliedByUserId: user.id,
               zaloMsgId,
               contentType: 'video',
               content: JSON.stringify({ href: mirror.url, thumb: thumbUrl, thumbUrl, thumbnail: thumbUrl, size: mirror.size, title: caption }),
-              metadata: { sender: { kind: 'user_crm', name: userFullName } },
+              metadata: {
+                sender: { kind: 'user_crm', name: userFullName },
+                sendStatus: 'sent',
+                outboundAttachment: { status: 'mirrored' },
+              },
               sentVia: 'user',
-              clientEchoId: echoId ? `${echoId}:${i}` : null,
-            });
+              clientEchoId: fileEchoIds[i],
+            }));
             await recordStorage(msg, [
-                          { upload: mirror, purpose: 'primary' },
-                          ...(thumbnailMirror ? [{ upload: thumbnailMirror, purpose: 'thumbnail' }] : []),
-                        ]);
-            created.push(msg);
+              { upload: mirror, purpose: 'primary' },
+              ...(thumbnailMirror ? [{ upload: thumbnailMirror, purpose: 'thumbnail' }] : []),
+            ]);
+            await completeFile(i, msg);
           } catch (err) {
+            if (
+              nativeDeliveryAccepted
+              || isZaloDeliveryUncertain(err)
+              || String((err as Error)?.message || err).includes('VIDEO_SEND_UNCERTAIN')
+            ) {
+              throw err;
+            }
             logger.error('[chat-attachment] Native video send failed, trying fallback:', err);
             // Fallback: regular attachment send
             const sendResult: any = await zaloOps.sendFile(
@@ -362,28 +628,37 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
               threadType as 0 | 1,
               [tmpPaths[i]],
               io,
+              '',
+              { maxAttempts: 1 },
             );
+            const zaloMsgId = extractZaloMsgId(sendResult);
+            zaloAcceptedIndices.add(i);
+            acceptedZaloMsgIds.set(i, zaloMsgId);
+            await prepareAcceptedFile(i, zaloMsgId);
             const [, mirroredThumbnail] = await Promise.all([mirrorTasks[i], thumbnailMirrorTask]);
             thumbnailMirror = mirroredThumbnail ?? null;
-            const zaloMsgId = extractZaloMsgId(sendResult);
             const mirror = mirrors[i];
             const thumbUrl = thumbnailMirror?.url ?? mirror.url;
-            const msg = await createMediaMessage({
+            const msg = await retryDurableStep(`finalize fallback video ${i}`, () => createMediaMessage({
               conversationId: id,
               zaloAccount: conversation.zaloAccount,
               repliedByUserId: user.id,
               zaloMsgId,
               contentType: 'video',
               content: JSON.stringify({ href: mirror.url, thumb: thumbUrl, thumbUrl, thumbnail: thumbUrl, size: mirror.size, title: caption }),
-              metadata: { sender: { kind: 'user_crm', name: userFullName } },
+              metadata: {
+                sender: { kind: 'user_crm', name: userFullName },
+                sendStatus: 'sent',
+                outboundAttachment: { status: 'mirrored' },
+              },
               sentVia: 'user',
-              clientEchoId: echoId ? `${echoId}:${i}` : null,
-            });
+              clientEchoId: fileEchoIds[i],
+            }));
             await recordStorage(msg, [
-                          { upload: mirror, purpose: 'primary' },
-                          ...(thumbnailMirror ? [{ upload: thumbnailMirror, purpose: 'thumbnail' }] : []),
-                        ]);
-            created.push(msg);
+              { upload: mirror, purpose: 'primary' },
+              ...(thumbnailMirror ? [{ upload: thumbnailMirror, purpose: 'thumbnail' }] : []),
+            ]);
+            await completeFile(i, msg);
           } finally {
             await generatedThumbnail?.cleanup().catch(() => {});
           }
@@ -391,6 +666,7 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
 
         // Send files (generic) one-by-one
         for (const i of fileIndexes) {
+          attemptedIndices.add(i);
           const sendResult: any = await zaloOps.sendFile(
             conversation.zaloAccountId,
             threadId,
@@ -398,44 +674,38 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
             [tmpPaths[i]],
             io,
             caption,
+            { maxAttempts: 1 },
           );
-          await mirrorTasks[i];
           const zaloMsgId = extractZaloMsgId(sendResult);
+          zaloAcceptedIndices.add(i);
+          acceptedZaloMsgIds.set(i, zaloMsgId);
+          await prepareAcceptedFile(i, zaloMsgId);
+          await mirrorTasks[i];
           const mirror = mirrors[i];
           const f = files[i];
-          const msg = await createMediaMessage({
+          const msg = await retryDurableStep(`finalize file ${i}`, () => createMediaMessage({
             conversationId: id,
             zaloAccount: conversation.zaloAccount,
             repliedByUserId: user.id,
             zaloMsgId,
             contentType: 'file',
             content: JSON.stringify({ href: mirror.url, name: f.filename, size: mirror.size, mime: f.mimeType, title: caption }),
-            clientEchoId: echoId ? `${echoId}:${i}` : null,
-          });
+            metadata: {
+              sender: { kind: 'user_crm', name: userFullName },
+              sendStatus: 'sent',
+              outboundAttachment: { status: 'mirrored' },
+            },
+            sentVia: 'user',
+            clientEchoId: fileEchoIds[i],
+          }));
           await recordStorage(msg, [{ upload: mirror, purpose: 'primary' }]);
-          created.push(msg);
+          await completeFile(i, msg);
         }
 
         await prisma.conversation.update({
           where: { id },
           data: { lastMessageAt: new Date(), isReplied: true, unreadCount: 0 },
         });
-
-        for (const m of created) {
-          // PRIVACY 2026-06-11: redact + scope org (emit-chat). Nick main → URL file
-          // KHÔNG ra room org (chỉ chính chủ đã unlock nhận bản thật).
-          await emitChatMessage({
-            io,
-            orgId: user.orgId,
-            accountId: conversation.zaloAccountId,
-            conversationId: id,
-            message: m,
-            privacyMode: conversation.zaloAccount.privacyMode,
-            ownerUserId: conversation.zaloAccount.ownerUserId,
-            isPrivate: conversation.isPrivate,
-            privateOwnerUserId: conversation.privateOwnerUserId,
-          });
-        }
 
         logger.info('[chat-perf] attachment send', {
           conversationId: id,
@@ -445,11 +715,179 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
           totalMs: Date.now() - requestStartedAt,
         });
 
-        return { messages: created };
+        const responseBody = {
+          messages: files.map((_, index) => completedByIndex.get(index)).filter(Boolean),
+          deduplicated: acceptedExisting.length > 0,
+        };
+        if (pendingConfirmationByIndex.size > 0) {
+          return reply.status(202).send({
+            ...responseBody,
+            pendingConfirmation: true,
+            pendingConfirmationIndices: Array.from(pendingConfirmationByIndex.keys()),
+            code: 'ATTACHMENT_IN_PROGRESS',
+            message: 'Một số tệp đang được Zalo xác nhận.',
+          });
+        }
+        return responseBody;
       } catch (err: any) {
         logger.error('[chat-attachment] upload error:', err);
-        return reply.status(500).send({ error: err?.message ?? 'attachment send failed' });
+        // The listener may already have claimed the durable row created before
+        // the Zalo call. Resolve exact echo ids before using the looser fallback.
+        for (const index of attemptedIndices) {
+          if (acceptedByIndex.has(index) || !fileEchoIds[index]) continue;
+          const persisted = await prisma.message.findUnique({
+            where: {
+              conversationId_clientEchoId: {
+                conversationId: id,
+                clientEchoId: fileEchoIds[index]!,
+              },
+            },
+          }).catch(() => null);
+          if (persisted && (zaloAcceptedIndices.has(index) || attachmentDeliveryAccepted(persisted))) {
+            acceptedByIndex.set(index, persisted);
+          }
+        }
+        // A socket timeout can hide a successful Zalo delivery. The listener now
+        // claims the exact durable row, so poll those echo ids only. Never adopt
+        // a nearby native-Zalo upload by type/time.
+        for (let poll = 0; poll < 8; poll += 1) {
+          const missing = Array.from(attemptedIndices).filter((index) => !acceptedByIndex.has(index));
+          if (missing.length === 0) break;
+          if (poll > 0) await new Promise((resolve) => setTimeout(resolve, 500));
+          for (const index of missing) {
+            const echoId = fileEchoIds[index];
+            if (!echoId) continue;
+            const persisted = await prisma.message.findUnique({
+              where: { conversationId_clientEchoId: { conversationId: id, clientEchoId: echoId } },
+            }).catch(() => null);
+            if (persisted && attachmentDeliveryAccepted(persisted)) acceptedByIndex.set(index, persisted);
+          }
+        }
+        // Zalo already acknowledged these files. Keep their durable rows and
+        // never put them back into the client retry queue, even if mirroring or
+        // a later persistence step failed.
+        for (const [index, accepted] of acceptedByIndex) {
+          if (completedByIndex.has(index)) continue;
+          const echoId = fileEchoIds[index];
+          const current = echoId
+            ? await prisma.message.findUnique({
+                where: { conversationId_clientEchoId: { conversationId: id, clientEchoId: echoId } },
+              }).catch(() => null)
+            : await prisma.message.findUnique({ where: { id: accepted.id } }).catch(() => null);
+          if (!current) continue;
+          const currentMetadata = current.metadata && typeof current.metadata === 'object' && !Array.isArray(current.metadata)
+            ? current.metadata as Record<string, unknown>
+            : {};
+          const acceptedZaloMsgId = acceptedZaloMsgIds.get(index) || '';
+          const settled = await prisma.message.update({
+            where: { id: current.id },
+            data: {
+              ...(acceptedZaloMsgId
+                ? {
+                    zaloMsgId: acceptedZaloMsgId,
+                    zaloMsgIdNum: /^\d+$/.test(acceptedZaloMsgId) ? BigInt(acceptedZaloMsgId) : null,
+                  }
+                : {}),
+              metadata: {
+                ...currentMetadata,
+                sendStatus: 'sent',
+                outboundAttachment: { status: 'accepted_pending_mirror' },
+              },
+              deliveryState: 'accepted',
+              deliveryLeaseId: null,
+              deliveryLeaseUntil: null,
+            },
+          }).catch(() => current);
+          completedByIndex.set(index, settled);
+          newlyCreatedCount += 1;
+          await emitChatMessage({
+            io: (app as any).io as Server,
+            orgId: user.orgId,
+            accountId: conversation.zaloAccountId,
+            conversationId: id,
+            message: settled,
+            privacyMode: conversation.zaloAccount.privacyMode,
+            ownerUserId: conversation.zaloAccount.ownerUserId,
+            isPrivate: conversation.isPrivate,
+            privateOwnerUserId: conversation.privateOwnerUserId,
+          }).catch(() => {});
+        }
+        if (newlyCreatedCount > 0) {
+          await prisma.conversation.update({
+            where: { id },
+            data: { lastMessageAt: new Date(), isReplied: true, unreadCount: 0 },
+          }).catch(() => {});
+        }
+        const ambiguousDelivery = isZaloDeliveryUncertain(err)
+          || String(err?.message || err).includes('VIDEO_SEND_UNCERTAIN');
+        const unresolvedIndices = failedAttachmentIndices(files.length, completedByIndex.keys());
+        for (const index of unresolvedIndices) {
+          if (!acquiredIndices.has(index)) continue;
+          const fileEchoId = fileEchoIds[index];
+          if (!fileEchoId) continue;
+          const current = await prisma.message.findUnique({
+            where: { conversationId_clientEchoId: { conversationId: id, clientEchoId: fileEchoId } },
+          }).catch(() => null);
+          if (!current || attachmentDeliveryAccepted(current)) continue;
+          const currentMetadata = current.metadata && typeof current.metadata === 'object' && !Array.isArray(current.metadata)
+            ? current.metadata as Record<string, unknown>
+            : {};
+          const isUncertain = ambiguousDelivery && attemptedIndices.has(index);
+          const settled = await prisma.message.update({
+            where: { id: current.id },
+            data: {
+              metadata: {
+                ...currentMetadata,
+                sendStatus: isUncertain ? 'sending' : 'failed',
+                ...(isUncertain ? {} : { failReason: err?.message ?? 'attachment send failed' }),
+                outboundAttachment: {
+                  status: isUncertain ? 'uncertain' : 'failed',
+                  ...(isUncertain ? { reason: err?.message ?? 'Zalo chưa trả kết quả gửi' } : {}),
+                },
+              },
+              deliveryState: isUncertain ? 'uncertain' : 'failed',
+              deliveryLeaseId: null,
+              deliveryLeaseUntil: null,
+            },
+          }).catch(() => current);
+          if (isUncertain) {
+            pendingConfirmationByIndex.set(index, settled);
+            completedByIndex.set(index, settled);
+            await emitChatMessage({
+              io: (app as any).io as Server,
+              orgId: user.orgId,
+              accountId: conversation.zaloAccountId,
+              conversationId: id,
+              message: settled,
+              privacyMode: conversation.zaloAccount.privacyMode,
+              ownerUserId: conversation.zaloAccount.ownerUserId,
+              isPrivate: conversation.isPrivate,
+              privateOwnerUserId: conversation.privateOwnerUserId,
+            }).catch(() => {});
+          }
+        }
+        if (pendingConfirmationByIndex.size > 0) {
+          await prisma.conversation.update({
+            where: { id },
+            data: { lastMessageAt: new Date(), isReplied: true, unreadCount: 0 },
+          }).catch(() => {});
+        }
+        const failedIndices = failedAttachmentIndices(files.length, completedByIndex.keys());
+        const response = {
+          messages: files.map((_, index) => completedByIndex.get(index)).filter(Boolean),
+          ...(pendingConfirmationByIndex.size > 0
+            ? {
+                pendingConfirmation: true,
+                pendingConfirmationIndices: Array.from(pendingConfirmationByIndex.keys()),
+              }
+            : {}),
+          ...(failedIndices.length > 0
+            ? { partial: true, failedIndices, error: err?.message ?? 'attachment send failed' }
+            : {}),
+        };
+        return reply.status(failedIndices.length > 0 ? 207 : 202).send(response);
       } finally {
+        if (leaseHeartbeat) clearInterval(leaseHeartbeat);
         // Clean tmp files (best effort)
         for (const p of tmpPaths) {
           if (p) await unlink(p).catch(() => {});

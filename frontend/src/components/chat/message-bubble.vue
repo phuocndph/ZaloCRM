@@ -138,9 +138,14 @@
             <div class="reply-text">{{ replyPreviewText }}</div>
           </div>
 
+          <div v-if="attachmentPlaceholderLabel" class="attachment-placeholder">
+            <v-icon size="20">{{ attachmentPlaceholderIcon }}</v-icon>
+            <span>{{ attachmentPlaceholderLabel }}</span>
+          </div>
+
           <!-- Reminder card — đặt TRƯỚC image branch vì thumb URL của reminder có đuôi .png
                sẽ làm getImageUrl trả về và render full size hình minh hoạ Zalo (bug cũ). -->
-          <div v-if="isReminderMessage(message)" class="reminder-card">
+          <div v-else-if="isReminderMessage(message)" class="reminder-card">
             <div class="d-flex align-center mb-1">
               <v-icon size="16" color="warning" class="mr-1">mdi-calendar-clock</v-icon>
               <span class="text-caption font-weight-bold" style="color: #FFB74D;">Nhắc hẹn</span>
@@ -309,6 +314,10 @@
         <div v-if="sendFailReason" class="send-failed">
           <v-icon size="13">mdi-alert-circle-outline</v-icon>
           Gửi thất bại: {{ sendFailReason }}
+        </div>
+        <div v-else-if="deliverySyncLabel && !attachmentPlaceholderLabel" class="send-syncing">
+          <v-icon size="13">mdi-cloud-sync-outline</v-icon>
+          {{ deliverySyncLabel }}
         </div>
 
         <!-- Timestamp — chỉ hiện ở tin CUỐI cụm (1 lần), nhỏ + xám. -->
@@ -757,6 +766,52 @@ const sendFailReason = computed<string | null>(() => {
   const m = props.message.metadata as { sendStatus?: string; failReason?: string } | null | undefined;
   return m?.sendStatus === 'failed' ? (m.failReason || 'không gửi được') : null;
 });
+const attachmentOutboxStatus = computed(() => {
+  const metadata = props.message.metadata as {
+    outboundAttachment?: { status?: string };
+  } | null | undefined;
+  return metadata?.outboundAttachment?.status ?? null;
+});
+const attachmentSyncLabel = computed<string | null>(() => {
+  if (
+    attachmentOutboxStatus.value === 'submitting'
+    || attachmentOutboxStatus.value === 'sending'
+    || attachmentOutboxStatus.value === 'uncertain'
+  ) {
+    return 'Đang xác nhận gửi qua Zalo';
+  }
+  if (attachmentOutboxStatus.value === 'zalo_accepted' || attachmentOutboxStatus.value === 'accepted_pending_mirror') {
+    return 'Đã gửi, đang đồng bộ bản lưu';
+  }
+  return null;
+});
+const textOutboxStatus = computed(() => {
+  const metadata = props.message.metadata as {
+    outboundText?: { status?: string };
+  } | null | undefined;
+  return metadata?.outboundText?.status ?? null;
+});
+const deliverySyncLabel = computed<string | null>(() => {
+  if (attachmentSyncLabel.value) return attachmentSyncLabel.value;
+  if (textOutboxStatus.value === 'submitting' || textOutboxStatus.value === 'uncertain') {
+    return 'Đang xác nhận gửi qua Zalo';
+  }
+  return null;
+});
+const attachmentPlaceholderLabel = computed<string | null>(() => {
+  if (!['image', 'video', 'file'].includes(props.message.contentType)) return null;
+  const hasMedia = props.message.contentType === 'image'
+    ? !!getImageUrl(props.message)
+    : props.message.contentType === 'video'
+      ? !!(getVideoUrl(props.message) || videoThumb.value)
+      : !!getFileInfo(props.message)?.href;
+  if (hasMedia) return null;
+  if (attachmentSyncLabel.value) return attachmentSyncLabel.value;
+  return attachmentOutboxStatus.value === 'failed' ? 'Tệp đính kèm chưa được gửi' : null;
+});
+const attachmentPlaceholderIcon = computed(() => props.message.contentType === 'image'
+  ? 'mdi-image-outline'
+  : props.message.contentType === 'video' ? 'mdi-video-outline' : 'mdi-file-document-outline');
 
 // ── Sticker — fetch metadata + CSS sprite animation cho animated stickers ──
 interface StickerMeta {
@@ -1371,6 +1426,27 @@ function onFileClick(href: string, name?: string) {
   color: #d9534f;
 }
 .send-failed :deep(.v-icon) { color: #d9534f; }
+.send-syncing {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  color: var(--smax-grey-700, #5f6b7a);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.attachment-placeholder {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 180px;
+  min-height: 52px;
+  padding: 10px 12px;
+  color: var(--smax-grey-700, #5f6b7a);
+  background: rgba(95, 107, 122, 0.08);
+  border-radius: 6px;
+  font-size: 13px;
+}
 .media-caption {
   margin-top: 6px;
   font-size: 13.5px;

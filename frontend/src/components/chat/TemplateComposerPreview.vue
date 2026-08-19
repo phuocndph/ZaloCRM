@@ -184,9 +184,15 @@ async function sendTextBlock(b: TemplateBlock) {
   });
 }
 async function sendMediaBlock(b: TemplateBlock) {
-  for (const a of b.attachments ?? []) {
+  for (const [index, a] of (b.attachments ?? []).entries()) {
     if (!a.assetId) throw new Error('Ảnh không có trong Kho Media — không gửi được');
-    await sendMediaToConversation(a.assetId, props.conversationId);
+    await sendMediaToConversation(
+      a.assetId,
+      props.conversationId,
+      undefined,
+      undefined,
+      echoFor(`${b.id}:media:${index}`),
+    );
   }
 }
 

@@ -89,6 +89,14 @@
       />
     </div>
 
+    <v-progress-linear
+      v-if="loading && conversations.length > 0"
+      indeterminate
+      height="2"
+      color="primary"
+      class="cl-refresh-progress"
+    />
+
     <!-- ════════ Conv items ════════ -->
     <div
       ref="scrollContainer"
@@ -369,6 +377,7 @@ import { loadTagTaxonomy, findTagBySlug, useTagTaxonomy } from '@/composables/us
 import { getAutoTagDef } from '@/constants/auto-tags';
 import PrivateBlur from '@/components/privacy/PrivateBlur.vue';
 import { usePrivacyVisibility } from '@/composables/use-privacy-visibility';
+import { parseFriendAcceptedNotice } from '@/composables/zalo-system-notice';
 
 import { useAuthStore } from '@/stores/auth';
 import {
@@ -1280,6 +1289,10 @@ function computeLastMessagePreview(conv: Conversation): PreviewResult {
   // E04 Tin thu hồi — anh chốt icon 🔂 (proposal 2026-05-21), tone muted
   if (msg.isDeleted) return { text: '🔂 Tin nhắn đã thu hồi', tone: 'muted' };
 
+  if (parseFriendAcceptedNotice(msg.content)) {
+    return { text: 'Đã đồng ý kết bạn', tone: 'muted' };
+  }
+
   // 2026-07-11 redesign: BỎ prefix "Bạn:" — CRM nhiều nhân viên, Hàng 2 hiện NHÃN người
   // trả lời cuối riêng (👤 Phước / 🤖 AI / 🤖 Bot) qua lastReplierLabel(). Preview chỉ còn nội dung.
   const prefix = '';
@@ -1422,6 +1435,7 @@ function lastMessagePreviewIcon(conv: Conversation): string | null {
   const msg = conv.messages?.[0];
   if (!msg) return null;
   if (msg.isDeleted) return 'mdi-message-off-outline';
+  if (parseFriendAcceptedNotice(msg.content)) return 'mdi-account-check-outline';
 
   let action = '';
   if (msg.content?.startsWith('{')) {

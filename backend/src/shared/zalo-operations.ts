@@ -22,9 +22,17 @@ export class ZaloOpError extends Error {
     message: string,
     public readonly code: 'NOT_CONNECTED' | 'RATE_LIMITED' | 'SESSION_EXPIRED' | 'API_ERROR' | 'INVALID_PARAMS',
     public readonly statusCode: number = 400,
+    public readonly deliveryUncertain: boolean = false,
   ) {
     super(message);
     this.name = 'ZaloOpError';
+  }
+}
+
+export class ZaloDeliveryUncertainError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'ZaloDeliveryUncertainError';
   }
 }
 
@@ -54,6 +62,7 @@ export interface ExecOptions {
   socketPayload?: any;         // data to emit (merged with result)
   suppressErrorLog?: (err: any) => boolean;
   maxAttempts?: number;        // reduce for non-idempotent operations that must not be sent twice
+  deliveryOperation?: boolean; // response loss may hide an accepted external send
 }
 
 interface ZaloCredentials {
@@ -115,7 +124,7 @@ function isSessionExpiredError(err: any): boolean {
  * Bằng chứng: "sendImage failed: TypeError: fetch failed" + "SocketError: other side closed"
  * + Symbol(undici UND_ERR_SOCKET) khi gửi album 7 ảnh (zca-js Promise.all upload song song).
  */
-function isTransientNetworkError(err: any): boolean {
+export function isTransientNetworkError(err: any): boolean {
   // undici socket errors mang Symbol UND_ERR — bắt cả ở err và err.cause.
   const undiciFlag = (e: any) => e && (e[Symbol.for('undici.error.UND_ERR')] === true
     || Object.getOwnPropertySymbols(e).some((s) => String(s).includes('UND_ERR')));
@@ -215,14 +224,6 @@ export async function exec<T>(opts: ExecOptions, fn: (api: any) => Promise<T>): 
         logger.warn(`[zalo-ops:${accountId}] Session expired during ${operation}, attempting reconnect...`);
         try {
           await attemptReconnect(accountId);
-          // After reconnect, get fresh API instance
-          const freshInstance = zaloPool.getInstance(accountId);
-          if (freshInstance?.api && freshInstance.status === 'connected') {
-            // Use fresh API directly — don't mutate the captured reference
-            const retryResult = await fn(freshInstance.api);
-            zaloRateLimiter.recordSend(accountId, category);
-            return retryResult;
-          }
         } catch (reconnectErr) {
           logger.error(`[zalo-ops:${accountId}] Reconnect failed:`, reconnectErr);
           throw new ZaloOpError(
@@ -230,6 +231,23 @@ export async function exec<T>(opts: ExecOptions, fn: (api: any) => Promise<T>): 
             'SESSION_EXPIRED',
             401,
           );
+        }
+        // Reconnect now, send only on the caller's next explicit attempt. An
+        // automatic replay could duplicate a delivery whose response was lost.
+        if (opts.deliveryOperation && MAX_ATTEMPTS === 1) {
+          throw new ZaloOpError(
+            'Phiên Zalo vừa được kết nối lại. Vui lòng gửi lại tin nhắn.',
+            'SESSION_EXPIRED',
+            409,
+          );
+        }
+        // After reconnect, get fresh API instance
+        const freshInstance = zaloPool.getInstance(accountId);
+        if (freshInstance?.api && freshInstance.status === 'connected') {
+          // Use fresh API directly — don't mutate the captured reference
+          const retryResult = await fn(freshInstance.api);
+          zaloRateLimiter.recordSend(accountId, category);
+          return retryResult;
         }
       }
 
@@ -255,6 +273,11 @@ export async function exec<T>(opts: ExecOptions, fn: (api: any) => Promise<T>): 
   }
   const zaloCode = lastError?.code; // ZaloApiError exposes .code = Zalo error_code (e.g., 113, 222)
   const msg = lastError?.message || String(lastError);
+  const deliveryUncertain = Boolean(
+    opts.deliveryOperation
+    && !isDeterministicZaloRejection(lastError)
+    && (isTransientNetworkError(lastError) || zaloCode == null),
+  );
 
   // User-friendly message cho 1 số Zalo error code phổ biến (2026-05-21).
   if (operation === 'undo' && zaloCode === 112) {
@@ -269,6 +292,7 @@ export async function exec<T>(opts: ExecOptions, fn: (api: any) => Promise<T>): 
     `${operation} failed: ${msg}${zaloCode != null ? ` [zalo:${zaloCode}]` : ''}`,
     'API_ERROR',
     500,
+    deliveryUncertain,
   );
 }
 
@@ -283,15 +307,37 @@ async function sendMessage(
   io?: Server | null,
   options?: Pick<ExecOptions, 'maxAttempts'>,
 ) {
-  return exec({ accountId, category: 'message', operation: 'sendMessage', io, socketEvent: 'chat:message', ...options },
+  return exec({ accountId, category: 'message', operation: 'sendMessage', io, socketEvent: 'chat:message', deliveryOperation: true, ...options },
     (api) => api.sendMessage(msg, threadId, threadType));
+}
+
+
+export function isDeterministicZaloRejection(err: any): boolean {
+  const code = err?.code;
+  if ((typeof code === 'number' && Number.isFinite(code)) || (typeof code === 'string' && /^\d+$/.test(code))) return true;
+  const message = String(err?.message || err || '');
+  return /\[zalo:\d+\]|invalid params|tham số không hợp lệ|không thể nhận tin|chặn không nhận tin|người lạ/i.test(message);
+}
+
+export function isZaloDeliveryUncertain(err: unknown): boolean {
+  if (err instanceof ZaloDeliveryUncertainError) return true;
+  if (err instanceof ZaloOpError) return err.deliveryUncertain;
+  return isTransientNetworkError(err) && !isDeterministicZaloRejection(err);
 }
 
 // 2026-06-12 FIX: thêm `msg` (kể cả '') vào payload. zca-js sendMessage.cjs:445 đọc
 // `msg.length` → thiếu msg = crash undefined. Có msg + attachments là local path CÓ ĐUÔI
 // ảnh (.jpg/.png/.webp) → Zalo nhận ẢNH INLINE (không phải file). caption tùy chọn.
-async function sendImage(accountId: string, threadId: string, threadType: 0 | 1, attachments: any[], io?: Server | null, caption: string = '') {
-  return exec({ accountId, category: 'message', operation: 'sendImage', io },
+async function sendImage(
+  accountId: string,
+  threadId: string,
+  threadType: 0 | 1,
+  attachments: any[],
+  io?: Server | null,
+  caption: string = '',
+  options?: Pick<ExecOptions, 'maxAttempts'>,
+) {
+  return exec({ accountId, category: 'message', operation: 'sendImage', io, deliveryOperation: true, ...options },
     (api) => api.sendMessage({ msg: caption, attachments }, threadId, threadType));
 }
 
@@ -339,8 +385,15 @@ async function sendCard(accountId: string, threadId: string, threadType: 0 | 1, 
     (api) => api.sendCard(cardData, threadId, threadType));
 }
 
-async function sendVoice(accountId: string, threadId: string, threadType: 0 | 1, voicePath: string, duration?: number) {
-  return exec({ accountId, category: 'message', operation: 'sendVoice' },
+async function sendVoice(
+  accountId: string,
+  threadId: string,
+  threadType: 0 | 1,
+  voicePath: string,
+  duration?: number,
+  options?: Pick<ExecOptions, 'maxAttempts'>,
+) {
+  return exec({ accountId, category: 'message', operation: 'sendVoice', deliveryOperation: true, ...options },
     (api) => api.sendVoice(voicePath, threadId, threadType, duration));
 }
 
@@ -349,8 +402,16 @@ async function sendVideo(accountId: string, threadId: string, threadType: 0 | 1,
     (api) => api.sendVideo(videoPayload, threadId, threadType));
 }
 
-async function sendFile(accountId: string, threadId: string, threadType: 0 | 1, filePaths: string[], io?: Server | null, caption: string = '') {
-  return exec({ accountId, category: 'message', operation: 'sendFile', io },
+async function sendFile(
+  accountId: string,
+  threadId: string,
+  threadType: 0 | 1,
+  filePaths: string[],
+  io?: Server | null,
+  caption: string = '',
+  options?: Pick<ExecOptions, 'maxAttempts'>,
+) {
+  return exec({ accountId, category: 'message', operation: 'sendFile', io, deliveryOperation: true, ...options },
     (api) => api.sendMessage({ msg: caption, attachments: filePaths }, threadId, threadType));
 }
 
@@ -367,8 +428,9 @@ async function forwardMessage(
   threadIds: string[],
   threadType: 0 | 1,
   reference?: { id: string; ts: number; logSrcType?: number; fwLvl?: number },
+  options?: Pick<ExecOptions, 'maxAttempts'>,
 ) {
-  return exec({ accountId, category: 'message', operation: 'forwardMessage' },
+  return exec({ accountId, category: 'message', operation: 'forwardMessage', deliveryOperation: true, ...options },
     (api) => api.forwardMessage(
       {
         message: text,

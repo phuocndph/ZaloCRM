@@ -9,9 +9,12 @@
  * tái dùng đúng đường media đã được chứng minh: tải URL về tmp rồi đưa LOCAL PATH cho
  * zca-js (api.sendMessage attachments cần path, KHÔNG nhận URL).
  */
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { createWriteStream } from 'node:fs';
+import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { config } from '../../config/index.js';
 
 /** Extract zaloMsgId từ nhiều shape trả về của zca-js (text/media/forward). */
@@ -130,19 +133,44 @@ export async function downloadMediaToTemp(
 ): Promise<{ path: string; cleanup: () => Promise<void> }> {
   let lastError: unknown;
   for (const url of candidateDownloadUrls(media.url)) {
+    let dir: string | null = null;
     try {
       const response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const buffer = Buffer.from(await response.arrayBuffer());
-      if (buffer.length === 0) throw new Error('empty response');
+      if (!response.body) throw new Error('empty response');
 
-      const dir = await mkdtemp(path.join(tmpdir(), 'zalocrm-forward-'));
+      dir = await mkdtemp(path.join(tmpdir(), 'zalocrm-forward-'));
       const filePath = path.join(dir, filenameFromUrl(url, contentType, media.filename));
-      await writeFile(filePath, buffer);
-      return { path: filePath, cleanup: () => rm(dir, { recursive: true, force: true }) };
+      await pipeline(Readable.fromWeb(response.body as any), createWriteStream(filePath));
+      if ((await stat(filePath)).size === 0) throw new Error('empty response');
+      const completedDir = dir;
+      return { path: filePath, cleanup: () => rm(completedDir, { recursive: true, force: true }) };
     } catch (err) {
+      if (dir) await rm(dir, { recursive: true, force: true }).catch(() => {});
       lastError = err;
     }
   }
   throw new Error(`Không tải được file media để gửi: ${(lastError as Error)?.message ?? String(lastError)}`);
+}
+
+export async function downloadMediaBatch(
+  items: Array<{ media: { url: string; filename?: string }; contentType: string }>,
+  concurrency = 4,
+): Promise<Array<{ path: string; cleanup: () => Promise<void> }>> {
+  const results: Array<{ path: string; cleanup: () => Promise<void> } | undefined> = new Array(items.length);
+  let nextIndex = 0;
+  const worker = async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex++;
+      results[index] = await downloadMediaToTemp(items[index].media, items[index].contentType);
+    }
+  };
+
+  try {
+    await Promise.all(Array.from({ length: Math.min(Math.max(1, concurrency), items.length) }, worker));
+    return results.filter((item): item is NonNullable<typeof item> => !!item);
+  } catch (error) {
+    await Promise.all(results.map((item) => item?.cleanup().catch(() => {})));
+    throw error;
+  }
 }
