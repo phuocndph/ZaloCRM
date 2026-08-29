@@ -434,6 +434,9 @@ function buildChat() {
   const aiSentiment = ref<AiSentiment | null>(null);
   const aiSentimentLoading = ref(false);
   const aiUsage = ref({ usedToday: 0, maxDaily: 500, remaining: 500, enabled: true });
+  // Keep the composer from making a false "missing API key" diagnosis while
+  // the organization configuration is still being fetched after app boot.
+  const aiConfigLoading = ref(true);
   const aiConfig = ref<AiConfig>({ provider: 'anthropic', model: 'claude-sonnet-4-6', maxDaily: 500, enabled: true });
   let socket: Socket | null = null;
   // work-scope 2026-06-15 — badge "N tin nick khác": đếm tin OUT-OF-SCOPE per nick.
@@ -826,6 +829,7 @@ function buildChat() {
   }
 
   async function fetchAiConfig() {
+    aiConfigLoading.value = true;
     try {
       const res = await api.get('/ai/config');
       aiConfig.value = {
@@ -839,19 +843,17 @@ function buildChat() {
       };
     } catch (err) {
       console.error('Failed to fetch AI config:', err);
+    } finally {
+      aiConfigLoading.value = false;
     }
   }
 
   async function saveAiConfig(payload: AiConfig) {
-    const res = await api.put('/ai/config', payload);
-    aiConfig.value = {
-      provider: res.data.provider,
-      model: res.data.model,
-      maxDaily: res.data.maxDaily,
-      enabled: res.data.enabled,
-      hasAnthropicKey: aiConfig.value.hasAnthropicKey,
-      hasGeminiKey: aiConfig.value.hasGeminiKey,
-    };
+    await api.put('/ai/config', payload);
+    // The update endpoint intentionally returns the legacy row only. Re-read
+    // the full config so availableProviders reflects a newly saved key and the
+    // chat composer can enable AI without requiring a page reload.
+    await fetchAiConfig();
   }
 
   async function fetchAiUsage() {
@@ -870,7 +872,10 @@ function buildChat() {
     aiSuggestionLoading.value = true;
     aiSuggestionError.value = '';
     try {
-      const res = await api.post(`/ai/replies/conversations/${conversationId}/generate`, {});
+      // F5Quota can take longer than the default 30s axios timeout while it
+      // queues a model request. Keep the AI action alive without slowing down
+      // ordinary chat requests.
+      const res = await api.post(`/ai/replies/conversations/${conversationId}/generate`, {}, { timeout: 90_000 });
       if (requestId !== aiSuggestionRequest.value || selectedConvId.value !== conversationId) return;
       aiSuggestion.value = res.data.reply_text || '';
       await fetchAiUsage();
@@ -888,7 +893,7 @@ function buildChat() {
     if (!selectedConvId.value) return;
     aiSummaryLoading.value = true;
     try {
-      const res = await api.post(`/ai/summarize/${selectedConvId.value}`);
+      const res = await api.post(`/ai/summarize/${selectedConvId.value}`, {}, { timeout: 90_000 });
       aiSummary.value = res.data.content || '';
       await fetchAiUsage();
     } catch (err) {
@@ -902,7 +907,7 @@ function buildChat() {
     if (!selectedConvId.value) return;
     aiSentimentLoading.value = true;
     try {
-      const res = await api.post(`/ai/sentiment/${selectedConvId.value}`);
+      const res = await api.post(`/ai/sentiment/${selectedConvId.value}`, {}, { timeout: 90_000 });
       aiSentiment.value = res.data;
       await fetchAiUsage();
     } catch (err) {
@@ -1751,6 +1756,7 @@ function buildChat() {
     aiSuggestion,
     aiSuggestionLoading,
     aiSuggestionError,
+    aiConfigLoading,
     aiSummary,
     aiSummaryLoading,
     aiSentiment,

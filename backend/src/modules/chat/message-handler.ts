@@ -8,6 +8,7 @@ import { prisma } from '../../shared/database/prisma-client.js';
 import { logger } from '../../shared/utils/logger.js';
 import { safeContactUpdate, safeContactCreate } from '../../shared/database/safe-contact-write.js';
 import { publishMessagePersisted } from '../../shared/bridge-bus.js';
+import { enqueueConversationAnalysis } from '../ai/conversation-analysis-queue.js';
 import { randomUUID } from 'node:crypto';
 import { emitWebhook } from '../api/webhook-service.js';
 import { runAutomationRules } from '../../shared/ee-registry/automation.js';
@@ -797,6 +798,20 @@ export async function handleIncomingMessage(
         conversationIsPrivate: conversation.isPrivate,
         conversationPrivateOwnerUserId: conversation.privateOwnerUserId,
       };
+    }
+
+    // Re-analyze both directions. An outbound staff reply changes the operating
+    // state from "customer is waiting" to "waiting for customer", so leaving
+    // the previous inbound insight active would keep a stale work item open.
+    // The BullMQ job is debounced and shadow-only; it never sends a reply.
+    if (msg.threadType === 'user' && contactId) {
+      void enqueueConversationAnalysis({
+        orgId: account.orgId,
+        conversationId: conversation.id,
+        messageId: message.id,
+      }).catch((error) => logger.warn(
+        `[conversation-analysis] enqueue failed conversation=${conversation.id}: ${(error as Error).message}`,
+      ));
     }
 
     // Emit webhook for message event (fire-and-forget)

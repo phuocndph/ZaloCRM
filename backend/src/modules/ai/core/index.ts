@@ -17,6 +17,7 @@ export const aiModelRegistry = new ModelRegistry()
   .registerProvider(new OpenAICompatibleProvider('openai'))
   .registerProvider(new OpenAICompatibleProvider('qwen', '/compatible-mode/v1/chat/completions'))
   .registerProvider(new OpenAICompatibleProvider('kimi'))
-  .registerProvider(new OpenAICompatibleProvider('9router'));
+  .registerProvider(new OpenAICompatibleProvider('9router'))
+  .registerProvider(new OpenAICompatibleProvider('f5quota'));
 
 export const aiClient = new AIClient(aiModelRegistry);

@@ -5,6 +5,7 @@ const routeMocks = vi.hoisted(() => ({
   promptManagerRoutes: vi.fn(async () => undefined),
   conversationContextRoutes: vi.fn(async () => undefined),
   conversationMemoryRoutes: vi.fn(async () => undefined),
+  conversationAnalysisRoutes: vi.fn(async () => undefined),
   knowledgeBaseRoutes: vi.fn(async () => undefined),
   intentEngineRoutes: vi.fn(async () => undefined),
   emotionEngineRoutes: vi.fn(async () => undefined),
@@ -24,6 +25,7 @@ vi.mock('../../src/modules/ai/ai-core-routes.js', () => ({ aiCoreRoutes: routeMo
 vi.mock('../../src/modules/ai/prompt-manager-routes.js', () => ({ promptManagerRoutes: routeMocks.promptManagerRoutes }));
 vi.mock('../../src/modules/ai/conversation-context-routes.js', () => ({ conversationContextRoutes: routeMocks.conversationContextRoutes }));
 vi.mock('../../src/modules/ai/conversation-memory-routes.js', () => ({ conversationMemoryRoutes: routeMocks.conversationMemoryRoutes }));
+vi.mock('../../src/modules/ai/conversation-analysis-routes.js', () => ({ conversationAnalysisRoutes: routeMocks.conversationAnalysisRoutes }));
 vi.mock('../../src/modules/ai/knowledge-base-routes.js', () => ({ knowledgeBaseRoutes: routeMocks.knowledgeBaseRoutes }));
 vi.mock('../../src/modules/ai/intent-engine-routes.js', () => ({ intentEngineRoutes: routeMocks.intentEngineRoutes }));
 vi.mock('../../src/modules/ai/emotion-engine-routes.js', () => ({ emotionEngineRoutes: routeMocks.emotionEngineRoutes }));
@@ -72,6 +74,7 @@ describe('aiRoutes registration', () => {
     expect(routeMocks.promptManagerRoutes).toHaveBeenCalledWith(app);
     expect(routeMocks.conversationContextRoutes).toHaveBeenCalledWith(app);
     expect(routeMocks.conversationMemoryRoutes).toHaveBeenCalledWith(app);
+    expect(routeMocks.conversationAnalysisRoutes).toHaveBeenCalledWith(app);
     expect(routeMocks.knowledgeBaseRoutes).toHaveBeenCalledWith(app);
     expect(routeMocks.intentEngineRoutes).toHaveBeenCalledWith(app);
     expect(routeMocks.emotionEngineRoutes).toHaveBeenCalledWith(app);

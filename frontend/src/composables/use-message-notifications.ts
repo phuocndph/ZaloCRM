@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Nguyễn Tiến Lộc
 /**
- * use-message-notifications.ts — Thông báo tin nhắn NỔI cho DESKTOP (giống Zalo).
+ * use-message-notifications.ts — thông báo tin nhắn realtime cho desktop và mobile.
  *
  * Hai lớp:
  *   1. Thẻ nổi trong app (góc dưới-phải) — luôn dùng được khi đang mở CRM, không cần
@@ -21,19 +21,27 @@ import { createAppSocket } from '@/api/socket';
 import { useChat } from '@/composables/use-chat';
 import { createConversationNotificationRateLimiter } from '@/composables/conversation-notification-rate-limit';
 import { router } from '@/router';
+import {
+  compactNotificationLabel,
+  notificationAvatarUrl,
+  notificationContext,
+  notificationPreview,
+  notificationRoute,
+} from '@/composables/message-notification-utils';
 
 export interface NotifCard {
   id: string;
   convId: string;
   accountId: string | null;
   name: string;
+  context: string;
   preview: string;
   avatarUrl: string | null;
   at: number;
 }
 
 const ENABLED_KEY = 'desktop.notify.enabled';
-const SOUND_KEY = 'desktop.notify.sound';
+const SOUND_KEY = 'notification.sound.enabled';
 const MAX_CARDS = 4;
 const CARD_TTL_MS = 6500;
 const GROUP_NOTIFICATION_LIMIT = 3;
@@ -41,7 +49,10 @@ const GROUP_NOTIFICATION_WINDOW_MS = 60_000;
 
 // ── State singleton (chia sẻ mọi nơi) ──
 const enabled = ref(localStorage.getItem(ENABLED_KEY) !== 'false');
-const soundEnabled = ref(localStorage.getItem(SOUND_KEY) !== 'false');
+const savedSound = localStorage.getItem(SOUND_KEY)
+  ?? localStorage.getItem('mobile.notification.sound')
+  ?? localStorage.getItem('desktop.notify.sound');
+const soundEnabled = ref(savedSound !== 'false');
 const nativeSupported =
   typeof window !== 'undefined' && 'Notification' in window && window.isSecureContext;
 const permission = ref<NotificationPermission>(
@@ -57,24 +68,6 @@ const groupNotificationLimiter = createConversationNotificationRateLimiter(
   GROUP_NOTIFICATION_WINDOW_MS,
 );
 let audioCtx: AudioContext | null = null;
-
-/** Nhãn preview theo loại tin (khi không phải text). */
-function previewFor(message: any): string {
-  if (message?.redacted) return 'Bạn có tin nhắn mới';
-  const type = message?.contentType;
-  const raw = typeof message?.content === 'string' ? message.content : '';
-  if (type && type !== 'text') {
-    const label: Record<string, string> = {
-      image: '🖼 Hình ảnh', video: '🎬 Video', file: '📎 Tệp đính kèm',
-      voice: '🎤 Tin nhắn thoại', audio: '🎤 Tin nhắn thoại', sticker: '😊 Sticker',
-      gif: '🎞 GIF', link: '🔗 Liên kết', location: '📍 Vị trí', contact_card: '👤 Danh thiếp',
-    };
-    return label[type] || 'Tin nhắn mới';
-  }
-  const compact = raw.replace(/\s+/g, ' ').trim();
-  if (!compact) return 'Tin nhắn mới';
-  return compact.length > 90 ? `${compact.slice(0, 90)}…` : compact;
-}
 
 function beep() {
   if (!soundEnabled.value) return;
@@ -113,25 +106,35 @@ function pushCard(card: NotifCard) {
 
 function openCard(card: NotifCard) {
   dismiss(card.id);
+  if (!card.convId) return;
   window.focus();
-  void router.push({ name: 'Chat', params: { convId: card.convId } });
+  void router.push(notificationRoute(card.convId, router.currentRoute.value.path));
 }
 
-function showNative(card: NotifCard) {
+function showNative(card: NotifCard, force = false) {
   if (!nativeSupported || permission.value !== 'granted') return;
-  if (!document.hidden) return; // đang xem app → chỉ cần thẻ nổi
+  const mobileExperience = router.currentRoute.value.path.startsWith('/m')
+    || window.matchMedia('(max-width: 700px)').matches;
+  if (!force && mobileExperience) return; // mobile dùng Web Push khi app ở nền, tránh thông báo kép
+  if (!force && !document.hidden) return; // đang xem app → chỉ cần thẻ nổi
   try {
     const n = new Notification(card.name, {
-      body: card.preview,
+      body: `${card.context} · ${card.preview}`,
       icon: card.avatarUrl || '/pwa-192x192.png',
       tag: `conv-${card.convId}`, // gộp theo hội thoại, không spam
     });
-    n.onclick = () => { window.focus(); void router.push({ name: 'Chat', params: { convId: card.convId } }); n.close(); };
+    n.onclick = () => {
+      window.focus();
+      if (card.convId) void router.push(notificationRoute(card.convId, router.currentRoute.value.path));
+      n.close();
+    };
   } catch { /* noop */ }
 }
 
 function onSocketMessage(payload: {
   conversationId?: string; accountId?: string; message?: any;
+  threadType?: 'user' | 'group'; groupName?: string | null; groupAvatarUrl?: string | null;
+  senderAvatarUrl?: string | null;
 }) {
   if (!enabled.value) return;
   const message = payload?.message;
@@ -143,9 +146,11 @@ function onSocketMessage(payload: {
   // Đang MỞ đúng hội thoại đó (ở route /chat) và cửa sổ focus → không làm phiền (giống Zalo).
   // Phải kiểm tra route: selectedConvId là state singleton, GIỮ lại hội thoại mở gần nhất — nếu
   // chỉ so id thì rời sang trang khác vẫn bị bỏ qua nhầm cho đúng hội thoại đó.
-  const onChatRoute = router.currentRoute.value.path.startsWith('/chat');
+  const currentRoute = router.currentRoute.value;
+  const onChatRoute = currentRoute.name === 'Chat' || currentRoute.name === 'M.Chat';
   const chat = useChat();
-  if (!document.hidden && onChatRoute && chat.selectedConvId?.value === convId) return;
+  const openConvId = String(currentRoute.params.convId ?? chat.selectedConvId?.value ?? '');
+  if (!document.hidden && onChatRoute && openConvId === convId) return;
 
   // Group message bursts can include an album and several texts. Keep message delivery and
   // unread state untouched, while capping visible, audible, and native notifications.
@@ -155,9 +160,16 @@ function onSocketMessage(payload: {
     id: String(message.id ?? `${convId}-${Date.now()}`),
     convId,
     accountId: payload.accountId ?? null,
-    name: (message.senderName && String(message.senderName).trim()) || 'Tin nhắn mới',
-    preview: previewFor(message),
-    avatarUrl: (typeof message.avatarUrl === 'string' && message.avatarUrl) || null,
+    name: message.redacted
+      ? 'Tin nhắn mới'
+      : compactNotificationLabel(message.senderName, 120) || 'Tin nhắn mới',
+    context: message.redacted
+      ? 'Nội dung riêng tư'
+      : notificationContext(payload.threadType, payload.groupName),
+    preview: notificationPreview(message),
+    avatarUrl: message.redacted ? null : notificationAvatarUrl(
+      payload.threadType === 'group' ? payload.groupAvatarUrl : payload.senderAvatarUrl,
+    ),
     at: Date.now(),
   };
   pushCard(card);
@@ -166,7 +178,7 @@ function onSocketMessage(payload: {
 }
 
 export function useMessageNotifications() {
-  /** Khởi động 1 lần ở tầng layout (DefaultLayout). Socket sống toàn app. */
+  /** Khởi động một lần ở App.vue. Socket sống trong toàn bộ phiên đăng nhập. */
   function start() {
     if (started) return;
     started = true;
@@ -187,8 +199,7 @@ export function useMessageNotifications() {
 
   /** Bật: xin quyền native (nếu hỗ trợ) + bật cờ. Thẻ nổi vẫn chạy dù không có quyền OS. */
   async function enable(): Promise<{ ok: boolean; error?: string }> {
-    enabled.value = true;
-    localStorage.setItem(ENABLED_KEY, 'true');
+    setEnabled(true);
     if (nativeSupported && permission.value !== 'granted') {
       try { permission.value = await Notification.requestPermission(); } catch { /* noop */ }
     }
@@ -198,20 +209,30 @@ export function useMessageNotifications() {
     return { ok: true };
   }
 
-  function disable() {
-    enabled.value = false;
-    localStorage.setItem(ENABLED_KEY, 'false');
-    cards.value = [];
-    groupNotificationLimiter.reset();
+  function setEnabled(value: boolean) {
+    enabled.value = value;
+    localStorage.setItem(ENABLED_KEY, String(value));
+    if (!value) {
+      cards.value = [];
+      groupNotificationLimiter.reset();
+    }
   }
+
+  function disable() { setEnabled(false); }
 
   function setSound(v: boolean) {
     soundEnabled.value = v;
     localStorage.setItem(SOUND_KEY, String(v));
   }
 
+  function test(card: NotifCard) {
+    pushCard(card);
+    beep();
+    showNative(card, true);
+  }
+
   return {
     enabled, soundEnabled, permission, nativeSupported, cards,
-    start, stop, enable, disable, setSound, dismiss, openCard,
+    start, stop, enable, disable, setEnabled, setSound, dismiss, openCard, test,
   };
 }

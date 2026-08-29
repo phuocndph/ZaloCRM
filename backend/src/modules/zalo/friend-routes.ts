@@ -19,6 +19,14 @@ import { syncAccountFully } from './friend-sync-service.js';
 import { zaloPool } from './zalo-pool.js';
 import { logger } from '../../shared/utils/logger.js';
 import { createHash } from 'node:crypto';
+import {
+  aggregateFriendOverviewGroups,
+  buildFriendOverviewCsv,
+  buildFriendOverviewItems,
+  friendOverviewStats as calculateFriendOverviewStats,
+  sortFriendOverviewGroups,
+  type FriendOverviewPairGroupRow,
+} from './friend-overview.js';
 
 // Phase metrics layer 2026-05-22: hash SĐT trước khi log để privacy + dedup.
 function hashPhone(phone: string): string {
@@ -202,10 +210,218 @@ export async function friendRoutes(app: FastifyInstance) {
     }
   });
 
+  // One Contact per row with all accessible Friend pairs nested by Zalo account.
+  app.get('/api/v1/friends-db/overview', { preHandler: requireGrant('friend', 'access') }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const user = request.user!;
+    const {
+      kind = 'all', page = '1', limit = '25', search = '', sortBy = 'recent',
+      statusId = '', multiNickOnly = 'false', summaryOnly = 'false',
+      accountId = '', exportCsv = 'false',
+    } = request.query as {
+      kind?: string; page?: string; limit?: string; search?: string; sortBy?: string;
+      statusId?: string; multiNickOnly?: string; summaryOnly?: string;
+      accountId?: string; exportCsv?: string;
+    };
+
+    try {
+      const scope = await getZaloScope(user.id, user.orgId, user.role);
+      const accessibleIds = scope.accessibleIds;
+      if (accountId && !accessibleIds.includes(accountId)) {
+        return reply.status(403).send({ error: 'Bạn không có quyền xem tài khoản Zalo này' });
+      }
+      const scopedIds = accountId ? [accountId] : accessibleIds;
+      const pageNum = Math.max(1, parseInt(page, 10) || 1);
+      const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 25));
+      if (scopedIds.length === 0) {
+        return {
+          contacts: [], total: 0, page: pageNum, limit: limitNum, counts: {},
+          accountCounts: {}, totalPairs: 0, duplicateContacts: 0,
+          totalContacts: 0, totalMessages: 0, accessibleNicks: 0,
+          filteredStats: { totalPairs: 0, totalContacts: 0, duplicateContacts: 0, totalMessages: 0 },
+        };
+      }
+
+      const baseWhere = { orgId: user.orgId, zaloAccountId: { in: scopedIds } };
+      const where: any = { ...baseWhere };
+      if (kind && kind !== 'all') where.relationshipKind = kind;
+      if (statusId) where.statusId = statusId;
+      if (search.trim()) {
+        const q = search.trim();
+        const canonicalPhone = normalizePhone(q);
+        const contactOr: Record<string, unknown>[] = [
+          { fullName: { contains: q, mode: 'insensitive' } },
+          { crmName: { contains: q, mode: 'insensitive' } },
+          { tags: { array_contains: q } },
+          {
+            tagAssignments: {
+              some: {
+                removedAt: null,
+                tag: {
+                  archivedAt: null,
+                  isActive: true,
+                  name: { contains: q, mode: 'insensitive' },
+                },
+              },
+            },
+          },
+        ];
+        if (canonicalPhone) contactOr.push({ phoneNormalized: { equals: canonicalPhone } });
+        where.AND = [{ OR: [
+          { contact: { OR: contactOr } },
+          { zaloUidInNick: { equals: q } },
+          { zaloGlobalId: { equals: q } },
+          { zaloUsername: { equals: q } },
+          { zaloDisplayName: { contains: q, mode: 'insensitive' } },
+          { aliasInNick: { contains: q, mode: 'insensitive' } },
+          { crmTagsPerNick: { array_contains: q } },
+          { autoTags: { array_contains: q } },
+          { zaloLabels: { array_contains: [{ name: q }] } },
+          {
+            tagAssignments: {
+              some: {
+                removedAt: null,
+                tag: {
+                  archivedAt: null,
+                  isActive: true,
+                  name: { contains: q, mode: 'insensitive' },
+                },
+              },
+            },
+          },
+          { zaloAccount: { displayName: { contains: q, mode: 'insensitive' } } },
+        ] }];
+      }
+
+      const groupAggregation = {
+        _count: { _all: true },
+        _sum: { totalInbound: true, totalOutbound: true },
+        _max: {
+          lastInteractionAt: true,
+          lastInboundAt: true,
+          lastOutboundAt: true,
+          leadScore: true,
+        },
+        _min: { stuckSince: true },
+      } as const;
+      const inventoryPairs = await prisma.friend.groupBy({
+        by: ['contactId', 'zaloAccountId', 'relationshipKind'],
+        where: baseWhere,
+        ...groupAggregation,
+      });
+      const allInventoryGroups = aggregateFriendOverviewGroups(
+        inventoryPairs as FriendOverviewPairGroupRow[],
+      );
+      const counts: Record<string, number> = {};
+      const contactsByKind = new Map<string, Set<string>>();
+      const accountCounts: Record<string, { pairs: number; contacts: number; friends: number }> = {};
+      const accountContacts = new Map<string, Set<string>>();
+
+      for (const pair of inventoryPairs) {
+        const pairCount = pair._count._all;
+        const kindContacts = contactsByKind.get(pair.relationshipKind) ?? new Set<string>();
+        kindContacts.add(pair.contactId);
+        contactsByKind.set(pair.relationshipKind, kindContacts);
+
+        const account = accountCounts[pair.zaloAccountId] ?? { pairs: 0, contacts: 0, friends: 0 };
+        account.pairs += pairCount;
+        if (pair.relationshipKind === 'friend') account.friends += pairCount;
+        accountCounts[pair.zaloAccountId] = account;
+        const contactIds = accountContacts.get(pair.zaloAccountId) ?? new Set<string>();
+        contactIds.add(pair.contactId);
+        accountContacts.set(pair.zaloAccountId, contactIds);
+      }
+      for (const [relationshipKind, contactIds] of contactsByKind) counts[relationshipKind] = contactIds.size;
+      for (const [accountId, contactIds] of accountContacts) accountCounts[accountId].contacts = contactIds.size;
+
+      const inventoryStats = calculateFriendOverviewStats(allInventoryGroups);
+      const summary = {
+        counts,
+        accountCounts,
+        ...inventoryStats,
+        accessibleNicks: scopedIds.length,
+      };
+      if (summaryOnly === 'true') {
+        return {
+          contacts: [],
+          total: allInventoryGroups.length,
+          page: 1,
+          limit: 0,
+          filteredStats: inventoryStats,
+          ...summary,
+        };
+      }
+
+      const hasActiveFilter = (kind && kind !== 'all') || !!statusId || !!search.trim();
+      let matchingContactIds: Set<string> | null = null;
+      if (hasActiveFilter) {
+        const matchingContacts = await prisma.friend.groupBy({
+          by: ['contactId'],
+          where,
+          _count: { _all: true },
+        });
+        matchingContactIds = new Set(matchingContacts.map((row) => row.contactId));
+      }
+
+      const matchingGroups = matchingContactIds
+        ? allInventoryGroups.filter((group) => matchingContactIds!.has(group.contactId))
+        : allInventoryGroups;
+      const filteredGroups = multiNickOnly === 'true'
+        ? matchingGroups.filter((group) => Number(group.friendNickCount) > 1)
+        : matchingGroups;
+      const filteredStats = calculateFriendOverviewStats(filteredGroups);
+      const sortedGroups = sortFriendOverviewGroups(filteredGroups, sortBy);
+      if (exportCsv === 'true' && sortedGroups.length > 10_000) {
+        return reply.status(413).send({
+          error: 'Kết quả xuất vượt quá 10.000 khách. Hãy dùng bộ lọc để thu hẹp dữ liệu.',
+        });
+      }
+      const pageGroups = exportCsv === 'true'
+        ? sortedGroups
+        : sortedGroups.slice((pageNum - 1) * limitNum, pageNum * limitNum);
+      const contactIds = pageGroups.map((group) => group.contactId);
+      const friends = contactIds.length
+        ? await prisma.friend.findMany({
+            where: {
+              orgId: user.orgId,
+              zaloAccountId: { in: scopedIds },
+              contactId: { in: contactIds },
+            },
+            include: FRIEND_INCLUDE_WITH_CONTACT,
+            orderBy: buildFriendOrderBy('recent'),
+          })
+        : [];
+
+      const { buildPrivacyContext, redactFriend } = await import('../privacy/redact.js');
+      const privacyCtx = await buildPrivacyContext(request);
+      const redacted = friends.map((friend) => redactFriend(toFriendDto(friend) as any, privacyCtx));
+      const contacts = buildFriendOverviewItems(pageGroups, redacted as any);
+
+      if (exportCsv === 'true') {
+        const date = new Date().toISOString().slice(0, 10);
+        return reply
+          .header('Content-Type', 'text/csv; charset=utf-8')
+          .header('Content-Disposition', `attachment; filename="ban-be-zalo-${date}.csv"`)
+          .send(buildFriendOverviewCsv(contacts));
+      }
+
+      return {
+        contacts,
+        total: filteredGroups.length,
+        page: pageNum,
+        limit: limitNum,
+        filteredStats,
+        ...summary,
+      };
+    } catch (err) {
+      return handleError(reply, err, 'friends-db-overview');
+    }
+  });
+
   // POST .../friends-db/sync — manual force-refresh ("↻ Làm mới ngay" button).
   // Gọi syncAccountFully → 3 nhánh parallel (friends + aliases + labels) để
   // user bấm 1 nút catch tất cả update từ Zalo native app.
   // Cooldown 5s/account (áp ở friends branch) để chống spam.
+
   app.post(`${BASE}-db/sync`, async (request: FastifyRequest, reply: FastifyReply) => {
     const { accountId } = request.params as { accountId: string };
     const user = request.user!;
@@ -220,6 +436,13 @@ export async function friendRoutes(app: FastifyInstance) {
         return reply.status(429).send({
           error: 'cooldown',
           message: 'Vừa đồng bộ xong, vui lòng thử lại sau vài giây',
+        });
+      }
+      if (result.friends?.skipped === 'daily_limit') {
+        return reply.status(429).send({
+          error: 'daily_limit',
+          message: 'Nick Zalo đã hết lượt đọc danh sách bạn bè trong ngày. Hệ thống sẽ tự đồng bộ lại sau 0:05.',
+          retryAt: result.friends.dailyLimitResetAt,
         });
       }
       return {

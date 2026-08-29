@@ -28,6 +28,31 @@ export const STATUS_LITE_SELECT = {
   isTerminal: true,
 } as const satisfies Prisma.StatusSelect;
 
+/** Tag taxonomy v2 metadata needed by Friends aggregate and per-nick tracking. */
+export const TAG_LITE_SELECT = {
+  id: true,
+  name: true,
+  color: true,
+  scope: true,
+  source: true,
+} as const satisfies Prisma.TagSelect;
+
+export const ACTIVE_TAG_ASSIGNMENTS_SELECT = {
+  where: {
+    removedAt: null,
+    tag: { archivedAt: null, isActive: true },
+  },
+  select: { tag: { select: TAG_LITE_SELECT } },
+} as const satisfies Prisma.FriendTagFindManyArgs;
+
+export const ACTIVE_CONTACT_TAG_ASSIGNMENTS_SELECT = {
+  where: {
+    removedAt: null,
+    tag: { archivedAt: null, isActive: true },
+  },
+  select: { tag: { select: TAG_LITE_SELECT } },
+} as const satisfies Prisma.ContactTagFindManyArgs;
+
 /** ZaloAccount nick CRM — fields cần cho FriendsView row + ContactsView child row.
  *  Union của 2 endpoint cũ: AGGREGATE_INCLUDE (full với owner) + /friends-db (no owner).
  *  Lấy union để FE dùng `zaloAccount.owner?.fullName` ở 1 chỗ. */
@@ -63,6 +88,7 @@ export const CONTACT_LITE_SELECT = {
   province: true,
   district: true,
   birthYear: true,
+  tagAssignments: ACTIVE_CONTACT_TAG_ASSIGNMENTS_SELECT,
 } as const satisfies Prisma.ContactSelect;
 
 // ── Canonical Friend includes ──────────────────────────────────────────────
@@ -75,6 +101,7 @@ export const CONTACT_LITE_SELECT = {
 export const FRIEND_INCLUDE = {
   statusRef: { select: STATUS_LITE_SELECT },
   zaloAccount: { select: ZALO_ACCOUNT_LITE_SELECT },
+  tagAssignments: ACTIVE_TAG_ASSIGNMENTS_SELECT,
 } as const satisfies Prisma.FriendInclude;
 
 /**

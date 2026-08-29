@@ -12,7 +12,8 @@
 // từ module outreach (đã kiểm chứng). STUB_MODE=1 → mô phỏng, không bắn Zalo.
 // ════════════════════════════════════════════════════════════════════════════
 
-import { prisma } from '../../shared/database/prisma-client.js';
+import { prisma, tenantTransaction } from '../../shared/database/prisma-client.js';
+import { slugifyTag } from '../../shared/tag-slug.js';
 import { logger } from '../../shared/utils/logger.js';
 import { sendCampaignMessage, renderTemplate, STUB_MODE } from '../outreach/outreach-service.js';
 import { scheduleAdvance, cancelScheduledJob } from './followup-queue.js';
@@ -39,13 +40,15 @@ const MAX_SYNC_STEPS = 100; // chặn vòng lặp vô hạn do condition trỏ v
 const PAUSE_RECHECK_MS = 30 * 60_000; // chiến dịch đang Tạm dừng → 30' kiểm lại 1 lần.
 
 // ── Trạng thái KH dùng cho điều kiện/goal/stop (đọc 1 lần, cập nhật khi gắn/xoá tag) ──
-interface ContactState {
+export interface ContactState {
   contactId: string;
   zaloUid: string | null;
   fullName: string | null;
   phone: string | null;
   tags: string[];
   isFriend: boolean;
+  strangerBlocked: boolean;
+  consentStatus: string;
 }
 
 function parseTags(raw: unknown): string[] {
@@ -53,23 +56,77 @@ function parseTags(raw: unknown): string[] {
   return [];
 }
 
+function normalizedTags(values: Array<string | null | undefined>): string[] {
+  return [...new Set(values.map((value) => slugifyTag(value ?? '')).filter(Boolean))];
+}
+
+function zaloLabelNames(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((label) => {
+    if (!label || typeof label !== 'object' || Array.isArray(label)) return [];
+    const value = (label as { name?: unknown; text?: unknown }).name
+      ?? (label as { text?: unknown }).text;
+    return typeof value === 'string' ? [value] : [];
+  });
+}
+
+const PURCHASE_TAGS = new Set(['da-mua', 'purchased', 'da-chot', 'chot-don']);
+
+function hasTag(state: ContactState, tag: string): boolean {
+  const normalized = slugifyTag(tag);
+  return !!normalized && state.tags.includes(normalized);
+}
+
+function hasPurchasedTag(state: ContactState): boolean {
+  return state.tags.some((tag) => PURCHASE_TAGS.has(tag));
+}
+
 async function loadContactState(contactId: string, zaloAccountId: string): Promise<ContactState | null> {
   const contact = await prisma.contact.findUnique({
     where: { id: contactId },
-    select: { id: true, zaloUid: true, fullName: true, phone: true, tags: true },
+    select: {
+      id: true,
+      zaloUid: true,
+      fullName: true,
+      phone: true,
+      tags: true,
+      consentStatus: true,
+      tagAssignments: {
+        where: { removedAt: null },
+        select: { tag: { select: { name: true, slug: true } } },
+      },
+    },
   });
   if (!contact) return null;
   const friend = await prisma.friend.findFirst({
     where: { zaloAccountId, contactId },
-    select: { friendshipStatus: true },
+    select: {
+      friendshipStatus: true,
+      strangerBlocked: true,
+      crmTagsPerNick: true,
+      zaloLabels: true,
+      tagAssignments: {
+        where: { removedAt: null },
+        select: { tag: { select: { name: true, slug: true } } },
+      },
+    },
   });
+  const tags = normalizedTags([
+    ...parseTags(contact.tags),
+    ...contact.tagAssignments.flatMap((item) => [item.tag.name, item.tag.slug]),
+    ...parseTags(friend?.crmTagsPerNick),
+    ...zaloLabelNames(friend?.zaloLabels),
+    ...(friend?.tagAssignments ?? []).flatMap((item) => [item.tag.name, item.tag.slug]),
+  ]);
   return {
     contactId,
     zaloUid: contact.zaloUid,
     fullName: contact.fullName ?? null,
     phone: contact.phone ?? null,
-    tags: parseTags(contact.tags),
+    tags,
     isFriend: friend?.friendshipStatus === 'accepted',
+    strangerBlocked: friend?.strangerBlocked === true,
+    consentStatus: contact.consentStatus,
   };
 }
 
@@ -214,14 +271,23 @@ async function removeContactTag(contactId: string, tag: string): Promise<void> {
 }
 
 // ── Điều kiện dừng + Goal ───────────────────────────────────────────────────
-function checkStop(
+export function checkFollowupStop(
   wf: { stopOnPurchase: boolean; stopOnTags: string[] },
   state: ContactState,
 ): { reason: string; message: string } | null {
-  for (const t of wf.stopOnTags) {
-    if (state.tags.includes(t)) return { reason: 'do_not_disturb', message: `Dừng - có tag "${t}"` };
+  if (state.consentStatus === 'revoked') {
+    return { reason: 'do_not_disturb', message: 'Dừng - khách đã từ chối nhận liên hệ' };
   }
-  if (wf.stopOnPurchase && state.tags.includes('Đã mua')) {
+  if (state.strangerBlocked) {
+    return { reason: 'customer_blocked', message: 'Dừng - khách đã chặn tài khoản Zalo' };
+  }
+  if (!state.isFriend) {
+    return { reason: 'not_friend', message: 'Dừng - khách không còn là bạn Zalo' };
+  }
+  for (const t of wf.stopOnTags) {
+    if (hasTag(state, t)) return { reason: 'do_not_disturb', message: `Dừng - có tag "${t}"` };
+  }
+  if (wf.stopOnPurchase && hasPurchasedTag(state)) {
     return { reason: 'purchased', message: 'Dừng - khách đã mua hàng' };
   }
   return null;
@@ -236,9 +302,9 @@ async function checkGoal(
     case 'replied':
       return hasRepliedSince(enr.contactId, enr.zaloAccountId, enr.startedAt);
     case 'purchased':
-      return state.tags.includes('Đã mua');
+      return hasPurchasedTag(state);
     case 'has_tag':
-      return !!wf.goalTag && state.tags.includes(wf.goalTag);
+      return !!wf.goalTag && hasTag(state, wf.goalTag);
     default:
       return false; // none | requested_quote | custom → đạt thủ công qua API
   }
@@ -300,7 +366,7 @@ export async function advanceEnrollment(enrollmentId: string): Promise<void> {
     }
 
     // 2) Điều kiện dừng — kiểm trước mỗi bước.
-    const stop = checkStop(wf, state);
+    const stop = checkFollowupStop(wf, state);
     if (stop) { await finalize(enr, 'stopped', stop.reason, stop.message); return; }
 
     const stepKey = enr.currentStepKey;
@@ -324,13 +390,23 @@ export async function advanceEnrollment(enrollmentId: string): Promise<void> {
       }
       case 'tag_add': {
         const t = (cfg as unknown as TagStepConfig).tag;
-        if (t) { await addContactTag(enr.contactId, t); if (!state.tags.includes(t)) state.tags.push(t); await log(enr, 'tag_added', `Gắn tag "${t}"`, { stepKey: step.key, stepType: 'tag_add' }); }
+        if (t) {
+          await addContactTag(enr.contactId, t);
+          const normalized = slugifyTag(t);
+          if (normalized && !state.tags.includes(normalized)) state.tags.push(normalized);
+          await log(enr, 'tag_added', `Gắn tag "${t}"`, { stepKey: step.key, stepType: 'tag_add' });
+        }
         enr = await setCurrent(enr, step.nextKey, 'running');
         continue;
       }
       case 'tag_remove': {
         const t = (cfg as unknown as TagStepConfig).tag;
-        if (t) { await removeContactTag(enr.contactId, t); state.tags = state.tags.filter((x) => x !== t); await log(enr, 'tag_removed', `Xóa tag "${t}"`, { stepKey: step.key, stepType: 'tag_remove' }); }
+        if (t) {
+          await removeContactTag(enr.contactId, t);
+          const normalized = slugifyTag(t);
+          state.tags = state.tags.filter((x) => x !== normalized);
+          await log(enr, 'tag_removed', `Xóa tag "${t}"`, { stepKey: step.key, stepType: 'tag_remove' });
+        }
         enr = await setCurrent(enr, step.nextKey, 'running');
         continue;
       }
@@ -422,8 +498,8 @@ async function evalCondition(c: ConditionConfig, enr: NonNullable<EnrollmentRow>
     case 'not_replied': return !(await hasRepliedSince(enr.contactId, enr.zaloAccountId, enr.startedAt));
     case 'is_friend': return state.isFriend;
     case 'not_friend': return !state.isFriend;
-    case 'has_tag': return !!c.tag && state.tags.includes(c.tag);
-    case 'no_tag': return !!c.tag && !state.tags.includes(c.tag);
+    case 'has_tag': return !!c.tag && hasTag(state, c.tag);
+    case 'no_tag': return !!c.tag && !hasTag(state, c.tag);
     default: return false;
   }
 }
@@ -484,19 +560,6 @@ export async function enrollContact(opts: EnrollOpts): Promise<EnrollResult> {
   if (!wf) return { ok: false, error: 'workflow_not_found' };
   if (wf.status !== 'active') return { ok: false, error: 'workflow_not_active' };
 
-  // Đang tham gia workflow khác?
-  const active = await prisma.followupEnrollment.findFirst({
-    where: { orgId: wf.orgId, contactId: opts.contactId, status: { in: [...RUNNING_STATES] } },
-    orderBy: { createdAt: 'desc' },
-  });
-  if (active) {
-    if (opts.onConflict !== 'switch' && opts.reason !== 'switched') {
-      const other = await prisma.followupWorkflow.findUnique({ where: { id: active.workflowId }, select: { name: true } });
-      return { ok: false, conflict: { enrollmentId: active.id, workflowId: active.workflowId, workflowName: other?.name ?? '' } };
-    }
-    await stopEnrollment(active.id, 'switched', { actorType: opts.actorType, actorId: opts.actorId, actorName: opts.actorName });
-  }
-
   const steps = await prisma.followupStep.findMany({ where: { workflowId: wf.id }, select: { key: true, type: true } });
   const startKey = findStartKey(steps);
   if (!startKey) return { ok: false, error: 'workflow_has_no_steps' };
@@ -507,14 +570,46 @@ export async function enrollContact(opts: EnrollOpts): Promise<EnrollResult> {
     select: { id: true },
   });
 
-  const enr = await prisma.followupEnrollment.create({
-    data: {
-      orgId: wf.orgId, workflowId: wf.id, workflowVersion: wf.version,
-      contactId: opts.contactId, friendId: friend?.id ?? null, zaloAccountId: opts.zaloAccountId,
-      status: 'running', currentStepKey: startKey,
-      enrolledById: opts.actorId ?? null, enrolledByName: opts.actorName ?? null,
-    },
+  const result = await tenantTransaction(async (tx) => {
+    // Khóa theo (org, contact) ở PostgreSQL để mọi app process cùng tuần tự hóa enrollment.
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${wf.orgId}), hashtext(${opts.contactId}))`;
+    const active = await tx.followupEnrollment.findFirst({
+      where: { orgId: wf.orgId, contactId: opts.contactId, status: { in: [...RUNNING_STATES] } },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (active && opts.onConflict !== 'switch' && opts.reason !== 'switched') {
+      const other = await tx.followupWorkflow.findUnique({ where: { id: active.workflowId }, select: { name: true } });
+      return {
+        kind: 'conflict' as const,
+        conflict: { enrollmentId: active.id, workflowId: active.workflowId, workflowName: other?.name ?? '' },
+      };
+    }
+    if (active) {
+      await tx.followupEnrollment.update({
+        where: { id: active.id },
+        data: { status: 'stopped', stopReason: 'switched', completedAt: new Date(), nextRunAt: null, jobId: null },
+      });
+    }
+    const enrollment = await tx.followupEnrollment.create({
+      data: {
+        orgId: wf.orgId, workflowId: wf.id, workflowVersion: wf.version,
+        contactId: opts.contactId, friendId: friend?.id ?? null, zaloAccountId: opts.zaloAccountId,
+        status: 'running', currentStepKey: startKey,
+        enrolledById: opts.actorId ?? null, enrolledByName: opts.actorName ?? null,
+      },
+    });
+    return { kind: 'created' as const, enrollment, previous: active };
   });
+  if (result.kind === 'conflict') return { ok: false, conflict: result.conflict };
+
+  const { enrollment: enr, previous } = result;
+  if (previous) {
+    if (previous.jobId) await cancelScheduledJob(previous.jobId).catch(() => {});
+    await log(previous, 'stopped', 'Chuyển sang workflow khác', {
+      actorType: opts.actorType ?? 'system', actorId: opts.actorId, actorName: opts.actorName,
+    });
+    await recountWorkflow(previous.workflowId);
+  }
   await log(enr, 'enrolled', 'Bắt đầu workflow', { actorType: opts.actorType ?? 'system', actorId: opts.actorId, actorName: opts.actorName });
   await recountWorkflow(wf.id);
   await advanceEnrollment(enr.id);

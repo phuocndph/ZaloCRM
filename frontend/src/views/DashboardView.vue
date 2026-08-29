@@ -118,6 +118,8 @@
           </div>
         </div>
 
+        <DailyWorkQueue :as-user-id="hub.viewAsUserId.value" compact class="dh-work-queue" />
+
         <div class="at-dash-grid-2">
           <!-- LEFT -->
           <div class="at-dash-col">
@@ -457,6 +459,7 @@ import { useAuthStore } from '@/stores/auth';
 import { useRouter } from 'vue-router';
 import { useDashboardActionHub, type PrivacySplit } from '@/composables/use-dashboard-action-hub';
 import Avatar from '@/components/ui/Avatar.vue';
+import DailyWorkQueue from '@/components/dashboard/DailyWorkQueue.vue';
 import {
   Sun, Target, Users, Shield, User, ChevronDown, Lock, Search,
   Inbox, CalendarClock, Eye, Moon, CircleCheck, Flame, Bell,
@@ -668,6 +671,7 @@ function onOutsideClick(e: MouseEvent) {
   padding: 2px 14px; text-align: center; opacity: 0.7;
 }
 .dh-tabpanel { animation: dh-fade 0.15s ease-out; }
+.dh-work-queue { margin-bottom: 12px; }
 @keyframes dh-fade { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
 
 /* Picker dropdown (giữ từ bản cũ, Atlas-ish) */

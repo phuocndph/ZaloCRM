@@ -338,6 +338,7 @@ export async function getContactFollowup(contactId: string, orgId: string) {
       id: enr.id, status: enr.status, currentStepKey: enr.currentStepKey,
       messagesSent: enr.messagesSent, nextRunAt: enr.nextRunAt, saleTaskTitle: enr.saleTaskTitle,
       goalReached: enr.goalReached, stopReason: enr.stopReason, startedAt: enr.startedAt,
+      automated: enr.enrolledByName === 'AI chăm sóc khách hàng',
     },
     workflow: wf,
     timeline: timeline.map((t) => ({

@@ -35,10 +35,13 @@ const CONTENT_TYPE_LABEL: Record<string, string> = {
   location: '📍 Vị trí',
 };
 
-function makePreview(content: string | null, contentType: string): string | null {
+export function buildContactMessagePreview(content: string | null, contentType: string): string | null {
+  if (contentType !== 'text') {
+    return CONTENT_TYPE_LABEL[contentType] ?? 'Tin nhắn đính kèm';
+  }
   const trimmed = content?.trim();
   if (trimmed) return trimmed.slice(0, PREVIEW_LIMIT);
-  return CONTENT_TYPE_LABEL[contentType] ?? null;
+  return null;
 }
 
 export interface AggregateMessageInput {
@@ -76,7 +79,7 @@ export async function applyContactAggregateFromMessage(
 
     const { message } = args;
     const sentAt = message.sentAt;
-    const preview = makePreview(message.content, message.contentType);
+    const preview = buildContactMessagePreview(message.content, message.contentType);
     const isInbound = message.senderType === 'contact';
     const contactId = conv.contactId;
 
@@ -238,8 +241,8 @@ export async function applyFriendAggregate(args: AggregateMessageInput): Promise
     const sentAt = message.sentAt;
     const isInbound = message.senderType === 'contact';
     // Phase Contact Scope Hybrid 2026-05-27 — per-pair preview cho list KH render
-    // theo "view của riêng nick này". Reuse logic makePreview() (line 35).
-    const preview = makePreview(message.content, message.contentType);
+    // theo "view của riêng nick này". Dùng cùng preview đã chuẩn hóa ở Contact.
+    const preview = buildContactMessagePreview(message.content, message.contentType);
 
     // Deferred socket emits — collect inside transaction, flush after commit
     // để tránh emit khi rollback. Mỗi entry sẽ thành 1 'friend:updated' socket event.

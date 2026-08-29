@@ -76,6 +76,40 @@ describe('OpenAI-compatible 9Router client', () => {
     }));
   });
 
+  it('discovers and probes F5Quota models without duplicating the /v1 prefix', async () => {
+    const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).endsWith('/models')) {
+        return new Response(JSON.stringify({
+          data: [{ id: 'claude-sonnet-4-6' }, { id: 'gpt-5.3-codex' }],
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      const body = JSON.parse(String(init?.body)) as { model?: string };
+      expect(body.model).toBe('gpt-5.3-codex');
+      return new Response(JSON.stringify({
+        id: 'f5-request-1',
+        choices: [{ message: { content: 'OK' }, finish_reason: 'stop' }],
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as unknown as typeof fetch;
+
+    await expect(probeOpenAICompatibleConnection({
+      baseUrl: 'https://f5quota.store/v1',
+      apiKey: 'f5-secret',
+      vendor: 'f5quota',
+      model: 'gpt-5.3-codex',
+      fetchImpl,
+    })).resolves.toMatchObject({
+      selectedModel: 'gpt-5.3-codex',
+      completionVerified: true,
+      models: [
+        { title: 'claude-sonnet-4-6', value: 'claude-sonnet-4-6' },
+        { title: 'gpt-5.3-codex', value: 'gpt-5.3-codex' },
+      ],
+    });
+
+    expect(fetchImpl).toHaveBeenNthCalledWith(1, 'https://f5quota.store/v1/models', expect.any(Object));
+    expect(fetchImpl).toHaveBeenNthCalledWith(2, 'https://f5quota.store/v1/chat/completions', expect.any(Object));
+  });
+
   it('discovers models then sends a minimal non-stream completion probe', async () => {
     const fetchImpl = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);

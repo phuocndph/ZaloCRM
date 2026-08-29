@@ -35,6 +35,9 @@ export interface DbFriend {
   scoreUpdatedAt?: string | null;
   stuckSince?: string | null;
   autoTags?: string[];
+  tagAssignments?: Array<{
+    tag: { id: string; name: string; color: string | null; scope: 'friend' | 'crm'; source: string };
+  }>;
   stageEnteredAt?: string | null;
   contact?: {
     id: string;
@@ -51,6 +54,9 @@ export interface DbFriend {
     province: string | null;
     district: string | null;
     birthYear: number | null;
+    tagAssignments?: Array<{
+      tag: { id: string; name: string; color: string | null; scope: 'friend' | 'crm'; source: string };
+    }>;
   };
   zaloAccount?: {
     id: string;
@@ -59,6 +65,59 @@ export interface DbFriend {
     avatarUrl?: string | null;
   };
 }
+
+export interface FriendOverviewTag {
+  id: string | null;
+  name: string;
+  color: string | null;
+  scope: 'friend' | 'crm';
+  source: string;
+}
+
+export interface FriendOverviewAccount {
+  zaloAccountId: string;
+  account: DbFriend['zaloAccount'] | null;
+  relationshipKind: DbFriend['relationshipKind'];
+  friend: DbFriend;
+  friendIds: string[];
+  identityCount: number;
+  totalInbound: number;
+  totalOutbound: number;
+  totalMessages: number;
+  lastInboundAt: string | null;
+  lastOutboundAt: string | null;
+  lastInteractionAt: string | null;
+  tags: FriendOverviewTag[];
+}
+
+export interface FriendOverviewItem {
+  id: string;
+  contactId: string;
+  contact: DbFriend['contact'] | null;
+  primaryFriend: DbFriend;
+  pairCount: number;
+  nickCount: number;
+  friendNickCount: number;
+  isMultiNickFriend: boolean;
+  totalInbound: number;
+  totalOutbound: number;
+  totalMessages: number;
+  lastInteractionAt: string | null;
+  maxLeadScore: number;
+  stuckSince: string | null;
+  tags: FriendOverviewTag[];
+  accounts: FriendOverviewAccount[];
+}
+
+export interface FriendOverviewStats {
+  totalPairs: number;
+  totalContacts: number;
+  duplicateContacts: number;
+  totalMessages: number;
+  accessibleNicks: number;
+}
+
+export type FriendOverviewFilteredStats = Omit<FriendOverviewStats, 'accessibleNicks'>;
 
 export function useFriends() {
   const friends = ref<any[]>([]);
@@ -71,6 +130,21 @@ export function useFriends() {
   // DB-backed (CRM-side persistent friend list)
   const friendsDb = ref<DbFriend[]>([]);
   const friendCounts = ref<Record<string, number>>({});
+  const friendsOverview = ref<FriendOverviewItem[]>([]);
+  const friendAccountCounts = ref<Record<string, { pairs: number; contacts: number; friends: number }>>({});
+  const friendOverviewStats = ref<FriendOverviewStats>({
+    totalPairs: 0,
+    totalContacts: 0,
+    duplicateContacts: 0,
+    totalMessages: 0,
+    accessibleNicks: 0,
+  });
+  const friendOverviewFilteredStats = ref<FriendOverviewFilteredStats>({
+    totalPairs: 0,
+    totalContacts: 0,
+    duplicateContacts: 0,
+    totalMessages: 0,
+  });
   const loadingDb = ref(false);
   const syncing = ref(false);
 
@@ -343,6 +417,82 @@ export function useFriends() {
     }
   }
 
+  async function fetchFriendsOverview(
+    opts: {
+      kind?: string; page?: number; limit?: number; search?: string; sortBy?: string;
+      statusId?: string; multiNickOnly?: boolean;
+    } = {},
+  ) {
+    loadingDb.value = true;
+    try {
+      const res = await api.get('/friends-db/overview', {
+        params: {
+          kind: opts.kind ?? 'all',
+          page: opts.page ?? 1,
+          limit: opts.limit ?? 25,
+          search: opts.search ?? '',
+          sortBy: opts.sortBy ?? 'recent',
+          statusId: opts.statusId ?? '',
+          multiNickOnly: opts.multiNickOnly ? 'true' : 'false',
+        },
+      });
+      friendsOverview.value = res.data?.contacts ?? [];
+      friendCounts.value = res.data?.counts ?? {};
+      friendAccountCounts.value = res.data?.accountCounts ?? {};
+      friendOverviewStats.value = {
+        totalPairs: res.data?.totalPairs ?? 0,
+        totalContacts: res.data?.totalContacts ?? 0,
+        duplicateContacts: res.data?.duplicateContacts ?? 0,
+        totalMessages: res.data?.totalMessages ?? 0,
+        accessibleNicks: res.data?.accessibleNicks ?? 0,
+      };
+      friendOverviewFilteredStats.value = {
+        totalPairs: res.data?.filteredStats?.totalPairs ?? res.data?.totalPairs ?? 0,
+        totalContacts: res.data?.filteredStats?.totalContacts ?? res.data?.total ?? 0,
+        duplicateContacts: res.data?.filteredStats?.duplicateContacts ?? 0,
+        totalMessages: res.data?.filteredStats?.totalMessages ?? 0,
+      };
+      friendsDbTotal.value = res.data?.total ?? 0;
+    } catch (err) {
+      console.error('fetchFriendsOverview failed:', err);
+      friendsOverview.value = [];
+      friendCounts.value = {};
+      friendAccountCounts.value = {};
+      friendOverviewStats.value = {
+        totalPairs: 0,
+        totalContacts: 0,
+        duplicateContacts: 0,
+        totalMessages: 0,
+        accessibleNicks: 0,
+      };
+      friendOverviewFilteredStats.value = {
+        totalPairs: 0,
+        totalContacts: 0,
+        duplicateContacts: 0,
+        totalMessages: 0,
+      };
+      friendsDbTotal.value = 0;
+    } finally {
+      loadingDb.value = false;
+    }
+  }
+
+  async function fetchFriendsOverviewSummary() {
+    try {
+      const res = await api.get('/friends-db/overview', { params: { summaryOnly: 'true' } });
+      friendAccountCounts.value = res.data?.accountCounts ?? {};
+      friendOverviewStats.value = {
+        totalPairs: res.data?.totalPairs ?? 0,
+        totalContacts: res.data?.totalContacts ?? 0,
+        duplicateContacts: res.data?.duplicateContacts ?? 0,
+        totalMessages: res.data?.totalMessages ?? 0,
+        accessibleNicks: res.data?.accessibleNicks ?? 0,
+      };
+    } catch (err) {
+      console.error('fetchFriendsOverviewSummary failed:', err);
+    }
+  }
+
   return {
     friends,
     onlineFriends,
@@ -371,10 +521,16 @@ export function useFriends() {
     friendsDb,
     friendsDbTotal,
     friendCounts,
+    friendsOverview,
+    friendAccountCounts,
+    friendOverviewStats,
+    friendOverviewFilteredStats,
     loadingDb,
     syncing,
     fetchFriendsDb,
     fetchFriendsDbAllNicks,
+    fetchFriendsOverview,
+    fetchFriendsOverviewSummary,
     syncFriendsDb,
   };
 }

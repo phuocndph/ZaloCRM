@@ -45,21 +45,7 @@
           <div class="mov-stat"><span class="mov-stat-n">{{ me.kpi.followSessions ?? 0 }}</span><span class="mov-stat-l">Đang theo dõi</span></div>
         </section>
 
-        <!-- Khách cần xử lý -->
-        <section v-if="(me.urgent || []).length" class="mov-urgent">
-          <div class="mov-sec-title">Cần xử lý ngay</div>
-          <button v-for="u in me.urgent.slice(0, 6)" :key="u.conversationId" class="mov-urow" @click="go(`/m/c/${u.conversationId}`)">
-            <div class="mov-uav">
-              <img v-if="u.contactAvatar && !imgFailed.has(u.conversationId)" :src="u.contactAvatar" alt="" loading="lazy" @error="imgFailed.add(u.conversationId)" />
-              <span v-else>{{ (u.contactName || '?').charAt(0).toUpperCase() }}</span>
-            </div>
-            <div class="mov-ubody">
-              <div class="mov-uname">{{ u.isPrivateNick ? 'Riêng tư - ' : '' }}{{ u.contactName || 'Khách' }}</div>
-              <div class="mov-uprev">{{ u.redacted ? 'Nội dung riêng tư' : (u.messagePreview || '') }}</div>
-            </div>
-            <span v-if="u.unreadCount" class="m-badge">{{ u.unreadCount > 99 ? '99+' : u.unreadCount }}</span>
-          </button>
-        </section>
+        <DailyWorkQueue ref="workQueue" mobile compact />
 
         <!-- Hành động nhanh -->
         <section class="mov-quick">
@@ -73,7 +59,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, reactive } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
 import { MessageCircle as MessageCircleIcon, Users as UsersIcon, CalendarClock as CalendarClockIcon } from 'lucide-vue-next';
 import { api } from '@/api/index';
@@ -81,6 +67,7 @@ import { useAuthStore } from '@/stores/auth';
 import { useChat } from '@/composables/use-chat';
 import MPageHeader from '@/components/mobile/MPageHeader.vue';
 import MState from '@/components/mobile/MState.vue';
+import DailyWorkQueue from '@/components/dashboard/DailyWorkQueue.vue';
 
 defineOptions({ name: 'MOverviewView' });
 
@@ -91,7 +78,7 @@ const { realtimeOffline } = useChat();
 const me = ref<any>(null);
 const loading = ref(false);
 const error = ref<string | null>(null);
-const imgFailed = reactive(new Set<string>()); // avatar lỗi → chữ cái đầu
+const workQueue = ref<InstanceType<typeof DailyWorkQueue> | null>(null);
 
 const firstName = computed(() => (auth.user?.fullName || 'bạn').trim().split(/\s+/).pop());
 const greeting = computed(() => { const h = new Date().getHours(); return h < 11 ? 'Chào buổi sáng' : h < 14 ? 'Chào buổi trưa' : h < 18 ? 'Chào buổi chiều' : 'Chào buổi tối'; });
@@ -106,9 +93,12 @@ const kOverdue = computed(() => (me.value?.reminders?.overdue || []).length);
 function go(path: string) { router.push(path); }
 function setSeg(seg: string) { router.push({ path: '/m/appointments', query: { seg } }); }
 
-async function load() {
+async function load(refreshWorkQueue = false) {
   loading.value = true; error.value = null;
-  try { me.value = (await api.get('/dashboard/action-hub/me')).data; }
+  try {
+    me.value = (await api.get('/dashboard/action-hub/me')).data;
+    if (refreshWorkQueue) void workQueue.value?.refresh(true);
+  }
   catch { error.value = 'Không tải được dữ liệu tổng quan'; }
   finally { loading.value = false; }
 }
@@ -132,7 +122,7 @@ function onTouchMove(e: TouchEvent) {
   pullY.value = dy > 0 ? Math.min(dy * 0.5, 90) : 0;
   if (pullY.value > 0) e.preventDefault();
 }
-async function onTouchEnd() { if (pullY.value > 64) await load(); pullY.value = 0; pulling = false; }
+async function onTouchEnd() { if (pullY.value > 64) await load(true); pullY.value = 0; pulling = false; }
 
 onMounted(() => void load());
 </script>
@@ -160,17 +150,6 @@ onMounted(() => void load());
 .mov-stat { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 12px 6px; background: var(--m-surface); border-radius: var(--m-r-md); box-shadow: var(--m-e1); }
 .mov-stat-n { font-size: var(--m-fs-lg); font-weight: var(--m-fw-bold); color: var(--m-text); }
 .mov-stat-l { font-size: var(--m-fs-2xs); color: var(--m-text-3); text-align: center; }
-
-.mov-sec-title { font-size: var(--m-fs-sm); font-weight: var(--m-fw-bold); color: var(--m-text-2); padding: var(--m-sp-2) var(--m-sp-4) 6px; }
-.mov-urgent { background: var(--m-surface); margin: 0 var(--m-sp-4) var(--m-sp-3); border-radius: var(--m-r-lg); overflow: hidden; box-shadow: var(--m-e1); }
-.mov-urow { display: flex; align-items: center; gap: var(--m-sp-3); width: 100%; padding: 10px var(--m-sp-3); border: 0; background: none; cursor: pointer; text-align: left; }
-.mov-urow + .mov-urow { box-shadow: inset 0 1px 0 var(--m-border); }
-.mov-urow:active { background: var(--m-surface-2); }
-.mov-uav { width: 40px; height: 40px; border-radius: var(--m-r-full); flex-shrink: 0; background: linear-gradient(135deg, #8fb7ff, #1f6fd6); color: #fff; display: flex; align-items: center; justify-content: center; font-weight: var(--m-fw-semibold); }
-.mov-uav img { width: 100%; height: 100%; border-radius: var(--m-r-full); object-fit: cover; }
-.mov-ubody { flex: 1; min-width: 0; }
-.mov-uname { font-size: var(--m-fs-sm); font-weight: var(--m-fw-semibold); color: var(--m-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mov-uprev { font-size: var(--m-fs-xs); color: var(--m-text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .mov-quick { display: flex; gap: var(--m-sp-2); padding: 0 var(--m-sp-4) var(--m-sp-4); }
 .mov-qa { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 12px 4px; border: 0; border-radius: var(--m-r-md); background: var(--m-surface); box-shadow: var(--m-e1); color: var(--m-brand); font-size: var(--m-fs-xs); font-weight: var(--m-fw-semibold); cursor: pointer; }

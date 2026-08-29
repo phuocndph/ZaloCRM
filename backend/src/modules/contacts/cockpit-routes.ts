@@ -72,8 +72,10 @@ export async function cockpitRoutes(app: FastifyInstance): Promise<void> {
           // Aggregate timeline
           lastInboundAt: true,
           lastInboundPreview: true,
+          lastInboundType: true,
           lastOutboundAt: true,
           lastOutboundPreview: true,
+          lastOutboundType: true,
           lastInteractionAt: true,
           nextAppointment: true,
           stuckSinceAggregate: true,
@@ -139,8 +141,10 @@ export async function cockpitRoutes(app: FastifyInstance): Promise<void> {
         // Timeline
         lastInboundAt: contact.lastInboundAt,
         lastInboundPreview: contact.lastInboundPreview,
+        lastInboundType: contact.lastInboundType,
         lastOutboundAt: contact.lastOutboundAt,
         lastOutboundPreview: contact.lastOutboundPreview,
+        lastOutboundType: contact.lastOutboundType,
         lastInteractionAt: contact.lastInteractionAt,
         nextAppointment: upcomingAppointment
           ? {

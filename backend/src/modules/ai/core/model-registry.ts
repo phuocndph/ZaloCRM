@@ -148,7 +148,7 @@ export class ModelRegistry {
       }
       baseUrl = String(parameters.baseUrl ?? '');
     }
-    if (stored.provider === 'openai-compatible' || stored.provider === 'openai' || stored.provider === 'qwen' || stored.provider === 'kimi' || stored.provider === '9router') {
+    if (stored.provider === 'openai-compatible' || stored.provider === 'openai' || stored.provider === 'qwen' || stored.provider === 'kimi' || stored.provider === '9router' || stored.provider === 'f5quota') {
       parseOpenAICompatibleBaseUrl(baseUrl);
     } else if (!/^https:\/\//i.test(baseUrl)) {
       throw new AIError('CONFIGURATION', 'AI model baseUrl must use HTTPS', false, 400, stored.provider);

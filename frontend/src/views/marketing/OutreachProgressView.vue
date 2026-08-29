@@ -6,6 +6,7 @@
       <button class="op-back" @click="$router.push('/marketing/campaigns')">← Danh sách</button>
       <h1>{{ campaign.name }}</h1>
       <span class="op-badge" :class="campaign.state">{{ stateLabel(campaign.state) }}</span>
+      <span class="op-source">{{ campaign.audienceSource === 'friend_pool' ? 'Bạn bè đa nick' : 'Tệp SĐT' }}</span>
       <span class="op-run">Lần chạy: {{ campaign.runCount || 0 }}</span>
     </div>
 
@@ -47,20 +48,23 @@
     <!-- Bảng 1 SỐ = 1 DÒNG -->
     <div class="op-card">
       <div class="op-toolbar">
-        <input v-model="filter.search" class="op-search" placeholder="Tìm số điện thoại…" @input="debouncedReload" />
+        <input v-model="filter.search" class="op-search" placeholder="Tìm tên, SĐT, nick hoặc tag…" @input="debouncedReload" />
         <div class="op-spacer" />
         <button class="op-sort" @click="toggleSort">
-          Sắp xếp: {{ filter.sort === 'phone' ? 'SĐT' : 'Cập nhật mới nhất' }}
+          Sắp xếp: {{ sortLabel }}
         </button>
         <span class="op-total">{{ pagination.total.toLocaleString('vi') }} số</span>
       </div>
       <div class="op-tablewrap">
         <table class="op-ptable">
           <thead>
-            <tr>
-              <th>Số điện thoại</th>
+          <tr>
+              <th>Khách hàng</th>
+              <th>Nick Zalo</th>
+              <th>Tag</th>
+              <th>Tương tác cuối</th>
               <th>Trạng thái</th>
-              <th>Kết bạn</th>
+              <th v-if="campaign.audienceSource === 'customer_list'">Kết bạn</th>
               <th>Nhắn tin</th>
               <th>Cập nhật</th>
               <th>Ghi chú</th>
@@ -68,14 +72,17 @@
           </thead>
           <tbody>
             <tr v-for="p in phones" :key="p.entryId">
-              <td class="op-mono">{{ p.phone }}</td>
+              <td><div class="op-target">{{ p.targetName || p.phone || '—' }}</div><small>{{ p.phone || 'Không có SĐT' }}</small></td>
+              <td>{{ p.accountName || '—' }}</td>
+              <td><span v-for="tag in p.tagNames.slice(0, 2)" :key="tag" class="op-tag">{{ tag }}</span><small v-if="p.tagNames.length > 2">+{{ p.tagNames.length - 2 }}</small><span v-if="!p.tagNames.length">—</span></td>
+              <td class="op-dim">{{ fmtInteraction(p.lastInteractionAt) }}</td>
               <td><span class="op-ov" :class="p.overallStatus">{{ overallLabel(p.overallStatus) }}</span></td>
-              <td><span class="op-cell" :class="'f-' + p.friendStatus">{{ friendLabel(p.friendStatus) }}</span></td>
+              <td v-if="campaign.audienceSource === 'customer_list'"><span class="op-cell" :class="'f-' + p.friendStatus">{{ friendLabel(p.friendStatus) }}</span></td>
               <td><span class="op-cell" :class="'m-' + p.messageStatus">{{ msgLabel(p.messageStatus) }}</span></td>
               <td class="op-dim">{{ p.updatedAt ? fmtTime(p.updatedAt) : '—' }}</td>
               <td class="op-note">{{ p.note || '—' }}</td>
             </tr>
-            <tr v-if="!phones.length"><td colspan="6" class="op-empty">Chưa có số nào.</td></tr>
+            <tr v-if="!phones.length"><td :colspan="campaign.audienceSource === 'customer_list' ? 9 : 8" class="op-empty">Chưa có đối tượng nào.</td></tr>
           </tbody>
         </table>
       </div>
@@ -136,11 +143,12 @@ const phones = ref<OutreachPhone[]>([]);
 const runs = ref<OutreachRun[]>([]);
 const summary = reactive<PhoneSummary>({ total: 0, success: 0, waiting: 0, processing: 0, skipped: 0 });
 const pagination = reactive({ page: 1, limit: 50, total: 0 });
-const filter = reactive({ search: '', status: '' as '' | 'success' | 'waiting' | 'processing' | 'skipped', sort: 'updatedAt' as 'updatedAt' | 'phone' });
+const filter = reactive({ search: '', status: '' as '' | 'success' | 'waiting' | 'processing' | 'skipped', sort: 'updatedAt' as 'updatedAt' | 'phone' | 'interaction' });
 const showRestart = ref(false);
 const restarting = ref(false);
 
 const totalPages = computed(() => Math.max(1, Math.ceil(pagination.total / pagination.limit)));
+const sortLabel = computed(() => ({ updatedAt: 'Cập nhật mới nhất', phone: 'SĐT', interaction: 'Tương tác gần nhất' }[filter.sort]));
 const pct = computed(() => {
   if (summary.total === 0) return 0;
   return Math.round(((summary.success + summary.skipped) / summary.total) * 1000) / 10;
@@ -159,7 +167,10 @@ async function loadPhones() {
 }
 
 function setStatus(s: '' | 'success' | 'waiting' | 'processing' | 'skipped') { filter.status = s; pagination.page = 1; loadPhones(); }
-function toggleSort() { filter.sort = filter.sort === 'updatedAt' ? 'phone' : 'updatedAt'; loadPhones(); }
+function toggleSort() {
+  filter.sort = filter.sort === 'updatedAt' ? 'interaction' : filter.sort === 'interaction' ? 'phone' : 'updatedAt';
+  loadPhones();
+}
 function goPage(p: number) { pagination.page = p; loadPhones(); }
 
 let searchTimer: ReturnType<typeof setTimeout>;
@@ -193,6 +204,13 @@ function fmtDateTime(iso: string) { const d = new Date(iso); return `${String(d.
 function friendLabel(s: string) { return ({ success: '✅', already_friend: '🤝 Đã là bạn', waiting: '⏳', failed: '❌', none: '–' } as any)[s] || '–'; }
 function msgLabel(s: string) { return ({ sent: '✅ Đã gửi', waiting: '⏳', failed: '❌', none: '–' } as any)[s] || '–'; }
 function fmtTime(iso: string) { const d = new Date(iso); return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}:${String(d.getSeconds()).padStart(2,'0')}`; }
+function fmtInteraction(iso: string | null) {
+  if (!iso) return 'Chưa từng tương tác';
+  const days = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 86400000));
+  if (days === 0) return 'Hôm nay';
+  if (days === 1) return 'Hôm qua';
+  return `${days} ngày trước`;
+}
 
 // ── Realtime ──
 // Cập nhật campaign state (progress). Phone events → patch dòng tại chỗ + debounced reload
@@ -218,7 +236,14 @@ onUnmounted(() => { if (reloadTimer) clearTimeout(reloadTimer); });
 </script>
 
 <style scoped>
-.op-page { padding: 18px 22px; max-width: 1080px; }
+.op-page {
+  padding: 18px 22px;
+  max-width: 1080px;
+  min-height: 100%;
+  background: var(--surface-2);
+  color: var(--ink);
+  color-scheme: light;
+}
 .op-head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
 .op-head h1 { margin: 0; font-size: 19px; font-weight: 800; color: var(--ink); }
 .op-back { background: none; border: none; color: var(--brand-700); font-weight: 600; cursor: pointer; font-family: inherit; font-size: 13px; }
@@ -247,7 +272,7 @@ onUnmounted(() => { if (reloadTimer) clearTimeout(reloadTimer); });
 
 /* Toolbar */
 .op-toolbar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
-.op-search { flex: 0 0 260px; padding: 7px 10px; border: 1px solid var(--line); border-radius: var(--r-sm, 8px); font-size: 13px; font-family: inherit; }
+.op-search { flex: 0 0 260px; padding: 7px 10px; border: 1px solid var(--line); border-radius: var(--r-sm, 8px); background: var(--surface); color: var(--ink); font-size: 13px; font-family: inherit; }
 .op-spacer { flex: 1; }
 .op-sort { padding: 6px 12px; border: 1px solid var(--line); border-radius: var(--r-sm, 8px); background: var(--surface); color: var(--ink-2); font-size: 12.5px; font-weight: 600; cursor: pointer; font-family: inherit; }
 .op-total { font-size: 12px; color: var(--ink-4); }
@@ -259,6 +284,9 @@ onUnmounted(() => { if (reloadTimer) clearTimeout(reloadTimer); });
 .op-ptable tbody td { padding: 7px 12px; border-bottom: 1px solid var(--line-2); color: var(--ink-2); vertical-align: middle; }
 .op-ptable tbody tr:hover { background: var(--brand-softer); }
 .op-mono { font-family: var(--mono, monospace); color: var(--ink); font-weight: 600; }
+.op-target { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-weight: 700; }
+.op-target + small { display: block; margin-top: 2px; color: var(--ink-4); }
+.op-tag { display: inline-block; max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin: 1px 4px 1px 0; padding: 2px 6px; border-radius: 999px; background: var(--surface-3); color: var(--ink-2); font-size: 10.5px; }
 .op-dim { color: var(--ink-4); font-variant-numeric: tabular-nums; }
 .op-note { color: var(--ink-3); max-width: 260px; }
 .op-empty { text-align: center; color: var(--ink-4); padding: 28px; }
@@ -282,6 +310,7 @@ onUnmounted(() => { if (reloadTimer) clearTimeout(reloadTimer); });
 .op-badge.paused { background: #fef3c7; color: #92400e; }
 .op-badge.completed { background: #dcfce7; color: #166534; }
 .op-badge.cancelled, .op-badge.failed { background: #fee2e2; color: #b91c1c; }
+.op-source { font-size: 11.5px; color: var(--ink-3); padding: 2px 8px; border: 1px solid var(--line); border-radius: 999px; }
 
 /* Lần chạy chip */
 .op-run { padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700; background: var(--surface-3); color: var(--ink-2); }
@@ -307,4 +336,22 @@ onUnmounted(() => { if (reloadTimer) clearTimeout(reloadTimer); });
 .op-modal-body ul { margin: 6px 0 12px; padding-left: 18px; }
 .op-modal-body li { font-size: 13px; color: var(--ink-2); margin-bottom: 4px; }
 .op-modal-foot { display: flex; justify-content: flex-end; gap: 10px; margin-top: 16px; }
+@media (max-width: 720px) {
+  .op-page { padding: 14px; }
+  .op-head { flex-wrap: wrap; gap: 8px; }
+  .op-head h1 { width: 100%; order: -1; }
+  .op-progress { align-items: stretch; flex-direction: column; }
+  .op-controls { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .op-controls .op-btn { width: 100%; }
+  .op-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .op-toolbar { align-items: stretch; flex-wrap: wrap; }
+  .op-search { flex: 1 1 100%; min-width: 0; }
+  .op-spacer { display: none; }
+  .op-tablewrap { max-height: 58vh; }
+  .op-ptable { min-width: 850px; }
+  .op-run-row { grid-template-columns: 1fr 1fr; }
+  .op-run-time { grid-column: 1 / -1; text-align: left; }
+  .op-modal-overlay { padding: 0; }
+  .op-modal { max-width: 100vw; max-height: 100dvh; border-radius: 0; }
+}
 </style>

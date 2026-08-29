@@ -73,6 +73,7 @@ export async function listProviderModels(
     case 'openai':
     case 'kimi':
     case '9router':
+    case 'f5quota':
       models = await listOpenAICompatibleModels({ baseUrl, apiKey, vendor: provider });
       break;
     case 'qwen':

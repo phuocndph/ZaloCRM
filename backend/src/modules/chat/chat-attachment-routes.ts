@@ -35,6 +35,7 @@ import {
   outboundDeliveryState,
   renewOutboundDeliveryLease,
 } from './chat-helpers.js';
+import { enqueueConversationAnalysis } from '../ai/conversation-analysis-queue.js';
 
 export const IMAGE_MAX = 100 * 1024 * 1024;
 export const VIDEO_MAX = 500 * 1024 * 1024;
@@ -457,6 +458,15 @@ export async function chatAttachmentRoutes(app: FastifyInstance) {
             isPrivate: conversation.isPrivate,
             privateOwnerUserId: conversation.privateOwnerUserId,
           });
+          if (conversation.threadType === 'user' && conversation.contactId) {
+            void enqueueConversationAnalysis({
+              orgId: user.orgId,
+              conversationId: id,
+              messageId: message.id,
+            }).catch((error) => logger.warn(
+              `[conversation-analysis] outbound media enqueue failed conversation=${id}: ${(error as Error).message}`,
+            ));
+          }
         };
         const prepareAcceptedFile = async (index: number, zaloMsgId: string) => {
           const message = await retryDurableStep(`persist accepted file ${index}`, () => createMediaMessage({

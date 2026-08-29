@@ -37,7 +37,7 @@ export type ProviderInfo = {
   keyMask: string;
 };
 
-const PROVIDER_IDS = ['anthropic', 'gemini', 'openai', 'qwen', 'kimi', '9router'] as const;
+const PROVIDER_IDS = ['anthropic', 'gemini', 'openai', 'qwen', 'kimi', '9router', 'f5quota'] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 
 /** Build catalog tĩnh từ config (env) */
@@ -49,6 +49,7 @@ function buildCatalog(): ProviderDef[] {
     { id: 'qwen', name: 'Qwen', adapter: 'openai-compatible', vendor: 'qwen', baseUrl: config.qwenBaseUrl, authToken: config.qwenAuthToken },
     { id: 'kimi', name: 'Kimi', adapter: 'openai-compatible', vendor: 'kimi', baseUrl: config.kimiBaseUrl, authToken: config.kimiAuthToken },
     { id: '9router', name: '9Router', adapter: 'openai-compatible', vendor: '9router', baseUrl: config.nineRouterBaseUrl, authToken: config.nineRouterApiKey },
+    { id: 'f5quota', name: 'F5Quota', adapter: 'openai-compatible', vendor: 'f5quota', baseUrl: config.f5QuotaBaseUrl, authToken: config.f5QuotaApiKey },
   ];
 }
 
@@ -65,6 +66,7 @@ function isValidProvider(id: string): id is ProviderId {
 
 const keySettingKey = (provider: string) => `ai_${provider}_api_key`;
 const urlSettingKey = (provider: string) => `ai_${provider}_base_url`;
+const warnedUndecryptableLegacyKeys = new Set<string>();
 
 /** Mask key để hiển thị UI: "••••1234" */
 function maskKey(key: string): string {
@@ -85,8 +87,12 @@ export async function resolveProviderApiKey(orgId: string, provider: string): Pr
   if (setting?.valueEncrypted) {
     try {
       return decryptToken(Buffer.from(setting.valueEncrypted).toString('utf8'));
-    } catch (err) {
-      logger.error('[ai-registry] decrypt key fail provider=%s: %s', provider, (err as Error).message);
+    } catch {
+      const warningKey = `${orgId}:${provider}`;
+      if (!warnedUndecryptableLegacyKeys.has(warningKey)) {
+        warnedUndecryptableLegacyKeys.add(warningKey);
+        logger.warn(`[ai-registry] Ignoring an undecryptable legacy API key for provider=${provider}; re-enter or remove that legacy credential`);
+      }
     }
   }
   if (setting?.valuePlain) return setting.valuePlain;
@@ -105,6 +111,7 @@ export async function getProviderBaseUrl(orgId: string, provider: string): Promi
 export async function setProviderApiKey(orgId: string, provider: string, apiKey: string | null): Promise<void> {
   if (!isValidProvider(provider)) throw new Error(`Unknown provider: ${provider}`);
   const settingKey = keySettingKey(provider);
+  warnedUndecryptableLegacyKeys.delete(`${orgId}:${provider}`);
   if (!apiKey) {
     await prisma.appSetting.deleteMany({ where: { orgId, settingKey } });
     return;

@@ -3,6 +3,7 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';
 import { useToast } from '@/composables/use-toast';
+import { mobileChatRedirect } from './mobile-chat-redirect';
 // Open-core: extension route injection (empty in Community edition via @ee stub).
 import { eeSettingsChildren, eeReportsChildren, eeTopRoutes } from '@ee/routes';
 // Edition flag (open-core): EE=true, Community=false. Dùng để chỉ đăng ký menu
@@ -46,6 +47,12 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true },
   },
   {
+    path: '/work-items',
+    name: 'WorkItems',
+    component: () => import('@/views/WorkItemsView.vue'),
+    meta: { requiresAuth: true, resource: 'conversation' },
+  },
+  {
     path: '/chat/:convId?',
     name: 'Chat',
     component: () => import('@/views/ChatView.vue'),
@@ -68,6 +75,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'appointments/:id', name: 'M.AppointmentDetail', component: () => import('@/views/mobile/MAppointmentDetailView.vue'), meta: { requiresAuth: true, resource: 'appointment' } },
       // Tổng quan mobile — tái dùng /dashboard/action-hub/me.
       { path: 'overview', name: 'M.Overview', component: () => import('@/views/mobile/MOverviewView.vue'), meta: { requiresAuth: true } },
+      { path: 'work-items', name: 'M.WorkItems', component: () => import('@/views/mobile/MWorkItemsView.vue'), meta: { requiresAuth: true, resource: 'conversation' } },
       { path: 'settings', name: 'M.Settings', component: () => import('@/views/mobile/MSettingsView.vue'), meta: { requiresAuth: true } },
     ],
   },
@@ -305,7 +313,10 @@ router.beforeEach(async (to, _from, next) => {
   // từng nằm trong ChatView). Chỉ chạy khi width < 768 ⇒ desktop KHÔNG bị ảnh hưởng.
   if (to.name === 'Chat' && typeof window !== 'undefined' && window.innerWidth < 768) {
     const convId = to.params.convId as string | undefined;
-    return next(convId ? { name: 'M.Chat', params: { convId } } : { name: 'M.Conversations' });
+    // Preserve query/hash when a desktop deep-link is redirected to the PWA
+    // route. Work-item AI links rely on `?ai=1` to open Copilot after the
+    // asynchronously loaded mobile chat has mounted.
+    return next(mobileChatRedirect({ convId, query: to.query, hash: to.hash }));
   }
 
   // Check auth for protected routes

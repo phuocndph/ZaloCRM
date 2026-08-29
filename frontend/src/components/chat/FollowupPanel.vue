@@ -6,8 +6,19 @@
   <div class="fup">
     <div v-if="loading" class="fup-loading"><v-progress-circular indeterminate size="22" color="primary" /></div>
 
+    <div v-else-if="loadError && !loadedOnce" class="fup-load-error">
+      <v-icon size="24" color="warning">mdi-alert-circle-outline</v-icon>
+      <strong>Không tải được thông tin chăm sóc</strong>
+      <span>Dữ liệu hiện tại chưa được xác nhận. Vui lòng tải lại trước khi thao tác.</span>
+      <v-btn size="small" variant="tonal" color="primary" @click="load()">Tải lại</v-btn>
+    </div>
+
     <!-- Chưa trong workflow nào → cho enroll -->
     <template v-else-if="!enrollment">
+      <div v-if="loadError" class="fup-stale-warning">
+        <v-icon size="15">mdi-alert-outline</v-icon>
+        Chưa cập nhật được dữ liệu mới nhất.
+      </div>
       <div class="fup-empty">
         <v-icon size="30" color="grey-lighten-1">mdi-timeline-clock-outline</v-icon>
         <p class="fup-empty-txt">Khách chưa nằm trong chiến dịch nào.</p>
@@ -37,9 +48,16 @@
 
     <!-- Đang có enrollment -->
     <template v-else>
+      <div v-if="loadError" class="fup-stale-warning">
+        <v-icon size="15">mdi-alert-outline</v-icon>
+        Đang hiển thị dữ liệu gần nhất; lần cập nhật mới vừa thất bại.
+      </div>
       <div class="fup-card">
         <div class="fup-card-head">
-          <div class="fup-wf-name">{{ workflow?.name || 'Chiến dịch' }}</div>
+          <div class="fup-wf-title">
+            <div class="fup-wf-name">{{ workflow?.name || 'Chiến dịch' }}</div>
+            <span v-if="enrollment.automated" class="fup-auto-badge">AI tự động</span>
+          </div>
           <span class="fup-status" :class="'en-' + enrollment.status">{{ enrollStatusLabel(enrollment.status) }}</span>
         </div>
         <div class="fup-meta">
@@ -91,14 +109,18 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from 'vue';
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue';
 import { api } from '@/api/index';
 import { useToast } from '@/composables/use-toast';
+import { orgDayKey, useOrgTimezone } from '@/composables/use-org-timezone';
 
 const props = defineProps<{ contactId: string; zaloAccountId: string | null }>();
 const toast = useToast();
+const { format: formatOrgTime } = useOrgTimezone();
 
 const loading = ref(true);
+const loadError = ref(false);
+const loadedOnce = ref(false);
 const enrollment = ref<any>(null);
 const workflow = ref<any>(null);
 const timeline = ref<any[]>([]);
@@ -108,6 +130,7 @@ const enrolling = ref(false);
 const showReenroll = ref(false);
 const conflictOpen = ref(false);
 const conflictName = ref('');
+let refreshTimer: number | null = null;
 
 const wfOptions = computed(() => activeWfs.value.map((w) => ({ title: w.name, value: w.id })));
 const isActive = computed(() => ['running', 'waiting', 'waiting_sale'].includes(enrollment.value?.status));
@@ -115,28 +138,30 @@ const isActive = computed(() => ['running', 'waiting', 'waiting_sale'].includes(
 const EN: Record<string, string> = { running: 'Đang chạy', waiting: 'Đang chờ', waiting_sale: 'Chờ Sale', completed: 'Hoàn thành', stopped: 'Đã dừng', goal_reached: 'Đạt Goal' };
 function enrollStatusLabel(s: string) { return EN[s] ?? s; }
 function fmtWhen(iso: string) {
-  const d = new Date(iso); const now = new Date();
-  const hhmm = `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}`;
-  if (d.toDateString() === now.toDateString()) return `Hôm nay ${hhmm}`;
-  return `${d.getDate().toString().padStart(2, '0')}/${(d.getMonth() + 1).toString().padStart(2, '0')} ${hhmm}`;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '—';
+  if (orgDayKey(d) === orgDayKey(new Date())) return `Hôm nay ${formatOrgTime(d, { timeOnly: true })}`;
+  return formatOrgTime(d);
 }
 
-async function load() {
+async function load(silent = false) {
   if (!props.contactId) { loading.value = false; return; }
-  loading.value = true;
+  if (!silent) loading.value = true;
   try {
+    loadError.value = false;
     const [res, act] = await Promise.all([
       api.get(`/followup/contacts/${props.contactId}`),
-      api.get('/followup/active').catch(() => ({ data: { workflows: [] } })),
+      api.get('/followup/active'),
     ]);
     enrollment.value = res.data.enrollment;
     workflow.value = res.data.workflow;
     timeline.value = res.data.timeline ?? [];
     activeWfs.value = act.data.workflows ?? [];
+    loadedOnce.value = true;
   } catch {
-    /* im lặng — tab phụ */
+    loadError.value = true;
   } finally {
-    loading.value = false;
+    if (!silent) loading.value = false;
   }
 }
 
@@ -177,13 +202,31 @@ async function completeTask() {
   catch { toast.error('Lỗi'); }
 }
 
-watch(() => props.contactId, () => { enrollment.value = null; load(); });
-onMounted(load);
+watch(() => [props.contactId, props.zaloAccountId], () => {
+  enrollment.value = null;
+  workflow.value = null;
+  timeline.value = [];
+  activeWfs.value = [];
+  loadedOnce.value = false;
+  loadError.value = false;
+  void load();
+});
+onMounted(() => {
+  void load();
+  refreshTimer = window.setInterval(() => void load(true), 15_000);
+});
+onUnmounted(() => {
+  if (refreshTimer !== null) window.clearInterval(refreshTimer);
+});
 </script>
 
 <style scoped>
 .fup { padding: 12px 14px; }
 .fup-loading { display: flex; justify-content: center; padding: 24px; }
+.fup-load-error { display: flex; flex-direction: column; align-items: center; gap: 7px; padding: 20px 14px; text-align: center; color: #475467; }
+.fup-load-error strong { color: #344054; font-size: 13px; }
+.fup-load-error span { max-width: 310px; font-size: 12px; line-height: 1.45; }
+.fup-stale-warning { display: flex; align-items: center; gap: 6px; margin: 8px 10px 0; padding: 8px 10px; border: 1px solid #f7c970; background: #fffaeb; color: #854a0e; font-size: 11px; line-height: 1.35; border-radius: 6px; }
 .fup-empty { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 18px 8px; }
 .fup-empty-txt { font-size: 13px; color: var(--smax-grey-700, #5a6478); margin: 8px 0 12px; }
 .fup-pick { width: 100%; }
@@ -196,7 +239,9 @@ onMounted(load);
 }
 .fup-card { background: var(--smax-grey-50, #fafbfc); border: 1px solid var(--smax-grey-200, #ebedf0); border-radius: 12px; padding: 12px; }
 .fup-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.fup-wf-title { min-width: 0; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .fup-wf-name { font-weight: 700; font-size: 14px; }
+.fup-auto-badge { font-size: 10px; font-weight: 700; color: #087443; background: #eaf8f0; border-radius: 4px; padding: 2px 5px; }
 .fup-status { font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 999px; white-space: nowrap; }
 .en-running { background: rgba(0,200,83,.14); color: #1b8a4d; } .en-waiting { background: rgba(33,150,243,.14); color: #1565c0; }
 .en-waiting_sale { background: rgba(255,145,0,.14); color: #ef6c00; } .en-completed { background: #eceff1; color: #607d8b; }

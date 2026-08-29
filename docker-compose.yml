@@ -21,6 +21,8 @@ services:
       # Phase 7 overnight test: STUB mode prevents Zalo SDK calls.
       # Set to 'false' or remove for REAL mode.
       - AUTOMATION_STUB_MODE=${AUTOMATION_STUB_MODE:-false}
+      - AI_CUSTOMER_AUTOMATION_ENABLED=${AI_CUSTOMER_AUTOMATION_ENABLED:-false}
+      - AI_CUSTOMER_AUTOMATION_BACKFILL_BATCH=${AI_CUSTOMER_AUTOMATION_BACKFILL_BATCH:-25}
       # Friend Invite Queue test mode: 60s tick delay instead of 20-40min.
       - FRIEND_INVITE_TEST_MODE=${FRIEND_INVITE_TEST_MODE:-true}
       # ── Luồng Mục Tiêu M1 (2026-06-01) ── BullMQ Redis URL

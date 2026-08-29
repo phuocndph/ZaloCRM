@@ -49,6 +49,7 @@ import {
   createProviderConnection,
   deleteProviderConnection,
   getProviderConnection,
+  getProviderConnectionRuntime,
   listProviderConnections,
   normalizeProviderBaseUrl,
   revokeProviderConnectionSecret,
@@ -95,6 +96,8 @@ describe('provider connection service', () => {
   it('accepts HTTPS and only allows HTTP for an exact 9Router host allowlist match', () => {
     expect(normalizeProviderBaseUrl('https://router.example.com/v1/', 'custom'))
       .toBe('https://router.example.com/v1');
+    expect(normalizeProviderBaseUrl('https://f5quota.store/v1/', 'f5quota'))
+      .toBe('https://f5quota.store/v1');
     expect(normalizeProviderBaseUrl('http://host.docker.internal:20128/v1/', '9router'))
       .toBe('http://host.docker.internal:20128/v1');
 
@@ -174,6 +177,35 @@ describe('provider connection service', () => {
       }),
     }));
     expect(JSON.stringify(mocks.prisma.aiAuditLog.create.mock.calls)).not.toContain('apiKey');
+  });
+
+  it('creates an F5Quota connection with its HTTPS OpenAI-compatible endpoint', async () => {
+    mocks.prisma.aiProviderConnection.findFirst.mockResolvedValue(null);
+    mocks.prisma.aiProviderConnection.create.mockResolvedValue(connectionRow({
+      key: 'f5quota-primary',
+      name: 'F5Quota',
+      vendor: 'f5quota',
+      baseUrl: 'https://f5quota.store/v1',
+      status: 'draft',
+      apiKeyLast4: null,
+      _count: { modelConfigs: 0 },
+    }));
+
+    await createProviderConnection(actor, {
+      key: 'f5quota-primary',
+      name: 'F5Quota',
+      adapter: 'openai_compatible',
+      vendor: 'f5quota',
+      baseUrl: 'https://f5quota.store/v1/',
+    });
+
+    expect(mocks.prisma.aiProviderConnection.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({
+        key: 'f5quota-primary',
+        vendor: 'f5quota',
+        baseUrl: 'https://f5quota.store/v1',
+      }),
+    }));
   });
 
   it('encrypts a write-only secret, preserves only its last four characters, and requires a new test', async () => {
@@ -260,6 +292,30 @@ describe('provider connection service', () => {
     await revokeProviderConnectionSecret(actor, 'connection-1');
     expect(mocks.prisma.aiProviderConnection.updateMany).toHaveBeenLastCalledWith(expect.objectContaining({
       data: expect.objectContaining({ status: 'disabled', apiKeyEncrypted: null }),
+    }));
+  });
+
+  it('marks a connection failed when its persisted credential cannot be decrypted', async () => {
+    const encryptedSecret = new TextEncoder().encode('old-key-ciphertext');
+    mocks.prisma.aiProviderConnection.findFirst.mockResolvedValue(connectionRow({
+      apiKeyEncrypted: encryptedSecret,
+      status: 'connected',
+    }));
+    mocks.prisma.aiProviderConnection.updateMany.mockResolvedValue({ count: 1 });
+    mocks.decryptToken.mockImplementationOnce(() => {
+      throw new Error('authentication failed');
+    });
+
+    await expect(getProviderConnectionRuntime('org-1', 'connection-1')).rejects.toMatchObject({
+      code: 'AI_SECRET_UNAVAILABLE',
+    });
+    expect(mocks.prisma.aiProviderConnection.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'connection-1', orgId: 'org-1', deletedAt: null },
+      data: expect.objectContaining({
+        status: 'failed',
+        lastTestStatus: 'credential_unavailable',
+        lastErrorCode: 'AI_SECRET_UNAVAILABLE',
+      }),
     }));
   });
 

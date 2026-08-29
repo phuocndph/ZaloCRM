@@ -171,8 +171,6 @@
     <!-- Global toast queue -->
     <ToastContainer />
 
-    <!-- Thông báo tin nhắn nổi (desktop, giống Zalo) -->
-    <MessageNotifications />
   </v-app>
 </template>
 
@@ -188,8 +186,6 @@ import { useRouter } from 'vue-router';
 import NotificationBell from '@/components/NotificationBell.vue';
 import GlobalSearch from '@/components/GlobalSearch.vue';
 import ToastContainer from '@/components/ui/ToastContainer.vue';
-import MessageNotifications from '@/components/MessageNotifications.vue';
-import { useMessageNotifications } from '@/composables/use-message-notifications';
 import Avatar from '@/components/ui/Avatar.vue';
 import { fetchPublicBranding } from '@/api/public-branding';
 // Open-core: extension top-nav shortcuts (empty in Community edition via @ee stub).
@@ -309,14 +305,6 @@ onMounted(() => {
   localStorage.removeItem('theme');
   void checkInternalContactSetup();
 
-  // Thông báo tin nhắn nổi — socket sống toàn app ở tầng layout cho cả desktop/PWA.
-  // Tự kích hoạt sau đăng nhập nếu người dùng chưa chủ động tắt trong cài đặt.
-  const messageNotifications = useMessageNotifications();
-  messageNotifications.start();
-  if (messageNotifications.enabled.value) {
-    void messageNotifications.enable();
-  }
-
   fetchPublicBranding()
     .then((b) => {
       if (!b) return;
@@ -340,6 +328,7 @@ interface NavTab {
 //     "Báo cáo" tab riêng (gộp dropdown), Automation legacy dropdown (Marketing thay).
 // Icons MDI line stroke-2 (mdi-*-outline) thay emoji để nhất quán + đổi màu theo theme.
 const primaryTabs: NavTab[] = [
+  { path: '/work-items',              label: 'Công việc',    icon: 'mdi-format-list-checks', resource: 'conversation' },
   { path: '/',                       label: 'Dashboard',   icon: 'mdi-view-dashboard-outline', matchPrefix: '/$' },
   { path: '/chat',                   label: 'Tin nhắn',    icon: 'mdi-message-text-outline', resource: 'conversation' },
   { path: '/friends',                label: 'Bạn bè',      icon: 'mdi-account-multiple-outline', resource: 'friend' },
@@ -412,7 +401,6 @@ const isReportsActive = computed(
 // 2026-06-13 (anh chốt): bỏ chọn theme tối — app luôn theme sáng 'hsLight' (mặc định ở vuetify.ts).
 
 function logout() {
-  useMessageNotifications().stop(); // ngắt socket thông báo để không giữ token cũ khi đổi tài khoản
   authStore.logout();
   router.push('/login');
 }

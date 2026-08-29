@@ -1161,6 +1161,7 @@ const props = defineProps<{
   aiSuggestionLoading: boolean;
   aiSuggestionError: string;
   aiConfig?: { provider: string; model: string; enabled: boolean; availableProviders?: Array<{ id: string; name: string; hasKey: boolean }> };
+  aiConfigLoading?: boolean;
   allConversations?: Conversation[];
   replyingTo?: Message | null;
   editingMessage?: Message | null;
@@ -1230,11 +1231,18 @@ async function toggleThreadNotifications() {
 }
 const isAiReady = computed(() => {
   const config = props.aiConfig;
+  if (props.aiConfigLoading) return false;
   if (!config?.enabled || !config.model?.trim()) return false;
-  return !!config.availableProviders?.some((provider) => provider.id === config.provider && provider.hasKey);
+  // The backend is authoritative for credentials. Provider readiness metadata
+  // can be stale in an already-open tab (or absent on older deployments), so
+  // it must not disable Copilot before the request is made. A real missing key
+  // is returned by the generate endpoint as a precise error message.
+  return true;
 });
 const aiUnavailableMessage = computed(() => {
+  if (props.aiConfigLoading) return 'Đang tải cấu hình AI…';
   const config = props.aiConfig;
+  if (isAiReady.value) return '';
   if (!config?.enabled) return 'AI đang tắt — vào Cài đặt > API & Webhook để bật.';
   if (!config?.model?.trim()) return 'AI chưa chọn model — vào Cài đặt > API & Webhook.';
   const providerName = config.availableProviders?.find((provider) => provider.id === config.provider)?.name || config?.provider || 'provider AI';

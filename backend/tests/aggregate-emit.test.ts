@@ -47,7 +47,7 @@ vi.mock('../src/modules/zalo/zalo-pool.js', () => ({
   zaloPool: { getIO: vi.fn(() => ioMock) },
 }));
 
-const { applyFriendAggregate } = await import('../src/modules/contacts/contact-aggregate.ts');
+const { applyFriendAggregate, buildContactMessagePreview } = await import('../src/modules/contacts/contact-aggregate.ts');
 
 const BASE_CONV = {
   contactId: 'c1',
@@ -72,6 +72,17 @@ beforeEach(() => {
   vi.clearAllMocks();
   ioToMock.emit.mockClear();
   ioMock.to.mockClear();
+});
+
+describe('buildContactMessagePreview', () => {
+  it('does not expose attachment JSON as the customer preview', () => {
+    expect(buildContactMessagePreview('{"href":"https://example.test/image.jpg"}', 'image'))
+      .toBe('📷 Hình ảnh');
+  });
+
+  it('keeps a compact preview for text messages', () => {
+    expect(buildContactMessagePreview('  Khách cần báo giá  ', 'text')).toBe('Khách cần báo giá');
+  });
 });
 
 describe('applyFriendAggregate — emit friend:updated', () => {

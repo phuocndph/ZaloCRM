@@ -36,6 +36,7 @@ import { buildSendFileName } from '../media/media-routes.js';
 import { bumpUsage } from '../media/media-service.js';
 import { getOwnerScope } from '../rbac/owner-scope.js';
 import { blockVisibilityWhere } from '../../shared/ee-registry/automation.js';
+import { enqueueConversationAnalysis } from '../ai/conversation-analysis-queue.js';
 
 type QueryParams = Record<string, string>;
 
@@ -2207,6 +2208,16 @@ export async function chatRoutes(app: FastifyInstance) {
         // khớp tin optimistic kể cả khi message bị redact (nick Riêng tư).
         ...(echoId ? { extra: { echoId } } : {}),
       });
+
+      if (!sendFail && conversation.threadType === 'user' && conversation.contactId) {
+        void enqueueConversationAnalysis({
+          orgId: user.orgId,
+          conversationId: id,
+          messageId: message.id,
+        }).catch((error) => logger.warn(
+          `[conversation-analysis] outbound enqueue failed conversation=${id}: ${(error as Error).message}`,
+        ));
+      }
 
       return safeMessage;
     } catch (err) {

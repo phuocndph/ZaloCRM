@@ -95,6 +95,7 @@
       :ai-suggestion-loading="aiSuggestionLoading"
       :ai-suggestion-error="aiSuggestionError"
       :ai-config="aiConfig"
+      :ai-config-loading="aiConfigLoading"
       :all-conversations="conversations"
       :replying-to="replyingTo"
       :editing-message="editingMessage"
@@ -143,8 +144,19 @@
       />
     </aside>
 
-    <button v-if="selectedConv" class="copilot-toggle" :class="{ active: showCopilot }" title="Mở AI Copilot" @click="showCopilot = !showCopilot">✦ AI Copilot</button>
+    <button
+      v-if="selectedConv"
+      class="copilot-toggle"
+      :class="{ active: showCopilot, 'with-contact-panel': showContactPanel && selectedConv?.contact }"
+      type="button"
+      aria-label="Mở AI Copilot"
+      title="Mở AI Copilot"
+      @click="showCopilot = !showCopilot"
+    >
+      <SparklesIcon :size="18" :stroke-width="2" aria-hidden="true" />
+    </button>
     <AiCopilotPanel
+      ref="copilotRef"
       :open="showCopilot"
       :conversation-id="selectedConvId"
       :private-blocked="conversationPrivateBlocked"
@@ -174,6 +186,7 @@
       :active-zalo-account-id="selectedConv.zaloAccount?.id ?? null"
       :friend-id="selectedConv.friendship?.id ?? null"
       :conversation-id="selectedConv.id ?? null"
+      :conversation-private-blocked="conversationPrivateBlocked"
       :active-zalo-account-name="selectedConv.zaloAccount?.displayName ?? null"
       :ai-summary="aiSummary"
       :ai-summary-loading="aiSummaryLoading"
@@ -192,6 +205,8 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
+import { SparklesIcon } from 'lucide-vue-next';
+import { isExtension } from '@ee/edition';
 import { api } from '@/api/index';
 import { useToast } from '@/composables/use-toast';
 import ConversationList from '@/components/chat/ConversationList.vue';
@@ -222,7 +237,7 @@ const {
   conversations, selectedConvId, selectedConv, messages,
   conversationPrivateBlocked,
   loadingConvs, loadingMoreConvs, hasMoreConvs, loadingMsgs, hasOlderMessages, loadingOlderMessages, sendingMsg, searchQuery, accountFilter, extraFilters,
-  aiSuggestion, aiSuggestionLoading, aiSuggestionError, aiConfig,
+  aiSuggestion, aiSuggestionLoading, aiSuggestionError, aiConfig, aiConfigLoading,
   aiSummary, aiSummaryLoading, aiSentiment, aiSentimentLoading,
   fetchConversations, loadMoreConversations, fetchAiConfig, fetchMessages, loadOlderMessages, selectConversation, sendMessage,
   generateAiSuggestion, generateAiSummary, generateAiSentiment,
@@ -308,6 +323,10 @@ function onShowAllOutOfScope() {
 // hiện chuông sau tên. Fetch 1 lần lúc mount; cập nhật ngay khi toggle follow ở menu.
 const followingPairs = ref<Set<string>>(new Set());
 async function fetchFollowingPairs() {
+  if (!isExtension) {
+    followingPairs.value = new Set();
+    return;
+  }
   try {
     const res = await api.get<{ pairs: Array<{ contactId: string; nickId: string; externalThreadId?: string | null }> }>(
       '/automation/care-sessions/listening-pairs',
@@ -652,6 +671,8 @@ async function onSwitchToNickConv(convId: string) {
 // Auto-show panel khi chọn conv có contact
 const showContactPanel = ref(true);
 const showCopilot = ref(false);
+const copilotRef = ref<{ generate: () => Promise<void> } | null>(null);
+const aiAutoGeneratePending = ref(false);
 function onCopilotAction(action: string) { toast.push(action === 'followup' ? 'Copilot đã đề xuất đặt Follow-up — hãy xác nhận trong panel chăm sóc.' : action === 'note' ? 'Copilot đã đề xuất thêm ghi chú — hãy xác nhận trong hồ sơ khách.' : 'Copilot đề xuất chuyển nhân viên — chưa có thay đổi nào được thực hiện.'); }
 async function onCopilotFeedback(kind: string, payload: Record<string, unknown> = {}) { if (!selectedConvId.value) return; try { await api.post('/ai/feedback/conversations/' + selectedConvId.value, { type: kind, ...payload }); toast.push(kind === 'good' ? 'Đã ghi nhận đánh giá tốt.' : kind === 'edited' ? 'Đã ghi nhận câu trả lời đã chọn/chỉnh sửa.' : 'Đã ghi nhận phản hồi.', kind === 'good' ? 'success' : 'warning'); } catch (error: any) { toast.error(error?.response?.data?.error || 'Không thể lưu phản hồi AI.'); } }
 
@@ -789,6 +810,25 @@ watch(
 watch(selectedConvId, (id) => {
   pinnedIds.value = [];
   if (id) void loadPinnedIds(id);
+});
+
+// Work queue deep-link: open Copilot only after the conversation is resolved.
+// The panel itself remains approval-only; selecting the draft inserts it into the composer.
+watch(
+  [selectedConvId, () => route.query.ai],
+  ([id, ai]) => {
+    if (id && ai === '1') {
+      aiAutoGeneratePending.value = true;
+      showCopilot.value = true;
+      void router.replace({ query: { ...route.query, ai: undefined } });
+    }
+  },
+  { immediate: true },
+);
+watch(copilotRef, (instance) => {
+  if (!instance || !aiAutoGeneratePending.value) return;
+  aiAutoGeneratePending.value = false;
+  void instance.generate();
 });
 
 // Phase 2026-05-30 — Mở chat từ lead Facebook (/chat?compose=SĐT). Truyền xuống
@@ -1113,4 +1153,42 @@ watch(searchQuery, () => {
   .smax-chat-grid > :nth-child(4) { display: none; }
 }
 
-.copilot-toggle{position:fixed;right:18px;bottom:20px;z-index:1190;border:1px solid #2563eb;background:#fff;color:#1d4ed8;border-radius:999px;padding:9px 13px;font-size:12px;font-weight:700;box-shadow:0 6px 18px #1e40af22;cursor:pointer}.copilot-toggle.active{right:390px;background:#2563eb;color:#fff}@media(max-width:900px){.copilot-toggle.active{right:18px;bottom:calc(min(70dvh,620px) + 12px)}}</style>
+.copilot-toggle {
+  position: fixed;
+  right: 18px;
+  bottom: 72px;
+  z-index: 1190;
+  width: 38px;
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid #2563eb;
+  background: #fff;
+  color: #1d4ed8;
+  border-radius: 50%;
+  padding: 0;
+  box-shadow: 0 6px 18px #1e40af22;
+  cursor: pointer;
+}
+.copilot-toggle:hover { background: #eff6ff; }
+.copilot-toggle:focus-visible { outline: 3px solid #93c5fd; outline-offset: 2px; }
+.copilot-toggle.with-contact-panel { right: 370px; }
+.copilot-toggle.active {
+  right: 462px;
+  background: #2563eb;
+  color: #fff;
+}
+@media (max-width: 1200px) and (min-width: 1025px) {
+  .copilot-toggle.with-contact-panel { right: 300px; }
+}
+@media (max-width: 1024px) {
+  .copilot-toggle.with-contact-panel { right: 18px; }
+}
+@media (max-width: 900px) {
+  .copilot-toggle.active {
+    right: 18px;
+    bottom: calc(min(70dvh, 620px) + 12px);
+  }
+}
+</style>

@@ -82,5 +82,23 @@ describe('persistent AI readiness', () => {
     expect(result?.connection.errorCode).toBe('AI_CONNECTION_TEST_FAILED');
     expect(serialized).not.toMatch(/url-secret|query-secret|provider-secret/);
   });
+
+  it('reports a healthy saved connection as unavailable when the server cannot decrypt its credential', () => {
+    const result = getPersistentAiReadiness({
+      ...input(),
+      credentialDecryption: { ready: false, errorCode: 'TOKEN_ENCRYPTION_KEY_MISSING' },
+    });
+
+    expect(result).toMatchObject({
+      ready: false,
+      status: 'error',
+      connection: { status: 'failed', errorCode: 'TOKEN_ENCRYPTION_KEY_MISSING' },
+      model: { available: false },
+    });
+    expect(result?.checks).toContainEqual(expect.objectContaining({
+      id: 'credential_encryption',
+      status: 'failed',
+    }));
+  });
 });
 

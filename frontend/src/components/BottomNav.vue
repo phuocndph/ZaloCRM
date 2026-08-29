@@ -17,6 +17,7 @@ const route = useRoute();
 const router = useRouter();
 
 const tabs = [
+  { title: 'Công việc', icon: 'mdi-format-list-checks', path: '/work-items' },
   { title: 'Chat', icon: 'mdi-message-text-outline', path: '/chat' },
   { title: 'Khách hàng', icon: 'mdi-account-group-outline', path: '/contacts' },
   { title: 'Lịch hẹn', icon: 'mdi-calendar-clock-outline', path: '/appointments' },

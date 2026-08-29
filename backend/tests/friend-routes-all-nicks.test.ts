@@ -149,3 +149,206 @@ describe('GET /api/v1/friends-db/all-nicks', () => {
     expect(call.take).toBe(10);
   });
 });
+
+describe('GET /api/v1/friends-db/overview', () => {
+  const maxAt = new Date('2026-08-24T10:00:00.000Z');
+
+  function pairGroup(overrides: Record<string, unknown> = {}) {
+    return {
+      contactId: 'contact-1',
+      zaloAccountId: 'za-A',
+      relationshipKind: 'friend',
+      _count: { _all: 1 },
+      _sum: { totalInbound: 2, totalOutbound: 1 },
+      _max: {
+        lastInteractionAt: maxAt,
+        lastInboundAt: maxAt,
+        lastOutboundAt: null,
+        leadScore: 70,
+      },
+      _min: { stuckSince: null },
+      ...overrides,
+    };
+  }
+
+  function friendRow(overrides: Record<string, unknown> = {}) {
+    return {
+      id: 'friend-1',
+      contactId: 'contact-1',
+      zaloAccountId: 'za-A',
+      zaloUidInNick: 'uid-1',
+      relationshipKind: 'friend',
+      totalInbound: 2,
+      totalOutbound: 1,
+      lastInteractionAt: maxAt,
+      lastInboundAt: maxAt,
+      lastOutboundAt: null,
+      crmTagsPerNick: [],
+      autoTags: [],
+      zaloLabels: [],
+      tagAssignments: [],
+      contact: { id: 'contact-1', fullName: 'Khách Một', tags: [], tagAssignments: [] },
+      zaloAccount: { id: 'za-A', displayName: 'Nick A', privacyMode: 'sub' },
+      ...overrides,
+    };
+  }
+
+  it('returns empty aggregate when user has no accessible accounts', async () => {
+    setScope([]);
+
+    const res = await buildApp().inject({ method: 'GET', url: '/api/v1/friends-db/overview' });
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({
+      contacts: [],
+      total: 0,
+      totalPairs: 0,
+      totalContacts: 0,
+      duplicateContacts: 0,
+      accessibleNicks: 0,
+    });
+    expect(prismaMock.friend.groupBy).not.toHaveBeenCalled();
+  });
+
+  it('paginates by unique contact and returns per-account message counts', async () => {
+    setScope(['za-A', 'za-B']);
+    prismaMock.friend.groupBy.mockResolvedValue([
+      pairGroup({ _count: { _all: 2 }, _sum: { totalInbound: 3, totalOutbound: 2 } }),
+      pairGroup({
+        zaloAccountId: 'za-B',
+        _sum: { totalInbound: 4, totalOutbound: 3 },
+        _max: { lastInteractionAt: maxAt, lastInboundAt: maxAt, lastOutboundAt: maxAt, leadScore: 80 },
+      }),
+      pairGroup({
+        contactId: 'contact-2',
+        relationshipKind: 'ghost',
+        _sum: { totalInbound: 1, totalOutbound: 0 },
+        _max: { lastInteractionAt: null, lastInboundAt: null, lastOutboundAt: null, leadScore: 10 },
+      }),
+    ]);
+    prismaMock.friend.findMany.mockResolvedValue([
+      friendRow(),
+      friendRow({ id: 'friend-2', zaloUidInNick: 'uid-2', totalInbound: 1, totalOutbound: 1 }),
+      friendRow({
+        id: 'friend-3',
+        zaloAccountId: 'za-B',
+        zaloUidInNick: 'uid-3',
+        totalInbound: 4,
+        totalOutbound: 3,
+        zaloAccount: { id: 'za-B', displayName: 'Nick B', privacyMode: 'sub' },
+      }),
+      friendRow({
+        id: 'friend-4',
+        contactId: 'contact-2',
+        zaloUidInNick: 'uid-4',
+        relationshipKind: 'ghost',
+        totalInbound: 1,
+        totalOutbound: 0,
+        lastInteractionAt: null,
+        lastInboundAt: null,
+        contact: { id: 'contact-2', fullName: 'Khách Hai', tags: [], tagAssignments: [] },
+      }),
+    ]);
+
+    const res = await buildApp().inject({ method: 'GET', url: '/api/v1/friends-db/overview' });
+    const body = JSON.parse(res.body);
+
+    expect(res.statusCode).toBe(200);
+    expect(body.total).toBe(2);
+    expect(body.totalContacts).toBe(2);
+    expect(body.totalPairs).toBe(4);
+    expect(body.duplicateContacts).toBe(1);
+    expect(body.totalMessages).toBe(13);
+    expect(body.accountCounts).toEqual({
+      'za-A': { pairs: 3, contacts: 2, friends: 2 },
+      'za-B': { pairs: 1, contacts: 1, friends: 1 },
+    });
+
+    const contact = body.contacts.find((item: any) => item.contactId === 'contact-1');
+    expect(contact.accounts).toHaveLength(2);
+    expect(contact.friendNickCount).toBe(2);
+    expect(contact.isMultiNickFriend).toBe(true);
+    expect(contact.totalMessages).toBe(12);
+    expect(contact.accounts.find((account: any) => account.zaloAccountId === 'za-A')).toMatchObject({
+      identityCount: 2,
+      totalInbound: 3,
+      totalOutbound: 2,
+    });
+
+    expect(prismaMock.friend.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({
+        zaloAccountId: { in: ['za-A', 'za-B'] },
+        contactId: { in: ['contact-1', 'contact-2'] },
+      }),
+    }));
+  });
+
+  it('filters duplicate contacts and searches account names plus legacy/taxonomy tags', async () => {
+    setScope(['za-A', 'za-B']);
+    prismaMock.friend.groupBy
+      .mockResolvedValueOnce([
+        pairGroup(),
+        pairGroup({ zaloAccountId: 'za-B' }),
+        pairGroup({ contactId: 'contact-2', relationshipKind: 'ghost' }),
+      ])
+      .mockResolvedValueOnce([{ contactId: 'contact-1', _count: { _all: 1 } }]);
+    prismaMock.friend.findMany.mockResolvedValue([
+      friendRow(),
+      friendRow({
+        id: 'friend-2',
+        zaloAccountId: 'za-B',
+        zaloUidInNick: 'uid-2',
+        zaloAccount: { id: 'za-B', displayName: 'Nick B', privacyMode: 'sub' },
+      }),
+    ]);
+
+    const res = await buildApp().inject({
+      method: 'GET',
+      url: '/api/v1/friends-db/overview?multiNickOnly=true&search=VIP',
+    });
+    const body = JSON.parse(res.body);
+
+    expect(res.statusCode).toBe(200);
+    expect(body.total).toBe(1);
+    expect(body.contacts).toHaveLength(1);
+    expect(prismaMock.friend.findMany.mock.calls[0][0].where.contactId.in).toEqual(['contact-1']);
+
+    const groupWhere = prismaMock.friend.groupBy.mock.calls[1][0].where;
+    const serializedWhere = JSON.stringify(groupWhere);
+    expect(serializedWhere).toContain('tagAssignments');
+    expect(serializedWhere).toContain('crmTagsPerNick');
+    expect(serializedWhere).toContain('zaloLabels');
+    expect(serializedWhere).toContain('zaloAccount');
+    expect(body.filteredStats).toMatchObject({
+      totalContacts: 1,
+      totalPairs: 2,
+      duplicateContacts: 1,
+      totalMessages: 6,
+    });
+  });
+
+  it('returns inventory summary without fetching Friend detail rows', async () => {
+    setScope(['za-A', 'za-B']);
+    prismaMock.friend.groupBy.mockResolvedValue([
+      pairGroup({ _count: { _all: 2 } }),
+      pairGroup({ zaloAccountId: 'za-B' }),
+    ]);
+
+    const res = await buildApp().inject({
+      method: 'GET',
+      url: '/api/v1/friends-db/overview?summaryOnly=true',
+    });
+    const body = JSON.parse(res.body);
+
+    expect(res.statusCode).toBe(200);
+    expect(body).toMatchObject({
+      contacts: [],
+      total: 1,
+      totalContacts: 1,
+      totalPairs: 3,
+      duplicateContacts: 1,
+      accessibleNicks: 2,
+    });
+    expect(prismaMock.friend.findMany).not.toHaveBeenCalled();
+  });
+});

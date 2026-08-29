@@ -6,6 +6,7 @@ const PROVIDER_ENV_KEYS: Record<string, readonly string[]> = {
   qwen: ['QWEN_AUTH_TOKEN'],
   kimi: ['KIMI_AUTH_TOKEN'],
   '9router': ['NINE_ROUTER_API_KEY'],
+  f5quota: ['F5QUOTA_API_KEY'],
 };
 
 function validEnvironmentKey(value: string): boolean {

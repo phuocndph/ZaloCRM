@@ -37,6 +37,24 @@ export async function backfillMissingFriends(): Promise<MissingFriendBackfillRes
     });
     if (exists) continue;
 
+    const messageGroups = await prisma.message.groupBy({
+      by: ['senderType'],
+      where: { conversationId: conv.id, senderType: { in: ['contact', 'self'] } },
+      _count: { _all: true },
+      _min: { sentAt: true },
+      _max: { sentAt: true },
+    });
+    const inbound = messageGroups.find((group) => group.senderType === 'contact');
+    const outbound = messageGroups.find((group) => group.senderType === 'self');
+    const firstMessageAt = messageGroups
+      .map((group) => group._min.sentAt)
+      .filter((value): value is Date => value instanceof Date)
+      .sort((a, b) => a.getTime() - b.getTime())[0] ?? conv.lastMessageAt;
+    const lastInteractionAt = messageGroups
+      .map((group) => group._max.sentAt)
+      .filter((value): value is Date => value instanceof Date)
+      .sort((a, b) => b.getTime() - a.getTime())[0] ?? conv.lastMessageAt;
+
     // Resolve default status cho org
     const defaultStatus = await prisma.status.findFirst({
       where: { orgId: conv.orgId, isDefault: true },
@@ -54,7 +72,12 @@ export async function backfillMissingFriends(): Promise<MissingFriendBackfillRes
           // Conservative: chưa rõ relationshipKind, fallback 'chatting_stranger'
           relationshipKind: 'chatting_stranger',
           friendshipStatus: 'none',
-          firstMessageAt: conv.lastMessageAt,
+          firstMessageAt,
+          lastInboundAt: inbound?._max.sentAt ?? null,
+          lastOutboundAt: outbound?._max.sentAt ?? null,
+          lastInteractionAt,
+          totalInbound: inbound?._count._all ?? 0,
+          totalOutbound: outbound?._count._all ?? 0,
           statusId: defaultStatus?.id ?? null,
           leadScore: 0,
         },

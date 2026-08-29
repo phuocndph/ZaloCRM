@@ -2,19 +2,22 @@
 <!-- Copyright (C) 2026 Nguyễn Tiến Lộc -->
 <template>
   <v-dialog :model-value="modelValue" max-width="560" @update:model-value="$emit('update:modelValue', $event)">
-    <v-card>
+    <v-card class="aic-card">
       <v-card-title>Cấu hình AI</v-card-title>
       <v-card-text>
         <v-progress-linear v-if="loadingProviders" indeterminate class="mb-4" />
 
         <v-select
-          v-model="local.provider"
+          :model-value="local.provider"
           :items="providerItems"
           label="Provider"
           class="mb-3"
           :disabled="loadingProviders"
           @update:model-value="onProviderChange"
         />
+        <div v-if="currentProviderDescription" class="aic-provider-note mb-3">
+          {{ currentProviderDescription }}
+        </div>
 
         <v-text-field
           v-model="local.baseUrl"
@@ -58,6 +61,9 @@
           :return-object="false"
           label="Model"
           :loading="loadingModels"
+          :menu-props="{ maxHeight: 420 }"
+          clearable
+          no-data-text="Không có model phù hợp. Bạn vẫn có thể nhập Model ID thủ công."
           class="mb-1"
           :hint="modelHint"
           persistent-hint
@@ -110,11 +116,15 @@ const local = reactive({ provider: 'openai', model: '', maxDaily: 500, enabled: 
 
 const providerItems = computed(() => providers.value.map((p) => ({ title: p.name, value: p.id })));
 const currentProvider = computed(() => providers.value.find((p) => p.id === local.provider));
+const currentProviderDescription = computed(() => {
+  if (local.provider === 'f5quota') return 'F5Quota hỗ trợ các model Claude và Codex qua API tương thích OpenAI.';
+  return '';
+});
 const modelHint = computed(() => {
   if (loadingModels.value) return 'Đang tải danh sách model…';
   if (modelsError.value) return `Không lấy được danh sách (${modelsError.value}) — gõ tay tên model.`;
   if (!modelOptions.value.length) return 'Chưa có danh sách — lưu API key rồi bấm tải, hoặc gõ tay tên model.';
-  return 'Chọn từ danh sách hoặc gõ tay tên model.';
+  return `Đã tải ${modelOptions.value.length} model. Có thể tìm, chọn hoặc nhập Model ID thủ công.`;
 });
 
 /* Fetch providers + trạng thái key per-org */
@@ -173,9 +183,11 @@ async function clearKey() {
   modelOptions.value = [];
 }
 
-function onProviderChange() {
+function onProviderChange(providerId: string | null) {
+  local.provider = providerId ?? '';
   local.baseUrl = currentProvider.value?.baseUrl ?? '';
   local.apiKey = '';
+  local.model = '';
   modelOptions.value = [];
   modelsError.value = '';
   fetchModels();
@@ -214,6 +226,8 @@ watch(() => props.config, (value) => {
 <style scoped>
 /* Nút theo phong cách trang Zalo (NickGridCards): áp dụng = coral đặc, xoá = viền đỏ nền trắng */
 .aic-actions { display: flex; gap: 8px; }
+.aic-card { max-height: calc(100dvh - 32px); overflow-y: auto; }
+.aic-provider-note { padding: 10px 12px; border: 1px solid #b9e3f6; border-radius: 8px; color: #0b5880; background: #eef9fe; font-size: 13px; line-height: 1.45; }
 .aic-apply, .aic-clear {
   flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   padding: 9px; border: none; border-radius: 9px; font-weight: 600; font-size: 13.5px; cursor: pointer;
@@ -225,4 +239,8 @@ watch(() => props.config, (value) => {
 .aic-apply:disabled, .aic-clear:disabled { opacity: .4; cursor: not-allowed; }
 .aic-spin { animation: aic-spin .8s linear infinite; }
 @keyframes aic-spin { to { transform: rotate(360deg); } }
+@media (max-width: 480px) {
+  .aic-actions { flex-direction: column; }
+  .aic-apply, .aic-clear { width: 100%; min-height: 42px; }
+}
 </style>

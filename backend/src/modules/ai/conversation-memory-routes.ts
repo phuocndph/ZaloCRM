@@ -88,6 +88,7 @@ export async function conversationMemoryRoutes(app: FastifyInstance) {
       return await upsertCustomerMemory(await actorFromRequest(request), contactId, {
         ...((request.body ?? {}) as Record<string, unknown>),
         source: 'manual',
+        runId: undefined,
       } as any);
     } catch (error) {
       return handleMemoryError(reply, error);

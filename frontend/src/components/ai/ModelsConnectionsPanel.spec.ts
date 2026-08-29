@@ -136,6 +136,50 @@ describe('ModelsConnectionsPanel', () => {
     expect(tabs[0].attributes('aria-selected')).toBe('true')
   })
 
+  it('fills the F5Quota preset with its provider defaults', async () => {
+    const wrapper = mount(ModelsConnectionsPanel)
+    await flushPromises()
+
+    await wrapper.findAll('button').find((button) => button.text().includes('Thêm kết nối'))!.trigger('click')
+    const preset = wrapper.get('form.dialog select')
+    await preset.setValue('9router')
+    await preset.setValue('f5quota')
+
+    const inputs = wrapper.findAll('form.dialog input')
+    expect((inputs[0].element as HTMLInputElement).value).toBe('F5Quota')
+    expect((inputs[1].element as HTMLInputElement).value).toBe('f5quota-primary')
+    expect((inputs[2].element as HTMLInputElement).value).toBe('https://f5quota.store/v1')
+  })
+
+  it('filters a discovered F5Quota model list by name or model id', async () => {
+    const f5Connection = {
+      ...connection,
+      id: 'f5-connection',
+      key: 'f5quota-primary',
+      name: 'F5Quota',
+      vendor: 'f5quota',
+      baseUrl: 'https://f5quota.store/v1',
+    }
+    aiApi.listConnections.mockResolvedValue([f5Connection])
+    aiApi.discoverModels.mockResolvedValue([
+      { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', ownedBy: null },
+      { id: 'gpt-5.3-codex', name: 'GPT 5.3 Codex', ownedBy: null },
+      { id: 'gemini-2.5-pro', name: 'Gemini 2.5 Pro', ownedBy: null },
+    ])
+    const wrapper = mount(ModelsConnectionsPanel)
+    await flushPromises()
+
+    await wrapper.findAll('button').find((button) => button.text() === 'Xem mô hình')!.trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('3/3 model')
+
+    await wrapper.get('input[type="search"]').setValue('codex')
+    expect(wrapper.text()).toContain('GPT 5.3 Codex')
+    expect(wrapper.text()).toContain('1/3 model')
+    expect(wrapper.text()).not.toContain('Claude Sonnet 4.6')
+    expect(wrapper.text()).not.toContain('Gemini 2.5 Pro')
+  })
+
   it('does not offer a destructive retest for an approved model', async () => {
     aiApi.listConnections.mockResolvedValue([connection])
     aiApi.listModelConfigs.mockResolvedValue({

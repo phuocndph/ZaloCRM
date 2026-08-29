@@ -25,7 +25,10 @@ import {
   STUB_MODE, randDelay, selectWeightedTemplate, renderTemplate,
   sendCampaignMessage, countActionsToday, writeLog, emitProgress,
 } from './outreach-service.js';
-import { evaluateAudience, orderEligibleByChat, filterFromCampaign, type EvaluatedEntry } from './outreach-audience.js';
+import {
+  evaluateCampaignAudience, evaluateFriendPoolEntry, filterFromCampaign,
+  orderEligibleByChat, type EvaluatedEntry, type FriendPoolSnapshot,
+} from './outreach-audience.js';
 
 export const OUTREACH_QUEUE = 'outreach';
 
@@ -39,7 +42,7 @@ const DEFAULT_JOB_OPTIONS = {
 type AddFriendJob = { kind: 'add_friend'; campaignId: string; entryId: string; seq: number };
 type SendMessageJob = {
   kind: 'send_message'; campaignId: string; entryId: string; seq: number;
-  contactId: string | null; zaloUid: string; phone: string; name: string | null;
+  contactId: string | null; zaloAccountId: string; zaloUid: string; phone: string; name: string | null;
 };
 type OutreachJob = AddFriendJob | SendMessageJob;
 
@@ -84,12 +87,15 @@ function getQueue(): Queue<OutreachJob> {
  * seq=-1 (KHÔNG bao giờ được finishPhone chọn vì nó chỉ đi tới seq>=0). Không enqueue.
  * Idempotent (restart): createMany skipDuplicates + raw update ép trạng thái skipped.
  */
-async function seedSkipped(campaignId: string, skipped: EvaluatedEntry[]) {
+async function seedSkipped(campaignId: string, skipped: EvaluatedEntry[], friendPool: boolean) {
   if (!skipped.length) return;
   await prisma.outreachPhone.createMany({
     data: skipped.map((e) => ({
       campaignId, entryId: e.id, phone: e.phone, seq: -1,
-      overallStatus: 'skipped', friendStatus: 'none', messageStatus: 'none',
+      targetName: e.name, friendId: e.friendId, contactId: e.contactId,
+      zaloAccountId: e.zaloAccountId, zaloUid: e.zaloUid, accountName: e.accountName,
+      tagNames: e.tags, lastInteractionAt: e.lastChatAt ? new Date(e.lastChatAt) : null,
+      overallStatus: 'skipped', friendStatus: friendPool ? 'already_friend' : 'none', messageStatus: 'none',
       note: e.reason ? `Bỏ qua - ${e.reason}` : 'Bỏ qua - không đủ điều kiện',
     })),
     skipDuplicates: true,
@@ -98,27 +104,33 @@ async function seedSkipped(campaignId: string, skipped: EvaluatedEntry[]) {
   const notes = skipped.map((e) => (e.reason ? `Bỏ qua - ${e.reason}` : 'Bỏ qua - không đủ điều kiện'));
   await prisma.$executeRawUnsafe(
     `UPDATE outreach_phones AS p
-       SET seq = -1, overall_status='skipped', friend_status='none', message_status='none', note = t.note, updated_at=now()
+       SET seq = -1, overall_status='skipped',
+           friend_status=CASE WHEN $4::boolean THEN 'already_friend' ELSE 'none' END,
+           message_status='none', note = t.note, updated_at=now()
      FROM unnest($1::text[], $2::text[]) AS t(entry_id, note)
      WHERE p.campaign_id = $3 AND p.entry_id = t.entry_id`,
-    entryIds, notes, campaignId,
+    entryIds, notes, campaignId, friendPool,
   );
   // Ghi audit log cho từng khách bị bỏ (hiện trong lịch sử chiến dịch) — batch 1 query.
   await prisma.outreachLog.createMany({
     data: skipped.map((e) => ({
       campaignId, entryId: e.id, contactId: e.contactId, phone: e.phone,
-      actionType: 'add_friend', status: 'skipped',
+      actionType: e.source === 'friend_pool' ? 'send_message' : 'add_friend', status: 'skipped',
       errorMessage: e.reason ? `Bỏ qua - ${e.reason}` : 'Bỏ qua - không đủ điều kiện',
     })),
   }).catch(() => {});
 }
 
 /** Tạo/RESET dòng per-số + gán seq theo thứ tự (idempotent — chạy lại không tạo trùng). */
-async function seedPhones(campaignId: string, ordered: Array<{ id: string; phone: string }>) {
+async function seedPhones(campaignId: string, ordered: EvaluatedEntry[], friendPool: boolean) {
   await prisma.outreachPhone.createMany({
     data: ordered.map((e, i) => ({
       campaignId, entryId: e.id, phone: e.phone, seq: i,
-      overallStatus: 'waiting', friendStatus: 'none', messageStatus: 'none',
+      targetName: e.name, friendId: e.friendId, contactId: e.contactId,
+      zaloAccountId: e.zaloAccountId, zaloUid: e.zaloUid, accountName: e.accountName,
+      tagNames: e.tags, lastInteractionAt: e.lastChatAt ? new Date(e.lastChatAt) : null,
+      overallStatus: 'waiting', friendStatus: friendPool ? 'already_friend' : 'none',
+      messageStatus: friendPool ? 'waiting' : 'none',
     })),
     skipDuplicates: true,
   });
@@ -128,12 +140,40 @@ async function seedPhones(campaignId: string, ordered: Array<{ id: string; phone
     const seqs = ordered.map((_, i) => i);
     await prisma.$executeRawUnsafe(
       `UPDATE outreach_phones AS p
-         SET seq = t.seq, overall_status='waiting', friend_status='none', message_status='none', note=NULL, updated_at=now()
+         SET seq = t.seq, overall_status='waiting',
+             friend_status=CASE WHEN $4::boolean THEN 'already_friend' ELSE 'none' END,
+             message_status=CASE WHEN $4::boolean THEN 'waiting' ELSE 'none' END,
+             note=NULL, updated_at=now()
        FROM unnest($1::text[], $2::int[]) AS t(entry_id, seq)
        WHERE p.campaign_id = $3 AND p.entry_id = t.entry_id`,
-      entryIds, seqs, campaignId,
+      entryIds, seqs, campaignId, friendPool,
     );
   }
+}
+
+async function enqueueTarget(
+  campaign: NonNullable<Awaited<ReturnType<typeof prisma.outreachCampaign.findUnique>>>,
+  target: { entryId: string; seq: number; contactId: string | null; zaloAccountId: string | null; zaloUid: string | null; phone: string; targetName: string | null },
+) {
+  const queue = getQueue();
+  if (campaign.audienceSource === 'friend_pool') {
+    if (!target.zaloAccountId || !target.zaloUid) throw new Error('friend_target_missing_identity');
+    await queue.add(
+      'send_message',
+      {
+        kind: 'send_message', campaignId: campaign.id, entryId: target.entryId, seq: target.seq,
+        contactId: target.contactId, zaloAccountId: target.zaloAccountId, zaloUid: target.zaloUid,
+        phone: target.phone, name: target.targetName,
+      },
+      { delay: STUB_MODE() ? 500 : randDelay(campaign.msgDelayMinMs, campaign.msgDelayMaxMs) },
+    );
+    return;
+  }
+  await queue.add(
+    'add_friend',
+    { kind: 'add_friend', campaignId: campaign.id, entryId: target.entryId, seq: target.seq },
+    { delay: STUB_MODE() ? 500 : randDelay(campaign.addDelayMinMs, campaign.addDelayMaxMs) },
+  );
 }
 
 async function createRun(campaignId: string, runNumber: number, action: 'start' | 'restart', userId?: string | null, userName?: string | null) {
@@ -158,23 +198,29 @@ export async function startCampaign(campaignId: string, opts?: { userId?: string
   if (!c) throw new Error('campaign_not_found');
 
   // Điều kiện gửi: chỉ khách ĐỦ ĐIỀU KIỆN vào hàng đợi; khách bị bỏ ghi rõ lý do (không enqueue).
-  const evaluated = await evaluateAudience(c.orgId, c.customerListId, c.zaloAccountId, filterFromCampaign(c));
+  const evaluated = await evaluateCampaignAudience(c);
   const eligible = orderEligibleByChat(evaluated.filter((e) => e.eligible)); // chat cũ nhất trước
   const skipped = evaluated.filter((e) => !e.eligible);
-  const ordered = eligible.map((e) => ({ id: e.id, phone: e.phone }));
+  const ordered = eligible;
   const newRun = (c.runCount ?? 0) + 1;
 
   await prisma.outreachCampaign.update({
     where: { id: campaignId },
     data: {
-      state: 'running', totalTarget: ordered.length, startedAt: new Date(), completedAt: null, runCount: newRun,
-      totalAdded: 0, totalAddFailed: 0, totalMsgSent: 0, totalMsgFailed: 0, totalSkipped: 0,
+      // The target total includes filtered recipients, so progress remains bounded
+      // when a pre-filtered or runtime-revalidated recipient is skipped.
+      state: 'running', totalTarget: evaluated.length, startedAt: new Date(), completedAt: null, runCount: newRun,
+      totalAdded: 0, totalAddFailed: 0, totalMsgSent: 0, totalMsgFailed: 0, totalSkipped: skipped.length,
     },
   });
   await createRun(campaignId, newRun, opts?.action ?? 'start', opts?.userId, opts?.userName);
 
+  // OutreachPhone is the current-run snapshot. Remove stale recipients that may
+  // have left the list/friend pool since the previous run; audit logs are kept.
+  await prisma.outreachPhone.deleteMany({ where: { campaignId } });
+
   // Seed dòng "Bỏ qua" (theo filter) trước — luôn hiện trong bảng dù không có ai đủ điều kiện.
-  await seedSkipped(campaignId, skipped);
+  await seedSkipped(campaignId, skipped, c.audienceSource === 'friend_pool');
 
   if (ordered.length === 0) {
     await prisma.outreachCampaign.update({ where: { id: campaignId }, data: { state: 'completed', completedAt: new Date() } });
@@ -183,15 +229,15 @@ export async function startCampaign(campaignId: string, opts?: { userId?: string
     return 0;
   }
 
-  await seedPhones(campaignId, ordered);
+  await seedPhones(campaignId, ordered, c.audienceSource === 'friend_pool');
 
   const queue = getQueue();
   await queue.resume().catch(() => {});
-  await queue.add(
-    'add_friend',
-    { kind: 'add_friend', campaignId, entryId: ordered[0].id, seq: 0 },
-    { delay: STUB_MODE() ? 500 : randDelay(c.addDelayMinMs, c.addDelayMaxMs) },
-  );
+  await enqueueTarget(c, {
+    entryId: ordered[0].id, seq: 0, contactId: ordered[0].contactId,
+    zaloAccountId: ordered[0].zaloAccountId, zaloUid: ordered[0].zaloUid,
+    phone: ordered[0].phone, targetName: ordered[0].name,
+  });
   logger.info(`[outreach] campaign=${campaignId} run#${newRun} (${opts?.action ?? 'start'}): ${ordered.length} đủ điều kiện, ${skipped.length} bỏ qua theo filter.`);
   return ordered.length;
 }
@@ -233,14 +279,13 @@ async function finishPhone(campaignId: string, seq: number) {
   const next = await prisma.outreachPhone.findFirst({
     where: { campaignId, seq: { gt: seq } },
     orderBy: { seq: 'asc' },
-    select: { entryId: true, seq: true },
+    select: {
+      entryId: true, seq: true, contactId: true, zaloAccountId: true,
+      zaloUid: true, phone: true, targetName: true,
+    },
   });
   if (next) {
-    await getQueue().add(
-      'add_friend',
-      { kind: 'add_friend', campaignId, entryId: next.entryId, seq: next.seq },
-      { delay: STUB_MODE() ? 500 : randDelay(c.addDelayMinMs, c.addDelayMaxMs) },
-    );
+    await enqueueTarget(c, next);
   } else {
     await prisma.outreachCampaign.update({
       where: { id: campaignId },
@@ -345,6 +390,9 @@ async function processAddFriend(data: AddFriendJob) {
     } else if (!contactId) {
       state = 'failed'; note = 'cannot_resolve_contact';
     } else if (c.enableAutoAdd) {
+      if (!c.zaloAccountId) {
+        state = 'failed'; note = 'missing_sender_account';
+      } else {
       const outcome = await attemptFriendRequest({
         orgId: c.orgId, zaloAccountId: c.zaloAccountId, contactId,
         phone, message: c.addFriendMessage || 'Xin chào! Kết bạn để mình gửi thông tin nhé.',
@@ -352,6 +400,7 @@ async function processAddFriend(data: AddFriendJob) {
       if (outcome.ok) { zaloUid = outcome.zaloUid; state = outcome.state; }
       else if (outcome.state === 'no_zalo') { state = 'no_zalo'; note = 'Bỏ qua - số không dùng Zalo (tài khoản không tồn tại)'; }
       else { state = 'failed'; note = (outcome as any).errorDetail ?? outcome.state; }
+      }
     } else {
       const contact = await prisma.contact.findUnique({ where: { id: contactId }, select: { zaloUid: true } });
       zaloUid = contact?.zaloUid ?? null;
@@ -374,7 +423,7 @@ async function processAddFriend(data: AddFriendJob) {
       try {
         await getQueue().add(
           'send_message',
-          { kind: 'send_message', campaignId: c.id, entryId: entry.id, seq: data.seq, contactId, zaloUid: zaloUid!, phone, name },
+          { kind: 'send_message', campaignId: c.id, entryId: entry.id, seq: data.seq, contactId, zaloAccountId: c.zaloAccountId!, zaloUid: zaloUid!, phone, name },
           { delay: STUB_MODE() ? 800 : randDelay(c.waitAfterAddMinMs, c.waitAfterAddMaxMs) },
         );
         messageEnqueued = true;
@@ -437,6 +486,56 @@ async function processSendMessage(data: SendMessageJob) {
     c = await prisma.outreachCampaign.findUnique({ where: { id: data.campaignId } });
     if (!c || c.state === 'cancelled' || c.state === 'completed') return;
 
+    await upsertPhone(c, data.entryId, data.phone, { overall: 'processing' });
+
+    // Friend pool is revalidated at execution time because a queued recipient can unfriend
+    // or the sender account can disconnect after the campaign preview/start snapshot.
+    if (c.audienceSource === 'friend_pool') {
+      const friend = await prisma.friend.findFirst({
+        where: { id: data.entryId, orgId: c.orgId, zaloAccountId: data.zaloAccountId },
+        select: {
+          id: true, contactId: true, zaloAccountId: true, zaloUidInNick: true,
+          aliasInNick: true, zaloDisplayName: true, crmTagsPerNick: true, zaloLabels: true,
+          autoTags: true, lastInteractionAt: true, friendshipStatus: true, relationshipKind: true,
+          zaloAccount: { select: { displayName: true, phone: true, status: true } },
+          tagAssignments: {
+            where: { removedAt: null, tag: { archivedAt: null, isActive: true } },
+            select: { tag: { select: { name: true, slug: true } } },
+          },
+          contact: {
+            select: {
+              phone: true, crmName: true, fullName: true, tags: true, consentStatus: true,
+              tagAssignments: {
+                where: { removedAt: null, tag: { archivedAt: null, isActive: true } },
+                select: { tag: { select: { name: true, slug: true } } },
+              },
+            },
+          },
+        },
+      });
+      const fresh = friend ? evaluateFriendPoolEntry(friend as FriendPoolSnapshot, filterFromCampaign(c)) : null;
+      const invalidReason = !friend
+        ? 'Không còn trong danh sách bạn bè'
+        : friend.friendshipStatus !== 'accepted' || friend.relationshipKind !== 'friend'
+          ? 'Quan hệ bạn bè đã thay đổi'
+          : friend.zaloUidInNick !== data.zaloUid
+            ? 'Định danh bạn bè đã thay đổi'
+            : !fresh?.eligible
+              ? fresh?.reason || 'Không còn đủ điều kiện gửi'
+              : null;
+      if (invalidReason) {
+        await prisma.outreachCampaign.update({ where: { id: c.id }, data: { totalSkipped: { increment: 1 } } });
+        await writeLog({
+          campaignId: c.id, entryId: data.entryId, contactId: data.contactId, phone: data.phone,
+          actionType: 'send_message', status: 'skipped', errorMessage: `Bỏ qua - ${invalidReason}`,
+        });
+        counted = true;
+        await upsertPhone(c, data.entryId, data.phone, { messageStatus: 'failed', note: invalidReason });
+        await emitProgress(ioRef, c.orgId, c.id);
+        return;
+      }
+    }
+
     if (await countActionsToday(data.campaignId, 'send_message') >= c.maxMsgPerDay) {
       await prisma.outreachCampaign.update({ where: { id: c.id }, data: { totalSkipped: { increment: 1 } } });
       await writeLog({ campaignId: c.id, entryId: data.entryId, contactId: data.contactId, phone: data.phone, actionType: 'send_message', status: 'skipped', errorMessage: 'Bỏ qua - đã đạt giới hạn tin/ngày' });
@@ -452,7 +551,7 @@ async function processSendMessage(data: SendMessageJob) {
 
     const text = renderTemplate(tpl.content, { name: data.name, phone: data.phone });
     const res = await sendCampaignMessage({
-      zaloAccountId: c.zaloAccountId, zaloUid: data.zaloUid, text,
+      zaloAccountId: data.zaloAccountId, zaloUid: data.zaloUid, text,
       imageAssetIds: tpl.imageAssetIds, orgId: c.orgId, io: ioRef,
     });
     await prisma.outreachCampaign.update({

@@ -302,7 +302,7 @@
       :active-tab="activeTabKey || activeTab"
       :is-following="contextMenu.isFollowing"
       :follow-busy="contextMenu.followBusy"
-      :can-follow="!!(contextMenu.contactId && contextMenu.nickId)"
+      :can-follow="isExtension && !!(contextMenu.contactId && contextMenu.nickId)"
       :is-private="contextMenu.isPrivate"
       :is-privacy-owner="contextMenu.isPrivacyOwner"
       :privacy-busy="contextMenu.privacyBusy"
@@ -378,6 +378,7 @@ import { getAutoTagDef } from '@/constants/auto-tags';
 import PrivateBlur from '@/components/privacy/PrivateBlur.vue';
 import { usePrivacyVisibility } from '@/composables/use-privacy-visibility';
 import { parseFriendAcceptedNotice } from '@/composables/zalo-system-notice';
+import { isExtension } from '@ee/edition';
 
 import { useAuthStore } from '@/stores/auth';
 import {
@@ -1040,6 +1041,10 @@ async function moveConversation(convId: string, targetTab: string) {
 // ── Theo dõi (reuse care-session manual listen — KHÔNG tạo logic mới) ─────────
 // Endpoint + payload giống AutomationCardList.vue (contactId + nickId).
 async function fetchListenStatusForMenu() {
+  if (!isExtension) {
+    contextMenu.isFollowing = false;
+    return;
+  }
   if (!contextMenu.contactId || !contextMenu.nickId) {
     contextMenu.isFollowing = false;
     return;
@@ -1056,6 +1061,7 @@ async function fetchListenStatusForMenu() {
 }
 
 async function toggleFollowFromMenu() {
+  if (!isExtension) return;
   if (contextMenu.followBusy || !contextMenu.contactId || !contextMenu.nickId) return;
   contextMenu.followBusy = true;
   try {

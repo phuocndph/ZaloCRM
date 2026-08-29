@@ -44,8 +44,10 @@ export interface CockpitData {
   // Timeline
   lastInboundAt: string | null;
   lastInboundPreview: string | null;
+  lastInboundType: string | null;
   lastOutboundAt: string | null;
   lastOutboundPreview: string | null;
+  lastOutboundType: string | null;
   lastInteractionAt: string | null;
   nextAppointment: {
     id?: string;

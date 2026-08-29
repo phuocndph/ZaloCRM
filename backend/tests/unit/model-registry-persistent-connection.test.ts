@@ -16,6 +16,10 @@ const provider: AIProvider = {
   id: '9router',
   complete: vi.fn(),
 };
+const f5QuotaProvider: AIProvider = {
+  id: 'f5quota',
+  complete: vi.fn(),
+};
 
 function stored(overrides: Partial<StoredModelConfig> = {}): StoredModelConfig {
   return {
@@ -37,12 +41,15 @@ function registry(config: StoredModelConfig, resolver: ProviderConnectionRuntime
   const repository: ModelConfigRepository = {
     find: vi.fn(async (orgId, id) => orgId === config.orgId && id === config.id ? config : null),
   };
-  return new ModelRegistry(repository, resolver).registerProvider(provider);
+  return new ModelRegistry(repository, resolver)
+    .registerProvider(provider)
+    .registerProvider(f5QuotaProvider);
 }
 
 describe('ModelRegistry persistent provider connections', () => {
   afterEach(() => {
     delete process.env.NINE_ROUTER_API_KEY;
+    delete process.env.F5QUOTA_API_KEY;
   });
 
   it('uses the persistent connection secret and base URL instead of environment values', async () => {
@@ -60,6 +67,31 @@ describe('ModelRegistry persistent provider connections', () => {
     expect(resolver).toHaveBeenCalledWith('org-1', 'connection-1');
     expect(result.apiKey).toBe('persistent-secret');
     expect(result.baseUrl).toBe('http://host.docker.internal:20128/v1');
+  });
+
+  it('resolves an F5Quota model through its managed OpenAI-compatible connection', async () => {
+    const resolver = vi.fn(async () => ({
+      id: 'f5-connection',
+      adapter: 'openai_compatible',
+      vendor: 'f5quota',
+      baseUrl: 'https://f5quota.store/v1',
+      apiKey: 'persistent-f5-secret',
+    }));
+
+    const result = await registry(stored({
+      name: 'F5Quota Codex',
+      provider: 'f5quota',
+      model: 'gpt-5.3-codex',
+      connectionId: 'f5-connection',
+      credentialRef: 'env:F5QUOTA_API_KEY',
+    }), resolver).resolve('org-1', 'model-1');
+
+    expect(result).toMatchObject({
+      provider: 'f5quota',
+      model: 'gpt-5.3-codex',
+      baseUrl: 'https://f5quota.store/v1',
+      apiKey: 'persistent-f5-secret',
+    });
   });
 
   it('fails closed when a managed connection secret is missing and never falls back to env', async () => {

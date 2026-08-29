@@ -66,6 +66,8 @@ model Organization {
   aiKnowledgeChunks           AiKnowledgeChunk[]
   aiRuns                      AiRun[]
   aiConversationSummaries     AiConversationSummary[]
+  aiConversationInsights      AiConversationInsight[]
+  conversationWorkItems       ConversationWorkItem[]
   aiCustomerMemories          AiCustomerMemory[]
   aiIntentAnalyses            AiIntentAnalysis[]
   aiEmotionAnalyses           AiEmotionAnalysis[]
@@ -385,6 +387,7 @@ model User {
   aiReleasesDeployed           AiRelease[]                   @relation("AiReleaseDeployedBy")
   aiReleasesRolledBack         AiRelease[]                   @relation("AiReleaseRolledBackBy")
   aiAuditEvents                AiAuditLog[]                 @relation("AiAuditActor")
+  conversationWorkItems        ConversationWorkItem[]        @relation("ConversationWorkItemAssignee")
 
   @@map("users")
 }
@@ -773,6 +776,8 @@ model Contact {
   // M53 (2026-05-30): AI suggestions applied to this Contact (virtual chat assistant)
   aiSuggestionsApplied AiSuggestionApplied[]
   aiRuns               AiRun[]
+  aiConversationInsights AiConversationInsight[]
+  conversationWorkItems  ConversationWorkItem[]
   aiCustomerMemories   AiCustomerMemory[]
   aiIntentAnalyses     AiIntentAnalysis[]
   aiEmotionAnalyses    AiEmotionAnalysis[]
@@ -883,6 +888,8 @@ model Conversation {
   aiSuggestions          AiSuggestion[]
   aiRuns                 AiRun[]
   aiSummaries            AiConversationSummary[]
+  aiInsights             AiConversationInsight[]
+  workItems              ConversationWorkItem[]
   aiIntentAnalyses       AiIntentAnalysis[]
   aiEmotionAnalyses      AiEmotionAnalysis[]
   aiFeedback             AiFeedback[]
@@ -996,6 +1003,7 @@ model Message {
   messagePins                        MessagePin[]
   aiTriggeredRuns                    AiRun[]                 @relation("AiRunTriggerMessage")
   aiSummaryBoundaries                AiConversationSummary[] @relation("AiSummaryThroughMessage")
+  aiInsightBoundaries                AiConversationInsight[] @relation("AiInsightThroughMessage")
   aiIntentAnalyses                   AiIntentAnalysis[]
   aiEmotionAnalyses                  AiEmotionAnalysis[]
   aiFeedbackCustomerMessages         AiFeedback[]            @relation("AiFeedbackCustomerMessage")
@@ -4254,9 +4262,14 @@ model OutreachCampaign {
   createdById    String? @map("created_by_id")
   name           String
   description    String?
-  // Nguồn khách = 1 Tệp khách hàng (CustomerList); gửi từ 1 nick Zalo.
-  customerListId String  @map("customer_list_id")
-  zaloAccountId  String  @map("zalo_account_id")
+  // Nguồn khách:
+  // - customer_list: 1 CustomerList, gửi từ 1 nick Zalo (hành vi cũ).
+  // - friend_pool: bạn bè đã kết bạn từ nhiều nick, gửi bằng đúng nick sở hữu Friend.
+  audienceSource    String   @default("customer_list") @map("audience_source")
+  customerListId    String?  @map("customer_list_id")
+  zaloAccountId     String?  @map("zalo_account_id")
+  sourceAccountIds  String[] @default([]) @map("source_account_ids")
+  deduplicateContacts Boolean @default(true) @map("deduplicate_contacts")
 
   // ── Cấu hình kết bạn ──
   enableAutoAdd    Boolean @default(true) @map("enable_auto_add")
@@ -4372,6 +4385,14 @@ model OutreachPhone {
   campaignId    String   @map("campaign_id")
   entryId       String   @map("entry_id")
   phone         String
+  targetName    String?  @map("target_name")
+  friendId      String?  @map("friend_id")
+  contactId     String?  @map("contact_id")
+  zaloAccountId String?  @map("zalo_account_id")
+  zaloUid       String?  @map("zalo_uid")
+  accountName   String?  @map("account_name")
+  tagNames      String[] @default([]) @map("tag_names")
+  lastInteractionAt DateTime? @map("last_interaction_at")
   seq           Int      @default(0) // thứ tự xử lý (chat cũ nhất trước, chưa chat cuối cùng)
   // overall: 'waiting'(Chờ lượt) | 'processing'(Đang xử lý) | 'success'(Thành công) | 'skipped'(Bỏ qua)
   overallStatus String   @default("waiting") @map("overall_status")
@@ -4389,6 +4410,8 @@ model OutreachPhone {
   @@index([campaignId, overallStatus])
   @@index([campaignId, updatedAt])
   @@index([campaignId, phone])
+  @@index([campaignId, friendId])
+  @@index([campaignId, zaloAccountId])
   @@map("outreach_phones")
 }
 
@@ -4983,6 +5006,7 @@ model AiRun {
   promptVersion      AiPromptVersion?        @relation(fields: [promptVersionId], references: [id], onDelete: SetNull)
   modelConfig        AiModelConfig?          @relation(fields: [modelConfigId], references: [id], onDelete: SetNull)
   summaries          AiConversationSummary[]
+  insights           AiConversationInsight[]
   memories           AiCustomerMemory[]
   intentAnalyses     AiIntentAnalysis[]
   emotionAnalyses    AiEmotionAnalysis[]
@@ -5019,10 +5043,101 @@ model AiConversationSummary {
   run                    AiRun?       @relation(fields: [runId], references: [id], onDelete: SetNull)
   conversation           Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   sourceThroughMessage   Message?     @relation("AiSummaryThroughMessage", fields: [sourceThroughMessageId], references: [id], onDelete: SetNull)
+  insights               AiConversationInsight[]
 
   @@unique([conversationId, version])
   @@index([orgId, status, createdAt])
   @@map("ai_conversation_summaries")
+}
+
+// Versioned, read-only analysis snapshot used by the shadow follow-up strategy.
+// This model never changes CRM status and never enrolls or sends a workflow.
+model AiConversationInsight {
+  id                      String                @id @default(uuid())
+  orgId                   String                @map("org_id")
+  runId                   String?               @map("run_id")
+  conversationId          String                @map("conversation_id")
+  contactId               String?               @map("contact_id")
+  summaryId               String?               @map("summary_id")
+  sourceThroughMessageId  String                @map("source_through_message_id")
+  version                 Int
+  status                  String                @default("active")
+  mode                    String                @default("shadow")
+  stage                   String
+  stageConfidence         Float                 @map("stage_confidence")
+  stageReasonRedacted     String?               @map("stage_reason_redacted") @db.Text
+  intentLabel             String                @map("intent_label")
+  intentConfidence        Float                 @map("intent_confidence")
+  emotionLabel            String                @map("emotion_label")
+  emotionConfidence       Float                 @map("emotion_confidence")
+  emotionIntensity        Float?                @map("emotion_intensity")
+  requiresHuman           Boolean               @default(false) @map("requires_human")
+  nextAction              String                @map("next_action")
+  nextActionReasonRedacted String?               @map("next_action_reason_redacted") @db.Text
+  recommendedWorkflowType String?               @map("recommended_workflow_type")
+  memoryCandidateIds      String[]               @default([]) @map("memory_candidate_ids")
+  signals                 Json                   @default("{}")
+  safeguards              Json                   @default("{}")
+  analysisHash            String                 @map("analysis_hash")
+  generatedWithModel      Boolean                @default(false) @map("generated_with_model")
+  createdAt               DateTime               @default(now()) @map("created_at")
+  updatedAt               DateTime               @updatedAt @map("updated_at")
+  org                     Organization           @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  run                     AiRun?                 @relation(fields: [runId], references: [id], onDelete: SetNull)
+  conversation            Conversation           @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  contact                 Contact?               @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  summary                 AiConversationSummary? @relation(fields: [summaryId], references: [id], onDelete: SetNull)
+  sourceThroughMessage    Message                @relation("AiInsightThroughMessage", fields: [sourceThroughMessageId], references: [id], onDelete: Restrict)
+
+  @@unique([conversationId, version])
+  @@unique([conversationId, sourceThroughMessageId])
+  @@index([orgId, status, createdAt])
+  @@index([contactId, createdAt])
+  @@index([stage, createdAt])
+  @@map("ai_conversation_insights")
+}
+
+// Materialized daily action queue. Signals are reconciled from conversations,
+// AI insights, appointments and follow-up workflows; no row sends messages.
+model ConversationWorkItem {
+  id                String        @id @default(uuid())
+  orgId             String        @map("org_id")
+  contactId         String        @map("contact_id")
+  conversationId    String?       @map("conversation_id")
+  zaloAccountId     String?       @map("zalo_account_id")
+  assigneeUserId    String        @map("assignee_user_id")
+  sourceType        String        @map("source_type")
+  sourceId          String        @map("source_id")
+  kind              String
+  status            String        @default("open")
+  priority          String        @default("normal")
+  priorityScore     Int           @default(50) @map("priority_score")
+  title             String
+  customerSituation String?       @map("customer_situation") @db.Text
+  nextAction        String        @map("next_action") @db.Text
+  reason            String?       @db.Text
+  dueAt             DateTime?     @map("due_at")
+  snoozedUntil      DateTime?     @map("snoozed_until")
+  sourceEventAt     DateTime?     @map("source_event_at")
+  fingerprint       String
+  contextVersion    Int?          @map("context_version")
+  confidence        Float?
+  metadata          Json          @default("{}")
+  completedAt       DateTime?     @map("completed_at")
+  createdAt         DateTime      @default(now()) @map("created_at")
+  updatedAt         DateTime      @updatedAt @map("updated_at")
+
+  org          Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  contact      Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  assignee     User         @relation("ConversationWorkItemAssignee", fields: [assigneeUserId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, assigneeUserId, sourceType, sourceId])
+  @@index([orgId, assigneeUserId, status, dueAt])
+  @@index([orgId, contactId, status])
+  @@index([conversationId, status])
+  @@index([priorityScore(sort: Desc), dueAt])
+  @@map("conversation_work_items")
 }
 
 model AiCustomerMemory {

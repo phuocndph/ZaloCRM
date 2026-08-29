@@ -56,7 +56,7 @@ export async function getAiConfig(orgId: string) {
 }
 
 export async function updateAiConfig(orgId: string, input: { provider?: string; model?: string; maxDaily?: number; enabled?: boolean }) {
-  return prisma.aiConfig.upsert({
+  const updated = await prisma.aiConfig.upsert({
     where: { orgId },
     create: {
       orgId,
@@ -72,6 +72,16 @@ export async function updateAiConfig(orgId: string, input: { provider?: string; 
       enabled: input.enabled,
     },
   });
+  // Keep the legacy settings endpoint compatible with the V2 Copilot runtime.
+  // Reconciliation is best-effort so a provider settings save is never lost
+  // merely because an organization has incomplete V2 records.
+  try {
+    const { bridgeLegacyAiConfiguration } = await import('./legacy-ai-config-bridge.js');
+    await bridgeLegacyAiConfiguration(orgId);
+  } catch (error) {
+    logger.warn('[ai] V2 configuration reconciliation failed after legacy save: %s', error instanceof Error ? error.message : 'unknown');
+  }
+  return updated;
 }
 
 export async function getAiUsage(orgId: string) {
@@ -115,7 +125,7 @@ export async function generateText(provider: string, apiKey: string, model: stri
   /* OpenAI, Qwen, Kimi all use OpenAI-compatible chat/completions API */
   if (provider === 'openai') return generateWithOpenaiCompat(joinOpenAICompatibleUrl(baseUrl, '/v1/chat/completions'), apiKey, model, system, prompt, maxTokens, 'max_completion_tokens');
   if (provider === 'qwen') return generateWithOpenaiCompat(joinOpenAICompatibleUrl(baseUrl, '/compatible-mode/v1/chat/completions'), apiKey, model, system, prompt, maxTokens);
-  if (provider === 'kimi' || provider === '9router') return generateWithOpenaiCompat(joinOpenAICompatibleUrl(baseUrl, '/v1/chat/completions'), apiKey, model, system, prompt, maxTokens);
+  if (provider === 'kimi' || provider === '9router' || provider === 'f5quota') return generateWithOpenaiCompat(joinOpenAICompatibleUrl(baseUrl, '/v1/chat/completions'), apiKey, model, system, prompt, maxTokens);
 
   throw new Error(`Unsupported AI provider: ${provider}`);
 }

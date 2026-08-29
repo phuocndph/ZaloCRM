@@ -2,24 +2,21 @@
 <!-- Copyright (C) 2026 Nguyễn Tiến Lộc -->
 <template>
   <aside class="info-panel">
-    <!-- ════════ HEADER: Phase 8.C Score Banner (3 stat cards + avatar below) ════════ -->
+    <!-- Compact identity header. Scoring stays in the analysis layer, not in the
+         employee's daily task surface. -->
     <header class="ip-header">
       <button class="ip-close" title="Đóng" @click="$emit('close')">×</button>
-      <ScoreBanner :scores="scoreData">
-        <template #avatar>
-          <Avatar
-            :src="props.contact?.avatarUrl"
-            :name="headerFullName"
-            :size="56"
-            :gradient-seed="props.contact?.id || headerFullName"
-            class="ip-avatar-big"
-          />
-        </template>
-        <template #name>
+      <div class="ip-contact-head">
+        <Avatar
+          :src="props.contact?.avatarUrl"
+          :name="headerFullName"
+          :size="48"
+          :gradient-seed="props.contact?.id || headerFullName"
+          class="ip-avatar-big"
+        />
+        <div class="ip-contact-main">
           <div class="ip-name-line" :title="headerFullName">{{ headerFullName }}</div>
-          <div v-if="props.contact?.zaloUid" class="ip-id">UID: {{ props.contact.zaloUid }}</div>
-          <!-- 2026-06-06 (Anh chốt): trạng thái cột 4 cạnh UID dùng CÙNG ContactDealStageSelector
-               (statusId dynamic) như cột 3 → đổi 1 chỗ sync ngay 2 chỗ (cùng trường statusId). -->
+          <div v-if="senderNickName" class="ip-nick-line">Đang chăm qua {{ senderNickName }}</div>
           <div class="ip-care-row-inline">
             <ContactDealStageSelector
               v-if="props.contact?.id"
@@ -29,8 +26,8 @@
               @updated="onDealStageUpdatedPanel"
             />
           </div>
-        </template>
-      </ScoreBanner>
+        </div>
+      </div>
     </header>
 
     <!-- 2026-06-01: Wrapper conditional cho mainTab='profile' — content cũ giữ nguyên -->
@@ -39,39 +36,26 @@
     <nav class="ip-tabs">
       <button
         class="ip-tab"
+        :class="{ active: activeTab === 'activity', 'badge-bump': badgeBump }"
+        data-fly-target="activity-tab"
+        @click="activeTab = 'activity'"
+      >
+        <span class="ic"><ActivityIcon :size="15" :stroke-width="2" /></span> Cần làm
+        <span v-if="activityBadgeCount || pendingAptBump" class="tab-badge">{{ (activityBadgeCount ?? 0) + pendingAptBump }}</span>
+      </button>
+      <button
+        class="ip-tab"
         :class="{ active: activeTab === 'profile' }"
         @click="activeTab = 'profile'"
       >
-        <span class="ic"><UserIcon :size="15" :stroke-width="2" /></span> Hồ sơ
+        <span class="ic"><UserIcon :size="15" :stroke-width="2" /></span> Thông tin
       </button>
       <button
         class="ip-tab"
         :class="{ active: activeTab === 'crm' }"
         @click="activeTab = 'crm'"
       >
-        <span class="ic"><TargetIcon :size="15" :stroke-width="2" /></span> CRM
-        <span v-if="crmBadgeCount" class="tab-badge">{{ crmBadgeCount }}</span>
-      </button>
-      <button
-        class="ip-tab"
-        :class="{ active: activeTab === 'activity', 'badge-bump': badgeBump }"
-        data-fly-target="activity-tab"
-        @click="activeTab = 'activity'"
-      >
-        <span class="ic"><CalendarClockIcon :size="15" :stroke-width="2" /></span> Lịch hẹn
-        <span v-if="activityBadgeCount || pendingAptBump" class="tab-badge">{{ (activityBadgeCount ?? 0) + pendingAptBump }}</span>
-      </button>
-      <button
-        v-if="props.friendId"
-        class="ip-tab"
-        :class="{ active: activeTab === 'score' }"
-        :title="`Điểm KH: ${props.contact?.leadScore ?? 0}`"
-        @click="activeTab = 'score'"
-      >
-        <span class="ic"><StarIcon :size="15" :stroke-width="2" /></span> Điểm
-        <span v-if="(props.contact?.leadScore ?? 0) > 0" class="tab-badge tab-badge-score">
-          {{ props.contact?.leadScore }}
-        </span>
+        <span class="ic"><TargetIcon :size="15" :stroke-width="2" /></span> Chăm sóc
       </button>
     </nav>
 
@@ -202,133 +186,68 @@
           Lưu thất bại, thử lại.
         </v-alert>
 
-        <!-- Tag CRM section moved to MessageThread chat input bar (Smax-style) -->
+      </div>
 
-        <!-- ──── Customer Timeline (Notes + Activity unified) ──── -->
-        <section class="ip-section ip-notes-section">
+      <!-- Chăm sóc: dữ liệu vận hành và lịch sử, không hiển thị điểm phân tích. -->
+      <div v-show="activeTab === 'crm'" class="tab-pane care-tab">
+        <section class="care-section care-overview">
+          <div class="care-section-title">
+            <Clock3Icon :size="17" aria-hidden="true" />
+            <span>Liên hệ gần nhất</span>
+          </div>
+          <div v-if="cockpitLoading.cockpit" class="crm-w-loading">
+            <div class="crm-spinner" /><span>Đang tải thông tin chăm sóc...</span>
+          </div>
+          <div v-else class="care-facts">
+            <div class="care-fact">
+              <span class="care-fact-label">Khách nhắn gần nhất</span>
+              <strong>{{ cockpit?.lastInboundAt ? relativeTime(cockpit.lastInboundAt) : 'Chưa có tin nhắn' }}</strong>
+              <p v-if="cockpit?.lastInboundPreview || cockpit?.lastInboundType">
+                {{ careMessagePreview(cockpit.lastInboundType, cockpit.lastInboundPreview) }}
+              </p>
+            </div>
+            <div class="care-fact">
+              <span class="care-fact-label">Nhân viên trả lời gần nhất</span>
+              <strong>{{ cockpit?.lastOutboundAt ? relativeTime(cockpit.lastOutboundAt) : 'Chưa trả lời khách' }}</strong>
+              <p v-if="cockpit?.lastOutboundPreview || cockpit?.lastOutboundType">
+                {{ careMessagePreview(cockpit.lastOutboundType, cockpit.lastOutboundPreview) }}
+              </p>
+            </div>
+            <div class="care-fact care-fact--appointment">
+              <span class="care-fact-label">Lịch hẹn tiếp theo</span>
+              <strong v-if="cockpit?.nextAppointment">
+                {{ shortDateTime(cockpit.nextAppointment.at) }} · {{ relativeFuture(cockpit.nextAppointment.at) }}
+              </strong>
+              <strong v-else>Chưa có lịch hẹn</strong>
+              <p v-if="cockpit?.nextAppointment?.title">{{ cockpit.nextAppointment.title }}</p>
+            </div>
+          </div>
+        </section>
+
+        <section v-if="cockpit?.getflyLink?.linked" class="care-section care-linked-crm">
+          <div class="care-section-title">
+            <Link2Icon :size="17" aria-hidden="true" />
+            <span>CRM đã liên kết</span>
+          </div>
+          <div class="care-linked-row">
+            <strong>Getfly</strong>
+            <span>GF-{{ cockpit.getflyLink.getflyId }}</span>
+            <small v-if="cockpit.getflyLink.linkedAt">Liên kết {{ shortDateTime(cockpit.getflyLink.linkedAt) }}</small>
+          </div>
+        </section>
+
+        <div class="care-timeline">
           <CustomerTimelineSection
             :contact-id="props.contactId"
             :contact-name="headerFullName"
             @appointment-created="onAppointmentCreated"
           />
-        </section>
+        </div>
 
-        <!-- Phase 8 — Engagement Heatmap Timeline -->
-        <section v-if="props.contactId" class="ip-section">
-          <EngagementHeatmap :contact-id="props.contactId" />
-        </section>
-      </div>
-
-      <!-- ══════ TAB 2: QUAN HỆ (per-nick) ══════ -->
-      <div v-show="activeTab === 'crm'" class="tab-pane crm-tab">
-        <!-- Widget 1: Liên kết CRM (placeholder) -->
-        <section class="crm-widget crm-w-getfly">
-          <div class="crm-w-row">
-            <span class="crm-w-icon">🔗</span>
-            <span class="crm-w-title">Liên kết CRM</span>
-          </div>
-          <div class="crm-w-row crm-w-row-status">
-            <span v-if="cockpit?.getflyLink?.linked" class="getfly-pill ok">
-              ✅ GF-{{ cockpit.getflyLink.getflyId }}
-            </span>
-            <span v-else class="getfly-pill off">⚪ Chưa liên kết</span>
-            <button class="crm-btn-ghost" disabled title="Sẽ phát triển sau">Liên kết →</button>
-          </div>
-        </section>
-
-        <!-- Widget 2: Next Action — AI suggestion -->
-        <section class="crm-widget crm-w-suggest">
-          <div class="crm-w-row">
-            <span class="crm-w-icon">⚡</span>
-            <span class="crm-w-title">Hành động đề xuất</span>
-            <button class="crm-w-refresh" :disabled="suggestLoading" title="Đổi gợi ý" @click="onRefreshSuggest">↻</button>
-          </div>
-          <div v-if="suggestLoading" class="crm-w-loading">
-            <div class="crm-spinner" /><span>AI đang gợi ý...</span>
-          </div>
-          <div v-else-if="suggestText" class="crm-suggest-box">
-            <div class="crm-suggest-text">{{ suggestText }}</div>
-            <button class="crm-btn-primary" @click="onInsertSuggest">💬 Gửi ngay</button>
-          </div>
-          <div v-else class="crm-w-empty">Chưa có gợi ý. Nhấn ↻ để AI soạn.</div>
-        </section>
-
-        <!-- Widget 3: Nhiệt KH -->
-        <section class="crm-widget crm-w-heat">
-          <div class="crm-w-row">
-            <span class="crm-w-icon">📊</span>
-            <span class="crm-w-title">Nhiệt KH</span>
-          </div>
-          <div v-if="cockpit?.priorityScore != null" class="heat-stack">
-            <div class="heat-bar-row">
-              <div class="heat-bar">
-                <div
-                  class="heat-bar-fill"
-                  :style="{ width: cockpit.priorityScore + '%', background: priorityBarColor }"
-                />
-              </div>
-              <span class="heat-bar-num">{{ cockpit.priorityScore }}/100</span>
-            </div>
-            <div class="heat-meta">
-              <span class="heat-pattern">{{ patternIcon }} {{ patternLabel }}</span>
-              <span v-if="cockpit.engagementTrend != null" :class="['heat-trend', cockpit.engagementTrend > 0 ? 'up' : cockpit.engagementTrend < 0 ? 'down' : '']">
-                {{ cockpit.engagementTrend > 0 ? '↑' : cockpit.engagementTrend < 0 ? '↓' : '→' }}
-                {{ cockpit.engagementTrend > 0 ? '+' : '' }}{{ cockpit.engagementTrend }}% tuần
-              </span>
-            </div>
-            <div v-if="cockpit.stuckSinceAggregate" class="heat-stuck">
-              ⚠ Stuck {{ daysFrom(cockpit.stuckSinceAggregate) }} ngày qua mọi nick
-            </div>
-          </div>
-          <div v-else class="crm-w-empty">Chưa đủ dữ liệu nhiệt</div>
-        </section>
-
-        <!-- Widget 4: Timeline -->
-        <section class="crm-widget crm-w-timeline">
-          <div class="crm-w-row">
-            <span class="crm-w-icon">⏰</span>
-            <span class="crm-w-title">Timeline</span>
-          </div>
-          <div class="timeline-lines">
-            <div v-if="cockpit?.firstContactDate || cockpit?.source" class="tl-line">
-              <span v-if="cockpit.firstContactDate">📅 Quen {{ daysFrom(cockpit.firstContactDate) }} ngày</span>
-              <span v-if="cockpit.source" class="tl-sep">·</span>
-              <span v-if="cockpit.source">📞 {{ cockpit.source }}<span v-if="cockpit.sourceDate"> {{ shortDate(cockpit.sourceDate) }}</span></span>
-            </div>
-            <div v-if="cockpit?.lastInboundAt" class="tl-line">
-              🟢 KH chat cuối: {{ relativeTime(cockpit.lastInboundAt) }}
-            </div>
-            <div v-if="cockpit?.lastOutboundAt" class="tl-line">
-              🔵 Bạn chat cuối: {{ relativeTime(cockpit.lastOutboundAt) }}
-            </div>
-            <div v-if="cockpit?.nextAppointment" class="tl-line tl-appt">
-              📍 Lịch hẹn: {{ shortDateTime(cockpit.nextAppointment.at) }}
-              <span class="tl-appt-rel"> ({{ relativeFuture(cockpit.nextAppointment.at) }})</span>
-            </div>
-            <div v-if="!cockpit?.firstContactDate && !cockpit?.lastInboundAt && !cockpit?.lastOutboundAt && !cockpit?.nextAppointment" class="crm-w-empty">
-              Chưa có dữ liệu timeline
-            </div>
-          </div>
-        </section>
-
-        <!-- Widget 5: Sản phẩm quan tâm (placeholder) -->
-        <section class="crm-widget crm-w-interest">
-          <div class="crm-w-row">
-            <span class="crm-w-icon">🎯</span>
-            <span class="crm-w-title">Sản phẩm quan tâm</span>
-          </div>
-          <div class="crm-w-placeholder">
-            <span class="ph-icon">ⓘ</span>
-            <span class="ph-text">Chức năng đang phát triển — sẽ tự gom nhu cầu từ KH cha + các nick chăm cùng KH này</span>
-          </div>
-        </section>
-
-        <!-- M55 2026-05-30: Widget Cùng chăm theo ContactAccess (cover cả KH có Zalo
-             lẫn no-Zalo). Hiện luôn cả khi chỉ 1 sale chăm để minh bạch ai phụ trách. -->
-        <section v-if="cungChamList.length > 0" class="crm-widget crm-w-cung-cham">
-          <div class="crm-w-row">
-            <span class="crm-w-icon">👥</span>
-            <span class="crm-w-title">Sale đang/đã chăm KH ({{ cungChamList.length }})</span>
+        <section class="care-section">
+          <div class="care-section-title">
+            <UsersRoundIcon :size="17" aria-hidden="true" />
+            <span>Người phụ trách</span>
           </div>
           <div class="cung-cham-list">
             <div v-for="acc in cungChamList" :key="acc.user?.id || acc.createdAt" class="cung-cham-row">
@@ -338,23 +257,20 @@
               <div class="cc-info">
                 <div class="cc-name">
                   {{ acc.user?.fullName || acc.user?.email || 'Sale' }}
-                  <span v-if="acc.role === 'primary'" class="cc-role-primary" title="Sale phụ trách chính">⭐ Chính</span>
-                  <span v-else class="cc-role-collab" title="Sale cùng chăm">🤝 Cùng chăm</span>
+                  <span v-if="acc.role === 'primary'" class="cc-role-primary">Phụ trách chính</span>
+                  <span v-else class="cc-role-collab">Cùng chăm</span>
                 </div>
-                <div class="cc-meta">{{ ccSourceLabel(acc.source) }} · {{ ccDateLabel(acc.createdAt) }}</div>
+                <div v-if="ccDateLabel(acc.createdAt)" class="cc-meta">Theo dõi từ {{ ccDateLabel(acc.createdAt) }}</div>
               </div>
             </div>
           </div>
+          <div v-if="cungChamList.length === 0" class="crm-w-empty">Chưa gán nhân viên phụ trách.</div>
         </section>
 
-        <!-- Widget 6: Đồng đội chăm KH (chỉ hiện cho KH có Zalo — based on Friend nicks chăm) -->
-        <section v-if="teammatesFiltered.length > 0" class="crm-widget crm-w-team">
-          <div class="crm-w-row">
-            <span class="crm-w-icon">🤝</span>
-            <span class="crm-w-title">Nick CRM cùng chăm ({{ teammatesFiltered.length }})</span>
-          </div>
-          <div v-if="teammatesFiltered.length" class="team-banner">
-            💡 {{ teammatesFiltered.length }} sale khác cùng chăm KH này — phối hợp để win-win
+        <section class="care-section care-team-section">
+          <div class="care-section-title">
+            <MessagesSquareIcon :size="17" aria-hidden="true" />
+            <span>Tài khoản Zalo cùng chăm</span>
           </div>
           <div v-if="teammatesLoading" class="crm-w-loading">
             <div class="crm-spinner" /><span>Đang tải...</span>
@@ -365,12 +281,12 @@
                 <Avatar :src="t.nick.avatarUrl" :name="t.nick.displayName || 'Nick'" :size="32" :gradient-seed="t.friendId" platform="zalo" />
                 <div class="team-card-info">
                   <div class="team-name">{{ t.owner?.fullName || 'Sale chưa rõ' }}</div>
-                  <div class="team-sub">{{ t.nick.displayName || 'Nick' }} · <span :class="['team-status', teammateStatusClass(t)]">{{ teammateStatus(t) }}</span></div>
+                  <div class="team-sub">Qua {{ t.nick.displayName || 'tài khoản Zalo' }} · {{ teammateStatus(t) }}</div>
                 </div>
               </div>
               <div class="team-counts">
-                <span>📥 <strong>{{ t.totalInbound }}</strong></span>
-                <span>📤 <strong>{{ t.totalOutbound }}</strong></span>
+                <span>Khách gửi <strong>{{ t.totalInbound }}</strong> tin</span>
+                <span>Nhân viên gửi <strong>{{ t.totalOutbound }}</strong> tin</span>
               </div>
               <button
                 class="crm-btn-handoff"
@@ -378,19 +294,12 @@
                 :title="!t.owner ? 'Nick chưa gán cho sale nào' : ''"
                 @click="onOpenHandoff(t)"
               >
-                ✨ AI nhắn {{ shortName(t.owner?.fullName) || 'sale' }} phối hợp
+                <MessageSquareShareIcon :size="15" aria-hidden="true" />
+                Nhờ {{ shortName(t.owner?.fullName) || 'nhân viên' }} phối hợp
               </button>
             </div>
           </div>
-          <div v-else-if="cungChamList.length === 0" class="crm-w-empty">Chỉ mình bạn đang chăm KH này</div>
-        </section>
-
-        <!-- Widget 7: Push to Getfly (placeholder) -->
-        <section class="crm-widget crm-w-push">
-          <button class="crm-btn-push" disabled title="Sẽ phát triển sau">
-            📤 Đẩy thông tin KH lên Getfly CRM
-          </button>
-          <div class="crm-w-hint">Chức năng đang phát triển</div>
+          <div v-else class="crm-w-empty">Không có tài khoản khác cùng chăm khách này.</div>
         </section>
       </div>
 
@@ -409,28 +318,13 @@
         @regenerate="onRegenerateHandoff"
       />
 
-      <!-- ══════ TAB 3: HOẠT ĐỘNG (AI + Automation + Lịch hẹn) ══════ -->
+      <!-- Daily staff brief: AI translates signals into plain-language work. -->
       <div v-show="activeTab === 'activity'" class="tab-pane">
-        <!-- AI Summary -->
-        <section v-if="aiSummary || aiSummaryLoading" class="ip-section">
-          <div class="ip-section-title">
-            <span class="accent" style="background: #9c27b0" />
-            ✨ AI Tóm tắt
-            <button class="refresh-mini" :disabled="aiSummaryLoading" @click="$emit('refresh-ai-summary')">↻</button>
-          </div>
-          <AiSummaryCard :summary="aiSummary" :loading="aiSummaryLoading" />
-        </section>
-
-        <!-- AI Sentiment -->
-        <section v-if="aiSentiment || aiSentimentLoading" class="ip-section">
-          <div class="ip-section-title">
-            <span class="accent" style="background: #ec407a" />
-            💗 Cảm xúc khách hàng
-            <button class="refresh-mini" :disabled="aiSentimentLoading" @click="$emit('refresh-ai-sentiment')">↻</button>
-          </div>
-          <AiSentimentBadge :sentiment="aiSentiment" />
-          <div v-if="aiSentiment?.reason" class="sentiment-reason">{{ aiSentiment.reason }}</div>
-        </section>
+        <ConversationInsightCard
+          v-if="props.conversationId"
+          :conversation-id="props.conversationId"
+          :private-blocked="props.conversationPrivateBlocked"
+        />
 
         <!-- Automation cards cũ đã migrate sang Tab FOLLOW-UP (M9 Luồng Mục Tiêu 2026-06-02) -->
         <!-- Xem AutomationCardList ở tab FOLLOW-UP line 469 thay vì render tại tab Profile -->
@@ -441,36 +335,12 @@
           v-if="props.contactId"
           :contact-id="props.contactId"
           :contact-name="headerFullName"
-          :appointments="contactAppointments"
+          :appointments="actionableAppointments"
           @refresh="reloadAppointments"
         />
 
-        <!-- Empty state khi không có gì trong tab -->
-        <div v-if="!hasAnyActivity" class="tab-empty">
-          <p>Chưa có hoạt động — sau khi có conv tin nhắn, AI sẽ tự tóm tắt + phân tích cảm xúc.</p>
-        </div>
-      </div>
-
-      <!-- ══════ TAB 4: ĐIỂM (Lead Scoring) ══════ -->
-      <div v-show="activeTab === 'score'" class="tab-pane tab-pane-score">
-        <ScoreInlinePanel
-          v-if="props.friendId"
-          :friend-id="props.friendId"
-          :stage-label="scoreStageLabel"
-          @view-history="openScoreHistory"
-        />
-        <div v-else class="tab-empty">
-          <p>Tab Điểm chỉ áp dụng cho hội thoại 1-1 (có Friend).</p>
-        </div>
       </div>
     </div>
-
-    <!-- Score history modal (overlay full screen, Teleport to body) -->
-    <ScoreHistoryModal
-      v-model="scoreHistoryOpen"
-      :friend-id="props.friendId ?? null"
-      :contact-name="headerFullName"
-    />
     </template>
     <!-- /v-if mainTab=profile -->
 
@@ -518,7 +388,7 @@
         :nick-name="props.activeZaloAccountName || null"
         @add-flow="openAddFlowModal"
       />
-      <div v-else class="main-tab-placeholder">
+      <div v-if="!contact?.id" class="main-tab-placeholder">
         <div class="mtp-icon">🎯</div>
         <h3>Luồng bám đuổi</h3>
         <p>Chưa chọn khách hàng để xem các luồng đang chạy.</p>
@@ -594,8 +464,7 @@ import type { AiSentiment } from '@/composables/use-chat';
 import { useChatContactPanel } from '@/composables/use-chat-contact-panel';
 import { displayPhone, displayPhoneIntl } from '@/composables/use-phone-format';
 import ChatAppointments from './ChatAppointments.vue';
-import AiSummaryCard from '@/components/ai/ai-summary-card.vue';
-import AiSentimentBadge from '@/components/ai/ai-sentiment-badge.vue';
+import ConversationInsightCard from './ConversationInsightCard.vue';
 import AutomationCardList from './AutomationCardList.vue';
 import FollowupPanel from './FollowupPanel.vue';
 import { isExtension } from '@ee/edition';
@@ -608,18 +477,19 @@ import { useToast } from '@/composables/use-toast';
 import { api } from '@/api';
 // Icon top-tab — Lucide line (anh chốt 2026-06-08, đồng bộ bottom-tab SVG).
 import {
+  Clock3 as Clock3Icon,
+  Link2 as Link2Icon,
+  MessageSquareShare as MessageSquareShareIcon,
+  MessagesSquare as MessagesSquareIcon,
   User as UserIcon,
   Target as TargetIcon,
-  CalendarClock as CalendarClockIcon,
-  Star as StarIcon,
+  Activity as ActivityIcon,
+  UsersRound as UsersRoundIcon,
 } from 'lucide-vue-next';
 import CustomerTimelineSection from './CustomerTimelineSection.vue';
-import EngagementHeatmap from './EngagementHeatmap.vue';
-import ScoreBanner from './ScoreBanner.vue';
-import ScoreInlinePanel from '@/components/scoring/ScoreInlinePanel.vue';
-import ScoreHistoryModal from '@/components/scoring/ScoreHistoryModal.vue';
 import SalesHandoffModal from './SalesHandoffModal.vue';
 import { useContactCockpit, type Teammate } from '@/composables/use-contact-cockpit';
+import { notificationPreview } from '@/composables/message-notification-utils';
 
 const props = defineProps<{
   contactId: string | null;
@@ -628,8 +498,9 @@ const props = defineProps<{
   activeZaloAccountId?: string | null;
   // Tên hiển thị nick CRM đang online — hiển thị trong modal handoff ("Từ nick: ...")
   activeZaloAccountName?: string | null;
-  // Conversation hiện tại — dùng cho /ai/suggest (gợi ý next action widget 2 tab CRM)
+  // Conversation hiện tại — dùng cho phân tích hội thoại ở tab Cần làm.
   conversationId?: string | null;
+  conversationPrivateBlocked?: boolean;
   // Friend.id của cặp (contact × activeZaloAccount). Cần để fetch score breakdown per-pair.
   friendId?: string | null;
   // Friendship per-pair (nick × KH) — chứa aliasInNick để sync 2-way với Zalo Real.
@@ -645,7 +516,6 @@ const emit = defineEmits<{
   saved: [];
   'refresh-ai-summary': [];
   'refresh-ai-sentiment': [];
-  'insert-suggestion': [text: string];
   'status-changed': [statusId: string | null];
 }>();
 
@@ -702,7 +572,9 @@ async function saveAlias() {
 // 2026-06-12 (anh chốt): tab 'automation' → 'media' (gộp Picker Media + Automation:
 //   Ảnh/Video/Tệp/Khối trong MediaTabPanel). `activeTab` (sub-tab) chỉ active scope 'profile'.
 const mainTab = ref<'profile' | 'media' | 'ai' | 'followup'>('profile');
-const activeTab = ref<'profile' | 'crm' | 'activity' | 'score'>('profile');
+// Show the conversation analysis first when a chat is opened; staff can still
+// switch to the profile/CRM tabs without losing the generated insight.
+const activeTab = ref<'profile' | 'crm' | 'activity'>('activity');
 
 // Cho phép cha (ChatView) mở tab Media từ nút "Chèn từ kho" ở composer cột 3.
 function setMainTab(t: 'profile' | 'media' | 'ai' | 'followup') { mainTab.value = t; }
@@ -804,18 +676,6 @@ onBeforeUnmount(() => {
   window.removeEventListener('appointment-created', onGlobalAppointmentCreated);
 });
 
-// ════════ Score history modal (mở từ tab Điểm "Xem toàn bộ →") ════════
-const scoreHistoryOpen = ref(false);
-function openScoreHistory() {
-  scoreHistoryOpen.value = true;
-}
-
-// Stage label hiển thị cạnh điểm tổng (vd "warm-lead" lấy từ friendship.statusRef.name)
-const scoreStageLabel = computed<string | null>(() => {
-  const c = props.contact as Contact & { friendship?: { statusRef?: { name?: string } | null } } | null;
-  return c?.friendship?.statusRef?.name || null;
-});
-
 // ════════ Relations data (friends per nick = KH Con) — fetch khi đổi contact ═══
 interface FriendItem {
   id: string;
@@ -872,16 +732,6 @@ const headerFullName = computed(() => {
   if (isUsable(af?.zaloDisplayName)) return af!.zaloDisplayName!;
   return 'Khách hàng';
 });
-
-// Lead score tier để màu badge overlay trên avatar (thấp/TB/cao)
-// ════════ Phase 8.C — ScoreBanner 3 score data ════════
-const scoreData = computed(() => ({
-  lead: props.contact?.leadScore ?? null,
-  engagement: props.contact?.engagementScore ?? null,
-  priority: props.contact?.priorityScore ?? null,
-  engagementTrend: props.contact?.engagementTrend ?? null,
-  engagementPattern: props.contact?.engagementPattern ?? null,
-}));
 
 // ════════ Phones extras ════════
 const showExtraPhones = ref(false);
@@ -946,31 +796,22 @@ const senderNickName = computed<string | null>(() =>
 );
 
 // ════════ Tab badges ════════
-const crmBadgeCount = computed(() => teammatesFiltered.value.length || 0);
+const actionableAppointments = computed(() => contactAppointments.value.filter((appointment) =>
+  ['scheduled', 'overdue'].includes(appointment.status),
+));
 const activityBadgeCount = computed(() => {
-  // Migrate sang Tab FOLLOW-UP (2026-06-02) — không còn track automation count ở tab Activity legacy
-  return contactAppointments.value.length || null;
+  return actionableAppointments.value.length || null;
 });
-
-const hasAnyActivity = computed(() =>
-  !!(props.aiSummary || props.aiSentiment || contactAppointments.value.length),
-);
 
 const toast = useToast();
 const router = useRouter();
-
-// AI suggest state — PHẢI khai báo TRƯỚC watcher(props.contactId, {immediate:true}) bên dưới
-// vì watcher đó reset suggestText.value lúc setup. Khai báo sau watcher → TDZ
-// "Cannot access 'suggestText' before initialization" làm crash setup panel (fix 2026-06-06).
-const suggestText = ref('');
-const suggestLoading = ref(false);
 
 // Khi đổi sang contact mới, reset về tab Hồ sơ + refetch relations
 // (NotesSection tự fetch khi prop contactId đổi).
 // Cũng force reset infoExpanded + start countdown — nếu activeTab đã = 'profile',
 // watch(activeTab) sẽ KHÔNG fire khi cùng giá trị → form section stuck ở state cũ.
 watch(() => props.contactId, (id) => {
-  activeTab.value = 'profile';
+  activeTab.value = id && props.conversationId ? 'activity' : 'profile';
   // Switch conv hoặc reload page → reset về 'auto' (countdown 5s).
   // KHÔNG persist sticky giữa các conv (theo spec: sticky chỉ trong cùng conv).
   expandMode.value = 'auto';
@@ -982,37 +823,40 @@ watch(() => props.contactId, (id) => {
     cockpit.value = null;
     teammates.value = [];
   }
-  // Reset suggest text
-  suggestText.value = '';
 }, { immediate: true });
 
 function relativeTime(dateStr: string) {
   const diff = Date.now() - new Date(dateStr).getTime();
-  const days = Math.floor(diff / (1000 * 60 * 60 * 24));
-  if (days === 0) return 'hôm nay';
+  if (!Number.isFinite(diff)) return 'Chưa rõ thời gian';
+  if (diff < 60_000) return 'Vừa xong';
+  const minutes = Math.floor(diff / 60_000);
+  if (minutes < 60) return `${minutes} phút trước`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} giờ trước`;
+  const days = Math.floor(hours / 24);
   if (days === 1) return 'hôm qua';
-  return `${days} ngày trước`;
+  if (days < 7) return `${days} ngày trước`;
+  return new Intl.DateTimeFormat('vi-VN', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  }).format(new Date(dateStr));
 }
 
-// ════════════════════════════════════════════════════════════════════════
-// Tab CRM (Mini CRM cockpit) — 7 widget, anh chốt design 2026-05-22
-// docs/designs/CHAT-COL4-CRM-TAB.md
-// ════════════════════════════════════════════════════════════════════════
+function careMessagePreview(contentType: string | null | undefined, content: string | null | undefined) {
+  return notificationPreview({ contentType: contentType || 'text', content: content || '' });
+}
+
+// Dữ liệu chăm sóc được tải khi nhân viên mở tab để tránh request thừa.
 const { cockpit, teammates, loading: cockpitLoading, fetchCockpit, fetchTeammates, generateHandoffMessage } = useContactCockpit();
 
 // Fetch cockpit + teammates khi tab CRM được mở lần đầu (lazy load tiết kiệm request)
-const crmTabLoaded = ref(false);
 watch([activeTab, () => props.contactId], async ([tab, id]) => {
   if (tab === 'crm' && id) {
-    crmTabLoaded.value = true;
     await Promise.all([
       fetchCockpit(id),
       fetchTeammates(id, props.activeZaloAccountId || undefined),
     ]);
-    // Auto-fetch AI suggestion nếu chưa có
-    if (!suggestText.value && props.conversationId) {
-      void runAiSuggest();
-    }
   }
 }, { immediate: false });
 
@@ -1065,61 +909,12 @@ function ccAvatarColor(seed: string): string {
   for (let i = 0; i < (seed || '').length; i++) h = (h * 31 + seed.charCodeAt(i)) | 0;
   return CC_AVATAR_COLORS[Math.abs(h) % CC_AVATAR_COLORS.length];
 }
-const CC_SOURCE_LABELS: Record<string, string> = {
-  quick_add: 'Tạo KH nhanh',
-  quick_add_duplicate: 'Thêm KH trùng SĐT',
-  virtual_chat_open: 'Mở chat nội bộ',
-  virtual_chat_message: 'Gửi tin chat nội bộ',
-  auto_from_friend: 'Tự động qua Zalo Friend',
-  manual: 'Thủ công',
-};
-function ccSourceLabel(source: string): string {
-  return CC_SOURCE_LABELS[source] || source || 'Khác';
-}
-function ccDateLabel(iso: string): string {
+function ccDateLabel(iso: string): string | null {
   try {
     const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return null;
     return d.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit', year: 'numeric', timeZone: 'Asia/Ho_Chi_Minh' });
-  } catch { return ''; }
-}
-
-const patternIcon = computed(() => {
-  const p = cockpit.value?.engagementPattern;
-  if (p === 'hot') return '🔥';
-  if (p === 'champion') return '👑';
-  if (p === 'stable') return '🟢';
-  if (p === 'cooling') return '🟡';
-  if (p === 'cold') return '🔵';
-  return '⚪';
-});
-
-const patternLabel = computed(() => {
-  const p = cockpit.value?.engagementPattern;
-  if (p === 'hot') return 'Nóng';
-  if (p === 'champion') return 'Champion';
-  if (p === 'stable') return 'Ổn định';
-  if (p === 'cooling') return 'Đang nguội';
-  if (p === 'cold') return 'Lạnh';
-  if (p === 'noise') return 'Chưa đủ data';
-  return '—';
-});
-
-const priorityBarColor = computed(() => {
-  const s = cockpit.value?.priorityScore;
-  if (s == null) return '#cbd5e1';
-  if (s < 30) return '#3b82f6'; // xanh dương
-  if (s < 60) return '#10b981'; // xanh lá
-  if (s < 80) return '#f59e0b'; // cam
-  return '#ef4444'; // đỏ
-});
-
-function daysFrom(iso: string): number {
-  return Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 86400000));
-}
-
-function shortDate(iso: string): string {
-  const d = new Date(iso);
-  return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`;
+  } catch { return null; }
 }
 
 function shortDateTime(iso: string): string {
@@ -1141,21 +936,13 @@ function relativeFuture(iso: string): string {
 }
 
 function teammateStatus(t: Teammate): string {
-  if (!t.lastInboundAt) return 'Chưa chat';
-  const diff = Date.now() - new Date(t.lastInboundAt).getTime();
+  if (!t.lastInteractionAt) return 'chưa có tin nhắn';
+  const diff = Date.now() - new Date(t.lastInteractionAt).getTime();
   const hours = diff / 3600000;
-  if (hours < 24) return `🟢 Active ${Math.max(1, Math.floor(hours))}h`;
+  if (hours < 1) return 'vừa trao đổi';
+  if (hours < 24) return `trao đổi ${Math.max(1, Math.floor(hours))} giờ trước`;
   const days = Math.floor(hours / 24);
-  if (days <= 7) return `🟡 Đang chăm ${days}d`;
-  return `🔵 Lạnh ${days}d`;
-}
-
-function teammateStatusClass(t: Teammate): string {
-  if (!t.lastInboundAt) return 'grey';
-  const hours = (Date.now() - new Date(t.lastInboundAt).getTime()) / 3600000;
-  if (hours < 24) return 'active';
-  if (hours / 24 <= 7) return 'warm';
-  return 'cold';
+  return `trao đổi ${days} ngày trước`;
 }
 
 function shortName(full: string | null | undefined): string | null {
@@ -1164,39 +951,7 @@ function shortName(full: string | null | undefined): string | null {
   return parts[parts.length - 1];
 }
 
-// ─── Widget 2: AI suggest ────────────────────────────────────────────────
-// suggestText + suggestLoading đã khai báo ở trên (trước watcher contactId) để tránh TDZ.
-
-async function runAiSuggest() {
-  if (!props.conversationId) {
-    toast.warning('Chưa có hội thoại để AI gợi ý');
-    return;
-  }
-  suggestLoading.value = true;
-  try {
-    const { data } = await api.post<{ reply_text: string }>(`/ai/replies/conversations/${props.conversationId}/generate`, {});
-    suggestText.value = (data?.reply_text || '').trim();
-  } catch (err) {
-    const msg = (err as { response?: { data?: { error?: string } } }).response?.data?.error || 'AI suggest thất bại';
-    toast.error(msg);
-  } finally {
-    suggestLoading.value = false;
-  }
-}
-
-function onRefreshSuggest() {
-  void runAiSuggest();
-}
-
-function onInsertSuggest() {
-  if (!suggestText.value) return;
-  emit('insert-suggestion', suggestText.value);
-  // Phát event toàn cục cho ChatComposer nghe (giảm prop drill)
-  window.dispatchEvent(new CustomEvent('chat:insert-suggestion', { detail: { text: suggestText.value } }));
-  toast.success('Đã chèn vào ô soạn tin');
-}
-
-// ─── Widget 6: Sales handoff modal ───────────────────────────────────────
+// ─── Sales handoff modal ────────────────────────────────────────────────
 const handoffOpen = ref(false);
 const handoffLoading = ref(false);
 const handoffContent = ref('');
@@ -1293,41 +1048,39 @@ async function onRegenerateHandoff() {
 
 /* ════════ Header (pinned) ════════ */
 .ip-header {
-  padding: 0;
+  padding: 12px 42px 12px 14px;
   text-align: left;
   border-bottom: 1px solid var(--smax-grey-200);
   position: relative;
   flex-shrink: 0;
+  background: #fff;
 }
-/* Avatar + name layout inside ScoreBanner slot */
+.ip-contact-head {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  align-items: center;
+  gap: 11px;
+}
+.ip-contact-main { min-width: 0; }
 .ip-header .ip-name-line {
-  font-size: 15px;
-  font-weight: 700;
-  line-height: 1.2;
-  margin-top: 0;
+  font-size: 14px;
+  font-weight: 750;
+  line-height: 1.3;
+  margin: 0;
   padding: 0;
   text-align: left;
 }
-.ip-header .ip-id {
-  font-size: 10.5px;
+.ip-nick-line {
   margin-top: 2px;
-  padding: 0;
-  text-align: left;
+  color: #667085;
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .ip-care-row-inline {
-  margin-top: 5px;
+  margin-top: 6px;
   display: flex;
-}
-/* Tab 4 "Điểm" — score panel content full-width 280px, vertical stack */
-.tab-pane-score {
-  padding: 12px 14px 18px;
-}
-/* Tab badge cho score (khác badge số tin chưa đọc) */
-.tab-badge-score {
-  background: #fef3c7 !important;
-  color: #b45309 !important;
-  font-weight: 700 !important;
-  min-width: 24px;
 }
 
 .ip-close {
@@ -1348,7 +1101,6 @@ async function onRegenerateHandoff() {
 }
 .ip-avatar-big {
   display: block;
-  margin: 0 auto;
 }
 
 /* Lead score badge — overlay trên avatar (góc dưới-phải), Smax-style "điểm KH" */
@@ -1825,54 +1577,80 @@ async function onRegenerateHandoff() {
 }
 .ni-name { flex: 1; font-size: 12px; color: var(--smax-text); }
 
-/* ════════ Notes section in Tab Hồ Sơ ════════ */
-.ip-notes-section {
-  margin-top: 10px;
+/* ════════ Chăm sóc ════════ */
+.care-tab {
+  padding: 12px;
+  gap: 12px;
+  background: #f7f8fa;
 }
-
-/* ════════════════════════════════════════════════════════════════════════
-   Tab CRM (Mini cockpit, 7 widgets) — 2026-05-22
-   ════════════════════════════════════════════════════════════════════════ */
-.crm-tab {
-  padding: 10px 12px 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-.crm-widget {
-  background: #fff;
+.care-section {
+  padding: 12px;
   border: 1px solid var(--smax-grey-200);
-  border-radius: 10px;
-  padding: 10px 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+  border-radius: 8px;
+  background: #fff;
 }
-.crm-w-row {
+.care-section-title {
   display: flex;
   align-items: center;
   gap: 7px;
-}
-.crm-w-row-status { justify-content: space-between; }
-.crm-w-icon { font-size: 15px; flex-shrink: 0; }
-.crm-w-title {
+  margin-bottom: 10px;
+  color: #344054;
   font-size: 12.5px;
-  font-weight: 700;
-  color: var(--smax-grey-800);
-  flex: 1;
+  font-weight: 750;
 }
-.crm-w-refresh {
-  background: transparent;
-  border: 1px solid var(--smax-grey-300);
-  border-radius: 6px;
-  width: 24px; height: 22px;
-  font-size: 11.5px;
-  cursor: pointer;
-  color: var(--smax-grey-600);
+.care-section-title svg { color: #526174; flex-shrink: 0; }
+.care-facts { display: grid; gap: 0; }
+.care-fact {
+  min-width: 0;
+  padding: 9px 0;
+  border-bottom: 1px solid #eef0f3;
 }
-.crm-w-refresh:hover:not(:disabled) { background: var(--smax-grey-100); }
-.crm-w-refresh:disabled { opacity: 0.5; cursor: wait; }
-
+.care-fact:first-child { padding-top: 0; }
+.care-fact:last-child { padding-bottom: 0; border-bottom: 0; }
+.care-fact-label {
+  display: block;
+  margin-bottom: 3px;
+  color: #667085;
+  font-size: 10.5px;
+}
+.care-fact strong {
+  display: block;
+  color: #172033;
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+.care-fact p {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 3px 0 0;
+  color: #667085;
+  font-size: 11px;
+  line-height: 1.4;
+  word-break: break-word;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+.care-fact--appointment strong { color: #067647; }
+.care-linked-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 3px 8px;
+  font-size: 12px;
+}
+.care-linked-row span { color: #067647; font-weight: 700; text-align: right; }
+.care-linked-row small { grid-column: 1 / -1; color: #667085; }
+.care-timeline {
+  overflow: hidden;
+  border: 1px solid var(--smax-grey-200);
+  border-radius: 8px;
+  background: #fff;
+}
+.care-timeline :deep(.timeline-section) { padding: 0; }
+.care-timeline :deep(.tl-header),
+.care-timeline :deep(.note-composer),
+.care-timeline :deep(.tl-list),
+.care-timeline :deep(.tl-state) { padding-left: 12px; padding-right: 12px; }
 .crm-w-loading {
   display: flex; align-items: center; gap: 8px;
   padding: 6px 0;
@@ -1894,138 +1672,6 @@ async function onRegenerateHandoff() {
   color: var(--smax-grey-500);
   font-size: 11.5px;
   padding: 4px 0;
-}
-
-/* ── Widget 1: Getfly link ── */
-.getfly-pill {
-  font-size: 11.5px;
-  padding: 3px 9px;
-  border-radius: 999px;
-  font-weight: 600;
-}
-.getfly-pill.ok { background: #dcfce7; color: #166534; border: 1px solid #bbf7d0; }
-.getfly-pill.off { background: #f1f5f9; color: #475569; border: 1px solid #e2e8f0; }
-.crm-btn-ghost {
-  background: #fff;
-  border: 1px solid var(--smax-grey-300);
-  border-radius: 7px;
-  padding: 4px 10px;
-  font-size: 11.5px;
-  cursor: pointer;
-  color: var(--smax-grey-700);
-}
-.crm-btn-ghost:hover:not(:disabled) { background: var(--smax-grey-100); }
-.crm-btn-ghost:disabled { opacity: 0.4; cursor: not-allowed; }
-
-/* ── Widget 2: AI suggest ── */
-.crm-suggest-box {
-  background: linear-gradient(180deg, #faf5ff, #f5f3ff);
-  border: 1px solid #ddd6fe;
-  border-radius: 8px;
-  padding: 8px 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-}
-.crm-suggest-text {
-  font-size: 12px;
-  line-height: 1.45;
-  color: #312e81;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-.crm-btn-primary {
-  background: #4f46e5;
-  color: #fff;
-  border: none;
-  border-radius: 7px;
-  padding: 5px 10px;
-  font-size: 11.5px;
-  font-weight: 600;
-  cursor: pointer;
-  align-self: flex-start;
-}
-.crm-btn-primary:hover { background: #4338ca; }
-
-/* ── Widget 3: Nhiệt KH ── */
-.heat-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-.heat-bar-row {
-  display: flex; align-items: center; gap: 8px;
-}
-.heat-bar {
-  flex: 1;
-  height: 10px;
-  background: var(--smax-grey-200);
-  border-radius: 999px;
-  overflow: hidden;
-}
-.heat-bar-fill {
-  height: 100%;
-  border-radius: 999px;
-  transition: width 300ms ease, background-color 300ms ease;
-}
-.heat-bar-num {
-  font-size: 11.5px;
-  font-weight: 700;
-  color: var(--smax-grey-700);
-  min-width: 54px;
-  text-align: right;
-}
-.heat-meta {
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  font-size: 11.5px;
-}
-.heat-pattern { font-weight: 600; color: var(--smax-grey-800); }
-.heat-trend { font-weight: 600; color: var(--smax-grey-600); }
-.heat-trend.up { color: #15803d; }
-.heat-trend.down { color: #b91c1c; }
-.heat-stuck {
-  font-size: 11px;
-  background: #fef3c7;
-  border: 1px solid #fde68a;
-  color: #92400e;
-  border-radius: 6px;
-  padding: 3px 7px;
-}
-
-/* ── Widget 4: Timeline ── */
-.timeline-lines {
-  display: flex; flex-direction: column;
-  gap: 4px;
-  font-size: 11.5px;
-  color: var(--smax-grey-700);
-}
-.tl-line { line-height: 1.4; }
-.tl-sep { margin: 0 5px; color: var(--smax-grey-400); }
-.tl-appt { color: #065f46; font-weight: 600; }
-.tl-appt-rel { font-weight: 500; color: var(--smax-grey-600); }
-
-/* ── Widget 5: Placeholder interest ── */
-.crm-w-placeholder {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
-  font-size: 11.5px;
-  color: var(--smax-grey-600);
-  background: var(--smax-grey-100);
-  border-radius: 7px;
-  padding: 7px 9px;
-  line-height: 1.45;
-}
-.ph-icon { font-style: italic; color: var(--smax-grey-500); flex-shrink: 0; }
-
-/* ── Widget 6: Đồng đội ── */
-.team-banner {
-  background: #ecfeff;
-  border: 1px solid #a5f3fc;
-  color: #155e75;
-  font-size: 11px;
-  padding: 5px 8px;
-  border-radius: 7px;
 }
 .team-list {
   display: flex;
@@ -2072,22 +1718,22 @@ async function onRegenerateHandoff() {
   flex-wrap: wrap;
 }
 .cc-role-primary {
-  background: #fef3c7;
-  color: #92400e;
+  background: #ecfdf3;
+  color: #067647;
   font-size: 9px;
   font-weight: 700;
   padding: 1px 6px;
-  border-radius: 8px;
-  border: 1px solid #fcd34d;
+  border-radius: 4px;
+  border: 1px solid #abefc6;
 }
 .cc-role-collab {
-  background: #dbeafe;
-  color: #1e40af;
+  background: #eff8ff;
+  color: #175cd3;
   font-size: 9px;
   font-weight: 600;
   padding: 1px 6px;
-  border-radius: 8px;
-  border: 1px solid #93c5fd;
+  border-radius: 4px;
+  border: 1px solid #b2ddff;
 }
 .cc-meta {
   font-size: 10px;
@@ -2125,19 +1771,20 @@ async function onRegenerateHandoff() {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.team-status.active { color: #15803d; }
-.team-status.warm { color: #b45309; }
-.team-status.cold { color: #1d4ed8; }
-.team-status.grey { color: var(--smax-grey-500); }
 .team-counts {
-  display: flex; gap: 12px;
-  font-size: 11.5px;
+  display: flex; gap: 5px 12px; flex-wrap: wrap;
+  font-size: 10.5px;
   color: var(--smax-grey-700);
 }
 .crm-btn-handoff {
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
-  color: #fff;
-  border: none;
+  min-height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: #fff;
+  color: #175cd3;
+  border: 1px solid #b2ddff;
   border-radius: 7px;
   padding: 6px 10px;
   font-size: 11.5px;
@@ -2145,26 +1792,8 @@ async function onRegenerateHandoff() {
   cursor: pointer;
   width: 100%;
 }
-.crm-btn-handoff:hover:not(:disabled) { filter: brightness(1.05); }
+.crm-btn-handoff:hover:not(:disabled) { background: #eff8ff; }
 .crm-btn-handoff:disabled { opacity: 0.45; cursor: not-allowed; }
-
-/* ── Widget 7: Push Getfly ── */
-.crm-btn-push {
-  background: #f8fafc;
-  border: 1px dashed #94a3b8;
-  border-radius: 8px;
-  padding: 10px;
-  font-size: 12px;
-  color: var(--smax-grey-600);
-  cursor: not-allowed;
-  width: 100%;
-}
-.crm-w-hint {
-  font-size: 10.5px;
-  color: var(--smax-grey-500);
-  text-align: center;
-  font-style: italic;
-}
 
 /* ═════════ 2026-06-01: Bottom 4-tab strip + placeholder panels ═════════ */
 .bottom-tabs {

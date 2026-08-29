@@ -7,9 +7,15 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '../../shared/database/prisma-client.js';
 import { authMiddleware } from '../auth/auth-middleware.js';
+import { getZaloScope } from '../zalo/zalo-scope.js';
 import { logger } from '../../shared/utils/logger.js';
 import { startCampaign, pauseCampaign, resumeCampaign, cancelCampaign, restartCampaign } from './outreach-queue.js';
-import { evaluateAudience, type FriendRelation } from './outreach-audience.js';
+import {
+  evaluateCustomerListAudience,
+  evaluateFriendPoolAudience,
+  type AudienceSource,
+  type FriendRelation,
+} from './outreach-audience.js';
 
 export async function outreachRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', authMiddleware);
@@ -19,9 +25,24 @@ export async function outreachRoutes(app: FastifyInstance): Promise<void> {
     return prisma.outreachCampaign.findFirst({ where: { id, orgId } });
   }
 
+  async function accessibleAccounts(user: { id: string; orgId: string; role: string }, ids: string[]) {
+    const uniqueIds = [...new Set(ids.filter(Boolean))];
+    const scope = await getZaloScope(user.id, user.orgId, user.role);
+    return prisma.zaloAccount.findMany({
+      where: {
+        orgId: user.orgId,
+        archivedAt: null,
+        id: { in: uniqueIds },
+        ...(scope.isOrgAdmin ? {} : { id: { in: uniqueIds.filter((id) => scope.accessibleIds.includes(id)) } }),
+      },
+      select: { id: true, displayName: true, phone: true, status: true },
+    });
+  }
+
   // ── POST /campaigns — tạo campaign (draft) ──
   app.post<{ Body: {
-    name: string; description?: string; customerListId: string; zaloAccountId: string;
+    name: string; description?: string; audienceSource?: AudienceSource;
+    customerListId?: string; zaloAccountId?: string; sourceAccountIds?: string[]; deduplicateContacts?: boolean;
     enableAutoAdd?: boolean; addFriendMessage?: string;
     addDelayMinMs?: number; addDelayMaxMs?: number; maxAddPerDay?: number;
     enableAutoMessage?: boolean; waitAfterAddMinMs?: number; waitAfterAddMaxMs?: number;
@@ -32,14 +53,17 @@ export async function outreachRoutes(app: FastifyInstance): Promise<void> {
   } }>('/api/v1/outreach/campaigns', async (request, reply) => {
     const user = request.user!;
     const b = request.body ?? ({} as typeof request.body);
+    const audienceSource: AudienceSource = b.audienceSource === 'friend_pool' ? 'friend_pool' : 'customer_list';
+    const sourceAccountIds = [...new Set(Array.isArray(b.sourceAccountIds) ? b.sourceAccountIds.filter(Boolean) : [])];
     // ── Validation per-field (mirror rule FE) — trả errors{} theo từng ô ──
     const errors: Record<string, string> = {};
     const name = (b.name ?? '').trim();
     if (name.length < 3) errors.name = 'Tên chiến dịch bắt buộc (3-100 ký tự)';
     else if (name.length > 100) errors.name = 'Tên chiến dịch tối đa 100 ký tự';
-    if (!b.customerListId) errors.customerListId = 'Vui lòng chọn danh sách SĐT';
-    if (!b.zaloAccountId) errors.zaloAccountId = 'Vui lòng chọn nick Zalo gửi';
-    if (b.enableAutoAdd !== false) {
+    if (audienceSource === 'customer_list' && !b.customerListId) errors.customerListId = 'Vui lòng chọn danh sách SĐT';
+    if (audienceSource === 'customer_list' && !b.zaloAccountId) errors.zaloAccountId = 'Vui lòng chọn nick Zalo gửi';
+    if (audienceSource === 'friend_pool' && !sourceAccountIds.length) errors.sourceAccountIds = 'Chọn ít nhất một nick Zalo để theo dõi';
+    if (audienceSource === 'customer_list' && b.enableAutoAdd !== false) {
       const msg = (b.addFriendMessage ?? '').trim();
       if (msg.length < 5) errors.addFriendMessage = 'Lời mời kết bạn bắt buộc (5-500 ký tự)';
       else if (msg.length > 500) errors.addFriendMessage = 'Lời mời kết bạn tối đa 500 ký tự';
@@ -49,33 +73,54 @@ export async function outreachRoutes(app: FastifyInstance): Promise<void> {
     if (!tpls.length) errors.templates = 'Cần ít nhất 1 mẫu tin nhắn có nội dung';
     if (b.enableAutoMessage !== false) {
       if ((b.msgDelayMinMs ?? 0) >= (b.msgDelayMaxMs ?? 0)) errors.msgDelay = 'Delay tối thiểu phải nhỏ hơn delay tối đa';
-      if ((b.waitAfterAddMaxMs ?? 0) <= (b.waitAfterAddMinMs ?? 0)) errors.waitDelay = 'Thời gian chờ: max phải lớn hơn min';
+      if (audienceSource === 'customer_list' && (b.waitAfterAddMaxMs ?? 0) <= (b.waitAfterAddMinMs ?? 0)) {
+        errors.waitDelay = 'Thời gian chờ: max phải lớn hơn min';
+      }
     }
     if (Object.keys(errors).length) {
       return reply.status(400).send({ success: false, error: 'VALIDATION_ERROR', errors });
     }
-    // Validate list + nick thuộc org
-    const [list, nick] = await Promise.all([
-      prisma.customerList.findFirst({ where: { id: b.customerListId, orgId: user.orgId }, select: { id: true } }),
-      prisma.zaloAccount.findFirst({ where: { id: b.zaloAccountId, orgId: user.orgId }, select: { id: true } }),
-    ]);
-    if (!list) return reply.status(400).send({ success: false, error: 'VALIDATION_ERROR', errors: { customerListId: 'Danh sách SĐT không hợp lệ' } });
-    if (!nick) return reply.status(400).send({ success: false, error: 'VALIDATION_ERROR', errors: { zaloAccountId: 'Nick Zalo không hợp lệ' } });
+    let validatedAccountIds: string[] = [];
+    if (audienceSource === 'customer_list') {
+      const [list, accounts] = await Promise.all([
+        prisma.customerList.findFirst({ where: { id: b.customerListId!, orgId: user.orgId }, select: { id: true } }),
+        accessibleAccounts(user, [b.zaloAccountId!]),
+      ]);
+      if (!list) return reply.status(400).send({ success: false, error: 'VALIDATION_ERROR', errors: { customerListId: 'Danh sách SĐT không hợp lệ' } });
+      if (accounts.length !== 1) return reply.status(400).send({ success: false, error: 'VALIDATION_ERROR', errors: { zaloAccountId: 'Nick Zalo không hợp lệ hoặc ngoài quyền truy cập' } });
+      validatedAccountIds = [accounts[0].id];
+    } else {
+      const accounts = await accessibleAccounts(user, sourceAccountIds);
+      if (accounts.length !== sourceAccountIds.length) {
+        return reply.status(400).send({ success: false, error: 'VALIDATION_ERROR', errors: { sourceAccountIds: 'Có nick Zalo không hợp lệ hoặc ngoài quyền truy cập' } });
+      }
+      validatedAccountIds = accounts.map((account) => account.id);
+    }
+    if (audienceSource === 'friend_pool' && b.enableAutoMessage === false) {
+      errors.enableAutoMessage = 'Chiến dịch bạn bè cần bật tự động gửi tin';
+    }
 
     const campaign = await prisma.outreachCampaign.create({
       data: {
         orgId: user.orgId, createdById: user.id, name: b.name.trim(), description: b.description ?? null,
-        customerListId: b.customerListId, zaloAccountId: b.zaloAccountId,
-        enableAutoAdd: b.enableAutoAdd ?? true, addFriendMessage: b.addFriendMessage ?? null,
+        audienceSource,
+        customerListId: audienceSource === 'customer_list' ? b.customerListId! : null,
+        zaloAccountId: audienceSource === 'customer_list' ? validatedAccountIds[0] : null,
+        sourceAccountIds: audienceSource === 'friend_pool' ? validatedAccountIds : [],
+        deduplicateContacts: b.deduplicateContacts !== false,
+        enableAutoAdd: audienceSource === 'customer_list' ? (b.enableAutoAdd ?? true) : false,
+        addFriendMessage: audienceSource === 'customer_list' ? (b.addFriendMessage ?? null) : null,
         addDelayMinMs: b.addDelayMinMs ?? 2000, addDelayMaxMs: b.addDelayMaxMs ?? 5000, maxAddPerDay: b.maxAddPerDay ?? 100,
-        enableAutoMessage: b.enableAutoMessage ?? true,
+        enableAutoMessage: audienceSource === 'friend_pool' ? true : (b.enableAutoMessage ?? true),
         waitAfterAddMinMs: b.waitAfterAddMinMs ?? 60000, waitAfterAddMaxMs: b.waitAfterAddMaxMs ?? 120000,
         msgDelayMinMs: b.msgDelayMinMs ?? 3000, msgDelayMaxMs: b.msgDelayMaxMs ?? 8000, maxMsgPerDay: b.maxMsgPerDay ?? 500,
         // Điều kiện gửi (rỗng/'any' = không lọc).
         filterRequireTags: Array.isArray(b.filterRequireTags) ? b.filterRequireTags.filter(Boolean) : [],
         filterExcludeTags: Array.isArray(b.filterExcludeTags) ? b.filterExcludeTags.filter(Boolean) : [],
         filterSkipChattedDays: b.filterSkipChattedDays != null && b.filterSkipChattedDays > 0 ? Math.floor(b.filterSkipChattedDays) : null,
-        filterFriendRelation: ['friend_only', 'non_friend_only'].includes(b.filterFriendRelation ?? '') ? b.filterFriendRelation! : 'any',
+        filterFriendRelation: audienceSource === 'friend_pool'
+          ? 'friend_only'
+          : (['friend_only', 'non_friend_only'].includes(b.filterFriendRelation ?? '') ? b.filterFriendRelation! : 'any'),
         templates: b.templates?.length ? {
           create: b.templates.filter(t => t.content?.trim()).map(t => ({
             title: t.title ?? null, content: t.content, weight: Math.max(1, t.weight ?? 1),
@@ -90,29 +135,38 @@ export async function outreachRoutes(app: FastifyInstance): Promise<void> {
 
   // ── POST /audience/preview — đếm + danh sách theo Điều kiện gửi (dùng lúc tạo, trước khi lưu) ──
   app.post<{ Body: {
-    customerListId: string; zaloAccountId: string;
+    audienceSource?: AudienceSource; customerListId?: string; zaloAccountId?: string;
+    sourceAccountIds?: string[]; deduplicateContacts?: boolean;
     requireTags?: string[]; excludeTags?: string[];
     skipChattedDays?: number | null; friendRelation?: string;
     search?: string; limit?: number;
   } }>('/api/v1/outreach/audience/preview', async (request, reply) => {
     const user = request.user!;
     const b = request.body ?? ({} as typeof request.body);
-    if (!b.customerListId || !b.zaloAccountId) {
-      return reply.status(400).send({ error: 'customerListId + zaloAccountId bắt buộc' });
-    }
-    const [list, nick] = await Promise.all([
-      prisma.customerList.findFirst({ where: { id: b.customerListId, orgId: user.orgId }, select: { id: true } }),
-      prisma.zaloAccount.findFirst({ where: { id: b.zaloAccountId, orgId: user.orgId }, select: { id: true } }),
-    ]);
-    if (!list || !nick) return reply.status(400).send({ error: 'Tệp hoặc nick không hợp lệ' });
-
+    const audienceSource: AudienceSource = b.audienceSource === 'friend_pool' ? 'friend_pool' : 'customer_list';
     const rel = (['friend_only', 'non_friend_only'].includes(b.friendRelation ?? '') ? b.friendRelation : 'any') as FriendRelation;
-    const evaluated = await evaluateAudience(user.orgId, b.customerListId, b.zaloAccountId, {
+    const filter = {
       requireTags: Array.isArray(b.requireTags) ? b.requireTags.filter(Boolean) : [],
       excludeTags: Array.isArray(b.excludeTags) ? b.excludeTags.filter(Boolean) : [],
       skipChattedDays: b.skipChattedDays != null && b.skipChattedDays > 0 ? Math.floor(b.skipChattedDays) : null,
-      friendRelation: rel,
-    });
+      friendRelation: audienceSource === 'friend_pool' ? 'friend_only' as const : rel,
+    };
+    let evaluated;
+    if (audienceSource === 'friend_pool') {
+      const ids = [...new Set(Array.isArray(b.sourceAccountIds) ? b.sourceAccountIds.filter(Boolean) : [])];
+      if (!ids.length) return reply.status(400).send({ error: 'sourceAccountIds bắt buộc' });
+      const accounts = await accessibleAccounts(user, ids);
+      if (accounts.length !== ids.length) return reply.status(400).send({ error: 'Có nick Zalo không hợp lệ hoặc ngoài quyền truy cập' });
+      evaluated = await evaluateFriendPoolAudience(user.orgId, ids, filter, b.deduplicateContacts !== false);
+    } else {
+      if (!b.customerListId || !b.zaloAccountId) return reply.status(400).send({ error: 'customerListId + zaloAccountId bắt buộc' });
+      const [list, accounts] = await Promise.all([
+        prisma.customerList.findFirst({ where: { id: b.customerListId, orgId: user.orgId }, select: { id: true } }),
+        accessibleAccounts(user, [b.zaloAccountId]),
+      ]);
+      if (!list || accounts.length !== 1) return reply.status(400).send({ error: 'Tệp hoặc nick không hợp lệ' });
+      evaluated = await evaluateCustomerListAudience(user.orgId, b.customerListId, b.zaloAccountId, filter);
+    }
 
     const total = evaluated.length;
     const eligible = evaluated.filter((e) => e.eligible).length;
@@ -122,9 +176,18 @@ export async function outreachRoutes(app: FastifyInstance): Promise<void> {
     const q = (b.search ?? '').trim().toLowerCase();
     const limit = Math.min(Math.max(b.limit ?? 300, 1), 1000);
     const items = evaluated
-      .filter((e) => !q || (e.name ?? '').toLowerCase().includes(q) || e.phone.includes(q))
+      .filter((e) => !q
+        || (e.name ?? '').toLowerCase().includes(q)
+        || e.phone.includes(q)
+        || (e.accountName ?? '').toLowerCase().includes(q)
+        || e.tags.some((tag) => tag.toLowerCase().includes(q)))
       .slice(0, limit)
-      .map((e) => ({ name: e.name, phone: e.phone, tags: e.tags, eligible: e.eligible, reason: e.reason }));
+      .map((e) => ({
+        id: e.id, source: e.source, friendId: e.friendId, name: e.name, phone: e.phone,
+        accountId: e.zaloAccountId, accountName: e.accountName, accountStatus: e.accountStatus,
+        tags: e.tags, lastInteractionAt: e.lastChatAt ? new Date(e.lastChatAt).toISOString() : null,
+        eligible: e.eligible, reason: e.reason,
+      }));
 
     return { total, eligible, skipped, items };
   });
@@ -274,7 +337,10 @@ export async function outreachRoutes(app: FastifyInstance): Promise<void> {
     const user = request.user!;
     const c = await ownedCampaign(request.params.id, user.orgId);
     if (!c) return reply.status(404).send({ error: 'not_found' });
-    const processed = c.totalAdded + c.totalAddFailed + c.totalSkipped;
+    const counted = c.audienceSource === 'friend_pool'
+      ? c.totalMsgSent + c.totalMsgFailed + c.totalSkipped
+      : c.totalAdded + c.totalAddFailed + c.totalSkipped;
+    const processed = Math.min(c.totalTarget, counted);
     const pct = c.totalTarget > 0 ? Math.round((processed / c.totalTarget) * 1000) / 10 : 0;
     return {
       state: c.state,
@@ -314,9 +380,21 @@ export async function outreachRoutes(app: FastifyInstance): Promise<void> {
       const page = Math.max(1, parseInt(q.page ?? '1', 10) || 1);
       const limit = Math.min(200, Math.max(1, parseInt(q.limit ?? '50', 10) || 50));
       const where: Record<string, unknown> = { campaignId: request.params.id };
-      if (q.search?.trim()) where.phone = { contains: q.search.trim() };
+      if (q.search?.trim()) {
+        const search = q.search.trim();
+        where.OR = [
+          { phone: { contains: search, mode: 'insensitive' } },
+          { targetName: { contains: search, mode: 'insensitive' } },
+          { accountName: { contains: search, mode: 'insensitive' } },
+          { tagNames: { has: search } },
+        ];
+      }
       if (q.status && ['waiting', 'processing', 'success', 'skipped'].includes(q.status)) where.overallStatus = q.status;
-      const orderBy = q.sort === 'phone' ? { phone: 'asc' as const } : { updatedAt: 'desc' as const };
+      const orderBy = q.sort === 'phone'
+        ? { phone: 'asc' as const }
+        : q.sort === 'interaction'
+          ? { lastInteractionAt: { sort: 'desc' as const, nulls: 'last' as const } }
+          : { updatedAt: 'desc' as const };
       const [phones, total, groups] = await Promise.all([
         prisma.outreachPhone.findMany({ where, orderBy, skip: (page - 1) * limit, take: limit }),
         prisma.outreachPhone.count({ where }),

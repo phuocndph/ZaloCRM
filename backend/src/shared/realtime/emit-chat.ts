@@ -58,6 +58,11 @@ export async function emitChatMessage(args: EmitChatArgs): Promise<void> {
   if (!io) return;
 
   const basePayload = { accountId, conversationId, ...(extra ?? {}) };
+  const redactedExtra = extra ? { ...extra } : {};
+  delete redactedExtra.groupName;
+  delete redactedExtra.groupAvatarUrl;
+  delete redactedExtra.senderAvatarUrl;
+  const redactedBasePayload = { accountId, conversationId, ...redactedExtra };
   const conv: EmitChatConv = { zaloAccount: { privacyMode, ownerUserId } };
 
   // ── Riêng tư cấp HỘI THOẠI — THẮNG mọi luật nick, KHÔNG cần phiên OTP ──────────
@@ -96,7 +101,7 @@ export async function emitChatMessage(args: EmitChatArgs): Promise<void> {
     redactCtx,
   );
   io.to(`org:${orgId}`).emit('chat:message', {
-    ...basePayload,
+    ...redactedBasePayload,
     message: redacted,
     _privacyMeta: { privacyMode, ownerUserId },
   });

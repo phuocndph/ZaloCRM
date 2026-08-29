@@ -36,7 +36,7 @@ vi.mock('../src/modules/activity/activity-logger.js', () => ({
   logActivity: logActivityMock,
 }));
 
-const { syncFriendsForAccount } = await import('../src/modules/zalo/friend-sync-service.js');
+const { syncFriendsForAccount, resetFriendReadBackoffForTests } = await import('../src/modules/zalo/friend-sync-service.js');
 
 function mockIO() {
   const toMock = { emit: vi.fn() };
@@ -49,6 +49,7 @@ function mockIO() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  resetFriendReadBackoffForTests();
   prismaMock.contact.findUnique.mockReset().mockResolvedValue({ id: 'c1', fullName: 'KH' });
   prismaMock.friend.findMany.mockReset();
   prismaMock.friend.update.mockReset();
@@ -99,6 +100,22 @@ describe('syncFriendsForAccount — SDK fetch errors', () => {
     // dưới dạng "liveCount 0, không lỗi" (im lặng sai).
     expect(r.liveCount).toBe(0);
     expect(r.errors).toBe(1);
+  });
+
+  it('stops later triggers after the daily friend_read limit is reached', async () => {
+    const dailyLimit = Object.assign(new Error('Đã đạt giới hạn 500 friend_read/ngày'), { code: 'RATE_LIMITED' });
+    zaloOpsMock.getAllFriends.mockRejectedValue(dailyLimit);
+
+    const first = await syncFriendsForAccount('za-daily-limit', 'org-1', { trigger: 'connect' });
+    const second = await syncFriendsForAccount('za-daily-limit', 'org-1', { trigger: 'cron' });
+    const manual = await syncFriendsForAccount('za-daily-limit', 'org-1', { trigger: 'manual' });
+
+    expect(first).toMatchObject({ skipped: 'daily_limit', errors: 1 });
+    expect(first.dailyLimitResetAt).toMatch(/T/);
+    expect(second).toMatchObject({ skipped: 'daily_limit', errors: 0, dailyLimitResetAt: first.dailyLimitResetAt });
+    expect(manual).toMatchObject({ skipped: 'daily_limit', errors: 0, dailyLimitResetAt: first.dailyLimitResetAt });
+    expect(zaloOpsMock.getAllFriends).toHaveBeenCalledTimes(1);
+    expect(zaloOpsMock.getSentFriendRequests).not.toHaveBeenCalled();
   });
 });
 

@@ -36,6 +36,24 @@ describe('aiModelConnectionsApi', () => {
     expect(api.get).toHaveBeenCalledWith('/ai/provider-connections/connection-1/models')
   })
 
+  it('keeps F5Quota Claude and Codex model identifiers unchanged', async () => {
+    api.get.mockResolvedValue({
+      data: {
+        connectionId: 'f5-connection',
+        models: [
+          { title: 'Claude Sonnet 4.6', value: 'claude-sonnet-4-6' },
+          { title: 'GPT 5.3 Codex', value: 'gpt-5.3-codex' },
+        ],
+        truncated: false,
+      },
+    })
+
+    await expect(aiModelConnectionsApi.discoverModels('f5-connection')).resolves.toEqual([
+      { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', ownedBy: null },
+      { id: 'gpt-5.3-codex', name: 'GPT 5.3 Codex', ownedBy: null },
+    ])
+  })
+
   it('writes a secret only through the dedicated endpoint', async () => {
     api.put.mockResolvedValue({ data: { id: 'connection-1' } })
 

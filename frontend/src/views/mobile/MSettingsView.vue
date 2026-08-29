@@ -21,8 +21,16 @@
       <section class="mst-group">
         <h2>Thông báo</h2>
 
+        <label class="mst-row">
+          <span>
+            Thông báo nổi trong CRM
+            <small class="mst-help">Hiện người gửi, nhóm và nội dung xem trước khi app đang mở</small>
+          </span>
+          <input type="checkbox" :checked="floating.enabled.value" @change="toggleFloating" />
+        </label>
+
         <div v-if="!push.supported.value" class="mst-note">
-          Thiết bị này chưa hỗ trợ thông báo đẩy.
+          Thiết bị này chưa hỗ trợ thông báo khi app ở nền.
           <br />Trên <b>iPhone</b>: mở Safari -> Chia sẻ -> <b>Thêm vào màn hình chính</b>, rồi mở app từ đó.
           <br />Ngoài ra cần truy cập qua <b>HTTPS</b> (hoặc localhost).
         </div>
@@ -30,7 +38,7 @@
         <template v-else>
           <label class="mst-row">
             <span>
-              Nhận thông báo tin nhắn mới
+              Thông báo khi app ở nền
               <small v-if="push.permission.value === 'denied'">Bạn đã chặn quyền - mở Cài đặt trình duyệt để bật lại</small>
             </span>
             <input
@@ -39,12 +47,17 @@
               @change="toggleNoti"
             />
           </label>
-
-          <label class="mst-row">
-            <span>Âm thanh thông báo</span>
-            <input type="checkbox" :checked="push.soundEnabled.value" @change="toggleSound" />
-          </label>
         </template>
+
+        <label class="mst-row" :class="{ 'mst-row--off': !floating.enabled.value }">
+          <span>Âm báo khi đang mở CRM</span>
+          <input
+            type="checkbox"
+            :checked="floating.soundEnabled.value"
+            :disabled="!floating.enabled.value"
+            @change="toggleSound"
+          />
+        </label>
       </section>
 
       <section class="mst-group">
@@ -81,11 +94,13 @@ import { useRouter } from 'vue-router';
 import { ChevronLeft as ChevronLeftIcon, Check as CheckIcon } from 'lucide-vue-next';
 import { useAuthStore } from '@/stores/auth';
 import { useWebPush } from '@/composables/use-web-push';
+import { useMessageNotifications } from '@/composables/use-message-notifications';
 import { useTheme, type ThemeMode } from '@/composables/use-theme';
 
 const router = useRouter();
 const auth = useAuthStore();
 const push = useWebPush();
+const floating = useMessageNotifications();
 const msg = ref('');
 
 // Giao diện Sáng / Tối / Theo hệ thống (2026-07-13) — dùng chung store với bản desktop.
@@ -108,7 +123,8 @@ async function toggleNoti() {
     msg.value = r.ok ? 'Đã bật thông báo.' : (r.error ?? 'Không bật được');
   }
 }
-function toggleSound() { push.setSound(!push.soundEnabled.value); }
+function toggleSound() { floating.setSound(!floating.soundEnabled.value); }
+function toggleFloating() { floating.setEnabled(!floating.enabled.value); }
 
 async function logout() {
   await push.disable().catch(() => {});
@@ -133,7 +149,9 @@ onMounted(() => push.refresh());
 .mst-group h2 { font-size: var(--m-fs-xs); font-weight: var(--m-fw-semibold); text-transform: uppercase; letter-spacing: .04em; color: var(--m-text-3); margin: var(--m-sp-3) 0 6px; }
 .mst-row { display: flex; align-items: center; justify-content: space-between; gap: var(--m-sp-3); min-height: var(--m-touch); padding: 10px 0; border-top: 1px solid var(--m-border); font-size: var(--m-fs-md); color: var(--m-text); }
 .mst-row small { display: block; font-size: var(--m-fs-2xs); color: var(--m-warning); margin-top: 2px; }
+.mst-row small.mst-help { color: var(--m-text-3); }
 .mst-row input { width: 22px; height: 22px; accent-color: var(--m-brand); }
+.mst-row--off { opacity: .55; }
 .mst-note { font-size: var(--m-fs-sm); line-height: 1.6; color: var(--m-text-2); background: var(--m-info-soft); border-radius: var(--m-r-md); padding: var(--m-sp-3); margin: var(--m-sp-2) 0; }
 .mst-link { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 0; min-height: var(--m-touch); font-size: var(--m-fs-md); color: var(--m-text); border-top: 1px solid var(--m-border); }
 .mst-link.danger { color: var(--m-danger); font-weight: var(--m-fw-semibold); }

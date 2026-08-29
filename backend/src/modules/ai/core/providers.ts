@@ -61,14 +61,21 @@ export class OpenAICompatibleProvider implements AIProvider {
   }
 
   async complete(context: AIProviderContext, request: AIProviderRequest): Promise<AIProviderResponse> {
+    // F5Quota implements the OpenAI-compatible JSON mode but rejects the
+    // newer `json_schema` response format with HTTP 400. Keep the schema in
+    // the AIClient instruction/validator, while selecting the interoperable
+    // json_object transport only for that vendor.
+    const responseFormat = request.structuredOutput
+      ? context.provider === 'f5quota'
+        ? { type: 'json_object' }
+        : { type: 'json_schema', json_schema: { name: request.structuredOutput.name, strict: true, schema: request.structuredOutput.schema } }
+      : undefined;
     const response = await postOpenAICompatibleJson(context, this.completionPath, {
       model: request.model,
       messages: request.messages,
       max_completion_tokens: request.maxTokens,
       temperature: request.temperature,
-      response_format: request.structuredOutput
-        ? { type: 'json_schema', json_schema: { name: request.structuredOutput.name, strict: true, schema: request.structuredOutput.schema } }
-        : undefined,
+      response_format: responseFormat,
     }, request.signal);
     const data = await readOpenAICompatibleCompletion(response, context.provider);
     const text = data.choices?.[0]?.message?.content?.trim();

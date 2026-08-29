@@ -102,6 +102,9 @@ describe('ConversationMemoryService', () => {
     expect(mocks.prisma.aiConversationSummary.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ conversationId: 'conv-1', version: 2, sourceThroughMessageId: 'm-2' }),
     }));
+    const summaryPayload = mocks.prisma.aiConversationSummary.create.mock.calls[0][0].data.summaryRedacted;
+    expect(summaryPayload).toContain('Khách: Em quan tam can 2PN o Thu Duc?');
+    expect(summaryPayload).toContain('Nhân viên: Bao gia khoang 3.8 ty');
     expect(mocks.prisma.aiAuditLog.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ eventType: 'memory.summary_refreshed' }),
     }));

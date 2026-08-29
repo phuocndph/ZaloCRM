@@ -63,6 +63,7 @@ import { startAppointmentReminder } from './modules/contacts/appointment-reminde
 import { zinstantProxyRoutes } from './modules/contacts/zinstant-proxy-routes.js';
 import { dashboardRoutes } from './modules/dashboard/dashboard-routes.js';
 import { dashboardActionHubRoutes } from './modules/dashboard/dashboard-action-hub-routes.js';
+import { conversationWorkItemRoutes } from './modules/dashboard/conversation-work-item-routes.js';
 import { reportRoutes } from './modules/dashboard/report-routes.js';
 import { reportAnalyticsRoutes } from './modules/dashboard/report-analytics-routes.js';
 import { userRoutes } from './modules/auth/user-routes.js';
@@ -92,6 +93,12 @@ import { initTelegramBridge } from './modules/integrations/providers/telegram-br
 // Telegram bridge routes (Zalo↔Telegram /link + provisioner) — core, stays outside _ee.
 import { telegramBridgeRoutes } from './modules/integrations/providers/telegram-bridge/telegram-bridge-routes.js';
 import { aiRoutes } from './modules/ai/ai-routes.js';
+import {
+  startConversationAnalysisWorker,
+  startConversationAnalysisBackfill,
+  stopConversationAnalysisBackfill,
+  stopConversationAnalysisWorker,
+} from './modules/ai/conversation-analysis-queue.js';
 import { chatOperationsRoutes, registerChatSocketHandlers } from './modules/chat/chat-operations-routes.js';
 import { groupRoutes } from './modules/zalo/group-routes.js';
 import { groupScanRoutes } from './modules/zalo/group-scan-routes.js';
@@ -373,6 +380,7 @@ async function bootstrap() {
   await app.register(zinstantProxyRoutes);
   await app.register(dashboardRoutes);
   await app.register(dashboardActionHubRoutes);
+  await app.register(conversationWorkItemRoutes);
   await app.register(reportRoutes);
   await app.register(reportAnalyticsRoutes);
   await app.register(userRoutes);
@@ -513,9 +521,20 @@ async function bootstrap() {
     if (config.nodeEnv !== 'test') startOutreachWorker();
     // Follow-up Workflow worker (🟢 Community) — chạy các bước theo lịch (BullMQ).
     if (config.nodeEnv !== 'test') startFollowupWorker();
+    // Shadow analysis only: it cannot enroll a workflow or send a message.
+    if (config.nodeEnv !== 'test') startConversationAnalysisWorker();
+    if (config.nodeEnv !== 'test') startConversationAnalysisBackfill();
+    if (config.nodeEnv !== 'test') {
+      const { startConversationWorkItemCron } = await import('./modules/dashboard/conversation-work-item-cron.js');
+      startConversationWorkItemCron();
+    }
     // Sinh nhật: chỉ hoạt động khi org có chiến dịch type='birthday' đang Kích hoạt (opt-in).
     if (config.nodeEnv !== 'test') startFollowupBirthdayCron();
     startInteractionCron(); // daily silent_30d detection (02:00 VN)
+    if (config.nodeEnv !== 'test') {
+      const { startFriendMessageReconcileCron } = await import('./modules/contacts/friend-message-reconcile-cron.js');
+      startFriendMessageReconcileCron();
+    }
     // Phase 8 — Engagement heatmap classification (02:30 VN daily)
     const { startEngagementCron } = await import('./modules/engagement/engagement-cron.js');
     startEngagementCron();
@@ -606,6 +625,8 @@ async function bootstrap() {
         await stopGroupScanWorker().catch((e) => logger.warn('[shutdown] stopGroupScanWorker lỗi:', e));
         await stopOutreachWorker().catch((e) => logger.warn('[shutdown] stopOutreachWorker lỗi:', e));
         await stopFollowupWorker().catch((e) => logger.warn('[shutdown] stopFollowupWorker lỗi:', e));
+        stopConversationAnalysisBackfill();
+        await stopConversationAnalysisWorker().catch((e) => logger.warn('[shutdown] stopConversationAnalysisWorker failed:', e));
         // Close Zalo listeners before Docker replaces the process. Credentials stay in DB.
         zaloPool.shutdown();
         await app.close().catch((e) => logger.warn('[shutdown] app.close lỗi:', e));

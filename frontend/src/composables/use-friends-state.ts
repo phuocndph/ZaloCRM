@@ -63,7 +63,7 @@ function syncUrl(s: PersistedFriendsState) {
   if (typeof window === 'undefined') return;
   const url = new URL(window.location.href);
   if (s.nickId) url.searchParams.set('nick', s.nickId); else url.searchParams.delete('nick');
-  if (s.kind && s.kind !== 'all') url.searchParams.set('kind', s.kind); else url.searchParams.delete('kind');
+  if (s.kind) url.searchParams.set('kind', s.kind); else url.searchParams.delete('kind');
   if (s.careStatus) url.searchParams.set('care', s.careStatus); else url.searchParams.delete('care');
   window.history.replaceState(null, '', url);
 }
@@ -72,9 +72,11 @@ export function useFriendsState() {
   // Compute initial values: URL beats localStorage beats defaults
   const urlState = readUrlState();
   const stored = readStorage();
+  const initialNickId = urlState?.nickId ?? stored?.nickId ?? null;
+  const defaultKind: FriendKindFilter = initialNickId === 'all' ? 'friend' : 'all';
   const initial: PersistedFriendsState = {
-    nickId: urlState?.nickId ?? stored?.nickId ?? null,
-    kind: urlState?.kind ?? stored?.kind ?? 'all',
+    nickId: initialNickId,
+    kind: urlState?.kind ?? (urlState?.nickId ? defaultKind : stored?.kind ?? defaultKind),
     density: stored?.density ?? 'normal',
     careStatus: urlState?.careStatus ?? stored?.careStatus ?? '',
     ts: Date.now(),

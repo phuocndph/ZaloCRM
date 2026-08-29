@@ -16,9 +16,18 @@ import { withTenant, runSystemQuery } from '../../shared/tenant/tenant-context.j
 const SYNC_INTERVAL_MS = 5 * 60_000; // 5 minutes
 const MAX_GROUPS_PER_SYNC = 20;
 const MESSAGES_PER_GROUP = 50;
+const GROUP_NOT_FOUND_BASE_BACKOFF_MS = 30 * 60_000;
+const GROUP_NOT_FOUND_MAX_BACKOFF_MS = 24 * 60 * 60_000;
 
 // Track active sync intervals per account
 const syncIntervals = new Map<string, ReturnType<typeof setInterval>>();
+const unavailableGroups = new Map<string, { failures: number; retryAt: number }>();
+
+function isGroupNotFound(error: unknown): boolean {
+  const value = error as { status?: unknown; statusCode?: unknown; response?: { status?: unknown }; message?: unknown };
+  const status = Number(value?.status ?? value?.statusCode ?? value?.response?.status);
+  return status === 404 || /status code 404|group.*not found/i.test(String(value?.message ?? error));
+}
 
 /**
  * Sync recent group messages for one account.
@@ -50,8 +59,12 @@ async function syncGroupMessagesInOrg(api: any, accountId: string): Promise<numb
   let synced = 0;
 
   for (const conv of groupConvs) {
+    const unavailableKey = `${accountId}:${conv.externalThreadId}`;
+    const unavailable = unavailableGroups.get(unavailableKey);
+    if (unavailable && unavailable.retryAt > Date.now()) continue;
     try {
       const history = await api.getGroupChatHistory(conv.externalThreadId, MESSAGES_PER_GROUP);
+      unavailableGroups.delete(unavailableKey);
       const messages = history?.groupMsgs || history?.data?.groupMsgs || [];
 
       // Collect all msgIds for batch dedup check
@@ -100,7 +113,19 @@ async function syncGroupMessagesInOrg(api: any, accountId: string): Promise<numb
         if (result) synced++;
       }
     } catch (err) {
-      logger.warn(`[sync:${accountId}] Group ${conv.externalThreadId} failed:`, err);
+      if (isGroupNotFound(err)) {
+        const failures = (unavailable?.failures ?? 0) + 1;
+        const delay = Math.min(
+          GROUP_NOT_FOUND_MAX_BACKOFF_MS,
+          GROUP_NOT_FOUND_BASE_BACKOFF_MS * (2 ** Math.min(failures - 1, 6)),
+        );
+        unavailableGroups.set(unavailableKey, { failures, retryAt: Date.now() + delay });
+        logger.warn(
+          `[sync:${accountId}] Group ${conv.externalThreadId} không còn truy cập được; thử lại sau ${Math.round(delay / 60_000)} phút`,
+        );
+      } else {
+        logger.warn(`[sync:${accountId}] Group ${conv.externalThreadId} failed:`, err);
+      }
     }
   }
 

@@ -13,6 +13,7 @@ export type AiReadinessCheckId =
   | 'ai_enabled'
   | 'provider_selected'
   | 'api_key'
+  | 'credential_encryption'
   | 'base_url'
   | 'model_selected'
   | 'connection'

@@ -13,7 +13,6 @@
 import { ref } from 'vue';
 import { api } from '@/api/index';
 
-const SOUND_KEY = 'mobile.notification.sound';
 const AUTO_RECOVERY_KEY = 'mobile.notification.auto-recovery';
 
 // Singleton state: mobile settings and the app lifecycle must always see the same subscription.
@@ -28,7 +27,6 @@ const busy = ref(false);
 const permission = ref<NotificationPermission>(
   typeof Notification !== 'undefined' ? Notification.permission : 'default',
 );
-const soundEnabled = ref(localStorage.getItem(SOUND_KEY) !== 'false');
 let recoveryStarted = false;
 let recoveryPromise: Promise<{ ok: boolean; error?: string }> | null = null;
 
@@ -84,11 +82,6 @@ async function syncSubscriptionToServer(sub: PushSubscription): Promise<void> {
 }
 
 export function useWebPush() {
-  function setSound(v: boolean) {
-    soundEnabled.value = v;
-    localStorage.setItem(SOUND_KEY, String(v));
-  }
-
   async function getSubscription(): Promise<PushSubscription | null> {
     if (!supported.value) return null;
     const reg = await navigator.serviceWorker.ready;
@@ -215,5 +208,5 @@ export function useWebPush() {
     repair();
   }
 
-  return { supported, enabled, busy, permission, soundEnabled, setSound, refresh, recover, startAutoRecovery, enable, disable };
+  return { supported, enabled, busy, permission, refresh, recover, startAutoRecovery, enable, disable };
 }

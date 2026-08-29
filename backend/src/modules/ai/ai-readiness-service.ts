@@ -6,6 +6,7 @@ import {
 } from './provider-registry.js';
 import { invalidateModelCache, listProviderModels } from './providers/list-models.js';
 import { getPersistentAiReadiness } from './ai-persistent-readiness.js';
+import { getTokenEncryptionKeyReadiness } from '../integrations/_shared/token-encryption.util.js';
 
 export type AiReadinessStatus = 'disabled' | 'not_configured' | 'needs_test' | 'ready' | 'error';
 export type AiConnectionStatus = 'not_tested' | 'connected' | 'failed';
@@ -118,7 +119,10 @@ export async function getAiReadiness(orgId: string) {
       },
     },
   });
-  const persistent = config ? getPersistentAiReadiness(config) : null;
+  const persistent = config ? getPersistentAiReadiness({
+    ...config,
+    credentialDecryption: getTokenEncryptionKeyReadiness(),
+  }) : null;
   if (persistent) return persistent;
 
   // Compatibility fallback for organizations not bridged yet and for legacy

@@ -499,7 +499,25 @@ export async function getProviderConnectionSecret(orgId: string, connectionId: s
   try {
     return decryptToken(Buffer.from(current.apiKeyEncrypted).toString('utf8'));
   } catch {
+    await markProviderSecretUnavailable(orgId, connectionId);
     throw new ProviderConnectionError('Provider API key could not be decrypted', 500, 'AI_SECRET_UNAVAILABLE');
+  }
+}
+
+async function markProviderSecretUnavailable(orgId: string, connectionId: string): Promise<void> {
+  try {
+    await prisma.aiProviderConnection.updateMany({
+      where: { id: connectionId, orgId, deletedAt: null },
+      data: {
+        status: 'failed',
+        lastTestStatus: 'credential_unavailable',
+        lastTestedAt: new Date(),
+        lastLatencyMs: null,
+        lastErrorCode: 'AI_SECRET_UNAVAILABLE',
+      },
+    });
+  } catch {
+    // Preserve the stable credential error even if health-state persistence fails.
   }
 }
 
@@ -515,6 +533,7 @@ export async function getProviderConnectionRuntime(orgId: string, connectionId: 
   try {
     apiKey = decryptToken(Buffer.from(current.apiKeyEncrypted).toString('utf8'));
   } catch {
+    await markProviderSecretUnavailable(orgId, connectionId);
     throw new ProviderConnectionError('Provider API key could not be decrypted', 500, 'AI_SECRET_UNAVAILABLE');
   }
   return {

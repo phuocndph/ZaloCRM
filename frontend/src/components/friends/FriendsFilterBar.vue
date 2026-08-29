@@ -12,7 +12,7 @@
         @click="$emit('update:kindFilter', t.value)"
       >
         <span v-if="t.dot" class="dot" :style="{ background: t.dot }" />
-        {{ t.label }}
+        {{ t.value === 'all' ? allLabel : t.label }}
         <span class="num">{{ countByKind[t.value] ?? 0 }}</span>
       </button>
     </div>
@@ -49,11 +49,14 @@ import { X as XIcon, ChevronDown as ChevronDownIcon } from 'lucide-vue-next';
 import { api } from '@/api/index';
 import type { FriendKindFilter } from '@/composables/use-friends-state';
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   kindFilter: FriendKindFilter;
   countByKind: Record<string, number>;
   careStatus: string;
-}>();
+  allLabel?: string;
+}>(), {
+  allLabel: 'Tất cả',
+});
 
 const emit = defineEmits<{
   (e: 'update:kindFilter', v: FriendKindFilter): void;

@@ -90,22 +90,40 @@ async function bridgeWithDb(orgId: string, db: BridgeDb): Promise<LegacyAiBridge
     },
   });
   if (!config) return skip(orgId, 'legacy_config_missing');
-  if (config.defaultModelConfigId) {
-    return {
-      orgId,
-      status: 'already_configured',
-      connectionId: undefined,
-      modelConfigId: config.defaultModelConfigId,
-      connectionCreated: false,
-      modelCreated: false,
-    };
-  }
-
   const provider = config.provider?.trim().toLowerCase();
   const model = config.model?.trim();
   const definition = provider ? getProviderConfig(provider) : undefined;
   if (!provider || !definition) return skip(orgId, 'provider_unsupported');
   if (!model) return skip(orgId, 'model_missing');
+
+  if (config.defaultModelConfigId) {
+    const currentDefault = await db.aiModelConfig.findFirst({
+      where: { orgId, id: config.defaultModelConfigId, deletedAt: null },
+      select: { id: true, provider: true, model: true },
+    });
+    // Preserve idempotency for database adapters that do not expose the
+    // related model row in this compatibility path.
+    if (!currentDefault) {
+      return {
+        orgId,
+        status: 'already_configured',
+        connectionId: undefined,
+        modelConfigId: config.defaultModelConfigId,
+        connectionCreated: false,
+        modelCreated: false,
+      };
+    }
+    if (currentDefault?.provider === provider && currentDefault.model === model) {
+      return {
+        orgId,
+        status: 'already_configured',
+        connectionId: undefined,
+        modelConfigId: config.defaultModelConfigId,
+        connectionCreated: false,
+        modelCreated: false,
+      };
+    }
+  }
 
   const apiKeySettingKey = `ai_${provider}_api_key`;
   const baseUrlSettingKey = `ai_${provider}_base_url`;
@@ -191,8 +209,8 @@ async function bridgeWithDb(orgId: string, db: BridgeDb): Promise<LegacyAiBridge
   }
 
   const assigned = await db.aiConfig.updateMany({
-    where: { orgId, defaultModelConfigId: null },
-    data: { defaultModelConfigId: modelConfig.id },
+    where: { orgId, defaultModelConfigId: config.defaultModelConfigId },
+    data: { defaultModelConfigId: modelConfig.id, provider, model },
   });
   if (assigned.count > 0) {
     await db.aiAuditLog.create({
@@ -260,7 +278,7 @@ export async function backfillLegacyAiConfigurations(options: { batchSize?: numb
 
   while (true) {
     const rows = await prisma.aiConfig.findMany({
-      where: { defaultModelConfigId: null },
+      where: {},
       select: { id: true, orgId: true },
       orderBy: { id: 'asc' },
       take: batchSize,

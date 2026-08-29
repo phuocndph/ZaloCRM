@@ -156,6 +156,10 @@ export interface NotifyNewInboundArgs {
   message: any;
   /** Tên khách hiển thị (ưu tiên) — fallback message.senderName. */
   senderName?: string | null;
+  threadType?: 'user' | 'group';
+  groupName?: string | null;
+  groupAvatarUrl?: string | null;
+  senderAvatarUrl?: string | null;
   /** userId của người gửi tin nếu là nội bộ (để loại khỏi target). Inbound KH thường null. */
   senderUserId?: string | null;
 }
@@ -181,6 +185,13 @@ async function excludeMutedUsers(userIds: string[], conversationId: string): Pro
 const PRIVATE_BODY = 'Bạn có tin nhắn mới';
 
 /** Build preview body từ message (tôn trọng contentType — media không lộ text). */
+function pushContext(args: Pick<NotifyNewInboundArgs, 'threadType' | 'groupName'>): string {
+  if (args.threadType !== 'group') return 'Tin nhắn riêng';
+  const name = typeof args.groupName === 'string' ? args.groupName.replace(/\s+/g, ' ').trim() : '';
+  const compactName = name.length > 80 ? `${name.slice(0, 80)}…` : name;
+  return `Nhóm ${compactName || 'chưa đặt tên'}`;
+}
+
 function buildPreviewBody(message: any): string {
   const type = message?.contentType ?? 'text';
   if (type === 'text') {
@@ -215,8 +226,12 @@ export async function notifyNewInboundMessage(args: NotifyNewInboundArgs): Promi
   try {
     const { orgId, conversationId, zaloAccountId, privacyMode, ownerUserId, message } = args;
 
-    const title = (args.senderName ?? message?.senderName ?? 'Khách hàng').toString();
+    const titleCandidate = args.senderName ?? message?.senderName;
+    const title = typeof titleCandidate === 'string' && titleCandidate.trim()
+      ? titleCandidate.replace(/\s+/g, ' ').trim().slice(0, 120)
+      : 'Khách hàng';
     const realBody = buildPreviewBody(message);
+    const context = pushContext(args);
     const isPrivate = privacyMode === 'main';
 
     // Privacy đồng nhất với emit-chat: nick 'main' → người KHÔNG phải owner chỉ thấy body che
@@ -237,12 +252,16 @@ export async function notifyNewInboundMessage(args: NotifyNewInboundArgs): Promi
     targets = await excludeMutedUsers(targets, conversationId);
     if (targets.length === 0) return;
 
-    // Nick main + không phải owner → body đã che; owner (hoặc nick thường) → body thật.
-    const bodyFor = (userId: string) => (isPrivate && userId !== ownerUserId ? redactedBody : realBody);
+    const isRedactedFor = (userId: string) => isPrivate && userId !== ownerUserId;
+    const titleFor = (userId: string) => isRedactedFor(userId) ? 'Tin nhắn mới' : title;
+    const bodyFor = (userId: string) => isRedactedFor(userId) ? redactedBody : `${context} · ${realBody}`;
+    const iconFor = (userId: string) => isRedactedFor(userId)
+      ? null
+      : (args.threadType === 'group' ? args.groupAvatarUrl : args.senderAvatarUrl) ?? null;
 
     // 1) FCM/APNs — app native. GIỮ NGUYÊN hành vi cũ: không suppress, không đổi gì.
     for (const userId of targets) {
-      await sendPushToUser(userId, { title, body: bodyFor(userId), data });
+      await sendPushToUser(userId, { title: titleFor(userId), body: bodyFor(userId), data });
     }
 
     // 2) Web Push — PWA Mobile (thêm mới, chạy song song). NO-OP nếu thiếu VAPID env.
@@ -252,7 +271,13 @@ export async function notifyNewInboundMessage(args: NotifyNewInboundArgs): Promi
       const viewing = await getUsersViewing(targets, conversationId);
       await sendWebPushToUsers(
         targets,
-        (userId) => ({ title, body: bodyFor(userId), conversationId, sentAt: new Date().toISOString() }),
+        (userId) => ({
+          title: titleFor(userId),
+          body: bodyFor(userId),
+          icon: iconFor(userId),
+          conversationId,
+          sentAt: new Date().toISOString(),
+        }),
         viewing,
       );
     } catch (err) {

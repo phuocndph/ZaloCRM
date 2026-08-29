@@ -18,10 +18,27 @@ const ALGO = 'aes-256-gcm';
 const IV_LEN = 12; // 96-bit IV recommended for GCM
 const AUTH_TAG_LEN = 16;
 
+export type TokenEncryptionKeyReadiness = {
+  ready: boolean;
+  errorCode: 'TOKEN_ENCRYPTION_KEY_MISSING' | 'TOKEN_ENCRYPTION_KEY_INVALID' | null;
+};
+
+export function getTokenEncryptionKeyReadiness(): TokenEncryptionKeyReadiness {
+  const hex = process.env.TOKEN_ENCRYPTION_KEY?.trim() ?? '';
+  if (!hex) return { ready: false, errorCode: 'TOKEN_ENCRYPTION_KEY_MISSING' };
+  if (!/^[a-f0-9]{64}$/i.test(hex)) return { ready: false, errorCode: 'TOKEN_ENCRYPTION_KEY_INVALID' };
+  return { ready: true, errorCode: null };
+}
+
 function getKey(): Buffer {
   const hex = process.env.TOKEN_ENCRYPTION_KEY;
-  if (!hex) throw new Error('TOKEN_ENCRYPTION_KEY env var missing. Generate via: node -e "console.log(require(\\"crypto\\").randomBytes(32).toString(\\"hex\\"))"');
-  if (hex.length !== 64) throw new Error(`TOKEN_ENCRYPTION_KEY must be 64 hex chars (32 bytes), got ${hex.length}`);
+  const readiness = getTokenEncryptionKeyReadiness();
+  if (readiness.errorCode === 'TOKEN_ENCRYPTION_KEY_MISSING') {
+    throw new Error('TOKEN_ENCRYPTION_KEY env var missing. Generate via: node -e "console.log(require(\\"crypto\\").randomBytes(32).toString(\\"hex\\"))"');
+  }
+  if (!readiness.ready || !hex) {
+    throw new Error(`TOKEN_ENCRYPTION_KEY must be 64 hex chars (32 bytes), got ${hex?.length ?? 0}`);
+  }
   return Buffer.from(hex, 'hex');
 }
 

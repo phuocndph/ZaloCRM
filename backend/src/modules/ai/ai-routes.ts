@@ -20,6 +20,7 @@ import { aiCoreRoutes } from './ai-core-routes.js';
 import { promptManagerRoutes } from './prompt-manager-routes.js';
 import { conversationContextRoutes } from './conversation-context-routes.js';
 import { conversationMemoryRoutes } from './conversation-memory-routes.js';
+import { conversationAnalysisRoutes } from './conversation-analysis-routes.js';
 import { knowledgeBaseRoutes } from './knowledge-base-routes.js';
 import { intentEngineRoutes } from './intent-engine-routes.js';
 import { emotionEngineRoutes } from './emotion-engine-routes.js';
@@ -129,6 +130,7 @@ export async function aiRoutes(app: FastifyInstance) {
   await promptManagerRoutes(app);
   await conversationContextRoutes(app);
   await conversationMemoryRoutes(app);
+  await conversationAnalysisRoutes(app);
   await knowledgeBaseRoutes(app);
   await intentEngineRoutes(app);
   await emotionEngineRoutes(app);

@@ -45,6 +45,8 @@ export interface SyncFriendsOptions {
   trigger: SyncTrigger;
   /** Socket.IO server cho emit 'friend:updated'. Optional — null thì chỉ update DB không emit. */
   io?: Server | null;
+  /** Cron đã biết quota friend_read trong ngày đã hết; vẫn cho alias/label tiếp tục sync. */
+  skipFriendRead?: boolean;
 }
 
 export interface SyncFriendsResult {
@@ -60,13 +62,34 @@ export interface SyncFriendsResult {
   errors: number;
   durationMs: number;
   /** True khi bị cooldown 5s (chỉ áp cho trigger='manual'). Caller có thể trả 429 cho user. */
-  skipped: 'cooldown' | null;
+  skipped: 'cooldown' | 'daily_limit' | null;
+  dailyLimitResetAt: string | null;
 }
 
 // ── Cooldown registry (in-process) ─────────────────────────────────────────
 // 5s/account cho manual trigger. Cron + connect bỏ qua check này.
 const COOLDOWN_MS = 5_000;
 const lastManualSyncAt = new Map<string, number>();
+const friendReadBackoffUntil = new Map<string, number>();
+
+function nextVietnamDayStart(now = new Date()): number {
+  const shifted = new Date(now.getTime() + 7 * 60 * 60_000);
+  shifted.setUTCHours(24, 5, 0, 0);
+  return shifted.getTime() - 7 * 60 * 60_000;
+}
+
+function reachedFriendReadDailyLimit(error: unknown): boolean {
+  const value = error as { code?: unknown; message?: unknown };
+  const code = String(value?.code ?? '').toUpperCase();
+  const message = String(value?.message ?? error ?? '');
+  return code === 'RATE_LIMITED'
+    && /friend_read|500.*ngày|daily.*limit/i.test(message);
+}
+
+export function resetFriendReadBackoffForTests(): void {
+  friendReadBackoffUntil.clear();
+  lastManualSyncAt.clear();
+}
 
 // ── Diff helper ─────────────────────────────────────────────────────────────
 // Fields có thể đổi từ Zalo Real → cần diff trước khi update + emit.
@@ -160,7 +183,17 @@ async function syncFriendsForAccountImpl(
     errors: 0,
     durationMs: 0,
     skipped: null,
+    dailyLimitResetAt: null,
   };
+
+  const backoffUntil = friendReadBackoffUntil.get(accountId) ?? 0;
+  if (backoffUntil > Date.now()) {
+    result.skipped = 'daily_limit';
+    result.dailyLimitResetAt = new Date(backoffUntil).toISOString();
+    result.durationMs = Date.now() - startedAt;
+    return result;
+  }
+  if (backoffUntil) friendReadBackoffUntil.delete(accountId);
 
   // Cooldown gate cho manual trigger only
   if (opts.trigger === 'manual') {
@@ -194,6 +227,13 @@ async function syncFriendsForAccountImpl(
       : [];
   } catch (err) {
     result.errors++;
+    if (reachedFriendReadDailyLimit(err)) {
+      const resetAt = nextVietnamDayStart();
+      friendReadBackoffUntil.set(accountId, resetAt);
+      result.skipped = 'daily_limit';
+      result.dailyLimitResetAt = new Date(resetAt).toISOString();
+      logger.warn(`[friend-sync:${accountId}] Daily friend_read quota reached; pausing until ${result.dailyLimitResetAt}`);
+    }
     logger.warn(`[friend-sync:${accountId}] SDK fetch failed:`, err);
     await logSyncError(orgId, accountId, opts.trigger, err, { phase: 'sdk_fetch' });
     result.durationMs = Date.now() - startedAt;
@@ -483,7 +523,7 @@ async function syncAccountFullyImpl(
   // Result: 2 nhánh parallel thay vì 3 (friends + labels). aliasesUpdated lấy từ
   // labelsRes.aliasesUpdated do syncLabelsForAccount propagate qua.
   const [friendsRes, labelsRes] = await Promise.allSettled([
-    syncFriendsForAccount(accountId, orgId, opts),
+    opts.skipFriendRead ? Promise.resolve(null) : syncFriendsForAccount(accountId, orgId, opts),
     (async () => {
       const { syncLabelsIfStale } = await import('./zalo-labels-routes.js');
       return syncLabelsIfStale(accountId, orgId);

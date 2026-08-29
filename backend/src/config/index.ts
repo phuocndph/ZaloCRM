@@ -131,6 +131,9 @@ export const config = {
   nineRouterBaseUrl: envValue('NINE_ROUTER_BASE_URL') || 'http://host.docker.internal:20128/v1',
   nineRouterApiKey: envValue('NINE_ROUTER_API_KEY') || '',
 
+  f5QuotaBaseUrl: envValue('F5QUOTA_BASE_URL') || 'https://f5quota.store/v1',
+  f5QuotaApiKey: envValue('F5QUOTA_API_KEY') || '',
+
   isProduction: process.env.NODE_ENV === 'production',
 
   /**

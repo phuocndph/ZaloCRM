@@ -4,8 +4,8 @@
   <div class="oc-page">
     <div class="oc-head">
       <div>
-        <h1>Chiến dịch kết bạn &amp; nhắn tin</h1>
-        <p class="oc-sub">Tự động kết bạn + nhắn tin cho tệp khách hàng đã đồng ý. Chỉ dùng cho khách đã cho phép liên hệ.</p>
+        <h1>Chiến dịch Marketing Zalo</h1>
+        <p class="oc-sub">Gửi tin theo kịch bản cho tệp SĐT hoặc tổng hợp bạn bè đã kết bạn trên nhiều tài khoản.</p>
       </div>
       <button class="oc-btn primary" @click="showCreate = !showCreate">
         {{ showCreate ? '× Đóng' : '+ Tạo chiến dịch' }}
@@ -16,8 +16,13 @@
     <div v-if="showCreate" class="oc-card oc-form">
       <!-- Bước 1: nguồn + tên -->
       <section class="oc-step">
-        <h3>1. Chọn danh sách &amp; nick</h3>
-        <div class="oc-grid2">
+        <h3>1. Chọn nguồn đối tượng</h3>
+        <div class="oc-segment" role="group" aria-label="Nguồn đối tượng">
+          <button type="button" :class="{ on: form.audienceSource === 'customer_list' }" @click="setAudienceSource('customer_list')">Tệp số điện thoại</button>
+          <button type="button" :class="{ on: form.audienceSource === 'friend_pool' }" @click="setAudienceSource('friend_pool')">Bạn bè đã kết bạn</button>
+        </div>
+
+        <div v-if="form.audienceSource === 'customer_list'" class="oc-grid2">
           <label>Tệp khách hàng *
             <select v-model="form.customerListId" :class="{ 'oc-err': errors.customerListId }">
               <option :value="''" disabled>— Chọn tệp —</option>
@@ -33,6 +38,28 @@
             <span v-if="errors.zaloAccountId" class="oc-errtxt">{{ errors.zaloAccountId }}</span>
           </label>
         </div>
+        <div v-else class="oc-account-section">
+          <div class="oc-account-head">
+            <div>
+              <strong>Tài khoản cần theo dõi *</strong>
+              <span>Hệ thống gom toàn bộ bạn bè đã kết bạn từ các nick được chọn.</span>
+            </div>
+            <button type="button" class="oc-link" @click="selectConnectedAccounts">Chọn nick đang kết nối</button>
+          </div>
+          <div class="oc-account-grid" :class="{ 'oc-errbox': errors.sourceAccountIds }">
+            <label v-for="a in accounts" :key="a.id" class="oc-account-option" :class="{ on: form.sourceAccountIds.includes(a.id) }">
+              <input type="checkbox" :checked="form.sourceAccountIds.includes(a.id)" @change="toggleSourceAccount(a.id)" />
+              <span class="oc-status-dot" :class="a.status" />
+              <span class="oc-account-name">{{ a.displayName || a.phone || a.id }}</span>
+              <small>{{ a.status === 'connected' ? 'Đang kết nối' : 'Chưa kết nối' }}</small>
+            </label>
+          </div>
+          <span v-if="errors.sourceAccountIds" class="oc-errtxt">{{ errors.sourceAccountIds }}</span>
+          <label class="oc-check oc-dedupe">
+            <input type="checkbox" v-model="form.deduplicateContacts" />
+            Chỉ gửi một lần nếu cùng khách xuất hiện ở nhiều tài khoản
+          </label>
+        </div>
         <label>Tên chiến dịch *
           <input v-model="form.name" placeholder="VD: Chăm khách TokyoHome tháng 7" :class="{ 'oc-err': errors.name }" />
           <span v-if="errors.name" class="oc-errtxt">{{ errors.name }}</span>
@@ -41,7 +68,7 @@
       </section>
 
       <!-- Bước 2: kết bạn -->
-      <section class="oc-step">
+      <section v-if="form.audienceSource === 'customer_list'" class="oc-step">
         <h3>2. Cấu hình kết bạn</h3>
         <label class="oc-check"><input type="checkbox" v-model="form.enableAutoAdd" /> Tự động gửi lời mời kết bạn</label>
         <template v-if="form.enableAutoAdd">
@@ -99,8 +126,8 @@
           <!-- Filter 1: chỉ gửi cho KH có tag -->
           <div class="oc-fcard">
             <div class="oc-fcard-head">
-              <span class="oc-fcard-title">Chỉ gửi cho khách hàng có Tag</span>
-              <span class="oc-fcard-desc">Chỉ khách có ít nhất một trong các Tag được chọn mới nhận chiến dịch.</span>
+              <span class="oc-fcard-title">Chỉ gửi người có Tag</span>
+              <span class="oc-fcard-desc">Chỉ người có ít nhất một trong các Tag được chọn mới nhận chiến dịch.</span>
             </div>
             <select class="oc-tagpick" :value="''" @change="addTag('require', ($event.target as HTMLSelectElement).value); ($event.target as HTMLSelectElement).value = ''">
               <option value="" disabled>+ Thêm Tag…</option>
@@ -117,8 +144,8 @@
           <!-- Filter 2: không gửi cho KH có tag -->
           <div class="oc-fcard">
             <div class="oc-fcard-head">
-              <span class="oc-fcard-title">Không gửi cho khách hàng có Tag</span>
-              <span class="oc-fcard-desc">Khách có bất kỳ Tag nào dưới đây sẽ bị loại khỏi chiến dịch.</span>
+              <span class="oc-fcard-title">Không gửi người có Tag</span>
+              <span class="oc-fcard-desc">Người có bất kỳ Tag nào dưới đây sẽ bị loại khỏi chiến dịch.</span>
             </div>
             <select class="oc-tagpick" :value="''" @change="addTag('exclude', ($event.target as HTMLSelectElement).value); ($event.target as HTMLSelectElement).value = ''">
               <option value="" disabled>+ Thêm Tag…</option>
@@ -153,7 +180,7 @@
           </div>
 
           <!-- Filter 4: quan hệ bạn bè -->
-          <div class="oc-fcard">
+          <div v-if="form.audienceSource === 'customer_list'" class="oc-fcard">
             <div class="oc-fcard-head">
               <span class="oc-fcard-title">Quan hệ bạn bè</span>
               <span class="oc-fcard-desc">Lọc theo việc khách đã là bạn của nick gửi hay chưa.</span>
@@ -167,7 +194,7 @@
         </div>
 
         <!-- Tóm tắt: tổng / đủ điều kiện / không đủ -->
-        <div class="oc-audience" v-if="form.customerListId && form.zaloAccountId">
+        <div class="oc-audience" v-if="audienceReady">
           <div class="oc-aud-cards">
             <div class="oc-aud"><span class="oc-aud-n">{{ previewLoading ? '…' : audience.total.toLocaleString('vi') }}</span><span class="oc-aud-l">Tổng khách hàng</span></div>
             <div class="oc-aud ok"><span class="oc-aud-n">{{ previewLoading ? '…' : audience.eligible.toLocaleString('vi') }}</span><span class="oc-aud-l">Đủ điều kiện gửi</span></div>
@@ -175,20 +202,22 @@
           </div>
           <button class="oc-link" @click="openPreview">Xem danh sách →</button>
         </div>
-        <p v-else class="oc-fcard-empty">Chọn Tệp khách hàng và Nick Zalo (Bước 1) để xem số lượng đủ điều kiện.</p>
+        <p v-else class="oc-fcard-empty">Chọn đủ nguồn đối tượng ở Bước 1 để xem số lượng đủ điều kiện.</p>
       </section>
 
       <!-- Bước 5: thời gian nhắn -->
       <section class="oc-step">
         <h3>5. Cấu hình nhắn tin</h3>
-        <label class="oc-check"><input type="checkbox" v-model="form.enableAutoMessage" /> Tự động nhắn tin sau khi kết bạn</label>
+        <label v-if="form.audienceSource === 'customer_list'" class="oc-check"><input type="checkbox" v-model="form.enableAutoMessage" /> Tự động gửi tin theo mẫu đã cấu hình</label>
+        <p v-else class="oc-filter-intro">Tin sẽ được gửi từ đúng nick đã kết bạn với từng người. Hệ thống kiểm tra lại kết bạn, Tag, tương tác và đồng ý nhận tin trước lúc gửi.</p>
         <template v-if="form.enableAutoMessage">
-          <div class="oc-grid3">
+          <div v-if="form.audienceSource === 'customer_list'" class="oc-grid3">
             <label>Chờ sau kết bạn — min (giây) <input type="number" v-model.number="waitMinS" min="0" :class="{ 'oc-err': errors.waitDelay }" /></label>
             <label>Chờ sau kết bạn — max (giây) <input type="number" v-model.number="waitMaxS" min="0" :class="{ 'oc-err': errors.waitDelay }" /></label>
             <label>Tối đa tin/ngày <input type="number" v-model.number="form.maxMsgPerDay" min="1" /></label>
           </div>
-          <span v-if="errors.waitDelay" class="oc-errtxt">{{ errors.waitDelay }}</span>
+          <label v-else>Tối đa tin/ngày <input type="number" v-model.number="form.maxMsgPerDay" min="1" /></label>
+          <span v-if="form.audienceSource === 'customer_list' && errors.waitDelay" class="oc-errtxt">{{ errors.waitDelay }}</span>
           <div class="oc-grid2">
             <label>Delay giữa tin — min (giây) <input type="number" v-model.number="msgMinS" min="1" max="60" :class="{ 'oc-err': errors.msgDelay }" /></label>
             <label>Delay giữa tin — max (giây) <input type="number" v-model.number="msgMaxS" min="1" max="60" :class="{ 'oc-err': errors.msgDelay }" /></label>
@@ -210,17 +239,18 @@
     </div>
 
     <!-- ════ DANH SÁCH CHIẾN DỊCH ════ -->
-    <div class="oc-card">
+    <div class="oc-card oc-table-wrap">
       <table class="oc-table">
         <thead>
-          <tr><th>Tên</th><th>Trạng thái</th><th>Tiến độ</th><th>Kết bạn</th><th>Tin gửi</th><th>Tạo lúc</th><th></th></tr>
+          <tr><th>Tên</th><th>Nguồn</th><th>Trạng thái</th><th>Tiến độ</th><th>Kết bạn</th><th>Tin gửi</th><th>Tạo lúc</th><th></th></tr>
         </thead>
         <tbody>
           <tr v-for="c in campaigns" :key="c.id" @click="goProgress(c.id)">
             <td class="oc-name">{{ c.name }}</td>
+            <td><span class="oc-source">{{ sourceLabel(c) }}</span></td>
             <td><span class="oc-badge" :class="c.state">{{ stateLabel(c.state) }}</span></td>
             <td>{{ processed(c) }}/{{ c.totalTarget }}</td>
-            <td>{{ c.totalAdded }}<span v-if="c.totalAddFailed" class="oc-fail"> · {{ c.totalAddFailed }} lỗi</span></td>
+            <td>{{ c.audienceSource === 'friend_pool' ? '—' : c.totalAdded }}<span v-if="c.audienceSource === 'customer_list' && c.totalAddFailed" class="oc-fail"> · {{ c.totalAddFailed }} lỗi</span></td>
             <td>{{ c.totalMsgSent }}<span v-if="c.totalMsgFailed" class="oc-fail"> · {{ c.totalMsgFailed }} lỗi</span></td>
             <td class="oc-dim">{{ fmtDate(c.createdAt) }}</td>
             <td class="oc-actions">
@@ -231,7 +261,7 @@
               >Xoá</button>
             </td>
           </tr>
-          <tr v-if="!campaigns.length"><td colspan="7" class="oc-empty">Chưa có chiến dịch nào.</td></tr>
+          <tr v-if="!campaigns.length"><td colspan="8" class="oc-empty">Chưa có chiến dịch nào.</td></tr>
         </tbody>
       </table>
     </div>
@@ -296,7 +326,7 @@
         </div>
         <div class="oc-modal-body">
           <div class="oc-prev-bar">
-            <input v-model="preview.search" class="oc-modal-search" placeholder="Tìm theo tên hoặc SĐT…" @input="debouncedPreviewList" style="margin-bottom:0" />
+            <input v-model="preview.search" class="oc-modal-search" placeholder="Tìm tên, SĐT, nick hoặc Tag…" @input="debouncedPreviewList" style="margin-bottom:0" />
             <span class="oc-prev-counts">
               <span class="oc-prev-ok">Được gửi: {{ audience.eligible.toLocaleString('vi') }}</span> ·
               <span class="oc-prev-no">Bỏ qua: {{ audience.skipped.toLocaleString('vi') }}</span>
@@ -304,11 +334,12 @@
           </div>
           <div v-if="preview.loading" class="oc-hint" style="padding:16px">Đang tải…</div>
           <table v-else class="oc-modal-table">
-            <thead><tr><th>Tên khách hàng</th><th>SĐT</th><th>Tag</th><th>Kết quả</th><th>Lý do</th></tr></thead>
+            <thead><tr><th>Khách hàng</th><th>Nick Zalo</th><th>Tương tác cuối</th><th>Tag</th><th>Kết quả</th><th>Lý do</th></tr></thead>
             <tbody>
               <tr v-for="(row, i) in preview.items" :key="i">
-                <td class="oc-modal-name">{{ row.name || '—' }}</td>
-                <td class="oc-mono">{{ row.phone || '—' }}</td>
+                <td><div class="oc-modal-name">{{ row.name || '—' }}</div><small class="oc-dim">{{ row.phone || 'Không có SĐT' }}</small></td>
+                <td><div>{{ row.accountName || '—' }}</div><small :class="row.accountStatus === 'connected' ? 'oc-online' : 'oc-offline'">{{ row.accountStatus === 'connected' ? 'Đang kết nối' : 'Chưa kết nối' }}</small></td>
+                <td class="oc-dim">{{ fmtInteraction(row.lastInteractionAt) }}</td>
                 <td>
                   <span v-for="t in row.tags.slice(0, 3)" :key="t" class="oc-badge-tag oc-badge-mini" :style="tagStyle(t)">{{ t }}</span>
                   <span v-if="!row.tags.length" class="oc-dim">—</span>
@@ -317,7 +348,7 @@
                 <td><span class="oc-result" :class="row.eligible ? 'ok' : 'no'">{{ row.eligible ? 'Được gửi' : 'Bỏ qua' }}</span></td>
                 <td class="oc-dim">{{ row.reason || (row.eligible ? '—' : '') }}</td>
               </tr>
-              <tr v-if="!preview.items.length"><td colspan="5" class="oc-empty">Không có khách hàng nào khớp.</td></tr>
+              <tr v-if="!preview.items.length"><td colspan="6" class="oc-empty">Không có khách hàng nào khớp.</td></tr>
             </tbody>
           </table>
           <p v-if="preview.items.length >= 300" class="oc-hint" style="margin-top:10px">Chỉ hiển thị 300 kết quả đầu — dùng ô tìm kiếm để thu hẹp.</p>
@@ -338,6 +369,7 @@ import { useCustomerLists } from '@/composables/use-customer-lists';
 import { useZaloAccounts } from '@/composables/use-zalo-accounts';
 import { useToast } from '@/composables/use-toast';
 import { useCrmTagDefs } from '@/composables/use-crm-tag-defs';
+import { api } from '@/api/index';
 
 const router = useRouter();
 const toast = useToast();
@@ -355,7 +387,9 @@ const errors = reactive<Record<string, string>>({});
 const addMinS = ref(2), addMaxS = ref(5), waitMinS = ref(60), waitMaxS = ref(120), msgMinS = ref(3), msgMaxS = ref(8);
 
 const form = reactive({
+  audienceSource: 'customer_list' as 'customer_list' | 'friend_pool',
   customerListId: '', zaloAccountId: '', name: '', description: '',
+  sourceAccountIds: [] as string[], deduplicateContacts: true,
   enableAutoAdd: true, addFriendMessage: 'Chào bạn, cảm ơn bạn đã tin tưởng shop. Mình kết bạn để tiện hỗ trợ nhé!',
   maxAddPerDay: 100,
   enableAutoMessage: true, maxMsgPerDay: 500,
@@ -373,6 +407,11 @@ const chatDaysCustom = ref<number | null>(null);
 const audience = reactive({ total: 0, eligible: 0, skipped: 0 });
 const previewLoading = ref(false);
 const preview = reactive({ open: false, loading: false, search: '', items: [] as AudiencePreviewItem[] });
+const friendTags = ref<Array<{ id: string; name: string; color: string }>>([]);
+
+const audienceReady = computed(() => form.audienceSource === 'friend_pool'
+  ? form.sourceAccountIds.length > 0
+  : !!form.customerListId && !!form.zaloAccountId);
 
 // Số ngày chat hiệu lực (null = tắt).
 const chatDays = computed<number | null>(() => {
@@ -383,7 +422,8 @@ const chatDays = computed<number | null>(() => {
 
 function availableTags(exclude: string[]) {
   const taken = new Set(exclude);
-  return tagDefs.value.filter(t => !taken.has(t.name));
+  const defs = form.audienceSource === 'friend_pool' ? friendTags.value : tagDefs.value;
+  return defs.filter(t => !taken.has(t.name));
 }
 function addTag(kind: 'require' | 'exclude', name: string) {
   if (!name) return;
@@ -395,13 +435,36 @@ function removeTag(kind: 'require' | 'exclude', name: string) {
   const i = arr.indexOf(name); if (i >= 0) arr.splice(i, 1);
 }
 function tagStyle(name: string) {
-  const c = tagColor(name);
+  const c = friendTags.value.find((tag) => tag.name === name)?.color || tagColor(name);
   return { '--tag-c': c } as Record<string, string>;
+}
+
+function setAudienceSource(source: 'customer_list' | 'friend_pool') {
+  form.audienceSource = source;
+  if (source === 'friend_pool') form.enableAutoMessage = true;
+  filters.friendRelation = source === 'friend_pool' ? 'friend_only' : 'any';
+  filters.requireTags = [];
+  filters.excludeTags = [];
+  scheduleRefresh();
+}
+
+function toggleSourceAccount(id: string) {
+  const index = form.sourceAccountIds.indexOf(id);
+  if (index >= 0) form.sourceAccountIds.splice(index, 1);
+  else form.sourceAccountIds.push(id);
+}
+
+function selectConnectedAccounts() {
+  form.sourceAccountIds = accounts.value.filter((account) => account.status === 'connected').map((account) => account.id);
 }
 
 function filterPayload(extra: { search?: string; limit?: number } = {}) {
   return {
-    customerListId: form.customerListId, zaloAccountId: form.zaloAccountId,
+    audienceSource: form.audienceSource,
+    customerListId: form.customerListId || undefined,
+    zaloAccountId: form.zaloAccountId || undefined,
+    sourceAccountIds: form.sourceAccountIds,
+    deduplicateContacts: form.deduplicateContacts,
     requireTags: filters.requireTags, excludeTags: filters.excludeTags,
     skipChattedDays: chatDays.value, friendRelation: filters.friendRelation,
     ...extra,
@@ -411,7 +474,7 @@ function filterPayload(extra: { search?: string; limit?: number } = {}) {
 // Đếm tóm tắt — debounced, tự chạy khi filter/list/nick đổi.
 let previewTimer: ReturnType<typeof setTimeout> | null = null;
 async function refreshAudienceCounts() {
-  if (!form.customerListId || !form.zaloAccountId) { audience.total = 0; audience.eligible = 0; audience.skipped = 0; return; }
+  if (!audienceReady.value) { audience.total = 0; audience.eligible = 0; audience.skipped = 0; return; }
   previewLoading.value = true;
   try {
     const r = await previewAudience(filterPayload({ limit: 1 }));
@@ -426,7 +489,7 @@ function scheduleRefresh() {
 
 // Dialog "Xem danh sách".
 async function loadPreviewList() {
-  if (!form.customerListId || !form.zaloAccountId) return;
+  if (!audienceReady.value) return;
   preview.loading = true;
   try {
     const r = await previewAudience(filterPayload({ search: preview.search || undefined, limit: 300 }));
@@ -444,7 +507,7 @@ function debouncedPreviewList() {
 
 // Bất kỳ thay đổi nào ảnh hưởng eligibility → cập nhật đếm.
 watch(
-  () => [form.customerListId, form.zaloAccountId, filters.requireTags.length, filters.excludeTags.length, filters.friendRelation, chatDays.value],
+  () => [form.audienceSource, form.customerListId, form.zaloAccountId, form.sourceAccountIds.join(','), form.deduplicateContacts, filters.requireTags.join(','), filters.excludeTags.join(','), filters.friendRelation, chatDays.value],
   scheduleRefresh,
 );
 
@@ -482,12 +545,13 @@ function closePicker() { picker.open = false; }
 // ── Validation ──
 function validate(): boolean {
   Object.keys(errors).forEach(k => delete errors[k]);
-  if (!form.customerListId) errors.customerListId = 'Vui lòng chọn danh sách SĐT';
-  if (!form.zaloAccountId) errors.zaloAccountId = 'Vui lòng chọn nick Zalo';
+  if (form.audienceSource === 'customer_list' && !form.customerListId) errors.customerListId = 'Vui lòng chọn danh sách SĐT';
+  if (form.audienceSource === 'customer_list' && !form.zaloAccountId) errors.zaloAccountId = 'Vui lòng chọn nick Zalo';
+  if (form.audienceSource === 'friend_pool' && !form.sourceAccountIds.length) errors.sourceAccountIds = 'Chọn ít nhất một nick Zalo để theo dõi';
   const nm = form.name.trim();
   if (nm.length < 3) errors.name = 'Tên chiến dịch bắt buộc (tối thiểu 3 ký tự)';
   else if (nm.length > 100) errors.name = 'Tên chiến dịch tối đa 100 ký tự';
-  if (form.enableAutoAdd) {
+  if (form.audienceSource === 'customer_list' && form.enableAutoAdd) {
     const msg = (form.addFriendMessage || '').trim();
     if (msg.length < 5) errors.addFriendMessage = 'Lời mời kết bạn bắt buộc (tối thiểu 5 ký tự)';
     else if (msg.length > 500) errors.addFriendMessage = 'Lời mời tối đa 500 ký tự';
@@ -505,7 +569,7 @@ function validate(): boolean {
     if (!anyValid) errors.templates = 'Cần ít nhất 1 mẫu tin có nội dung';
   }
   if (form.enableAutoMessage) {
-    if (waitMaxS.value <= waitMinS.value || waitMinS.value < 0)
+    if (form.audienceSource === 'customer_list' && (waitMaxS.value <= waitMinS.value || waitMinS.value < 0))
       errors.waitDelay = 'Thời gian chờ: max phải > min và ≥ 0';
     if (msgMinS.value < 1 || msgMaxS.value > 60 || msgMinS.value >= msgMaxS.value)
       errors.msgDelay = 'Delay giữa tin: 1–60 giây, tối thiểu phải < tối đa';
@@ -519,14 +583,20 @@ async function submit(runNow: boolean) {
   try {
     const created = await createCampaign({
       name: form.name.trim(), description: form.description || undefined,
-      customerListId: form.customerListId, zaloAccountId: form.zaloAccountId,
-      enableAutoAdd: form.enableAutoAdd, addFriendMessage: form.addFriendMessage,
+      audienceSource: form.audienceSource,
+      customerListId: form.audienceSource === 'customer_list' ? form.customerListId : null,
+      zaloAccountId: form.audienceSource === 'customer_list' ? form.zaloAccountId : null,
+      sourceAccountIds: form.audienceSource === 'friend_pool' ? form.sourceAccountIds : [],
+      deduplicateContacts: form.deduplicateContacts,
+      enableAutoAdd: form.audienceSource === 'customer_list' && form.enableAutoAdd,
+      addFriendMessage: form.audienceSource === 'customer_list' ? form.addFriendMessage : null,
       addDelayMinMs: addMinS.value * 1000, addDelayMaxMs: addMaxS.value * 1000, maxAddPerDay: form.maxAddPerDay,
-      enableAutoMessage: form.enableAutoMessage,
+      enableAutoMessage: form.audienceSource === 'friend_pool' ? true : form.enableAutoMessage,
       waitAfterAddMinMs: waitMinS.value * 1000, waitAfterAddMaxMs: waitMaxS.value * 1000,
       msgDelayMinMs: msgMinS.value * 1000, msgDelayMaxMs: msgMaxS.value * 1000, maxMsgPerDay: form.maxMsgPerDay,
       filterRequireTags: filters.requireTags, filterExcludeTags: filters.excludeTags,
-      filterSkipChattedDays: chatDays.value, filterFriendRelation: filters.friendRelation,
+      filterSkipChattedDays: chatDays.value,
+      filterFriendRelation: form.audienceSource === 'friend_pool' ? 'friend_only' : filters.friendRelation,
       templates: form.templates.filter(t => t.content.trim()),
     } as any);
     if (!created?.id) { toast.error('Tạo chiến dịch thất bại'); return; }
@@ -564,11 +634,25 @@ async function doDelete() {
 }
 
 function goProgress(id: string) { router.push(`/marketing/campaigns/${id}`); }
-function processed(c: any) { return c.totalAdded + c.totalAddFailed + c.totalSkipped; }
+function processed(c: OutreachCampaign) {
+  const counted = c.audienceSource === 'friend_pool'
+    ? c.totalMsgSent + c.totalMsgFailed + c.totalSkipped
+    : c.totalAdded + c.totalAddFailed + c.totalSkipped;
+  return Math.min(c.totalTarget, counted);
+}
+function sourceLabel(c: OutreachCampaign) { return c.audienceSource === 'friend_pool' ? 'Bạn bè đa nick' : 'Tệp SĐT'; }
 function stateLabel(s: string) {
   return ({ draft: 'Nháp', running: 'Đang chạy', paused: 'Tạm dừng', completed: 'Hoàn tất', cancelled: 'Đã huỷ', failed: 'Lỗi' } as any)[s] || s;
 }
 function fmtDate(iso: string) { const d = new Date(iso); return `${d.getDate()}/${d.getMonth() + 1} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; }
+function fmtInteraction(iso: string | null) {
+  if (!iso) return 'Chưa từng tương tác';
+  const date = new Date(iso);
+  const days = Math.max(0, Math.floor((Date.now() - date.getTime()) / 86400000));
+  if (days === 0) return 'Hôm nay';
+  if (days === 1) return 'Hôm qua';
+  return `${days} ngày trước`;
+}
 
 // Realtime: cập nhật counter trong bảng danh sách
 useOutreachSocket((p) => {
@@ -578,16 +662,35 @@ useOutreachSocket((p) => {
 
 onMounted(async () => {
   await Promise.all([fetchCampaigns(), fetchLists(), fetchAccounts(), loadTagDefs()]);
+  try {
+    const [friendRes, crmRes] = await Promise.all([
+      api.get('/tags', { params: { scope: 'friend', limit: 500 } }),
+      api.get('/tags', { params: { scope: 'crm', limit: 500 } }),
+    ]);
+    const merged = new Map<string, { id: string; name: string; color: string }>();
+    for (const tag of [...(friendRes.data?.tags ?? []), ...(crmRes.data?.tags ?? [])]) {
+      if (!merged.has(tag.name)) merged.set(tag.name, { id: tag.id, name: tag.name, color: tag.color || '#64748b' });
+    }
+    friendTags.value = [...merged.values()];
+  } catch { friendTags.value = []; }
   imageAssets.value = await fetchImageAssets();
 });
 </script>
 
 <style scoped>
-.oc-page { padding: 20px 24px; max-width: 1080px; }
+.oc-page {
+  padding: 20px 24px;
+  max-width: 1080px;
+  min-height: 100%;
+  background: var(--surface-2);
+  color: var(--ink);
+  color-scheme: light;
+}
 .oc-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
 .oc-head h1 { margin: 0; font-size: 20px; font-weight: 800; color: var(--ink); }
 .oc-sub { margin: 4px 0 0; font-size: 13px; color: var(--ink-3); max-width: 640px; }
 .oc-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg, 14px); box-shadow: var(--sh-sm); margin-bottom: 18px; }
+.oc-table-wrap { overflow-x: auto; }
 .oc-form { padding: 18px 20px; }
 .oc-step { padding: 12px 0; border-bottom: 1px solid var(--line-2); }
 .oc-step:last-of-type { border-bottom: none; }
@@ -595,11 +698,29 @@ onMounted(async () => {
 .oc-step label { display: block; font-size: 12.5px; color: var(--ink-2); margin-bottom: 10px; }
 .oc-step input:not([type=checkbox]), .oc-step select, .oc-step textarea {
   display: block; width: 100%; margin-top: 4px; padding: 8px 10px;
-  border: 1px solid var(--line); border-radius: var(--r-sm, 8px); font-family: inherit; font-size: 13px; color: var(--ink);
+  border: 1px solid var(--line); border-radius: var(--r-sm, 8px); background: var(--surface); font-family: inherit; font-size: 13px; color: var(--ink);
 }
 .oc-step textarea { resize: vertical; }
 .oc-check { display: flex !important; align-items: center; gap: 8px; }
 .oc-check input { width: auto !important; margin: 0 !important; }
+.oc-segment { display: inline-grid; grid-template-columns: repeat(2, minmax(160px, 1fr)); gap: 2px; padding: 3px; margin-bottom: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); }
+.oc-segment button { min-height: 36px; padding: 7px 12px; border: 0; border-radius: 6px; background: transparent; color: var(--ink-3); font: inherit; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+.oc-segment button.on { background: var(--surface); color: var(--brand-700); box-shadow: var(--sh-sm); }
+.oc-account-section { margin-bottom: 12px; }
+.oc-account-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.oc-account-head div { display: flex; flex-direction: column; gap: 2px; }
+.oc-account-head strong { color: var(--ink); font-size: 12.5px; }
+.oc-account-head span { color: var(--ink-4); font-size: 11.5px; }
+.oc-account-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); }
+.oc-account-option { display: grid !important; grid-template-columns: 18px 8px minmax(0, 1fr) auto; align-items: center; gap: 8px; min-height: 44px; margin: 0 !important; padding: 7px 9px; border: 1px solid transparent; border-radius: 6px; background: var(--surface); cursor: pointer; }
+.oc-account-option.on { border-color: var(--brand); background: var(--brand-softer); }
+.oc-account-option input { margin: 0; width: 16px; height: 16px; accent-color: var(--brand); }
+.oc-account-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ink); font-weight: 600; }
+.oc-account-option small { color: var(--ink-4); white-space: nowrap; }
+.oc-status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--error); }
+.oc-status-dot.connected { background: var(--success); }
+.oc-dedupe { margin-top: 9px; }
+.oc-errbox { border-color: var(--error) !important; }
 .oc-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .oc-grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
 .oc-tpl { border: 1px solid var(--line); border-radius: var(--r-sm, 8px); padding: 12px; margin-bottom: 10px; background: var(--surface-2); }
@@ -638,6 +759,7 @@ onMounted(async () => {
 .oc-badge.paused { background: #fef3c7; color: #92400e; }
 .oc-badge.completed { background: #dcfce7; color: #166534; }
 .oc-badge.cancelled, .oc-badge.failed { background: #fee2e2; color: #b91c1c; }
+.oc-source { font-size: 11.5px; color: var(--ink-3); white-space: nowrap; }
 
 /* ── Validation ── */
 .oc-err { border-color: var(--error, #f04438) !important; background: #fff5f5; }
@@ -660,7 +782,7 @@ onMounted(async () => {
 .oc-modal-head h3 { margin: 0; font-size: 15px; color: var(--ink); }
 .oc-modal-x { border: none; background: none; font-size: 22px; color: var(--ink-4); cursor: pointer; line-height: 1; }
 .oc-modal-body { padding: 14px 18px; overflow-y: auto; flex: 1; }
-.oc-modal-search { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-sm, 8px); font-size: 13px; margin-bottom: 12px; font-family: inherit; }
+.oc-modal-search { width: 100%; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-sm, 8px); background: var(--surface); color: var(--ink); font-size: 13px; margin-bottom: 12px; font-family: inherit; }
 .oc-modal-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 .oc-modal-table th { text-align: left; padding: 6px 8px; font-size: 10.5px; text-transform: uppercase; color: var(--ink-4); border-bottom: 1px solid var(--line); }
 .oc-modal-table td { padding: 6px 8px; border-bottom: 1px solid var(--line-2); color: var(--ink-2); vertical-align: middle; }
@@ -721,5 +843,21 @@ onMounted(async () => {
 .oc-result { display: inline-block; padding: 2px 9px; border-radius: 999px; font-size: 11px; font-weight: 700; }
 .oc-result.ok { background: #dcfce7; color: #166534; }
 .oc-result.no { background: #fee2e2; color: #b91c1c; }
-@media (max-width: 720px) { .oc-filters { grid-template-columns: 1fr; } }
+.oc-online { color: var(--success); }
+.oc-offline { color: var(--error); }
+@media (max-width: 720px) {
+  .oc-page { padding: 14px; }
+  .oc-head { flex-direction: column; gap: 10px; }
+  .oc-head .oc-btn { width: 100%; }
+  .oc-form { padding: 14px; }
+  .oc-filters, .oc-account-grid, .oc-grid2, .oc-grid3 { grid-template-columns: 1fr; }
+  .oc-segment { display: grid; grid-template-columns: 1fr; width: 100%; }
+  .oc-account-head { align-items: flex-start; flex-direction: column; }
+  .oc-aud-cards { grid-template-columns: 1fr; }
+  .oc-form-foot { flex-direction: column-reverse; }
+  .oc-form-foot .oc-btn { width: 100%; }
+  .oc-modal { max-width: 100vw; max-height: 100dvh; border-radius: 0; }
+  .oc-modal-body { padding: 12px; }
+  .oc-modal-table { min-width: 700px; }
+}
 </style>

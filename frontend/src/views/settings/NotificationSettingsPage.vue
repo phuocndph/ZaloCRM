@@ -92,19 +92,16 @@ async function onToggle(v: boolean | null) {
 }
 
 function sendTest() {
-  // Đẩy 1 thẻ mẫu để xem giao diện + kiểm tra âm báo/quyền.
-  (notify.cards.value as any[]).unshift({
+  notify.test({
     id: `test-${Date.now()}`,
     convId: '',
     accountId: null,
-    name: 'Thông báo thử',
-    preview: 'Đây là thông báo mẫu — bấm để xem giao diện thẻ nổi.',
+    name: 'Nguyễn Minh Anh',
+    context: 'Nhóm Khách hàng VIP',
+    preview: 'Em đã gửi thông tin, anh/chị kiểm tra giúp em nhé.',
     avatarUrl: null,
     at: Date.now(),
   });
-  setTimeout(() => {
-    notify.cards.value = (notify.cards.value as any[]).filter((c) => !String(c.id).startsWith('test-'));
-  }, 5000);
 }
 </script>
 

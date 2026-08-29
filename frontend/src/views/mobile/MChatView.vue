@@ -5,7 +5,7 @@
 <template>
   <div class="mch-wrap">
     <header class="mch-head">
-      <button class="m-iconbtn mch-back" aria-label="Quay l?i" @click="goBack">
+      <button class="m-iconbtn mch-back" aria-label="Quay lại" @click="goBack">
         <ChevronLeftIcon :size="26" :stroke-width="2.2" />
       </button>
       <Avatar
@@ -19,7 +19,7 @@
         :gradient-seed="selectedConv?.id || title"
         role="button"
         tabindex="0"
-        :title="isGroupThread ? title : 'Th�ng tin kh�ch h�ng'"
+        :title="isGroupThread ? title : 'Thông tin khách hàng'"
         @click="openCustomerProfile"
         @keydown.enter.prevent="openCustomerProfile"
       />
@@ -27,33 +27,44 @@
         <div class="mch-name">{{ title }}</div>
         <div v-if="nickName" class="mch-nick">qua {{ nickName }}</div>
       </div>
-      <button class="m-iconbtn mch-pinned" aria-label="T�m trong h?i tho?i" @click="openContentSearch">
+      <button class="m-iconbtn mch-pinned" aria-label="Tìm trong hội thoại" @click="openContentSearch">
         <SearchIcon :size="20" :stroke-width="1.9" />
       </button>
-      <button class="m-iconbtn mch-pinned" aria-label="Th�m" @click="showHeaderMenu = true">
+      <button class="m-iconbtn mch-pinned" aria-label="Thêm" @click="showHeaderMenu = true">
         <MoreVerticalIcon :size="20" :stroke-width="1.9" />
       </button>
     </header>
 
-    <MBottomSheet v-model="showHeaderMenu" title="H?i tho?i">
+    <MBottomSheet v-model="showHeaderMenu" title="Hội thoại">
       <button class="mch-act-item" @click="openContentLibrary(); showHeaderMenu = false">
-        <FolderOpenIcon :size="20" :stroke-width="1.9" /><span>N?i dung d� chia s?</span>
+        <FolderOpenIcon :size="20" :stroke-width="1.9" /><span>Nội dung đã chia sẻ</span>
       </button>
       <button class="mch-act-item" @click="openPinned(); showHeaderMenu = false">
-        <PinIcon :size="20" :stroke-width="1.9" /><span>Tin d� ghim</span>
+        <PinIcon :size="20" :stroke-width="1.9" /><span>Tin đã ghim</span>
       </button>
       <button v-if="selectedConv?.contact" class="mch-act-item" @click="openCustomerProfile(); showHeaderMenu = false">
-        <UserIcon :size="20" :stroke-width="1.9" /><span>Th�ng tin kh�ch h�ng</span>
+        <UserIcon :size="20" :stroke-width="1.9" /><span>Thông tin khách hàng</span>
       </button>
       <button v-if="selectedConv?.friendship?.id" class="mch-act-item" @click="showTags = true; showHeaderMenu = false">
         <TagIcon :size="20" :stroke-width="1.9" /><span>Tag</span>
       </button>
       <button v-if="selectedConv?.contact" class="mch-act-item" @click="showNotes = true; showHeaderMenu = false">
-        <StickyNoteIcon :size="20" :stroke-width="1.9" /><span>Ghi ch� n?i b?</span>
+        <StickyNoteIcon :size="20" :stroke-width="1.9" /><span>Ghi chú nội bộ</span>
       </button>
       <button v-if="selectedConv?.contact" class="mch-act-item" @click="showAppointmentEditor = true; showHeaderMenu = false">
-        <CalendarClockIcon :size="20" :stroke-width="1.9" /><span>T?o l?ch h?n</span>
+        <CalendarClockIcon :size="20" :stroke-width="1.9" /><span>Tạo lịch hẹn</span>
       </button>
+      <button v-if="selectedConv?.contact && !isGroupThread" class="mch-act-item" @click="showInsight = true; showHeaderMenu = false">
+        <BrainCircuitIcon :size="20" :stroke-width="1.9" /><span>AI nắm bắt khách hàng</span>
+      </button>
+    </MBottomSheet>
+
+    <MBottomSheet v-model="showInsight" title="Phân tích hội thoại">
+      <ConversationInsightCard
+        v-if="showInsight"
+        :conversation-id="convId"
+        :private-blocked="conversationPrivateBlocked"
+      />
     </MBottomSheet>
 
     <!-- is-direct: chat 1-1 → ẩn tên người gửi trong bubble (đã có ở header, hiện lại là thừa).
@@ -338,7 +349,7 @@
       </div>
     </MBottomSheet>
 
-    <AiCopilotPanel v-if="showCopilot" :open="showCopilot" :conversation-id="convId" :private-blocked="conversationPrivateBlocked" @close="showCopilot = false" @feedback="onCopilotFeedback" />
+    <AiCopilotPanel ref="copilotRef" v-if="showCopilot" :open="showCopilot" :conversation-id="convId" :private-blocked="conversationPrivateBlocked" @close="showCopilot = false" @feedback="onCopilotFeedback" />
 
     <!-- Lightbox ảnh + modal video (P1 — xem media toàn màn hình) -->
     <MLightbox
@@ -469,10 +480,11 @@ import { useAuthStore } from '@/stores/auth';
 import { useToast } from '@/composables/use-toast';
 import { groupAvatarStore } from '@/composables/use-group-avatar-cache';
 import {
-  ChevronLeft as ChevronLeftIcon, Image as ImageIcon, Send as SendIcon, Loader2 as LoaderIcon, Reply as ReplyIcon, Paperclip as PaperclipIcon, CalendarClock as CalendarClockIcon, StickyNote as StickyNoteIcon, Sparkles as SparklesIcon, BookOpen as BookOpenIcon, Plus as PlusIcon,
+  BrainCircuit as BrainCircuitIcon, ChevronLeft as ChevronLeftIcon, Image as ImageIcon, Send as SendIcon, Loader2 as LoaderIcon, Reply as ReplyIcon, Paperclip as PaperclipIcon, CalendarClock as CalendarClockIcon, StickyNote as StickyNoteIcon, Sparkles as SparklesIcon, BookOpen as BookOpenIcon, Plus as PlusIcon,
   X as XIcon, Copy as CopyIcon, Download as DownloadIcon, FileText as FileTextIcon, RotateCcw as RotateCcwIcon, Trash2 as Trash2Icon, Pin as PinIcon, PinOff as PinOffIcon, Forward as ForwardIcon, Search as SearchIcon, FolderOpen as FolderOpenIcon, Link as LinkIcon, MoreVertical as MoreVerticalIcon, Heart as HeartIcon, Smile as SmileIcon, ChevronUp as ChevronUpIcon, ChevronDown as ChevronDownIcon, User as UserIcon, UserCheck as UserCheckIcon, Tag as TagIcon,
 } from 'lucide-vue-next';
 import MessageBubble from '@/components/chat/message-bubble.vue';
+import ConversationInsightCard from '@/components/chat/ConversationInsightCard.vue';
 import Avatar from '@/components/ui/Avatar.vue';
 import MLightbox from '@/components/mobile/MLightbox.vue';
 import MBottomSheet from '@/components/mobile/MBottomSheet.vue';
@@ -524,7 +536,10 @@ const hasOlderMessages = ref(true);
 const showAppointmentEditor = ref(false);
 const showNotes = ref(false);
 const showTags = ref(false);
+const showInsight = ref(false);
 const showCopilot = ref(false);
+const copilotRef = ref<{ generate: () => Promise<void> } | null>(null);
+const aiAutoGeneratePending = ref(false);
 const showMediaPicker = ref(false);
 const showTemplatePicker = ref(false);
 const showComposerTools = ref(false);
@@ -537,6 +552,25 @@ const draftKey = (id: string) => `zalocrm-mobile-draft:${id}`;
 const title = computed(() => selectedConv.value?.contact?.fullName || 'Chat');
 const avatarUrl = computed(() => (selectedConv.value?.contact as any)?.avatarUrl ?? null);
 const nickName = computed(() => (selectedConv.value as any)?.zaloAccount?.displayName ?? '');
+
+// Work queue deep-link: open the approval-only Copilot after the chat is ready.
+watch(
+  [convId, () => route.query.ai],
+  ([id, ai]) => {
+    if (id && ai === '1') {
+      aiAutoGeneratePending.value = true;
+      showCopilot.value = true;
+      void router.replace({ query: { ...route.query, ai: undefined } });
+    }
+  },
+  { immediate: true },
+);
+
+watch(copilotRef, (instance) => {
+  if (!instance || !aiAutoGeneratePending.value) return;
+  aiAutoGeneratePending.value = false;
+  void instance.generate();
+});
 
 const isGroupThread = computed(() => selectedConv.value?.threadType === 'group');
 
@@ -720,6 +754,7 @@ function isComposerObscured(): boolean {
     || showReactionDetails.value
     || showPinned.value
     || showTags.value
+    || showInsight.value
     || showNotes.value
     || showAppointmentEditor.value
     || showTemplatePicker.value

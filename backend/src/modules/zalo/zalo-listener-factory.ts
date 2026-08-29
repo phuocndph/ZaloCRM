@@ -866,6 +866,12 @@ export function attachZaloListener(ctx: ListenerContext): void {
           ownerUserId: result.ownerUserId,
           isPrivate: result.conversationIsPrivate,
           privateOwnerUserId: result.conversationPrivateOwnerUserId,
+          extra: {
+            threadType: isGroup ? 'group' : 'user',
+            groupName: isGroup ? (groupName || null) : null,
+            groupAvatarUrl: isGroup ? (groupAvatarUrl || null) : null,
+            senderAvatarUrl: !isGroup ? (contactZaloAvatarUrl || null) : null,
+          },
         });
 
         // Push mobile (FCM/APNs) — CHỈ tin KHÁCH gửi đến (inbound). Tin tự gửi/self bỏ qua.
@@ -883,6 +889,10 @@ export function attachZaloListener(ctx: ListenerContext): void {
             conversationPrivateOwnerUserId: result.conversationPrivateOwnerUserId,
             message: result.message,
             senderName,
+            threadType: isGroup ? 'group' : 'user',
+            groupName: isGroup ? (groupName || null) : null,
+            groupAvatarUrl: isGroup ? (groupAvatarUrl || null) : null,
+            senderAvatarUrl: !isGroup ? (contactZaloAvatarUrl || null) : null,
           }).catch((err) =>
             logger.error(`[zalo:${accountId}] push notify error:`, err),
           );
@@ -1062,6 +1072,7 @@ export function attachZaloListener(ctx: ListenerContext): void {
         let recipientName = '';
         let contactGlobalId = '';
         let contactUsername = '';
+        let contactZaloAvatarUrl = '';
 
         // Resolve display name — non-self: senderName; self user-thread: recipientName từ threadId.
         // Đồng thời capture globalId + username để dedup parent contact.
@@ -1069,6 +1080,7 @@ export function attachZaloListener(ctx: ListenerContext): void {
           if (!message.isSelf && senderUid) {
             const userInfo = await resolveZaloName(api, senderUid, userInfoCache);
             if (userInfo.zaloName) senderName = userInfo.zaloName;
+            contactZaloAvatarUrl = userInfo.avatar;
             contactGlobalId = userInfo.globalId;
             contactUsername = userInfo.username;
           } else if (message.isSelf && threadType === 'user' && resolvedThreadId) {
@@ -1152,6 +1164,12 @@ export function attachZaloListener(ctx: ListenerContext): void {
             ownerUserId: result.ownerUserId,
             isPrivate: result.conversationIsPrivate,
             privateOwnerUserId: result.conversationPrivateOwnerUserId,
+            extra: {
+              threadType,
+              groupName: threadType === 'group' ? (groupName || null) : null,
+              groupAvatarUrl: threadType === 'group' ? (groupAvatarUrl || null) : null,
+              senderAvatarUrl: threadType === 'user' ? (contactZaloAvatarUrl || null) : null,
+            },
           });
         }
       } catch (err) {

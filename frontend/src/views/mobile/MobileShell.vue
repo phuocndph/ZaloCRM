@@ -40,8 +40,9 @@ import { onUnmounted, computed } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import {
   MessageCircle as MessageCircleIcon, Users as UsersIcon,
-  CalendarClock as CalendarClockIcon, LayoutDashboard as DashboardIcon, Settings as SettingsIcon,
+  CalendarClock as CalendarClockIcon, Settings as SettingsIcon,
 } from 'lucide-vue-next';
+import { ListTodo as ListTodoIcon } from 'lucide-vue-next';
 import { useChat } from '@/composables/use-chat';
 import { useMobile } from '@/composables/use-mobile';
 import { useWebPush } from '@/composables/use-web-push';
@@ -59,10 +60,10 @@ const router = useRouter();
 // Tab đã có bản /m chuyên dụng → route /m/*; tab chưa có → tạm về route desktop (MobileLayout).
 // 4 tab đều có bản /m chuyên dụng (2026-07-12).
 const TABS = [
+  { label: 'Công việc', icon: ListTodoIcon, path: '/m/work-items' },
   { label: 'Tin nhắn', icon: MessageCircleIcon, path: '/m' },
   { label: 'Khách hàng', icon: UsersIcon, path: '/m/customers' },
   { label: 'Lịch hẹn', icon: CalendarClockIcon, path: '/m/appointments' },
-  { label: 'Tổng quan', icon: DashboardIcon, path: '/m/overview' },
   { label: 'Cài đặt', icon: SettingsIcon, path: '/m/settings' },
 ];
 function isActive(t: { path: string }) {

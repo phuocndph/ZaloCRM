@@ -10,6 +10,9 @@ import {
   STATUS_LITE_SELECT,
   ZALO_ACCOUNT_LITE_SELECT,
   CONTACT_LITE_SELECT,
+  TAG_LITE_SELECT,
+  ACTIVE_TAG_ASSIGNMENTS_SELECT,
+  ACTIVE_CONTACT_TAG_ASSIGNMENTS_SELECT,
   toFriendDto,
   buildFriendUpdatedPayload,
 } from '../src/shared/friend-serializer.js';
@@ -45,6 +48,19 @@ describe('FRIEND_INCLUDE shape', () => {
     expect(CONTACT_LITE_SELECT).toHaveProperty('fullName');
     expect(CONTACT_LITE_SELECT).toHaveProperty('phone');
     expect(CONTACT_LITE_SELECT).toHaveProperty('tags');
+    expect(CONTACT_LITE_SELECT).toHaveProperty('tagAssignments');
+  });
+
+  it('includes active taxonomy-v2 tags for Friend and Contact', () => {
+    expect(FRIEND_INCLUDE).toHaveProperty('tagAssignments', ACTIVE_TAG_ASSIGNMENTS_SELECT);
+    expect(CONTACT_LITE_SELECT.tagAssignments).toBe(ACTIVE_CONTACT_TAG_ASSIGNMENTS_SELECT);
+    expect(TAG_LITE_SELECT).toEqual({
+      id: true,
+      name: true,
+      color: true,
+      scope: true,
+      source: true,
+    });
   });
 });
 

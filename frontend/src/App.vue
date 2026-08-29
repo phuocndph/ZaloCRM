@@ -4,6 +4,7 @@
   <component :is="layout">
     <router-view />
   </component>
+  <MessageNotifications v-if="auth.isAuthenticated" />
   <!-- 2026-06-16 — hộp xác nhận HS theme global (thay window.confirm toàn app) -->
   <ConfirmHost />
 </template>
@@ -16,7 +17,9 @@ import AuthLayout from '@/layouts/AuthLayout.vue';
 import MobileLayout from '@/layouts/MobileLayout.vue';
 import BlankLayout from '@/layouts/BlankLayout.vue';
 import ConfirmHost from '@/components/ui/ConfirmHost.vue';
+import MessageNotifications from '@/components/MessageNotifications.vue';
 import { useMobile } from '@/composables/use-mobile';
+import { useMessageNotifications } from '@/composables/use-message-notifications';
 import { useAuthStore } from '@/stores/auth';
 import { usePrivacyStore } from '@/stores/privacy';
 
@@ -24,6 +27,7 @@ const route = useRoute();
 const { isMobile } = useMobile();
 const auth = useAuthStore();
 const privacy = usePrivacyStore();
+const messageNotifications = useMessageNotifications();
 
 const layout = computed(() => {
   const name = (route.meta?.layout as string) || 'default';
@@ -33,6 +37,15 @@ const layout = computed(() => {
   if (route.path === '/m' || route.path.startsWith('/m/')) return BlankLayout;
   return isMobile.value ? MobileLayout : DefaultLayout;
 });
+
+watch(
+  () => auth.isAuthenticated,
+  (isAuthenticated) => {
+    if (isAuthenticated) messageNotifications.start();
+    else messageNotifications.stop();
+  },
+  { immediate: true },
+);
 
 // Anh chốt 2026-05-22: sau F5 refresh, gọi privacyStore.fetchStatus() để rebuild
 // isUnlocked + expiresAt từ HttpOnly cookie. Trước fix: cookie vẫn còn ở browser

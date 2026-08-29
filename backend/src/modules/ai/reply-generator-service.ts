@@ -21,6 +21,7 @@ import { checkReplyPolicy, type PolicyResult } from './policy-safety-checker-ser
 import { calculateConfidence, historicalEvaluationSignal, type ConfidenceOutput } from './confidence-engine-service.js';
 import { analyzeIntentText } from './intent-engine-service.js';
 import { analyzeEmotionMessages } from './emotion-engine-service.js';
+import { logger } from '../../shared/utils/logger.js';
 
 export type ReplyActor = ContextActor;
 export type ReplyStyle = 'shorter' | 'friendlier' | 'professional' | 'softer' | 'more_sales_focused' | 'more_explanatory';
@@ -157,6 +158,15 @@ function latestCustomerMessage(context: ConversationContext) {
     senderType?: string;
   }> | undefined;
   return [...(messages ?? [])].reverse().find((message) => message.senderType === 'contact' && message.content?.trim()) ?? null;
+}
+
+function latestActivityMessage(context: ConversationContext) {
+  const messages = context.sections.find((section) => section.id === 'recent_messages')?.items as Array<{
+    id?: string;
+    content?: string;
+    senderType?: string;
+  }> | undefined;
+  return [...(messages ?? [])].reverse().find((message) => message.id) ?? null;
 }
 
 function latestCustomerText(context: ConversationContext) {
@@ -379,7 +389,7 @@ export async function generateReplyDraft(
             'Follow the selected skill goal. Move the conversation toward a useful next step without manipulation, false urgency, or pressure; respect rejection and opt-out signals.',
             'Do not repeat information the customer already supplied. If essential information is missing, ask at most one most important clarifying question.',
             'Never promise an action, discount, refund, outcome, or handoff that has not been confirmed. Mark sensitive or uncertain cases for human review.',
-            'Return Vietnamese JSON only. confidence must be between 0 and 1. This is a draft only and must never be sent automatically.',
+            'Return JSON only. Every user-facing string must be Vietnamese with full Unicode diacritics (tiếng Việt có dấu đầy đủ), never Vietnamese without dấu. confidence must be between 0 and 1. This is a draft only and must never be sent automatically.',
           ].join('\n'),
         },
         { role: 'user', content: JSON.stringify(modelPayload) },
@@ -556,8 +566,16 @@ async function runtimeAgent(orgId: string, requestedAgentId?: string, requestedS
     },
   });
   if (!agent) throw new ReplyGeneratorError('Chưa có tác nhân AI đang hoạt động phù hợp.', 409, 'ACTIVE_AGENT_REQUIRED');
-  const modelConfigId = agent.modelConfigId;
-  if (!modelConfigId || !agent.modelConfig || !['active', 'approved'].includes(agent.modelConfig.status)) {
+  const defaultModel = await prisma.aiConfig.findUnique({
+    where: { orgId },
+    select: { defaultModelConfig: { select: { id: true, status: true } } },
+  }).then((config) => config?.defaultModelConfig ?? null);
+  // The organization default is authoritative after an administrator switches
+  // provider, even when an older active agent still references the old model.
+  const modelConfigId = defaultModel && ['active', 'approved'].includes(defaultModel.status)
+    ? defaultModel.id
+    : agent.modelConfigId;
+  if (!modelConfigId || (!defaultModel && (!agent.modelConfig || !['active', 'approved'].includes(agent.modelConfig.status)))) {
     throw new ReplyGeneratorError('Model của tác nhân AI chưa sẵn sàng.', 409, 'AGENT_MODEL_NOT_READY');
   }
   const promptVersion = agent.promptVersion;
@@ -600,14 +618,40 @@ export async function generateConversationReply(
   const customerMessages = contextCustomerMessages(context);
   const latestText = customerMessages.at(-1) ?? '';
   const latestMessage = latestCustomerMessage(context);
-  const [inferredIntent, inferredEmotion] = await Promise.all([
-    !request.intent || request.intent.primary_intent === 'unknown'
-      ? analyzeIntentText(latestText, { orgId: actor.orgId, modelConfigId: agent.modelConfigId })
-      : request.intent,
-    !request.emotion || request.emotion.emotion === 'neutral'
-      ? analyzeEmotionMessages(customerMessages, { orgId: actor.orgId, modelConfigId: agent.modelConfigId })
-      : request.emotion,
-  ]);
+  const latestActivity = latestActivityMessage(context);
+  // Conversation analysis already classifies the exact latest message and is
+  // persisted by the background worker. Reuse it when possible so opening a
+  // work item does not trigger two extra model calls for intent and emotion.
+  const latestInsight = await prisma.aiConversationInsight.findFirst({
+    where: { orgId: actor.orgId, conversationId, status: 'active' },
+    orderBy: [{ version: 'desc' }, { updatedAt: 'desc' }],
+    select: {
+      sourceThroughMessageId: true,
+      intentLabel: true,
+      intentConfidence: true,
+      emotionLabel: true,
+      emotionConfidence: true,
+      emotionIntensity: true,
+      stage: true,
+    },
+  });
+  const reusableInsight = latestInsight && latestActivity?.id === latestInsight.sourceThroughMessageId
+    ? latestInsight
+    : null;
+  const inferredIntent = request.intent && request.intent.primary_intent !== 'unknown'
+    ? request.intent
+    : reusableInsight
+      ? { primary_intent: reusableInsight.intentLabel, confidence: reusableInsight.intentConfidence }
+      : await analyzeIntentText(latestText, { orgId: actor.orgId, modelConfigId: agent.modelConfigId });
+  const inferredEmotion = request.emotion && request.emotion.emotion !== 'neutral'
+    ? request.emotion
+    : reusableInsight
+      ? {
+          emotion: reusableInsight.emotionLabel,
+          confidence: reusableInsight.emotionConfidence,
+          intensity: reusableInsight.emotionIntensity ?? reusableInsight.emotionConfidence,
+        }
+      : await analyzeEmotionMessages(customerMessages, { orgId: actor.orgId, modelConfigId: agent.modelConfigId });
   const selectedSkill = selectRuntimeSkill(agent.skills, inferredIntent, request.skillId);
   if (!selectedSkill) throw new ReplyGeneratorError('Tác nhân AI chưa có kỹ năng phù hợp với ý định khách hàng.', 409, 'AGENT_SKILL_NOT_READY');
   const skill = selectedSkill;
@@ -626,7 +670,17 @@ export async function generateConversationReply(
   const prompt = {
     id: agent.promptVersion.id,
     version: agent.promptVersion.version,
-    content: decryptToken(Buffer.from(agent.promptVersion.contentEncrypted).toString('utf8')),
+    content: (() => {
+      try {
+        return decryptToken(Buffer.from(agent.promptVersion.contentEncrypted).toString('utf8'));
+      } catch {
+        // A rotated TOKEN_ENCRYPTION_KEY should not turn Copilot into a generic
+        // 502. Keep drafting available with a conservative fallback until the
+        // managed prompt is saved again under the current key.
+        logger.warn('[ai] Production prompt could not be decrypted; using runtime safety fallback');
+        return 'You are a Vietnamese customer-support assistant. Draft a concise, polite reply in Vietnamese. Do not invent prices, policies, stock, delivery times, discounts, or credentials. Ask one clarifying question when information is missing and request human review for complaints, refunds, discounts, or uncertainty.';
+      }
+    })(),
   };
   const inputHash = createHash('sha256')
     .update(JSON.stringify({ conversationId, skillId: skill.id, intent: inferredIntent, emotion: inferredEmotion }))

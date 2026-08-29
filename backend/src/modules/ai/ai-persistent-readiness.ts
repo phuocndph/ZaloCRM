@@ -1,5 +1,9 @@
 export type PersistentReadinessInput = {
   enabled: boolean;
+  credentialDecryption?: {
+    ready: boolean;
+    errorCode: 'TOKEN_ENCRYPTION_KEY_MISSING' | 'TOKEN_ENCRYPTION_KEY_INVALID' | null;
+  };
   defaultModelConfig: {
     id: string;
     name: string;
@@ -64,6 +68,7 @@ export function getPersistentAiReadiness(input: PersistentReadinessInput) {
   const connection = model?.connection;
   if (!model || !connection) return null;
 
+  const credentialReady = input.credentialDecryption?.ready ?? true;
   const baseUrl = publicBaseUrl(connection.baseUrl);
   const modelActive = ['active', 'approved'].includes(model.status);
   const connectionDeleted = Boolean(connection.deletedAt);
@@ -74,8 +79,10 @@ export function getPersistentAiReadiness(input: PersistentReadinessInput) {
   const testedFailed = connection.status === 'failed'
     || connectionDisabled
     || connectionDeleted;
-  const connectionStatus = testedHealthy ? 'connected' : testedFailed ? 'failed' : 'not_tested';
-  const errorCode = connectionDeleted
+  const connectionStatus = !credentialReady ? 'failed' : testedHealthy ? 'connected' : testedFailed ? 'failed' : 'not_tested';
+  const errorCode = !credentialReady
+    ? input.credentialDecryption?.errorCode ?? 'TOKEN_ENCRYPTION_KEY_INVALID'
+    : connectionDeleted
     ? 'AI_CONNECTION_NOT_FOUND'
     : connectionDisabled
       ? 'AI_CONNECTION_DISABLED'
@@ -85,9 +92,12 @@ export function getPersistentAiReadiness(input: PersistentReadinessInput) {
     && !connectionDeleted
     && !connectionDisabled
     && hasApiKey
+    && credentialReady
     && baseUrl.valid;
   const status = !input.enabled
     ? 'disabled'
+    : !credentialReady
+      ? 'error'
     : !configured
       ? 'not_configured'
       : testedFailed
@@ -113,6 +123,13 @@ export function getPersistentAiReadiness(input: PersistentReadinessInput) {
       hasApiKey ? 'Đã cấu hình API key cho kết nối.' : 'Kết nối chưa có API key.',
     ),
     check(
+      'credential_encryption',
+      credentialReady ? 'passed' : 'failed',
+      credentialReady
+        ? 'Máy chủ có thể giải mã thông tin kết nối AI.'
+        : 'Máy chủ đang thiếu hoặc dùng sai khóa giải mã thông tin kết nối AI.',
+    ),
+    check(
       'base_url',
       baseUrl.valid ? 'passed' : 'failed',
       baseUrl.valid ? 'Địa chỉ API hợp lệ.' : 'Địa chỉ API đang thiếu hoặc không hợp lệ.',
@@ -124,8 +141,10 @@ export function getPersistentAiReadiness(input: PersistentReadinessInput) {
     ),
     check(
       'connection',
-      testedHealthy ? 'passed' : testedFailed ? 'failed' : 'warning',
-      testedHealthy
+      credentialReady && testedHealthy ? 'passed' : testedFailed || !credentialReady ? 'failed' : 'warning',
+      !credentialReady
+        ? 'Không thể mở thông tin kết nối AI bằng khóa giải mã hiện tại.'
+        : testedHealthy
         ? 'Kết nối API đã được kiểm tra thành công.'
         : testedFailed
           ? 'Kết nối API đang lỗi hoặc đã bị vô hiệu hóa.'
@@ -133,8 +152,10 @@ export function getPersistentAiReadiness(input: PersistentReadinessInput) {
     ),
     check(
       'model_available',
-      testedHealthy && modelActive ? 'passed' : testedFailed ? 'failed' : 'warning',
-      testedHealthy && modelActive
+      credentialReady && testedHealthy && modelActive ? 'passed' : testedFailed || !credentialReady ? 'failed' : 'warning',
+      !credentialReady
+        ? 'Chưa thể dùng model vì thông tin kết nối AI không giải mã được.'
+        : testedHealthy && modelActive
         ? 'Model mặc định sẵn sàng sử dụng.'
         : testedFailed
           ? 'Không thể xác nhận model qua kết nối hiện tại.'
@@ -168,8 +189,8 @@ export function getPersistentAiReadiness(input: PersistentReadinessInput) {
       id: model.model,
       modelConfigId: model.id,
       configured: true,
-      status: testedHealthy && modelActive ? 'available' : modelActive ? 'unverified' : 'inactive',
-      available: testedHealthy && modelActive ? true : testedFailed ? false : null,
+      status: credentialReady && testedHealthy && modelActive ? 'available' : modelActive ? 'unverified' : 'inactive',
+      available: !credentialReady ? false : testedHealthy && modelActive ? true : testedFailed ? false : null,
     },
     connection: {
       id: connection.id,

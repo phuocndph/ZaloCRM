@@ -92,7 +92,7 @@
       <div v-else-if="connections.length === 0" class="state-card empty">
         <span class="state-icon" aria-hidden="true">⌁</span>
         <h4>Chưa có kết nối API</h4>
-        <p>Thêm 9Router hoặc một endpoint tương thích OpenAI để bắt đầu cấu hình mô hình.</p>
+        <p>Thêm F5Quota, 9Router hoặc một endpoint tương thích OpenAI để bắt đầu cấu hình mô hình.</p>
         <button class="button primary" type="button" @click="openCreateConnection">Thêm kết nối đầu tiên</button>
       </div>
 
@@ -331,12 +331,13 @@
         <div class="form-grid">
           <label class="field full">
             <span>Tên hiển thị <b aria-hidden="true">*</b></span>
-            <input v-model.trim="connectionDialog.name" required maxlength="160" placeholder="Ví dụ: 9Router nội bộ" />
+            <input v-model.trim="connectionDialog.name" required maxlength="160" placeholder="Ví dụ: F5Quota" />
           </label>
 
           <label class="field">
             <span>Loại kết nối <b aria-hidden="true">*</b></span>
             <select v-model="connectionDialog.preset" :disabled="Boolean(connectionDialog.id)" @change="applyConnectionPreset">
+              <option value="f5quota">F5Quota</option>
               <option value="9router">9Router</option>
               <option value="openai-compatible">OpenAI-compatible</option>
             </select>
@@ -350,15 +351,17 @@
               maxlength="80"
               pattern="[a-z0-9][a-z0-9_.-]{1,79}"
               :disabled="Boolean(connectionDialog.id)"
-              placeholder="9router-primary"
+              placeholder="f5quota-primary"
             />
             <small>Dùng chữ thường, số, dấu gạch ngang hoặc gạch dưới.</small>
           </label>
 
           <label class="field full">
             <span>Base URL <b aria-hidden="true">*</b></span>
-            <input v-model.trim="connectionDialog.baseUrl" required type="url" placeholder="http://host.docker.internal:20128/v1" />
-            <small>Nếu 9Router chạy trên Windows host, container dùng host.docker.internal thay cho localhost.</small>
+            <input v-model.trim="connectionDialog.baseUrl" required type="url" placeholder="https://f5quota.store/v1" />
+            <small v-if="connectionDialog.preset === 'f5quota'">F5Quota dùng endpoint OpenAI-compatible và tự tải danh sách model từ API.</small>
+            <small v-else-if="connectionDialog.preset === '9router'">Nếu 9Router chạy trên Windows host, container dùng host.docker.internal thay cho localhost.</small>
+            <small v-else>Nhập URL gốc của endpoint OpenAI-compatible, thường kết thúc bằng /v1.</small>
           </label>
         </div>
 
@@ -440,17 +443,29 @@
         <div v-else-if="discoveryDialog.models.length === 0" class="discovery-state">
           Kết nối không trả về mô hình nào.
         </div>
-        <div v-else class="discovered-list">
-          <button
-            v-for="model in discoveryDialog.models"
-            :key="model.id"
-            type="button"
-            @click="selectDiscoveredModel(model)"
-          >
-            <span><strong>{{ model.name }}</strong><small>{{ model.id }}</small></span>
-            <span aria-hidden="true">→</span>
-          </button>
-        </div>
+        <template v-else>
+          <div class="discovery-tools">
+            <label class="discovery-search">
+              <span class="sr-only">Tìm model</span>
+              <input v-model.trim="discoveryDialog.search" type="search" placeholder="Tìm theo tên hoặc Model ID" />
+            </label>
+            <span>{{ filteredDiscoveryModels.length }}/{{ discoveryDialog.models.length }} model</span>
+          </div>
+          <div v-if="filteredDiscoveryModels.length === 0" class="discovery-state compact-discovery-state">
+            Không có model phù hợp với từ khóa.
+          </div>
+          <div v-else class="discovered-list">
+            <button
+              v-for="model in filteredDiscoveryModels"
+              :key="model.id"
+              type="button"
+              @click="selectDiscoveredModel(model)"
+            >
+              <span><strong>{{ model.name }}</strong><small>{{ model.id }}</small></span>
+              <span aria-hidden="true">→</span>
+            </button>
+          </div>
+        </template>
       </section>
     </div>
 
@@ -588,12 +603,12 @@ const notice = reactive<{ tone: NoticeTone; message: string }>({ tone: 'success'
 const connectionDialog = reactive({
   open: false,
   id: '',
-  name: '',
-  key: '',
-  preset: '9router',
+  name: 'F5Quota',
+  key: 'f5quota-primary',
+  preset: 'f5quota',
   adapter: 'openai_compatible',
-  vendor: '9router',
-  baseUrl: 'http://host.docker.internal:20128/v1',
+  vendor: 'f5quota',
+  baseUrl: 'https://f5quota.store/v1',
   saving: false,
   error: '',
 })
@@ -616,6 +631,7 @@ const discoveryDialog = reactive({
   connectionName: '',
   loading: false,
   error: '',
+  search: '',
   models: [] as DiscoveredModel[],
 })
 
@@ -649,6 +665,13 @@ const modelDialog = reactive({
 })
 
 const connectedConnections = computed(() => connections.value.filter((item) => item.status === 'connected'))
+const filteredDiscoveryModels = computed(() => {
+  const search = discoveryDialog.search.trim().toLocaleLowerCase('vi')
+  if (!search) return discoveryDialog.models
+  return discoveryDialog.models.filter((model) => (
+    `${model.name} ${model.id} ${model.ownedBy || ''}`.toLocaleLowerCase('vi').includes(search)
+  ))
+})
 const modelDialogConnections = computed(() => [...connections.value].sort((left, right) => {
   if (left.id === modelDialog.connectionId) return -1
   if (right.id === modelDialog.connectionId) return 1
@@ -670,7 +693,7 @@ const readiness = computed(() => {
   if (connections.value.length === 0) {
     return {
       tone: 'warning', icon: '1', title: 'AI chưa thể hoạt động',
-      description: 'Chưa có kết nối API. Hãy thêm 9Router hoặc nhà cung cấp tương thích.',
+      description: 'Chưa có kết nối API. Hãy thêm F5Quota, 9Router hoặc nhà cung cấp tương thích.',
       actionLabel: 'Thêm kết nối', action: openCreateConnection,
     }
   }
@@ -776,8 +799,8 @@ function showNotice(message: string, tone: NoticeTone = 'success'): void {
 
 function resetConnectionDialog(): void {
   Object.assign(connectionDialog, {
-    open: false, id: '', name: '', key: '', preset: '9router', adapter: 'openai_compatible',
-    vendor: '9router', baseUrl: 'http://host.docker.internal:20128/v1', saving: false, error: '',
+    open: false, id: '', name: 'F5Quota', key: 'f5quota-primary', preset: 'f5quota', adapter: 'openai_compatible',
+    vendor: 'f5quota', baseUrl: 'https://f5quota.store/v1', saving: false, error: '',
   })
 }
 
@@ -793,7 +816,9 @@ function openEditConnection(connection: ProviderConnection): void {
     id: connection.id,
     name: connection.name,
     key: connection.key,
-    preset: connection.vendor === '9router' ? '9router' : 'openai-compatible',
+    preset: connection.vendor === 'f5quota'
+      ? 'f5quota'
+      : connection.vendor === '9router' ? '9router' : 'openai-compatible',
     adapter: connection.adapter,
     vendor: connection.vendor || '',
     baseUrl: connection.baseUrl || '',
@@ -807,12 +832,21 @@ function closeConnectionDialog(): void {
 }
 
 function applyConnectionPreset(): void {
-  if (connectionDialog.preset === '9router') {
+  if (connectionDialog.preset === 'f5quota') {
+    connectionDialog.name = 'F5Quota'
+    connectionDialog.key = 'f5quota-primary'
+    connectionDialog.adapter = 'openai_compatible'
+    connectionDialog.vendor = 'f5quota'
+    connectionDialog.baseUrl = 'https://f5quota.store/v1'
+  } else if (connectionDialog.preset === '9router') {
+    connectionDialog.name = '9Router'
+    connectionDialog.key = '9router-primary'
     connectionDialog.adapter = 'openai_compatible'
     connectionDialog.vendor = '9router'
     connectionDialog.baseUrl = 'http://host.docker.internal:20128/v1'
-    if (!connectionDialog.key) connectionDialog.key = '9router-primary'
   } else {
+    connectionDialog.name = ''
+    connectionDialog.key = ''
     connectionDialog.adapter = 'openai_compatible'
     connectionDialog.vendor = ''
     connectionDialog.baseUrl = ''
@@ -927,6 +961,7 @@ function openDiscoveryDialog(connection: ProviderConnection): void {
     connectionName: connection.name,
     loading: true,
     error: '',
+    search: '',
     models: [],
   })
 }
@@ -948,7 +983,7 @@ async function discoverConnectionModels(connection: ProviderConnection): Promise
 
 function closeDiscoveryDialog(): void {
   Object.assign(discoveryDialog, {
-    open: false, connectionId: '', connectionName: '', loading: false, error: '', models: [],
+    open: false, connectionId: '', connectionName: '', loading: false, error: '', search: '', models: [],
   })
 }
 
@@ -1155,11 +1190,13 @@ function modelStatusMeta(status: ModelConfigStatus | string) {
 }
 
 function providerLabel(connection: ProviderConnection): string {
+  if (connection.vendor === 'f5quota') return 'F5Quota · Claude & Codex'
   if (connection.vendor === '9router') return '9Router · OpenAI-compatible'
   return connection.vendor || connection.adapter || 'OpenAI-compatible'
 }
 
 function providerInitial(connection: ProviderConnection): string {
+  if (connection.vendor === 'f5quota') return 'F5'
   return connection.vendor === '9router' ? '9R' : connection.name.slice(0, 2).toUpperCase()
 }
 
@@ -1490,7 +1527,12 @@ h4 { font-size: 15px; line-height: 1.4; }
 .capabilities-field > div { display: flex; flex-wrap: wrap; gap: 10px 18px; }
 .capabilities-field label { display: inline-flex; align-items: center; gap: 7px; color: #334155; }
 .discovery-state { padding: 40px 16px; color: var(--muted); text-align: center; }
-.discovered-list { display: grid; gap: 8px; margin-top: 16px; }
+.compact-discovery-state { padding: 24px 16px; }
+.discovery-tools { display: flex; align-items: center; gap: 12px; margin-top: 16px; }
+.discovery-tools > span { flex: 0 0 auto; color: var(--muted); font-size: 12px; font-weight: 700; }
+.discovery-search { flex: 1; min-width: 0; }
+.discovery-search input { width: 100%; min-height: 42px; box-sizing: border-box; padding: 8px 11px; border: 1px solid #b9c5d4; border-radius: 7px; color: var(--ink); background: #fff; font: inherit; }
+.discovered-list { display: grid; max-height: min(52vh, 480px); gap: 8px; margin-top: 12px; overflow-y: auto; overscroll-behavior: contain; }
 .discovered-list button { display: flex; min-height: 54px; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); background: #fff; text-align: left; cursor: pointer; }
 .discovered-list button:hover { border-color: var(--brand); background: #f0fafd; }
 .discovered-list button span:first-child { display: grid; min-width: 0; }
@@ -1519,6 +1561,7 @@ h4 { font-size: 15px; line-height: 1.4; }
   .models-table td.model-actions { display: flex; min-width: 0; flex-wrap: wrap; justify-content: flex-start; padding-top: 10px; border-top: 1px solid #edf1f5; text-align: left !important; }
   .impact-line { flex-direction: column; gap: 3px; }
   .dialog { padding: 16px; }
+  .discovery-tools { align-items: stretch; flex-direction: column; gap: 6px; }
   .password-field, .select-with-action { flex-direction: column; }
   .select-with-action .button { width: 100%; }
 }

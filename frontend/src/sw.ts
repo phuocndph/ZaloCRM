@@ -79,16 +79,23 @@ self.addEventListener('push', (event: PushEvent) => {
   const title = p.title || 'Tin nhắn mới';
   const convId = p.conversationId ?? '';
   event.waitUntil(
-    self.registration.showNotification(title, {
-      body: p.body || '',
-      icon: p.icon || '/pwa-192x192.png',
-      badge: '/pwa-192x192.png',
-      // tag theo hội thoại → tin mới cùng 1 khách thay thế noti cũ, không spam.
-      tag: convId || 'zalocrm',
-      renotify: !!convId,
-      timestamp: p.sentAt ? Date.parse(p.sentAt) : Date.now(),
-      data: { conversationId: convId, url: convId ? `/m/c/${convId}` : '/m' },
-    } as NotificationOptions),
+    (async () => {
+      // Khi PWA đang ở foreground, socket realtime đã hiện thẻ nổi trong app.
+      // Không hiện thêm notification hệ điều hành để tránh người dùng nhận hai lần cùng một tin.
+      const windows = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+      if (windows.some((client) => (client as WindowClient).visibilityState === 'visible')) return;
+
+      await self.registration.showNotification(title, {
+        body: p.body || '',
+        icon: p.icon || '/pwa-192x192.png',
+        badge: '/pwa-192x192.png',
+        // tag theo hội thoại → tin mới cùng 1 khách thay thế noti cũ, không spam.
+        tag: convId || 'zalocrm',
+        renotify: !!convId,
+        timestamp: p.sentAt ? Date.parse(p.sentAt) : Date.now(),
+        data: { conversationId: convId, url: convId ? `/m/c/${convId}` : '/m' },
+      } as NotificationOptions);
+    })(),
   );
 });
 

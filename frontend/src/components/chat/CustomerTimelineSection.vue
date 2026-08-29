@@ -5,7 +5,7 @@
     <!-- Header: title + count + today badge + filter chip + ⚙ settings -->
     <div class="tl-header">
       <div class="tl-title">
-        📋 Timeline KH
+        📋 Ghi chú & lịch sử
         <span v-if="rootNoteCount" class="tl-count">#{{ rootNoteCount }}</span>
         <button
           v-if="todayCount > 0"

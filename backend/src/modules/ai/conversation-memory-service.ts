@@ -21,16 +21,19 @@ export type ShortTermConversationSummary = {
   generatedFrom: { conversationId: string; sourceThroughMessageId: string | null; sourceIds: string[] };
 };
 
-export type CustomerMemoryKey =
-  | 'customer_type'
-  | 'long_term_need'
-  | 'interested_product'
-  | 'previous_order'
-  | 'confirmed_budget'
-  | 'communication_style'
-  | 'rejection_reason'
-  | 'important_complaint'
-  | 'explicit_remember_request';
+export const CUSTOMER_MEMORY_KEYS = [
+  'customer_type',
+  'long_term_need',
+  'interested_product',
+  'previous_order',
+  'confirmed_budget',
+  'communication_style',
+  'rejection_reason',
+  'important_complaint',
+  'explicit_remember_request',
+] as const;
+
+export type CustomerMemoryKey = typeof CUSTOMER_MEMORY_KEYS[number];
 
 export type CustomerMemoryEvidence = {
   type: 'message' | 'context' | 'manual';
@@ -48,6 +51,7 @@ export type CustomerMemoryInput = {
   status?: 'candidate' | 'approved' | 'blocked';
   expiresAt?: Date | string | null;
   source?: 'manual' | 'ai_candidate';
+  runId?: string;
 };
 
 export class ConversationMemoryError extends Error {
@@ -57,17 +61,7 @@ export class ConversationMemoryError extends Error {
   }
 }
 
-const ALLOWED_MEMORY_KEYS = new Set<CustomerMemoryKey>([
-  'customer_type',
-  'long_term_need',
-  'interested_product',
-  'previous_order',
-  'confirmed_budget',
-  'communication_style',
-  'rejection_reason',
-  'important_complaint',
-  'explicit_remember_request',
-]);
+const ALLOWED_MEMORY_KEYS = new Set<CustomerMemoryKey>(CUSTOMER_MEMORY_KEYS);
 
 const SENSITIVE_PATTERNS = [
   /\b(password|mat khau|mật khẩu|otp|2fa|token|secret|api[_ -]?key|private key)\b/i,
@@ -193,13 +187,22 @@ async function audit(
 
 function buildDeterministicSummary(context: ConversationContext): ShortTermConversationSummary {
   const messages = recentMessages(context);
-  const lastMessages = messages.slice(-8).map((message) => `${message.senderType ?? 'unknown'}: ${message.content}`).join('\n');
+  const senderLabels: Record<string, string> = {
+    contact: 'Khách',
+    self: 'Nhân viên',
+    agent: 'Trợ lý',
+    system: 'Hệ thống',
+  };
+  const lastMessages = messages
+    .slice(-8)
+    .map((message) => `${senderLabels[message.senderType ?? ''] ?? 'Không rõ'}: ${normalizeSpaces(String(message.content ?? ''))}`)
+    .join('\n');
   const unansweredQuestions = messages
     .filter((message) => message.senderType !== 'agent' && message.content && /[?？]|\b(bao nhiêu|bao nhieu|khi nào|lúc nào|ở đâu|o dau|có không|co khong)\b/i.test(message.content))
     .slice(-5)
     .map((message) => normalizeSpaces(String(message.content)));
   return {
-    currentDiscussion: lastMessages || compactJson(sectionItems(context, 'conversation_summary') ?? 'No recent visible messages'),
+    currentDiscussion: lastMessages || compactJson(sectionItems(context, 'conversation_summary') ?? 'Chưa có tin nhắn phù hợp để tóm tắt.'),
     unansweredQuestions,
     currentProduct: sectionItems(context, 'current_product') ?? null,
     currentEmotion: sectionItems(context, 'latest_emotion') ?? null,
@@ -238,12 +241,25 @@ async function generateSummary(
       {
         role: 'system',
         content: [
-          'You summarize CRM conversations into short-term operational memory.',
-          'Only use provided context. Do not infer facts. If uncertain, omit.',
-          'Do not include secrets, raw phone numbers, raw emails, passwords, OTPs, tokens, or payment card data.',
+          'Bạn tóm tắt hội thoại CRM thành ghi nhớ tác nghiệp ngắn hạn cho nhân viên bán hàng.',
+          'BẮT BUỘC viết tiếng Việt chuẩn UTF-8 và có dấu đầy đủ trong mọi trường mô tả.',
+          'Nếu tin nhắn gốc viết không dấu, hãy tự khôi phục dấu theo ngữ cảnh.',
+          'Không dùng tiếng Anh, trừ tên riêng, mã sản phẩm hoặc thuật ngữ không có cách gọi tiếng Việt phù hợp.',
+          'Chỉ dùng dữ liệu trong ngữ cảnh được cung cấp; không suy đoán hoặc bịa thêm sự kiện.',
+          'Ưu tiên nội dung khách đang trao đổi gần nhất. Chỉ nhắc lịch sử cũ khi còn ảnh hưởng đến việc cần làm hiện tại.',
+          'Ví dụ: "khach hoi gia va noi se kiem tra" phải viết thành "Khách hỏi giá và cho biết sẽ kiểm tra lại."',
+          'Không đưa mật khẩu, OTP, token, số thẻ, số điện thoại hoặc email nguyên vẹn vào kết quả.',
         ].join(' '),
       },
-      { role: 'user', content: JSON.stringify({ context }) },
+      {
+        role: 'user',
+        content: [
+          'Hãy đọc dữ liệu dưới đây và trả về đúng JSON theo schema.',
+          'currentDiscussion: 2-4 câu ngắn, cho biết khách đang phản hồi gì và tình trạng hiện tại.',
+          'unansweredQuestions: chỉ liệt kê câu hỏi hoặc thông tin khách đang chờ nhân viên làm rõ.',
+          JSON.stringify({ context }),
+        ].join('\n'),
+      },
     ],
     structuredOutput: { name: 'conversation_short_term_summary', schema: summarySchema() },
   });
@@ -287,9 +303,18 @@ async function newMessageCount(conversationId: string, sourceThroughMessageId?: 
 export async function refreshConversationSummary(
   actor: MemoryActor,
   conversationId: string,
-  options: { modelConfigId?: string; force?: boolean; maxTokens?: number; minNewMessages?: number; idleMs?: number } = {},
+  options: {
+    modelConfigId?: string;
+    runId?: string;
+    force?: boolean;
+    maxTokens?: number;
+    minNewMessages?: number;
+    idleMs?: number;
+    context?: ConversationContext;
+    preparedSummary?: Partial<ShortTermConversationSummary>;
+  } = {},
 ) {
-  const context = await buildConversationContext(actor, conversationId, { maxTokens: options.maxTokens ?? 2600 });
+  const context = options.context ?? await buildConversationContext(actor, conversationId, { maxTokens: options.maxTokens ?? 2600 });
   const existing = await prisma.aiConversationSummary.findFirst({
     where: { orgId: actor.orgId, conversationId, status: 'active' },
     orderBy: [{ version: 'desc' }, { createdAt: 'desc' }],
@@ -306,7 +331,19 @@ export async function refreshConversationSummary(
   if (!options.force && count < minNewMessages && idleMs < requiredIdleMs) {
     return { skipped: true, reason: 'threshold_not_met', newMessages: count, idleMs };
   }
-  const summary = await generateSummary(actor, context, options.modelConfigId);
+  const fallback = buildDeterministicSummary(context);
+  const prepared = options.preparedSummary;
+  const summary = prepared
+    ? {
+        currentDiscussion: sanitizeSummaryText(prepared.currentDiscussion) || fallback.currentDiscussion,
+        unansweredQuestions: Array.isArray(prepared.unansweredQuestions)
+          ? prepared.unansweredQuestions.map(sanitizeSummaryText).filter(Boolean).slice(0, 8)
+          : fallback.unansweredQuestions,
+        currentProduct: prepared.currentProduct ?? fallback.currentProduct,
+        currentEmotion: prepared.currentEmotion ?? fallback.currentEmotion,
+        generatedFrom: fallback.generatedFrom,
+      }
+    : await generateSummary(actor, context, options.modelConfigId);
   const payload = JSON.stringify(summary);
   return prisma.$transaction(async (tx) => {
     await tx.aiConversationSummary.updateMany({
@@ -316,6 +353,7 @@ export async function refreshConversationSummary(
     const created = await tx.aiConversationSummary.create({
       data: {
         orgId: actor.orgId,
+        runId: options.runId ?? null,
         conversationId,
         sourceThroughMessageId: summary.generatedFrom.sourceThroughMessageId,
         version: (existing?.version ?? 0) + 1,
@@ -394,6 +432,7 @@ export async function upsertCustomerMemory(actor: MemoryActor, contactId: string
           confidence: Math.max(existingSame.confidence ?? 0, confidence),
           lastReinforcedAt: new Date(),
           expiresAt,
+          runId: input.runId ?? existingSame.runId,
           status: existingSame.status === 'approved' ? 'approved' : status,
           approvedByUserId: status === 'approved' ? actor.userId : existingSame.approvedByUserId,
           approvedAt: status === 'approved' ? new Date() : existingSame.approvedAt,
@@ -412,6 +451,7 @@ export async function upsertCustomerMemory(actor: MemoryActor, contactId: string
     const created = await tx.aiCustomerMemory.create({
       data: {
         orgId: actor.orgId,
+        runId: input.runId ?? null,
         contactId,
         key: input.key,
         valueEncrypted: encryptText(value),
@@ -534,13 +574,21 @@ function contactIdFromContext(context: ConversationContext) {
 export async function proposeCustomerMemoriesFromConversation(
   actor: MemoryActor,
   conversationId: string,
-  options: { modelConfigId?: string; maxTokens?: number } = {},
+  options: {
+    modelConfigId?: string;
+    runId?: string;
+    maxTokens?: number;
+    context?: ConversationContext;
+    preparedCandidates?: CustomerMemoryInput[];
+  } = {},
 ) {
-  const context = await buildConversationContext(actor, conversationId, { maxTokens: options.maxTokens ?? 2600 });
+  const context = options.context ?? await buildConversationContext(actor, conversationId, { maxTokens: options.maxTokens ?? 2600 });
   const contactId = contactIdFromContext(context);
   if (!contactId) throw new ConversationMemoryError('Conversation has no linked contact', 400, 'CONTACT_REQUIRED');
   let candidates = deterministicMemoryCandidates(context);
-  if (options.modelConfigId) {
+  if (options.preparedCandidates) {
+    candidates = [...candidates, ...options.preparedCandidates].slice(0, 20);
+  } else if (options.modelConfigId) {
     const response = await aiClient.complete<{ memories?: CustomerMemoryInput[] }>({
       orgId: actor.orgId,
       modelConfigId: options.modelConfigId,
@@ -551,9 +599,12 @@ export async function proposeCustomerMemoriesFromConversation(
         {
           role: 'system',
           content: [
-            'Extract long-term customer memory candidates only from explicit facts in the provided CRM context.',
-            'Never store guesses as facts. Every memory needs evidence, confidence, and one allowed key.',
-            'Return candidates only; they are not approved automatically.',
+            'Trích xuất ghi nhớ dài hạn về khách hàng từ các sự kiện được nói rõ trong ngữ cảnh CRM.',
+            'BẮT BUỘC viết giá trị ghi nhớ bằng tiếng Việt chuẩn UTF-8, có dấu đầy đủ.',
+            'Nếu tin nhắn gốc không dấu, hãy tự khôi phục dấu theo ngữ cảnh.',
+            'Không dùng tiếng Anh, trừ tên riêng hoặc mã sản phẩm.',
+            'Không lưu suy đoán thành sự thật. Mỗi ghi nhớ phải có bằng chứng, độ tin cậy và đúng một key cho phép.',
+            'Chỉ trả ứng viên để nhân viên duyệt; không tự phê duyệt.',
           ].join(' '),
         },
         { role: 'user', content: JSON.stringify({ allowedKeys: [...ALLOWED_MEMORY_KEYS], context }) },
@@ -574,7 +625,12 @@ export async function proposeCustomerMemoriesFromConversation(
   for (const candidate of candidates) {
     try {
       assertMemoryKey(candidate.key);
-      saved.push(await upsertCustomerMemory(actor, contactId, { ...candidate, status: 'candidate', source: 'ai_candidate' }));
+      saved.push(await upsertCustomerMemory(actor, contactId, {
+        ...candidate,
+        runId: options.runId,
+        status: 'candidate',
+        source: 'ai_candidate',
+      }));
     } catch (error) {
       if (error instanceof ConversationMemoryError) continue;
       throw error;

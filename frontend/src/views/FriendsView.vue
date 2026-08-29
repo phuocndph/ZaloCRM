@@ -26,20 +26,34 @@
             <span class="av">∑</span>
             <span class="nick-name">Tất cả nick</span>
             <span class="dot-sep">·</span>
-            <span>{{ totalAcrossAllNicks }} bạn</span>
+            <span>{{ friendsDbTotal }} khách duy nhất</span>
           </span>
+
+          <select
+            class="mobile-nick-picker"
+            :value="effectiveNickId || ''"
+            aria-label="Chọn phạm vi tài khoản Zalo"
+            @change="onMobileNickChange"
+          >
+            <option value="all">Tất cả tài khoản</option>
+            <option v-for="account in accounts" :key="account.id" :value="account.id">
+              {{ account.displayName || account.phone || 'Nick Zalo' }}
+            </option>
+          </select>
 
           <div class="spacer" />
           <div class="field head-search-field">
             <SearchIcon :size="14" :stroke-width="2" />
             <input
               v-model="searchInput"
-              placeholder="Tìm KH theo tên / SĐT / nick Zalo..."
+              placeholder="Tìm theo tên, SĐT, nick Zalo hoặc Tag..."
               @input="debouncedFetch"
             />
           </div>
-          <button class="btn" title="Xuất CSV (chưa làm)" @click="onExportCsv"><DownloadIcon :size="14" :stroke-width="2" /> Xuất CSV</button>
-          <v-menu :close-on-content-click="false">
+          <button class="btn" :disabled="exportingCsv" title="Xuất toàn bộ kết quả đang lọc" @click="onExportCsv">
+            <DownloadIcon :size="14" :stroke-width="2" /> {{ exportingCsv ? 'Đang xuất…' : 'Xuất CSV' }}
+          </button>
+          <v-menu v-if="effectiveNickId !== 'all'" :close-on-content-click="false">
             <template #activator="{ props: act }">
               <button v-bind="act" class="btn" title="Bật/tắt cột tuỳ chọn"><SlidersHorizontalIcon :size="14" :stroke-width="2" /> Cột</button>
             </template>
@@ -78,17 +92,26 @@
           ><RefreshCwIcon :size="14" :stroke-width="2" :class="{ spin: syncing }" /> {{ syncing ? 'Đang làm mới…' : 'Làm mới ngay' }}</button>
         </header>
 
-        <FriendsSmartHints :friends="friendsDb" @apply="onApplyHint" />
+        <FriendsSmartHints v-if="effectiveNickId !== 'all'" :friends="friendsDb" @apply="onApplyHint" />
 
         <FriendsFilterBar
           :kind-filter="state.kindFilter.value"
           :count-by-kind="countByKind"
           :care-status="state.careStatus.value"
+          :all-label="effectiveNickId === 'all' ? 'Mọi quan hệ' : 'Tất cả'"
           @update:kind-filter="onKindChange"
           @update:care-status="onCareChange"
         />
 
-        <div class="stats">
+        <div v-if="effectiveNickId === 'all'" class="overview-stats">
+          <div><strong>{{ friendsDbTotal.toLocaleString('vi') }}</strong><span>Khách đang hiển thị</span></div>
+          <div><strong>{{ friendOverviewFilteredStats.totalPairs.toLocaleString('vi') }}</strong><span>Quan hệ trong kết quả</span></div>
+          <div class="duplicate"><strong>{{ friendOverviewFilteredStats.duplicateContacts.toLocaleString('vi') }}</strong><span>Kết bạn nhiều nick</span></div>
+          <div><strong>{{ friendOverviewFilteredStats.totalMessages.toLocaleString('vi') }}</strong><span>Tin trong kết quả</span></div>
+          <div><strong>{{ friendOverviewStats.accessibleNicks.toLocaleString('vi') }}</strong><span>Tài khoản theo dõi</span></div>
+        </div>
+
+        <div v-else class="stats">
           <div class="stat good"><span class="sdot ok"></span>Đã KB: <strong>{{ friendCounts.friend ?? 0 }}</strong></div>
           <div class="stat warn"><span class="sdot warn"></span>Đang chờ: <strong>{{ friendCounts.pending_friend ?? 0 }}</strong></div>
           <div class="stat"><span class="sdot info"></span>Đang nhắn lạ: <strong>{{ friendCounts.chatting_stranger ?? 0 }}</strong></div>
@@ -107,21 +130,32 @@
         </div>
 
         <FriendsBulkBar
+          v-if="effectiveNickId !== 'all'"
           :count="selected.size"
           @clear="selected = new Set()"
-          @msg-batch="onBulkMessage"
-          @tag="onBulkTag"
-          @change-status="onBulkChangeStatus"
           @export="onBulkExport"
         />
 
+        <FriendsOverviewTable
+          v-if="effectiveNickId === 'all'"
+          :items="friendsOverview"
+          :loading="loadingDb"
+          :multi-nick-only="multiNickOnly"
+          :sort-by="overviewSortBy"
+          @update:multi-nick-only="onMultiNickOnly"
+          @sort-by="setSortBy"
+          @open-chat="onOpenChat"
+          @open-contact="onOpenContact"
+        />
+
         <FriendsTable
+          v-else
           :friends="friendsDb"
           :loading="loadingDb"
           :density="state.density.value"
           :selected="selected"
           :visible-cols="visibleCols"
-          :sort-by="sortBy"
+          :sort-by="perNickSortBy"
           @update:selected="selected = $event"
           @open-detail="onOpenDetail"
           @open-chat="onOpenChat"
@@ -130,7 +164,7 @@
         />
 
         <div class="pag">
-          <span>{{ pagFrom }}–{{ pagTo }} / {{ friendsDbTotal }}</span>
+          <span>{{ pagFrom }}–{{ pagTo }} / {{ friendsDbTotal }} {{ effectiveNickId === 'all' ? 'khách' : 'bạn' }}</span>
           <div class="spacer-flex" />
           <span>Trang:</span>
           <button :disabled="pagination.page === 1" @click="goPage(pagination.page - 1)">« Trước</button>
@@ -168,7 +202,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, reactive } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted, reactive } from 'vue';
 import { useRouter } from 'vue-router';
 import { useFriends, type DbFriend } from '@/composables/use-friends';
 import { useZaloAccounts } from '@/composables/use-zalo-accounts';
@@ -178,6 +212,7 @@ import NickSidebar from '@/components/friends/NickSidebar.vue';
 import FriendsFilterBar from '@/components/friends/FriendsFilterBar.vue';
 import FriendsSmartHints from '@/components/friends/FriendsSmartHints.vue';
 import FriendsTable from '@/components/friends/FriendsTable.vue';
+import FriendsOverviewTable from '@/components/friends/FriendsOverviewTable.vue';
 import FriendsBulkBar from '@/components/friends/FriendsBulkBar.vue';
 import FriendDetailPanel from '@/components/friends/FriendDetailPanel.vue';
 import CustomerProfileDialog from '@/components/contacts/CustomerProfileDialog.vue';
@@ -197,10 +232,15 @@ const {
   friendsDb,
   friendsDbTotal,
   friendCounts,
+  friendsOverview,
+  friendAccountCounts,
+  friendOverviewStats,
+  friendOverviewFilteredStats,
   loadingDb,
   syncing,
   fetchFriendsDb,
-  fetchFriendsDbAllNicks,
+  fetchFriendsOverview,
+  fetchFriendsOverviewSummary,
   syncFriendsDb,
 } = useFriends();
 
@@ -264,15 +304,48 @@ function toggleColumn(key: OptionalColKey) {
   try { localStorage.setItem(LS_KEY_COLS, JSON.stringify(visibleCols.value)); } catch { /* ignore */ }
 }
 
-function onExportCsv() {
-  // Placeholder: chưa làm. Defer phase sau, tránh button placeholder không phản hồi.
-  console.warn('[FriendsView] CSV export chưa implement');
+const exportingCsv = ref(false);
+async function onExportCsv() {
+  if (exportingCsv.value || !effectiveNickId.value) return;
+  exportingCsv.value = true;
+  try {
+    const { api } = await import('@/api/index');
+    const response = await api.get('/friends-db/overview', {
+      params: {
+        kind: state.kindFilter.value,
+        search: searchInput.value,
+        sortBy: effectiveNickId.value === 'all' ? overviewSortBy.value : perNickSortBy.value,
+        statusId: state.careStatus.value,
+        multiNickOnly: effectiveNickId.value === 'all' && multiNickOnly.value ? 'true' : 'false',
+        accountId: effectiveNickId.value === 'all' ? '' : effectiveNickId.value,
+        exportCsv: 'true',
+      },
+      responseType: 'blob',
+    });
+    const url = URL.createObjectURL(response.data as Blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `ban-be-zalo-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+    toast.success('Đã xuất toàn bộ kết quả đang lọc.');
+  } catch (error: any) {
+    const message = error?.response?.data instanceof Blob
+      ? 'Không thể xuất CSV. Hãy thu hẹp bộ lọc và thử lại.'
+      : error?.response?.data?.error || 'Không thể xuất CSV.';
+    toast.error(message);
+  } finally {
+    exportingCsv.value = false;
+  }
 }
 
 const searchInput = ref('');
 const pagination = reactive({ page: 1, limit: 25 });
 const selected = ref<Set<string>>(new Set());
 const detailFriend = ref<DbFriend | null>(null);
+const multiNickOnly = ref(false);
 
 // ─── Active nick resolution ───
 // effectiveNickId: 'all' | account.id | null (loading)
@@ -282,13 +355,14 @@ const activeAccount = computed(() =>
 );
 
 // Counts (TODO khi backend cho aggregate). Tạm derive từ list hiện tại.
-const countByNick = ref<Record<string, number>>({});
-const totalAcrossAllNicks = computed(() => {
-  return Object.values(countByNick.value).reduce((s, v) => s + v, 0);
-});
+const countByNick = computed<Record<string, number>>(() => Object.fromEntries(
+  Object.entries(friendAccountCounts.value).map(([accountId, counts]) => [accountId, counts.pairs]),
+));
+const totalAcrossAllNicks = computed(() => friendOverviewStats.value.totalPairs);
 const countByKind = computed<Record<string, number>>(() => {
   return {
-    all: friendsDbTotal.value,
+    all: effectiveNickId.value === 'all' ? friendOverviewStats.value.totalContacts : friendsDbTotal.value,
+    none: friendCounts.value.none ?? 0,
     friend: friendCounts.value.friend ?? 0,
     pending_friend: friendCounts.value.pending_friend ?? 0,
     chatting_stranger: friendCounts.value.chatting_stranger ?? 0,
@@ -331,14 +405,15 @@ async function fetch() {
   const id = effectiveNickId.value;
   if (!id) return;
   if (id === 'all') {
-    // Cross-nick aggregate: gọi /friends-db/all-nicks (Phase 4)
-    await fetchFriendsDbAllNicks({
+    // Cross-nick aggregate: one Contact row with per-account details nested below.
+    await fetchFriendsOverview({
       kind: state.kindFilter.value === 'all' ? undefined : state.kindFilter.value,
       page: pagination.page,
       limit: pagination.limit,
       search: searchInput.value || undefined,
-      sortBy: sortBy.value,
+      sortBy: overviewSortBy.value,
       statusId: state.careStatus.value || undefined,
+      multiNickOnly: multiNickOnly.value,
     });
     return;
   }
@@ -347,43 +422,79 @@ async function fetch() {
     page: pagination.page,
     limit: pagination.limit,
     search: searchInput.value || undefined,
-    sortBy: sortBy.value,
+    sortBy: perNickSortBy.value,
     statusId: state.careStatus.value || undefined,
   });
 }
 
 // Phase 6 polish — sort theo Score header click. Persist localStorage.
-type SortBy = 'recent' | 'score-desc' | 'score-asc' | 'stuck';
+type PerNickSortBy = 'recent' | 'score-desc' | 'score-asc' | 'stuck';
+type OverviewSortBy = 'recent' | 'nicks-desc' | 'messages-desc';
+type SortBy = PerNickSortBy | OverviewSortBy;
 const SORT_LS_KEY = 'friendsview.sortBy.v1';
-const sortBy = ref<SortBy>((localStorage.getItem(SORT_LS_KEY) as SortBy) || 'recent');
+const SORT_VALUES = new Set<SortBy>(['recent', 'score-desc', 'score-asc', 'stuck', 'nicks-desc', 'messages-desc']);
+function loadSortBy(): SortBy {
+  const stored = localStorage.getItem(SORT_LS_KEY) as SortBy | null;
+  return stored && SORT_VALUES.has(stored) ? stored : 'recent';
+}
+const sortBy = ref<SortBy>(loadSortBy());
 function setSortBy(v: SortBy) {
   sortBy.value = v;
   try { localStorage.setItem(SORT_LS_KEY, v); } catch { /* ignore */ }
   pagination.page = 1;
   fetch();
 }
+const perNickSortBy = computed<PerNickSortBy>(() =>
+  ['score-desc', 'score-asc', 'stuck'].includes(sortBy.value)
+    ? sortBy.value as PerNickSortBy
+    : 'recent',
+);
+const overviewSortBy = computed<OverviewSortBy>(() =>
+  ['nicks-desc', 'messages-desc'].includes(sortBy.value)
+    ? sortBy.value as OverviewSortBy
+    : 'recent',
+);
+
+function onMultiNickOnly(value: boolean) {
+  multiNickOnly.value = value;
+  pagination.page = 1;
+  fetch();
+}
 
 function goPage(p: number) {
   pagination.page = p;
+  selected.value = new Set();
   fetch();
 }
 
 function onSelectNick(nickId: string) {
+  if (nickId === 'all' && state.kindFilter.value === 'all') {
+    state.kindFilter.value = 'friend';
+  }
   stateRaw.selectedNickId.value = nickId;
   pagination.page = 1;
   selected.value = new Set();
   fetch();
+  requestAnimationFrame(() => {
+    document.querySelector<HTMLElement>('.mlx-body')?.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+  });
+}
+
+function onMobileNickChange(event: Event) {
+  onSelectNick((event.target as HTMLSelectElement).value);
 }
 
 function onKindChange(v: FriendKindFilter) {
   state.kindFilter.value = v;
   pagination.page = 1;
+  selected.value = new Set();
   fetch();
 }
 
 function onCareChange(v: string) {
   state.careStatus.value = v;
   pagination.page = 1;
+  selected.value = new Set();
   fetch();  // statusId truyền trong fetch() (backend filter theo Friend.statusId)
 }
 
@@ -400,7 +511,13 @@ async function onSync() {
 
 // ─── Live socket subscribe: friend:updated → merge patch vào row trong cache
 // Không refetch list, chỉ mutate trực tiếp row để tránh flicker + tiết kiệm HTTP.
+let overviewRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 useFriendSocket((payload: FriendUpdatedPayload) => {
+  if (effectiveNickId.value === 'all') {
+    if (overviewRefreshTimer) clearTimeout(overviewRefreshTimer);
+    overviewRefreshTimer = setTimeout(() => fetch(), 500);
+    return;
+  }
   const row = friendsDb.value.find((f) => f.id === payload.friendId);
   if (!row) return; // row không có trong page hiện tại, skip
   Object.assign(row as Record<string, unknown>, payload.patch);
@@ -448,18 +565,34 @@ function onCall(f: DbFriend) {
   }
 }
 
-// ─── Bulk actions (stubs — backend wiring lần kế) ───
-function onBulkMessage() {
-  console.log('[bulk] message to', [...selected.value]);
+function csvCell(value: unknown): string {
+  const text = value == null ? '' : String(value);
+  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }
-function onBulkTag() {
-  console.log('[bulk] tag', [...selected.value]);
-}
-function onBulkChangeStatus() {
-  console.log('[bulk] change status', [...selected.value]);
-}
+
 function onBulkExport() {
-  console.log('[bulk] export', [...selected.value]);
+  const rows = friendsDb.value.filter((friend) => selected.value.has(friend.id));
+  if (!rows.length) return;
+  const csv = [
+    ['Khách hàng', 'Số điện thoại', 'Quan hệ', 'Tin KH', 'Tin sale', 'Tương tác gần nhất'],
+    ...rows.map((friend) => [
+      friend.contact?.crmName || friend.zaloDisplayName || friend.contact?.fullName || '',
+      friend.contact?.phone || '',
+      friend.relationshipKind,
+      friend.totalInbound,
+      friend.totalOutbound,
+      friend.lastInteractionAt || '',
+    ]),
+  ].map((row) => row.map(csvCell).join(',')).join('\r\n');
+  const url = URL.createObjectURL(new Blob([`\uFEFF${csv}\r\n`], { type: 'text/csv;charset=utf-8' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `ban-be-da-chon-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+  toast.success(`Đã xuất ${rows.length} khách đã chọn.`);
 }
 
 // ─── Smart hints ───
@@ -518,12 +651,27 @@ onMounted(async () => {
   } else if (!persisted && accounts.value.length) {
     stateRaw.selectedNickId.value = accounts.value[0].id;
   }
-  fetch();
+  if (
+    stateRaw.selectedNickId.value === 'all'
+    && state.kindFilter.value === 'all'
+    && !new URL(window.location.href).searchParams.has('kind')
+  ) {
+    state.kindFilter.value = 'friend';
+  }
+  await Promise.all([
+    fetch(),
+    stateRaw.selectedNickId.value === 'all' ? Promise.resolve() : fetchFriendsOverviewSummary(),
+  ]);
 
   // Auto-dismiss restore toast sau 5s
   if (stateRaw.restoredFromStorage.value) {
     setTimeout(() => stateRaw.dismissRestoreToast(), 5000);
   }
+});
+
+onUnmounted(() => {
+  clearTimeout(searchTimeout);
+  if (overviewRefreshTimer) clearTimeout(overviewRefreshTimer);
 });
 </script>
 
@@ -581,6 +729,8 @@ onMounted(async () => {
 }
 .active-nick .dot-sep { opacity: .6; }
 
+.mobile-nick-picker { display: none; }
+
 .spacer { flex: 1; }
 
 .head-search-field {
@@ -623,6 +773,34 @@ onMounted(async () => {
 .sdot.mut { background: var(--ink-4); }
 .sdot.err { background: var(--error); }
 .spacer-flex { flex: 1; }
+
+.overview-stats {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(110px, 1fr));
+  gap: 1px;
+  padding: 0 22px;
+  background: var(--line);
+  border-bottom: 1px solid var(--line);
+}
+.overview-stats > div {
+  min-width: 0;
+  padding: 10px 12px;
+  background: var(--surface-2);
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+.overview-stats strong {
+  color: var(--ink);
+  font-size: 16px;
+  font-variant-numeric: tabular-nums;
+}
+.overview-stats span {
+  min-width: 0;
+  color: var(--ink-4);
+  font-size: 10.5px;
+}
+.overview-stats .duplicate strong { color: #b45309; }
 
 .density-label { font-size: 11px; color: var(--ink-3); }
 .density-toggle {
@@ -690,4 +868,35 @@ onMounted(async () => {
 .av-c5 { background: linear-gradient(135deg, #db2777, #be185d); }
 .av-c6 { background: linear-gradient(135deg, #0891b2, #0e7490); }
 .av-c7 { background: linear-gradient(135deg, #ea580c, #c2410c); }
+
+@media (max-width: 800px) {
+  .friends-page { height: calc(100dvh - var(--smax-topnav-h, 52px)); }
+  .page-head { padding: 10px 12px; gap: 8px; }
+  .page-head .active-nick { display: none; }
+  .mobile-nick-picker {
+    display: block;
+    min-width: 0;
+    max-width: calc(100% - 88px);
+    height: 34px;
+    padding: 0 30px 0 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    background: var(--surface);
+    color: var(--ink);
+    font-family: inherit;
+    font-size: 12.5px;
+    font-weight: 600;
+  }
+  .page-head .spacer { display: none; }
+  .head-search-field { order: 3; width: 100%; }
+  .page-head > .btn { margin-left: auto; }
+  .filter-bar { padding-inline: 12px; }
+  .overview-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding: 0;
+  }
+  .overview-stats > div:last-child { grid-column: 1 / -1; }
+  .overview-stats > div { flex-direction: column; gap: 1px; padding: 8px 12px; }
+  .pag { padding: 8px 12px; overflow-x: auto; white-space: nowrap; }
+}
 </style>

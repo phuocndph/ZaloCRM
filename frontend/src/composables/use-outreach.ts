@@ -22,8 +22,11 @@ export interface OutreachCampaign {
   id: string;
   name: string;
   description?: string | null;
-  customerListId: string;
-  zaloAccountId: string;
+  audienceSource: 'customer_list' | 'friend_pool';
+  customerListId: string | null;
+  zaloAccountId: string | null;
+  sourceAccountIds: string[];
+  deduplicateContacts: boolean;
   enableAutoAdd: boolean;
   addFriendMessage?: string | null;
   addDelayMinMs: number; addDelayMaxMs: number; maxAddPerDay: number;
@@ -67,6 +70,9 @@ export interface ProgressPayload {
 
 export interface OutreachPhone {
   id: string; entryId: string; phone: string;
+  targetName: string | null; friendId: string | null; contactId: string | null;
+  zaloAccountId: string | null; accountName: string | null; tagNames: string[];
+  lastInteractionAt: string | null;
   overallStatus: 'waiting' | 'processing' | 'success' | 'skipped';
   friendStatus: 'none' | 'success' | 'already_friend' | 'waiting' | 'failed';
   messageStatus: 'none' | 'sent' | 'waiting' | 'failed';
@@ -75,13 +81,18 @@ export interface OutreachPhone {
 export interface PhoneSummary { total: number; success: number; waiting: number; processing: number; skipped: number }
 
 export interface AudiencePreviewItem {
-  name: string | null; phone: string; tags: string[]; eligible: boolean; reason: string | null;
+  id: string; source: 'customer_list' | 'friend_pool'; friendId: string | null;
+  name: string | null; phone: string; accountId: string | null; accountName: string | null;
+  accountStatus: string | null; tags: string[]; lastInteractionAt: string | null;
+  eligible: boolean; reason: string | null;
 }
 export interface AudiencePreview {
   total: number; eligible: number; skipped: number; items: AudiencePreviewItem[];
 }
 export interface AudienceFilterPayload {
-  customerListId: string; zaloAccountId: string;
+  audienceSource?: 'customer_list' | 'friend_pool';
+  customerListId?: string; zaloAccountId?: string;
+  sourceAccountIds?: string[]; deduplicateContacts?: boolean;
   requireTags?: string[]; excludeTags?: string[];
   skipChattedDays?: number | null; friendRelation?: string;
   search?: string; limit?: number;
