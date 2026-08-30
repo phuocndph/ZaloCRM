@@ -504,10 +504,12 @@ import { useConversationContent } from '@/composables/use-conversation-content';
 import { CONVERSATION_PRIVATE_MESSAGE } from '@/composables/use-conversation-privacy';
 import { getComposerEnterAction } from '@/components/chat/composer-keyboard';
 import { parseFriendAcceptedNotice } from '@/composables/zalo-system-notice';
+import { useMessageNotificationInbox } from '@/composables/use-message-notification-inbox';
 
 const route = useRoute();
 const router = useRouter();
 const toast = useToast();
+const notificationInbox = useMessageNotificationInbox();
 const auth = useAuthStore();
 const {
   conversations, messages, selectedConv, loadingMsgs, sendingMsg, conversationPrivateBlocked,
@@ -1563,6 +1565,7 @@ function notifyRead(id: string | null) {
 // Mở hội thoại + auto-scroll khi có tin mới (socket đã cập nhật `messages`).
 onMounted(async () => {
   await selectConversation(convId.value, { messageLimit: 50 });
+  void notificationInbox.markConversationRead(convId.value);
   notifyRead(convId.value);
   unregisterSocketListeners = registerSocketListeners(getSocket());
   restoreDraft(convId.value);
@@ -1621,7 +1624,7 @@ watch(text, saveDraft);
 watch(realtimeOffline, (offline, was) => {
   if (was && !offline && convId.value && nearBottom.value) void resyncOpenThread();
 });
-watch(convId, async (id) => { if (id) { hasOlderMessages.value = true; unseenCount.value = 0; pinnedIds.value = new Set(); await selectConversation(id, { messageLimit: 50 }); notifyRead(id); restoreDraft(id); primeGroupAvatars(); await scrollBottom(); startPresence(); } });
+watch(convId, async (id) => { if (id) { hasOlderMessages.value = true; unseenCount.value = 0; pinnedIds.value = new Set(); await selectConversation(id, { messageLimit: 50 }); void notificationInbox.markConversationRead(id); notifyRead(id); restoreDraft(id); primeGroupAvatars(); await scrollBottom(); startPresence(); } });
 </script>
 
 <style scoped>

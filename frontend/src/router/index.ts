@@ -76,6 +76,7 @@ const routes: RouteRecordRaw[] = [
       // Tổng quan mobile — tái dùng /dashboard/action-hub/me.
       { path: 'overview', name: 'M.Overview', component: () => import('@/views/mobile/MOverviewView.vue'), meta: { requiresAuth: true } },
       { path: 'work-items', name: 'M.WorkItems', component: () => import('@/views/mobile/MWorkItemsView.vue'), meta: { requiresAuth: true, resource: 'conversation' } },
+      { path: 'notifications', name: 'M.Notifications', component: () => import('@/views/mobile/MNotificationsView.vue'), meta: { requiresAuth: true, resource: 'conversation' } },
       { path: 'settings', name: 'M.Settings', component: () => import('@/views/mobile/MSettingsView.vue'), meta: { requiresAuth: true } },
     ],
   },

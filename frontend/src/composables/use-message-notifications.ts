@@ -28,6 +28,7 @@ import {
   notificationPreview,
   notificationRoute,
 } from '@/composables/message-notification-utils';
+import { useMessageNotificationInbox } from '@/composables/use-message-notification-inbox';
 
 export interface NotifCard {
   id: string;
@@ -67,6 +68,7 @@ const groupNotificationLimiter = createConversationNotificationRateLimiter(
   GROUP_NOTIFICATION_LIMIT,
   GROUP_NOTIFICATION_WINDOW_MS,
 );
+const notificationInbox = useMessageNotificationInbox();
 let audioCtx: AudioContext | null = null;
 
 function beep() {
@@ -107,6 +109,7 @@ function pushCard(card: NotifCard) {
 function openCard(card: NotifCard) {
   dismiss(card.id);
   if (!card.convId) return;
+  void notificationInbox.markConversationRead(card.convId);
   window.focus();
   void router.push(notificationRoute(card.convId, router.currentRoute.value.path));
 }
@@ -115,17 +118,32 @@ function showNative(card: NotifCard, force = false) {
   if (!nativeSupported || permission.value !== 'granted') return;
   const mobileExperience = router.currentRoute.value.path.startsWith('/m')
     || window.matchMedia('(max-width: 700px)').matches;
-  if (!force && mobileExperience) return; // mobile dùng Web Push khi app ở nền, tránh thông báo kép
   if (!force && !document.hidden) return; // đang xem app → chỉ cần thẻ nổi
+  const options = {
+    body: `${card.context} · ${card.preview}`,
+    icon: card.avatarUrl || '/pwa-192x192.png',
+    badge: '/pwa-192x192.png',
+    tag: `conv-${card.convId}`,
+    renotify: false,
+    data: { conversationId: card.convId, url: notificationRoute(card.convId, '/m') },
+  } as NotificationOptions;
+  // Trên mobile/PWA, constructor Notification thường không được hỗ trợ. Dùng chính
+  // service worker để hiện thông báo khi socket còn sống ở nền; Web Push tới sau sẽ
+  // thay cùng tag hội thoại thay vì tạo bản thứ hai.
+  if (mobileExperience && 'serviceWorker' in navigator) {
+    void navigator.serviceWorker.ready
+      .then((registration) => registration.showNotification(card.name, options))
+      .catch(() => { /* Web Push hoặc hộp thư bền vững vẫn là fallback */ });
+    return;
+  }
   try {
-    const n = new Notification(card.name, {
-      body: `${card.context} · ${card.preview}`,
-      icon: card.avatarUrl || '/pwa-192x192.png',
-      tag: `conv-${card.convId}`, // gộp theo hội thoại, không spam
-    });
+    const n = new Notification(card.name, options);
     n.onclick = () => {
       window.focus();
-      if (card.convId) void router.push(notificationRoute(card.convId, router.currentRoute.value.path));
+      if (card.convId) {
+        void notificationInbox.markConversationRead(card.convId);
+        void router.push(notificationRoute(card.convId, router.currentRoute.value.path));
+      }
       n.close();
     };
   } catch { /* noop */ }
@@ -136,7 +154,6 @@ function onSocketMessage(payload: {
   threadType?: 'user' | 'group'; groupName?: string | null; groupAvatarUrl?: string | null;
   senderAvatarUrl?: string | null;
 }) {
-  if (!enabled.value) return;
   const message = payload?.message;
   const convId = payload?.conversationId;
   if (!message || !convId) return;
@@ -150,6 +167,18 @@ function onSocketMessage(payload: {
   const onChatRoute = currentRoute.name === 'Chat' || currentRoute.name === 'M.Chat';
   const chat = useChat();
   const openConvId = String(currentRoute.params.convId ?? chat.selectedConvId?.value ?? '');
+  const mobileExperience = currentRoute.path.startsWith('/m')
+    || window.matchMedia('(max-width: 700px)').matches;
+  if (mobileExperience) {
+    // Backend ghi hộp thư ngay sau socket emit, nên chờ ngắn trước khi đồng bộ. Nếu nhân
+    // viên đang mở đúng chat thì đánh dấu đọc thay vì làm badge tăng rồi giảm gây nháy.
+    if (!document.hidden && onChatRoute && openConvId === convId) {
+      setTimeout(() => { void notificationInbox.markConversationRead(convId); }, 650);
+    } else {
+      notificationInbox.scheduleRefresh(650);
+    }
+  }
+  if (!enabled.value) return;
   if (!document.hidden && onChatRoute && openConvId === convId) return;
 
   // Group message bursts can include an album and several texts. Keep message delivery and

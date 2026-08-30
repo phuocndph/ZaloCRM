@@ -7,6 +7,7 @@
     <MPageHeader
       title="Khách hàng"
       :count="total || null"
+      notifications
       searchable
       :search="search"
       search-placeholder="Tìm tên, SĐT, mã…"

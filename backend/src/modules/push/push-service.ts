@@ -252,12 +252,49 @@ export async function notifyNewInboundMessage(args: NotifyNewInboundArgs): Promi
     targets = await excludeMutedUsers(targets, conversationId);
     if (targets.length === 0) return;
 
+    // Chụp presence trước khi ghi inbox: người đang mở đúng hội thoại vẫn có lịch sử
+    // thông báo nhưng được đánh dấu đã đọc ngay, tránh race socket tới trước DB vài trăm ms.
+    let viewing = new Set<string>();
+    try {
+      viewing = await getUsersViewing(targets, conversationId);
+    } catch (err) {
+      logger.warn('[push] presence lookup failed:', (err as Error).message);
+    }
+
     const isRedactedFor = (userId: string) => isPrivate && userId !== ownerUserId;
     const titleFor = (userId: string) => isRedactedFor(userId) ? 'Tin nhắn mới' : title;
     const bodyFor = (userId: string) => isRedactedFor(userId) ? redactedBody : `${context} · ${realBody}`;
+    const contextFor = (userId: string) => isRedactedFor(userId) ? 'Nội dung riêng tư' : context;
+    const previewFor = (userId: string) => isRedactedFor(userId) ? PRIVATE_BODY : realBody;
     const iconFor = (userId: string) => isRedactedFor(userId)
       ? null
       : (args.threadType === 'group' ? args.groupAvatarUrl : args.senderAvatarUrl) ?? null;
+
+    // Hộp thư bền vững là nguồn khôi phục khi mobile bị hệ điều hành treo app, mất socket,
+    // hoặc Web Push chưa tới. Ghi trước các transport và chống trùng theo userId + messageId.
+    const messageId = typeof message?.id === 'string' ? message.id : String(message?.id ?? '');
+    if (messageId) {
+      try {
+        await prisma.messageNotification.createMany({
+          data: targets.map((userId) => ({
+            orgId,
+            userId,
+            conversationId,
+            messageId,
+            zaloAccountId,
+            title: titleFor(userId),
+            context: contextFor(userId),
+            preview: previewFor(userId),
+            avatarUrl: iconFor(userId),
+            readAt: viewing.has(userId) ? new Date() : null,
+          })),
+          skipDuplicates: true,
+        });
+      } catch (err) {
+        // Inbox lỗi không được chặn FCM/Web Push; log để vận hành phát hiện và sửa DB.
+        logger.warn('[push] persist message notification failed:', (err as Error).message);
+      }
+    }
 
     // 1) FCM/APNs — app native. GIỮ NGUYÊN hành vi cũ: không suppress, không đổi gì.
     for (const userId of targets) {
@@ -268,7 +305,6 @@ export async function notifyNewInboundMessage(args: NotifyNewInboundArgs): Promi
     //    Bỏ qua ai đang MỞ đúng hội thoại này (yêu cầu PRD). Lỗi ở đây được nuốt gọn:
     //    push hỏng KHÔNG được ảnh hưởng pipeline nhận/lưu/emit tin.
     try {
-      const viewing = await getUsersViewing(targets, conversationId);
       await sendWebPushToUsers(
         targets,
         (userId) => ({

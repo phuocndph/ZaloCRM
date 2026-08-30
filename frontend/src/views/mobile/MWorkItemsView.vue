@@ -2,7 +2,7 @@
 <!-- Màn hình công việc hằng ngày cho nhân viên trên mobile. -->
 <template>
   <div class="mwi mc-scroll">
-    <MPageHeader title="Công việc" :count="counts.now" />
+    <MPageHeader title="Công việc" :count="counts.now" notifications />
     <div class="mwi-body m-scroll">
       <div class="mwi-intro">
         <strong>Việc cần xử lý hôm nay</strong>

@@ -6,6 +6,7 @@
     <header class="mc-head">
       <div class="mc-title-row">
         <h1 class="mc-title">Tin nhắn<span v-if="totalUnread" class="m-badge mc-total">{{ totalUnread > 99 ? '99+' : totalUnread }}</span></h1>
+        <MNotificationButton />
         <button class="m-iconbtn" aria-label="Cài đặt" @click="router.push({ name: 'M.Settings' })">
           <SettingsIcon :size="22" :stroke-width="1.9" />
         </button>
@@ -55,6 +56,7 @@
       <div
         v-for="(c, idx) in displayItems"
         :key="c.id"
+        :data-conversation-id="c.id"
         class="mc-row"
         :class="{ unread: isUnread(c), pinned: isPinned(c) }"
         :style="idx < 12 ? { animationDelay: idx * 18 + 'ms' } : undefined"
@@ -160,9 +162,14 @@ import {
   Mail as MailIcon, MailOpen as MailOpenIcon, MoreHorizontal as MoreHorizontalIcon, UsersRound as UsersIcon,
 } from 'lucide-vue-next';
 import { useChat } from '@/composables/use-chat';
+import MNotificationButton from '@/components/mobile/MNotificationButton.vue';
 import {
   useMobileConversations, previewText, shortTime, isRecalledPreview, type MConversation,
 } from '@/composables/use-mobile-conversations';
+import {
+  captureConversationScrollAnchor,
+  restoreConversationScrollAnchor,
+} from '@/composables/conversation-scroll-anchor';
 
 defineOptions({ name: 'MConversationsView' }); // để <keep-alive include> nhận diện
 
@@ -290,6 +297,9 @@ function setTagFilter(tag: string) {
 // ── Infinite scroll ──
 const scroller = ref<HTMLElement | null>(null);
 const SCROLL_POSITION_KEY = 'zalocrm:mobile-conversations-scroll-top';
+const pendingRealtimeMoves = new Set<string>();
+let pendingRealtimeAnchor: ReturnType<typeof captureConversationScrollAnchor> = null;
+let scrollAnchorRestoreQueued = false;
 
 function savedScrollTop(): number {
   const value = Number(sessionStorage.getItem(SCROLL_POSITION_KEY) ?? 0);
@@ -351,7 +361,23 @@ async function onTouchEnd() {
 
 // ── Realtime: tin mới → cập nhật preview/badge/thứ tự ──
 function onSocketMessage(payload: { conversationId: string; message: Record<string, unknown> }) {
+  pendingRealtimeMoves.add(payload.conversationId);
+  pendingRealtimeAnchor = captureConversationScrollAnchor(scroller.value, pendingRealtimeMoves)
+    ?? pendingRealtimeAnchor;
   applyIncoming(payload, null); // ở màn danh sách thì không có hội thoại nào đang mở
+  if (!pendingRealtimeAnchor || scrollAnchorRestoreQueued) return;
+  scrollAnchorRestoreQueued = true;
+  void nextTick(() => {
+    requestAnimationFrame(() => {
+      const anchor = pendingRealtimeAnchor;
+      pendingRealtimeAnchor = null;
+      pendingRealtimeMoves.clear();
+      scrollAnchorRestoreQueued = false;
+      if (!anchor) return;
+      const fallbackIndex = displayItems.value.findIndex((item) => item.id === anchor.conversationId);
+      restoreConversationScrollAnchor(scroller.value, anchor, fallbackIndex);
+    });
+  });
 }
 function onGroupInfoUpdated(payload: { conversationId: string; groupMemberAvatars?: MConversation['groupMemberAvatars'] }) {
   if (!payload.groupMemberAvatars) return;
@@ -417,7 +443,7 @@ onUnmounted(() => {
 .mc-chip:active { transform: scale(0.96); }
 .mc-chip.on { background: var(--m-brand); color: var(--m-brand-ink); }
 
-.mc-list { flex: 1; min-height: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; padding-bottom: env(safe-area-inset-bottom, 0px); }
+.mc-list { flex: 1; min-height: 0; overflow-y: auto; overflow-anchor: none; -webkit-overflow-scrolling: touch; padding-bottom: env(safe-area-inset-bottom, 0px); }
 .mc-pull { display: flex; align-items: center; justify-content: center; font-size: var(--m-fs-xs); color: var(--m-text-2); }
 .mc-state { display: flex; flex-direction: column; align-items: center; gap: var(--m-sp-3); padding: 56px var(--m-sp-6); text-align: center; color: var(--m-text-2); }
 .mc-state p { font-size: var(--m-fs-md); margin: 0; }

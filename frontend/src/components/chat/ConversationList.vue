@@ -119,6 +119,7 @@
         v-for="conv in virtualConversations"
         :key="conv.id"
         :ref="(el) => registerRow(conv.id, el as HTMLElement | null)"
+        :data-conversation-id="conv.id"
         class="conv-item"
         role="option"
         :aria-selected="conv.id === selectedId"
@@ -389,6 +390,11 @@ import {
 } from '@/composables/use-conversation-privacy';
 import { setPersonalPin, setManualUnread, setConversationNotificationMute, clearConversationNotificationMute, isConversationNotificationMuted } from '@/composables/use-conversation-state';
 import type { ConversationUserStateView } from '@/composables/use-chat';
+import {
+  captureConversationScrollAnchor,
+  mostUpwardMovedConversationId,
+  restoreConversationScrollAnchor,
+} from '@/composables/conversation-scroll-anchor';
 
 const privacyVisibility = usePrivacyVisibility();
 const auth = useAuthStore();
@@ -1203,6 +1209,7 @@ const virtualEnd = computed(() => Math.min(
 const virtualConversations = computed(() => displayConversations.value.slice(virtualStart.value, virtualEnd.value));
 const virtualTopHeight = computed(() => virtualStart.value * VIRTUAL_ROW_HEIGHT);
 const virtualBottomHeight = computed(() => (displayConversations.value.length - virtualEnd.value) * VIRTUAL_ROW_HEIGHT);
+let scrollAnchorRestoreVersion = 0;
 
 function syncVirtualViewport(container: HTMLElement) {
   virtualScrollTop.value = container.scrollTop;
@@ -1251,6 +1258,31 @@ watch(() => props.selectedId, async () => {
   await nextTick();
   scrollSelectedIntoView();
 }, { immediate: true });
+
+// Realtime moves the latest conversation toward the top. Preserve the first unaffected
+// visible row so staff can keep scanning the current part of the list without a jump.
+watch(
+  () => displayConversations.value.map((conversation) => conversation.id),
+  async (nextIds, previousIds) => {
+    if (!previousIds?.length || nextIds.length < previousIds.length) return;
+    if (nextIds.every((id, index) => id === previousIds[index])) return;
+    const movedId = mostUpwardMovedConversationId(nextIds, previousIds);
+    const excluded = movedId ? new Set([movedId]) : new Set<string>();
+    const anchor = captureConversationScrollAnchor(scrollContainer.value, excluded);
+    if (!anchor) return;
+    const version = ++scrollAnchorRestoreVersion;
+    await nextTick();
+    requestAnimationFrame(() => {
+      if (version !== scrollAnchorRestoreVersion) return;
+      const fallbackIndex = displayConversations.value.findIndex(
+        (conversation) => conversation.id === anchor.conversationId,
+      );
+      restoreConversationScrollAnchor(scrollContainer.value, anchor, fallbackIndex, VIRTUAL_ROW_HEIGHT);
+      if (scrollContainer.value) syncVirtualViewport(scrollContainer.value);
+    });
+  },
+  { flush: 'pre' },
+);
 
 onMounted(() => {
   nextTick(() => {
@@ -1684,7 +1716,7 @@ function truncate(s: string, n: number): string {
   color: var(--smax-primary);
 }
 
-.conv-scroll { flex: 1; overflow-y: auto; }
+.conv-scroll { flex: 1; overflow-y: auto; overflow-anchor: none; }
 .conv-list-inner { display: flex; flex-direction: column; }
 .conv-list-items { display: flex; flex-direction: column; }
 .conv-virtual-spacer { flex: 0 0 auto; pointer-events: none; }

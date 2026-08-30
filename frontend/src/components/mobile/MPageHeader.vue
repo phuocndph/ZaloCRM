@@ -12,7 +12,10 @@
         {{ title }}
         <span v-if="count != null" class="m-badge mph-count">{{ count > 99 ? '99+' : count }}</span>
       </h1>
-      <div class="mph-actions"><slot name="actions" /></div>
+      <div class="mph-actions">
+        <MNotificationButton v-if="notifications" />
+        <slot name="actions" />
+      </div>
     </div>
 
     <div v-if="searchable" class="mph-search">
@@ -34,6 +37,7 @@
 
 <script setup lang="ts">
 import { ChevronLeft as ChevronLeftIcon, Search as SearchIcon, X as XIcon } from 'lucide-vue-next';
+import MNotificationButton from '@/components/mobile/MNotificationButton.vue';
 
 defineProps<{
   title: string;
@@ -42,6 +46,7 @@ defineProps<{
   searchable?: boolean;
   search?: string;
   searchPlaceholder?: string;
+  notifications?: boolean;
 }>();
 defineEmits<{ back: []; 'update:search': [v: string] }>();
 </script>

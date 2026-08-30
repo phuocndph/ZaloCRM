@@ -46,9 +46,12 @@ import { ListTodo as ListTodoIcon } from 'lucide-vue-next';
 import { useChat } from '@/composables/use-chat';
 import { useMobile } from '@/composables/use-mobile';
 import { useWebPush } from '@/composables/use-web-push';
+import { useMessageNotificationInbox } from '@/composables/use-message-notification-inbox';
 
 const { isOnline } = useMobile();
 useWebPush().startAutoRecovery();
+const notificationInbox = useMessageNotificationInbox();
+notificationInbox.startAutoRefresh();
 // Tái dùng socket + realtime của hệ thống hiện có, KHÔNG dựng kênh riêng.
 const { initSocket, destroySocket, realtimeOffline } = useChat();
 
@@ -80,7 +83,10 @@ const showBottomNav = computed(() => !DETAIL_RE.test(route.path));
 // registerSocketListeners(null) → mất realtime reactions/typing. Dựng ở setup đảm bảo
 // getSocket() đã sống trước khi bất kỳ view con nào mount.
 initSocket();
-onUnmounted(() => destroySocket());
+onUnmounted(() => {
+  destroySocket();
+  notificationInbox.stopAutoRefresh();
+});
 </script>
 
 <style scoped>

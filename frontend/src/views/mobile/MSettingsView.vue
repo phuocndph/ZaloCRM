@@ -7,6 +7,7 @@
         <ChevronLeftIcon :size="26" :stroke-width="2.2" />
       </button>
       <h1>Cài đặt</h1>
+      <MNotificationButton />
     </header>
 
     <div class="mst-body">
@@ -96,6 +97,7 @@ import { useAuthStore } from '@/stores/auth';
 import { useWebPush } from '@/composables/use-web-push';
 import { useMessageNotifications } from '@/composables/use-message-notifications';
 import { useTheme, type ThemeMode } from '@/composables/use-theme';
+import MNotificationButton from '@/components/mobile/MNotificationButton.vue';
 
 const router = useRouter();
 const auth = useAuthStore();
@@ -138,7 +140,7 @@ onMounted(() => push.refresh());
 <style scoped>
 .mst-wrap { display: flex; flex-direction: column; height: 100%; background: var(--m-bg); }
 .mst-head { flex-shrink: 0; display: flex; align-items: center; gap: var(--m-sp-1); padding: 0 var(--m-sp-2); padding-top: env(safe-area-inset-top, 0px); min-height: calc(var(--m-header-h) + env(safe-area-inset-top, 0px)); background: var(--m-surface); border-bottom: 1px solid var(--m-border); }
-.mst-head h1 { font-size: var(--m-fs-lg); font-weight: var(--m-fw-bold); color: var(--m-text); margin: 0; }
+.mst-head h1 { flex: 1; min-width: 0; font-size: var(--m-fs-lg); font-weight: var(--m-fw-bold); color: var(--m-text); margin: 0; }
 .mst-back { color: var(--m-brand); }
 .mst-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; touch-action: pan-y; -webkit-overflow-scrolling: touch; padding: var(--m-sp-4); padding-bottom: calc(var(--m-sp-4) + env(safe-area-inset-bottom, 0px)); }
 .mst-user { display: flex; align-items: center; gap: var(--m-sp-3); background: var(--m-surface); border-radius: var(--m-r-lg); padding: var(--m-sp-4); box-shadow: var(--m-e1); }

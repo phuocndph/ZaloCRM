@@ -90,8 +90,10 @@ self.addEventListener('push', (event: PushEvent) => {
         icon: p.icon || '/pwa-192x192.png',
         badge: '/pwa-192x192.png',
         // tag theo hội thoại → tin mới cùng 1 khách thay thế noti cũ, không spam.
-        tag: convId || 'zalocrm',
-        renotify: !!convId,
+        tag: convId ? `conv-${convId}` : 'zalocrm',
+        // Socket fallback và Web Push có thể cùng tới. Cùng tag + không renotify giúp
+        // lần tới sau chỉ cập nhật nội dung, không rung/đổ chuông hai lần.
+        renotify: false,
         timestamp: p.sentAt ? Date.parse(p.sentAt) : Date.now(),
         data: { conversationId: convId, url: convId ? `/m/c/${convId}` : '/m' },
       } as NotificationOptions);

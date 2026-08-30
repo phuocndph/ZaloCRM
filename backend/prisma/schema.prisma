@@ -89,6 +89,7 @@ model Organization {
   aiAutoReplyLogs             AiAutoReplyLog[]
   pinnedConversations         PinnedConversation[]
   conversationUserStates      ConversationUserState[]
+  messageNotifications        MessageNotification[]
   groupPolls                  GroupPoll[]
   // 2026-06-21 (E1 quét group) — roster member + lịch sử lần quét cấp org.
   groupMembers                GroupMember[]
@@ -347,6 +348,8 @@ model User {
   devices                      Device[]
   // PWA Mobile — subscription Web Push (VAPID), song song với devices ở trên.
   pushSubscriptions            PushSubscription[]
+  // Hộp thư thông báo tin nhắn bền vững — không mất khi mobile ngủ/tải lại app.
+  messageNotifications         MessageNotification[]
   // Phase FB Lead Ads "Form" 2026-06-09 — round-robin chia lead cho sale.
   customerListAssignments      CustomerListSaleAssignment[]
   // Phase Media Library 2026-06-11 — kho phương tiện (owner + người tạo).
@@ -4610,6 +4613,32 @@ model PushSubscription {
   @@index([userId, revokedAt])
   @@index([orgId])
   @@map("push_subscriptions")
+}
+
+// Hộp thư thông báo bền vững cho từng người dùng. Dữ liệu title/context/preview đã được
+// áp chính sách riêng tư trước khi ghi, vì vậy API chỉ cần scope theo userId + orgId.
+model MessageNotification {
+  id             String    @id @default(uuid())
+  orgId          String    @map("org_id")
+  userId         String    @map("user_id")
+  conversationId String    @map("conversation_id")
+  messageId      String    @map("message_id")
+  zaloAccountId  String    @map("zalo_account_id")
+  title          String
+  context        String
+  preview        String    @db.Text
+  avatarUrl      String?   @map("avatar_url")
+  readAt         DateTime? @map("read_at")
+  createdAt      DateTime  @default(now()) @map("created_at")
+
+  org  Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  user User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, messageId])
+  @@index([userId, readAt, createdAt(sort: Desc)])
+  @@index([userId, conversationId, readAt])
+  @@index([orgId, createdAt(sort: Desc)])
+  @@map("message_notifications")
 }
 
 // AI Assistant database foundation.

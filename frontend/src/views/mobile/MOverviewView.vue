@@ -4,7 +4,7 @@
      (quyền + scope giữ ở backend). Ưu tiên số liệu + việc cần xử lý, KHÔNG bê dashboard desktop. -->
 <template>
   <div class="mov mc-scroll">
-    <MPageHeader title="Tổng quan" />
+    <MPageHeader title="Tổng quan" notifications />
 
     <div ref="scroller" class="mov-body m-scroll"
       @touchstart.passive="onTouchStart" @touchmove="onTouchMove" @touchend="onTouchEnd">

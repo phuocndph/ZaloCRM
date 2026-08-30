@@ -4,7 +4,7 @@
      timezone giữ ở backend. Segment Hôm nay / Sắp tới / Tất cả; card + pull-to-refresh. -->
 <template>
   <div class="map mc-scroll">
-    <MPageHeader title="Lịch hẹn" :count="items.length || null">
+    <MPageHeader title="Lịch hẹn" :count="items.length || null" notifications>
       <template #below>
         <div class="map-seg">
           <button v-for="s in SEGMENTS" :key="s.key" class="map-seg-btn" :class="{ on: segment === s.key }" @click="setSegment(s.key)">{{ s.label }}</button>
