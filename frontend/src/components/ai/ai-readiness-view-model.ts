@@ -22,8 +22,8 @@ const STATUS_VIEW: Record<AiReadinessStatus, AiReadinessViewModel> = {
   ready: {
     state: 'ready',
     icon: 'mdi-check-circle-outline',
-    title: 'Kết nối AI đã sẵn sàng',
-    description: 'API key và model đã kết nối thành công. Hãy hoàn tất Agent, kho tri thức, Evaluation và Release trước khi vận hành thật.',
+    title: 'AI đã sẵn sàng hoạt động',
+    description: 'Kết nối, model, tác nhân, prompt và kỹ năng đều đã sẵn sàng.',
     ctaLabel: 'Quản lý mô hình',
   },
   disabled: {

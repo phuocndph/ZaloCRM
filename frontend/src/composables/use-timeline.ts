@@ -30,6 +30,16 @@ export interface TimelineItem {
   data: Note | ActivityLogItem;
 }
 
+function normalizeTimelineItem(item: TimelineItem): TimelineItem {
+  if (item.type !== 'note') return item;
+  const normalizeNote = (note: Note): Note => ({
+    ...note,
+    reactions: Array.isArray(note.reactions) ? note.reactions : [],
+    replies: Array.isArray(note.replies) ? note.replies.map(normalizeNote) : [],
+  });
+  return { ...item, data: normalizeNote(item.data as Note) };
+}
+
 export function useTimeline(getContactId: () => string | null) {
   const items = ref<TimelineItem[]>([]);
   const loading = ref(false);
@@ -53,7 +63,7 @@ export function useTimeline(getContactId: () => string | null) {
       const params: Record<string, string> = { limit: '50' };
       if (categories?.length) params.categories = categories.join(',');
       const { data } = await api.get(`/customers/${contactId}/timeline`, { params });
-      items.value = data.items || [];
+      items.value = Array.isArray(data.items) ? data.items.map(normalizeTimelineItem) : [];
       nextCursor.value = data.nextCursor || null;
     } catch (err) {
       console.error('[timeline] fetch error', err);
@@ -76,7 +86,8 @@ export function useTimeline(getContactId: () => string | null) {
       };
       if (categories?.length) params.categories = categories.join(',');
       const { data } = await api.get(`/customers/${contactId}/timeline`, { params });
-      items.value = [...items.value, ...(data.items || [])];
+      const nextItems = Array.isArray(data.items) ? data.items.map(normalizeTimelineItem) : [];
+      items.value = [...items.value, ...nextItems];
       nextCursor.value = data.nextCursor || null;
     } catch (err) {
       console.error('[timeline] load more error', err);

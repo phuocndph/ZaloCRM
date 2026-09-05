@@ -14,7 +14,7 @@ describe('WorkItemsView', () => {
     mocks.get.mockResolvedValue({
       data: {
         items: [],
-        counts: { now: 3, today: 7, waiting: 2, upcoming: 4, done: 5 },
+        counts: { now: 3, today: 7, waiting: 2, upcoming: 4, verify: 0, done: 5 },
         generatedAt: '2026-08-27T04:00:00.000Z',
       },
     });
@@ -32,7 +32,7 @@ describe('WorkItemsView', () => {
     await flushPromises();
 
     expect(mocks.get).toHaveBeenLastCalledWith('/work-items', expect.objectContaining({ params: expect.objectContaining({ scope: 'today' }) }));
-    expect(wrapper.findAll('.wi-stat-value').map((node) => node.text())).toEqual(['3', '7', '2', '4', '5']);
+    expect(wrapper.findAll('.wi-stat-value').map((node) => node.text())).toEqual(['3', '7', '2', '4', '0', '5']);
 
     await wrapper.findAll('.wi-stat')[2].trigger('click');
     await flushPromises();

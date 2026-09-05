@@ -44,17 +44,18 @@ const router = useRouter();
 const queue = ref<{ refresh: (quiet?: boolean) => Promise<unknown>; counts: WorkItemCounts } | null>(null);
 const refreshing = ref(false);
 
-const validScopes: WorkItemScope[] = ['now', 'today', 'waiting', 'upcoming', 'done'];
+const validScopes: WorkItemScope[] = ['now', 'today', 'waiting', 'upcoming', 'verify', 'done'];
 const currentScope = computed<WorkItemScope>(() => {
   const value = String(route.query.scope || 'now') as WorkItemScope;
   return validScopes.includes(value) ? value : 'now';
 });
-const counts = computed<WorkItemCounts>(() => queue.value?.counts ?? { now: 0, today: 0, waiting: 0, upcoming: 0, done: 0 });
+const counts = computed<WorkItemCounts>(() => queue.value?.counts ?? { now: 0, today: 0, waiting: 0, upcoming: 0, verify: 0, done: 0 });
 const summaryStats: Array<{ key: WorkItemScope; label: string }> = [
   { key: 'now', label: 'Cần làm ngay' },
   { key: 'today', label: 'Còn lại hôm nay' },
   { key: 'waiting', label: 'Đang hoãn' },
   { key: 'upcoming', label: 'Sắp tới' },
+  { key: 'verify', label: 'Cần xác minh' },
   { key: 'done', label: 'Đã xong' },
 ];
 
@@ -82,7 +83,7 @@ async function refresh() {
 .wi-refresh:disabled { opacity: .6; cursor: default; }
 .spin { animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
-.wi-summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
+.wi-summary { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; margin-bottom: 14px; }
 .wi-stat { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; min-height: 70px; padding: 12px 14px; border: 1px solid #e4e7ec; border-radius: 7px; background: #fff; text-align: left; cursor: pointer; }
 .wi-stat:hover, .wi-stat.active { border-color: #8bcde3; background: #f4fbfd; }
 .wi-stat-value { color: #172033; font-size: 21px; font-weight: 800; line-height: 1; }

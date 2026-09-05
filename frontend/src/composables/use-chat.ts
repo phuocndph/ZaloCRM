@@ -12,6 +12,7 @@ import { useWorkScope } from '@/composables/use-work-scope';
 import { classifyIncoming } from '@/composables/work-scope-logic';
 import { useToast } from '@/composables/use-toast';
 import { isConversationPrivateError } from '@/composables/use-conversation-privacy';
+import { parseFriendAcceptedNotice } from '@/composables/zalo-system-notice';
 import {
   isSameMessageIdentity,
   messageEchoIdOf,
@@ -126,6 +127,12 @@ export interface Conversation {
   groupAvatarUrl?: string | null;
   /** Số thành viên nhóm */
   groupMembersCount?: number | null;
+  groupSdkType?: number | null;
+  groupCategory?: 'sales' | 'customer_care' | 'internal' | 'supplier' | 'community' | 'unknown';
+  groupMonitoringEnabled?: boolean;
+  groupClassificationSource?: 'sdk' | 'rule' | 'manual' | 'unclassified';
+  groupClassificationConfidence?: number | null;
+  groupClassifiedAt?: string | null;
   /** Avatar thành viên nhóm — BE trả để ghép lưới avatar khi nhóm chưa có ảnh riêng. */
   groupMemberAvatars?: Array<{ uid: string; name?: string | null; avatarUrl: string }>;
   /** External thread ID (group id từ Zalo, hoặc UID per-nick cho user thread) */
@@ -293,7 +300,17 @@ function setCachedMessages(conversationId: string, messages: Message[]) {
 // Cache key encode toàn bộ filter params (tab, threadType, accountIds, search, ...).
 const conversationsCache = new Map<string, { data: Conversation[]; total: number; hasMore: boolean; nextCursor: string | null; fetchedAt: number }>();
 const CONV_CACHE_MAX_ENTRIES = 16;  // ~4 tabs × ~4 filter variants
-const DESKTOP_CONVERSATION_PAGE_SIZE = 100;
+// Keep the first paint bounded. The list is virtualized and already supports
+// cursor-based "load more", so fetching 50 rows on desktop (30 on mobile) is
+// enough for triage while avoiding a large contact/friend/avatar payload.
+const DESKTOP_CONVERSATION_PAGE_SIZE = 50;
+const MOBILE_CONVERSATION_PAGE_SIZE = 30;
+
+function conversationPageSize() {
+  return typeof window !== 'undefined' && window.innerWidth < 768
+    ? MOBILE_CONVERSATION_PAGE_SIZE
+    : DESKTOP_CONVERSATION_PAGE_SIZE;
+}
 
 // Debug hook (DEV only) — expose cache state via window.__zaloCRMConvCache để
 // diagnose cache miss khi tab switch vẫn cảm giác lag. Inspect:
@@ -475,7 +492,7 @@ function buildChat() {
 
   function conversationListParams() {
     return {
-      limit: DESKTOP_CONVERSATION_PAGE_SIZE,
+      limit: conversationPageSize(),
       search: searchQuery.value,
       accountId: accountFilter.value || undefined,
       ...extraFilters.value,
@@ -1319,7 +1336,7 @@ function buildChat() {
     document.addEventListener('visibilitychange', onVisible);
     window.addEventListener('online', onOnline);
 
-    socket.on('chat:message', (data: { message: Message; conversationId: string; accountId?: string; echoId?: string; _privacyMeta?: { privacyMode?: string; ownerUserId?: string | null } }) => {
+    socket.on('chat:message', (data: { message: Message; conversationId: string; accountId?: string; echoId?: string; systemNotification?: boolean; _privacyMeta?: { privacyMode?: string; ownerUserId?: string | null } }) => {
       // PRIVACY 2026-06-11 — Server GIỜ redact server-side trước khi emit (emit-chat.ts):
       // non-owner nhận bản đã blur, chính chủ đã unlock nhận bản thật ở room riêng.
       // Đoạn dưới chỉ còn là LỚP 2 (safety belt) đánh dấu redacted để UI blur — KHÔNG
@@ -1349,6 +1366,9 @@ function buildChat() {
         scope: workScope.accountIds.value,
       });
 
+      const suppressAttention = data.message.senderType !== 'self'
+        && (data.systemNotification === true || !!parseFriendAcceptedNotice(data.message.content));
+
       const incoming = normalizeMessage(data.message as RawMessage);
       const incomingEchoId = data.echoId || messageEchoId(incoming);
       if (incomingEchoId) {
@@ -1374,7 +1394,7 @@ function buildChat() {
 
       // (b) OUT-OF-SCOPE (và không phải thread đang mở) → CHỈ đếm badge "N tin nick khác",
       // KHÔNG cho vào cột 2. Đây là chỗ "không load tin nick khác vào UI".
-      if (cls.bumpBadge && data.accountId) {
+      if (cls.bumpBadge && data.accountId && !suppressAttention) {
         const m = new Map(outOfScopeCounts.value);
         m.set(data.accountId, (m.get(data.accountId) ?? 0) + 1);
         outOfScopeCounts.value = m;
@@ -1419,7 +1439,7 @@ function buildChat() {
           lastMessageAt: data.message.sentAt,
           // preview tin mới nhất ngay
           messages: [data.message, ...(cur.messages || [])].slice(0, 1),
-          unreadCount: (data.message.senderType !== 'self' && !isOpen)
+          unreadCount: (data.message.senderType !== 'self' && !isOpen && !suppressAttention)
             ? (cur.unreadCount ?? 0) + 1
             : cur.unreadCount,
         } as typeof cur;
@@ -1438,7 +1458,7 @@ function buildChat() {
       // mount/move/delete/mark-read, KHÔNG refresh khi có tin mới. Bắn event để ChatView
       // refresh badge (debounce 400ms — burst nhiều tin chỉ 1 lần gọi /counts). Chỉ tin
       // ĐẾN (không phải tin mình gửi) mới làm tăng unread tab Ưu tiên.
-      if (data.message.senderType !== 'self' && typeof window !== 'undefined') {
+      if (data.message.senderType !== 'self' && !suppressAttention && typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('chat:inbound-message'));
       }
     });
@@ -1612,12 +1632,18 @@ function buildChat() {
     // Thông tin nhóm đổi (avatar/tên/sĩ số) — BE (group-info-refresh) bắn khi nhận
     // group_event 'update_avatar'/'update' hoặc cron 6h refresh. Patch conversation
     // IN-PLACE (không refetch cả list) → avatar/tên mới hiện ngay, không cần F5.
-    socket.on('chat:group-info-updated', (data: { conversationId: string; groupName?: string; groupAvatarUrl?: string; groupMembersCount?: number; groupMemberAvatars?: Array<{ uid: string; name?: string | null; avatarUrl: string }> }) => {
+    socket.on('chat:group-info-updated', (data: { conversationId: string; groupName?: string; groupAvatarUrl?: string; groupMembersCount?: number; groupMemberAvatars?: Array<{ uid: string; name?: string | null; avatarUrl: string }>; groupSdkType?: number | null; groupCategory?: Conversation['groupCategory']; groupMonitoringEnabled?: boolean; groupClassificationSource?: Conversation['groupClassificationSource']; groupClassificationConfidence?: number | null; groupClassifiedAt?: string | null }) => {
       const conv = conversations.value.find(c => c.id === data.conversationId);
       if (!conv) return;
       if (data.groupName != null) conv.groupName = data.groupName;
       if (data.groupAvatarUrl != null) conv.groupAvatarUrl = data.groupAvatarUrl;
       if (data.groupMembersCount != null) conv.groupMembersCount = data.groupMembersCount;
+      if ('groupSdkType' in data) conv.groupSdkType = data.groupSdkType ?? null;
+      if (data.groupCategory != null) conv.groupCategory = data.groupCategory;
+      if (data.groupMonitoringEnabled != null) conv.groupMonitoringEnabled = data.groupMonitoringEnabled;
+      if (data.groupClassificationSource != null) conv.groupClassificationSource = data.groupClassificationSource;
+      if ('groupClassificationConfidence' in data) conv.groupClassificationConfidence = data.groupClassificationConfidence ?? null;
+      if ('groupClassifiedAt' in data) conv.groupClassifiedAt = data.groupClassifiedAt ?? null;
       if (data.groupMemberAvatars != null) conv.groupMemberAvatars = data.groupMemberAvatars;
     });
 

@@ -18,7 +18,7 @@ async function canViewAssignee(user: JwtUser, assigneeUserId: string) {
 }
 
 function validScope(value: unknown): value is WorkItemScope {
-  return ['now', 'today', 'waiting', 'upcoming', 'done', 'all'].includes(String(value));
+  return ['now', 'today', 'waiting', 'upcoming', 'verify', 'done', 'all'].includes(String(value));
 }
 
 export async function conversationWorkItemRoutes(app: FastifyInstance) {
@@ -26,7 +26,7 @@ export async function conversationWorkItemRoutes(app: FastifyInstance) {
 
   app.get('/api/v1/work-items', async (request, reply) => {
     const user = request.user as JwtUser;
-    const query = request.query as { asUserId?: string; scope?: string; limit?: string };
+    const query = request.query as { asUserId?: string; scope?: string; limit?: string; offset?: string; q?: string };
     const assigneeUserId = query.asUserId || user.id;
     if (!(await canViewAssignee(user, assigneeUserId))) {
       return reply.status(403).send({ error: 'Bạn không có quyền xem công việc của nhân viên này', code: 'WORK_ITEMS_FORBIDDEN' });
@@ -39,12 +39,15 @@ export async function conversationWorkItemRoutes(app: FastifyInstance) {
     const privacy = await buildPrivacyContext(request);
     const scope = validScope(query.scope) ? query.scope : 'now';
     const limit = Number(query.limit);
+    const offset = Number(query.offset);
     const result = await listConversationWorkItems({
       orgId: user.orgId,
       assigneeUserId,
       privacy,
       scope,
       limit: Number.isFinite(limit) ? limit : undefined,
+      offset: Number.isFinite(offset) ? offset : undefined,
+      query: query.q,
     });
     return { ...result, assignee };
   });

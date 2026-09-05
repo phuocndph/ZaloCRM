@@ -4,9 +4,11 @@ import { logger } from '../../shared/utils/logger.js';
 import { enrollContact, stopEnrollment } from '../followup/followup-engine.js';
 import { createWorkflow, setStatus, type WorkflowInput } from '../followup/followup-service.js';
 import { addCrmTag, removeCrmTag } from '../tags/tag-service.js';
+import { isConfirmedNonCustomer, normalizeCounterpartyAssessment } from './counterparty-role.js';
 
 const ACTIVE_ENROLLMENT_STATES = ['running', 'waiting', 'waiting_sale'];
 const AUTOMATION_MARKER = 'customer-automation:v1';
+const AUTOMATION_ACTOR_NAME = 'AI chăm sóc khách hàng';
 const COMPLETED_OUTCOMES = ['success', 'no_change', 'blocked'];
 
 export type CustomerAutomationWorkflowType = 'after_quote' | 'post_sale' | 'reengage';
@@ -67,6 +69,11 @@ const TAGS: Record<string, { names: string[]; color: string }> = {
   cold: { names: ['Khách đang nguội'], color: '#64748B' },
   human_required: { names: ['Cần nhân viên xử lý'], color: '#DC2626' },
   do_not_contact: { names: ['Không liên hệ'], color: '#991B1B' },
+  vendor: { names: ['Người chào hàng'], color: '#64748B' },
+  partner: { names: ['Đối tác'], color: '#0F766E' },
+  recruiter: { names: ['Tuyển dụng'], color: '#7C3AED' },
+  personal: { names: ['Liên hệ cá nhân'], color: '#475569' },
+  spam: { names: ['Tin quảng cáo'], color: '#B91C1C' },
 };
 
 const AUTOMATED_TAG_NAMES = [...new Set([
@@ -215,10 +222,10 @@ async function ensureWorkflow(orgId: string, type: CustomerAutomationWorkflowTyp
 async function syncTags(
   insight: InsightSnapshot,
   actions: AutomationAction[],
-  options: { preserveDoNotContact?: boolean } = {},
+  options: { preserveDoNotContact?: boolean; desiredNames?: string[] } = {},
 ) {
   if (!insight.contactId) return;
-  const desired = new Set(desiredAutomatedTags(insight.stage, insight.intentLabel));
+  const desired = new Set(options.desiredNames ?? desiredAutomatedTags(insight.stage, insight.intentLabel));
   if (options.preserveDoNotContact) desired.add(TAGS.do_not_contact.names[0]);
   const assignments = await prisma.contactTag.findMany({
     where: {
@@ -348,6 +355,35 @@ async function reconcile(insight: InsightSnapshot): Promise<CustomerAutomationRe
   }
 
   const signals = jsonObject(insight.signals);
+  const counterparty = normalizeCounterpartyAssessment({
+    role: signals.counterpartyRole,
+    confidence: signals.counterpartyConfidence,
+    reason: signals.counterpartyReason,
+  });
+  const classifierApplied = Number(signals.counterpartyClassifierVersion ?? 0) > 0;
+  const salesTargetConfirmed = signals.workItemEligible === true;
+  const analysisModelFallback = signals.analysisModelFallback === true;
+  const identityUnconfirmed = classifierApplied && !salesTargetConfirmed && !isConfirmedNonCustomer(counterparty);
+  if (isConfirmedNonCustomer(counterparty)) {
+    const blockReason = 'not_a_customer';
+    await syncTags(insight, actions, {
+      desiredNames: TAGS[counterparty!.role]?.names ?? [],
+    });
+    if (active?.enrolledByName === 'AI chăm sóc khách hàng') {
+      await stopEnrollment(active.id, blockReason, { actorType: 'system', actorName: 'AI chăm sóc khách hàng' });
+      actions.push({ type: 'workflow_stopped', workflowId: active.workflowId, enrollmentId: active.id, reason: blockReason });
+    }
+    const result: CustomerAutomationResult = {
+      enabled: true,
+      outcome: 'blocked',
+      reason: blockReason,
+      desiredWorkflowType: null,
+      enrollmentId: active?.enrolledByName === 'AI chăm sóc khách hàng' ? null : active?.id ?? null,
+      actions,
+    };
+    await writeAudit(insight, result);
+    return result;
+  }
   const explicitOptOut = insight.stage === 'do_not_contact' || signals.explicitOptOut === true;
   if (explicitOptOut && contact.consentStatus !== 'revoked') {
     await prisma.contact.updateMany({
@@ -357,8 +393,6 @@ async function reconcile(insight: InsightSnapshot): Promise<CustomerAutomationRe
     contact.consentStatus = 'revoked';
     actions.push({ type: 'consent_revoked', reason: 'explicit_opt_out' });
   }
-  await syncTags(insight, actions, { preserveDoNotContact: contact.consentStatus === 'revoked' });
-
   const messageableFriend = await prisma.friend.findFirst({
     where: { orgId: insight.orgId, contactId: insight.contactId, zaloAccountId: conversation.zaloAccountId },
     select: { friendshipStatus: true, strangerBlocked: true, zaloAccountId: true },
@@ -370,6 +404,31 @@ async function reconcile(insight: InsightSnapshot): Promise<CustomerAutomationRe
     friendshipStatus: messageableFriend?.friendshipStatus ?? null,
     strangerBlocked: messageableFriend?.strangerBlocked ?? null,
   });
+  if (identityUnconfirmed) {
+    // A current, non-fallback classifier result may retract stale AI-owned
+    // sales state. Manual tags and workflows remain untouched.
+    if (!analysisModelFallback) {
+      await syncTags(insight, actions, { desiredNames: [] });
+    }
+    const stopUnconfirmedAutomation = active?.enrolledByName === AUTOMATION_ACTOR_NAME
+      && (!!blockedReason || !analysisModelFallback);
+    if (stopUnconfirmedAutomation && active) {
+      const reason = blockedReason ?? 'customer_identity_unconfirmed';
+      await stopEnrollment(active.id, reason, { actorType: 'system', actorName: AUTOMATION_ACTOR_NAME });
+      actions.push({ type: 'workflow_stopped', workflowId: active.workflowId, enrollmentId: active.id, reason });
+    }
+    const result: CustomerAutomationResult = {
+      enabled: true,
+      outcome: blockedReason ? 'blocked' : actions.length ? 'success' : 'no_change',
+      reason: blockedReason ?? (analysisModelFallback ? 'analysis_pending' : 'customer_identity_unconfirmed'),
+      desiredWorkflowType: null,
+      enrollmentId: stopUnconfirmedAutomation ? null : active?.id ?? null,
+      actions,
+    };
+    await writeAudit(insight, result);
+    return result;
+  }
+  await syncTags(insight, actions, { preserveDoNotContact: contact.consentStatus === 'revoked' });
   if (blockedReason) {
     if (active) {
       await stopEnrollment(active.id, blockedReason, { actorType: 'system', actorName: 'AI chăm sóc khách hàng' });

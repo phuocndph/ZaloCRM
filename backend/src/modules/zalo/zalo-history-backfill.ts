@@ -274,6 +274,7 @@ export async function backfillAccountHistory(api: any, accountId: string): Promi
             groupName,
             groupAvatarUrl: groupAvatar || undefined,
             groupMembersCount: typeof membersCount === 'number' ? membersCount : undefined,
+            groupSdkType: typeof group?.type === 'number' ? group.type : undefined,
             attachments: [],
             quote: msg?.data?.quote,
             albumKey: album.albumKey,

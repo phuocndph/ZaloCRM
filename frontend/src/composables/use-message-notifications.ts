@@ -29,6 +29,7 @@ import {
   notificationRoute,
 } from '@/composables/message-notification-utils';
 import { useMessageNotificationInbox } from '@/composables/use-message-notification-inbox';
+import { parseFriendAcceptedNotice } from '@/composables/zalo-system-notice';
 
 export interface NotifCard {
   id: string;
@@ -151,6 +152,7 @@ function showNative(card: NotifCard, force = false) {
 
 function onSocketMessage(payload: {
   conversationId?: string; accountId?: string; message?: any;
+  systemNotification?: boolean;
   threadType?: 'user' | 'group'; groupName?: string | null; groupAvatarUrl?: string | null;
   senderAvatarUrl?: string | null;
 }) {
@@ -159,6 +161,8 @@ function onSocketMessage(payload: {
   if (!message || !convId) return;
   // Chỉ tin ĐẾN (khách gửi) — bỏ tin mình gửi đi.
   if (message.senderType === 'self') return;
+  // Accepted-friend e-cards are system history, not customer messages.
+  if (payload.systemNotification === true || parseFriendAcceptedNotice(message.content)) return;
 
   // Đang MỞ đúng hội thoại đó (ở route /chat) và cửa sổ focus → không làm phiền (giống Zalo).
   // Phải kiểm tra route: selectedConvId là state singleton, GIỮ lại hội thoại mở gần nhất — nếu

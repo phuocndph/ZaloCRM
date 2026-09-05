@@ -3,6 +3,7 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '../../shared/database/prisma-client.js';
 import { authMiddleware } from '../auth/auth-middleware.js';
+import { isZaloFriendAcceptedNotification } from '../zalo/zalo-friend-accepted-notification.js';
 
 type JwtUser = { id: string; orgId: string };
 
@@ -12,6 +13,17 @@ function boundedLimit(raw: unknown): number {
   return Math.min(100, Math.max(1, Math.trunc(value)));
 }
 
+async function findSystemMessageIds(messageIds: string[]): Promise<Set<string>> {
+  if (!messageIds.length) return new Set();
+  const messages = await prisma.message.findMany({
+    where: { id: { in: messageIds } },
+    select: { id: true, content: true },
+  });
+  return new Set(messages
+    .filter((message) => isZaloFriendAcceptedNotification(message.content))
+    .map((message) => message.id));
+}
+
 export async function messageNotificationRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', authMiddleware);
 
@@ -19,7 +31,7 @@ export async function messageNotificationRoutes(app: FastifyInstance): Promise<v
     const user = request.user as JwtUser;
     const limit = boundedLimit(request.query?.limit);
     const where = { userId: user.id, orgId: user.orgId };
-    const [notifications, unreadCount] = await Promise.all([
+    const [rawNotifications, rawUnread] = await Promise.all([
       prisma.messageNotification.findMany({
         where,
         orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
@@ -37,8 +49,24 @@ export async function messageNotificationRoutes(app: FastifyInstance): Promise<v
           createdAt: true,
         },
       }),
-      prisma.messageNotification.count({ where: { ...where, readAt: null } }),
+      prisma.messageNotification.findMany({
+        where: { ...where, readAt: null },
+        select: { messageId: true },
+      }),
     ]);
+    // Older app versions may already have persisted an accepted-friend e-card as a
+    // notification. Filter those legacy rows at read time without deleting history.
+    const systemMessageIds = await findSystemMessageIds([
+      ...new Set([
+        ...rawNotifications.map((notification) => notification.messageId),
+        ...rawUnread.map((notification) => notification.messageId),
+      ]),
+    ]);
+    const notifications = rawNotifications.filter((notification) => !systemMessageIds.has(notification.messageId));
+    const unreadCount = rawUnread.reduce(
+      (count, notification) => count + (systemMessageIds.has(notification.messageId) ? 0 : 1),
+      0,
+    );
     return { success: true, notifications, unreadCount };
   });
 

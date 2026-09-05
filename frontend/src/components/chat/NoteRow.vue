@@ -132,7 +132,7 @@ const absTime = computed(() => formatInOrgTz(props.note.createdAt));
 
 const clusteredReactions = computed(() => {
   const map = new Map<string, { emoji: string; count: number; mine: boolean; users: string[] }>();
-  for (const r of props.note.reactions) {
+  for (const r of props.note.reactions ?? []) {
     const entry = map.get(r.emoji) || { emoji: r.emoji, count: 0, mine: false, users: [] };
     entry.count++;
     if (r.userId === props.currentUserId) entry.mine = true;

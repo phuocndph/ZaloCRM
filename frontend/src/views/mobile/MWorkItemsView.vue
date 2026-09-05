@@ -2,7 +2,7 @@
 <!-- Màn hình công việc hằng ngày cho nhân viên trên mobile. -->
 <template>
   <div class="mwi mc-scroll">
-    <MPageHeader title="Công việc" :count="counts.now" notifications />
+    <MPageHeader title="Công việc" :count="counts[scope] ?? 0" notifications />
     <div class="mwi-body m-scroll">
       <div class="mwi-intro">
         <strong>Việc cần xử lý hôm nay</strong>
@@ -24,12 +24,12 @@ defineOptions({ name: 'MWorkItemsView' });
 const route = useRoute();
 const router = useRouter();
 const queue = ref<InstanceType<typeof DailyWorkQueue> | null>(null);
-const validScopes: WorkItemScope[] = ['now', 'today', 'waiting', 'upcoming', 'done'];
+const validScopes: WorkItemScope[] = ['now', 'today', 'waiting', 'upcoming', 'verify', 'done'];
 const scope = computed<WorkItemScope>(() => {
   const value = String(route.query.scope || 'now') as WorkItemScope;
   return validScopes.includes(value) ? value : 'now';
 });
-const counts = computed(() => queue.value?.counts ?? { now: 0 });
+const counts = computed(() => queue.value?.counts ?? { now: 0, today: 0, waiting: 0, upcoming: 0, verify: 0, done: 0 });
 
 function onScopeChange(value: WorkItemScope) {
   void router.replace({ query: { ...route.query, scope: value === 'now' ? undefined : value } });

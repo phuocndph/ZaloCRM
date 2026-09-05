@@ -140,6 +140,12 @@ async function refreshAccountGroups(
         groupName: true,
         groupAvatarUrl: true,
         groupMembersCount: true,
+        groupSdkType: true,
+        groupCategory: true,
+        groupMonitoringEnabled: true,
+        groupClassificationSource: true,
+        groupClassificationConfidence: true,
+        groupClassifiedAt: true,
       },
     }),
   );

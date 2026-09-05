@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   prisma: {
     aiConfig: { findUnique: vi.fn() },
+    aiAgent: { findFirst: vi.fn() },
   },
   getProviderConfig: vi.fn(),
   resolveProviderApiKey: vi.fn(),
@@ -38,6 +39,11 @@ describe('AI readiness service', () => {
       : undefined);
     mocks.resolveProviderApiKey.mockResolvedValue('sk-secret-value');
     mocks.getProviderBaseUrl.mockResolvedValue('https://api.example.test');
+    mocks.prisma.aiAgent.findFirst.mockResolvedValue({
+      id: 'agent-1',
+      promptVersion: { status: 'production' },
+      skills: [{ id: 'agent-skill-1' }],
+    });
   });
 
   it('reports a missing AI configuration without resolving credentials', async () => {
@@ -111,5 +117,21 @@ describe('AI readiness service', () => {
       code: 'AI_PROVIDER_UNSUPPORTED',
     });
     expect(mocks.listProviderModels).not.toHaveBeenCalled();
+  });
+
+  it('does not report ready when the provider works but the active AI runtime is incomplete', async () => {
+    mocks.prisma.aiConfig.findUnique.mockResolvedValue({ enabled: true, provider: 'openai', model: 'gpt-test' });
+    mocks.prisma.aiAgent.findFirst.mockResolvedValue(null);
+    mocks.listProviderModels.mockResolvedValue([{ title: 'gpt-test', value: 'gpt-test' }]);
+
+    await testProviderConnection('org-1', 'openai');
+    const readiness = await getAiReadiness('org-1');
+
+    expect(readiness).toMatchObject({
+      ready: false,
+      status: 'not_configured',
+      runtime: { agentReady: false, promptReady: false, skillReady: false, ready: false },
+    });
+    expect(readiness.checks).toContainEqual(expect.objectContaining({ id: 'active_agent', status: 'failed' }));
   });
 });

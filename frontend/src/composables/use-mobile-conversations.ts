@@ -134,7 +134,7 @@ export function useMobileConversations() {
   }
 
   function applyIncoming(
-    payload: { conversationId: string; message: Record<string, unknown> },
+    payload: { conversationId: string; message: Record<string, unknown>; systemNotification?: boolean },
     activeConvId: string | null,
   ) {
     const idx = items.value.findIndex((c) => c.id === payload.conversationId);
@@ -147,7 +147,7 @@ export function useMobileConversations() {
     conv.messages = [{ content: msg.content ?? '', contentType: msg.contentType ?? 'text', senderType: msg.senderType ?? 'contact' }];
     conv.lastMessageAt = msg.sentAt ?? new Date().toISOString();
     const isInbound = msg.senderType !== 'self';
-    if (isInbound && payload.conversationId !== activeConvId) {
+    if (isInbound && payload.conversationId !== activeConvId && !payload.systemNotification && !parseFriendAcceptedNotice(msg.content)) {
       conv.unreadCount = (conv.unreadCount ?? 0) + 1;
     }
     items.value.splice(idx, 1);

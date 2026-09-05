@@ -3,7 +3,7 @@ import { api } from '@/api';
 import { createAppSocket } from '@/api/socket';
 import type { Socket } from 'socket.io-client';
 
-export type WorkItemScope = 'now' | 'today' | 'waiting' | 'upcoming' | 'done';
+export type WorkItemScope = 'now' | 'today' | 'waiting' | 'upcoming' | 'verify' | 'done';
 export type WorkItemPriority = 'critical' | 'high' | 'normal' | 'low';
 
 export interface ConversationWorkItemMetadata {
@@ -14,6 +14,15 @@ export interface ConversationWorkItemMetadata {
   unreadCount?: number;
   signalCount?: number;
   signals?: Array<{ kind?: string; title?: string; dueAt?: string | null }>;
+  actionKey?: string;
+  isGroup?: boolean;
+  groupName?: string;
+  groupCategory?: string;
+  actionableSenderUid?: string | null;
+  actionableSenderName?: string | null;
+  actionableMessageId?: string | null;
+  actionableRequest?: string | null;
+  requiredEmployeeAction?: string | null;
 }
 
 export interface ConversationWorkItem {
@@ -49,20 +58,35 @@ export interface WorkItemCounts {
   today: number;
   waiting: number;
   upcoming: number;
+  verify: number;
   done: number;
   all?: number;
+}
+
+export interface WorkItemSummary {
+  totalActive: number;
+  critical: number;
+  overdue: number;
+  waitingReply: number;
+  verification: number;
 }
 
 type WorkItemResponse = {
   items: ConversationWorkItem[];
   counts: WorkItemCounts;
+  summary?: WorkItemSummary;
   generatedAt: string;
+  hasMore?: boolean;
+  nextOffset?: number | null;
 };
 
 export function useConversationWorkItems() {
   const items = ref<ConversationWorkItem[]>([]);
-  const counts = ref<WorkItemCounts>({ now: 0, today: 0, waiting: 0, upcoming: 0, done: 0 });
+  const counts = ref<WorkItemCounts>({ now: 0, today: 0, waiting: 0, upcoming: 0, verify: 0, done: 0 });
+  const summary = ref<WorkItemSummary>({ totalActive: 0, critical: 0, overdue: 0, waitingReply: 0, verification: 0 });
   const loading = ref(false);
+  const loadingMore = ref(false);
+  const hasMore = ref(false);
   const mutatingId = ref<string | null>(null);
   const error = ref<string | null>(null);
   let requestSequence = 0;
@@ -70,10 +94,11 @@ export function useConversationWorkItems() {
   let refreshTimer: ReturnType<typeof setTimeout> | null = null;
   let activeScope: WorkItemScope = 'now';
   let activeAsUserId: string | null | undefined;
+  let activeQuery = '';
 
   function scheduleRefresh() {
     if (refreshTimer) clearTimeout(refreshTimer);
-    refreshTimer = setTimeout(() => { void fetchItems(activeScope, activeAsUserId, true); }, 350);
+    refreshTimer = setTimeout(() => { void fetchItems(activeScope, activeAsUserId, true, activeQuery); }, 350);
   }
 
   function startRealtime() {
@@ -86,24 +111,50 @@ export function useConversationWorkItems() {
     socket.on('work-items:updated', refreshOnActivity);
   }
 
-  async function fetchItems(scope: WorkItemScope, asUserId?: string | null, quiet = false) {
+  async function fetchItems(scope: WorkItemScope, asUserId?: string | null, quiet = false, query = '') {
     const sequence = ++requestSequence;
     activeScope = scope;
     activeAsUserId = asUserId;
+    activeQuery = query.trim();
     if (!quiet) loading.value = true;
     error.value = null;
     try {
       startRealtime();
       const { data } = await api.get<WorkItemResponse>('/work-items', {
-        params: { scope, limit: 40, ...(asUserId ? { asUserId } : {}) },
+        params: { scope, limit: 40, offset: 0, ...(activeQuery ? { q: activeQuery } : {}), ...(asUserId ? { asUserId } : {}) },
       });
       if (sequence !== requestSequence) return;
       items.value = data.items ?? [];
       counts.value = { ...counts.value, ...(data.counts ?? {}) };
+      summary.value = { ...summary.value, ...(data.summary ?? {}) };
+      hasMore.value = data.hasMore === true;
     } catch {
       if (sequence === requestSequence) error.value = 'Không tải được danh sách công việc. Vui lòng thử lại.';
     } finally {
       if (sequence === requestSequence) loading.value = false;
+    }
+  }
+
+  async function loadMore() {
+    if (!hasMore.value || loadingMore.value) return;
+    const sequence = requestSequence;
+    loadingMore.value = true;
+    try {
+      const { data } = await api.get<WorkItemResponse>('/work-items', {
+        params: {
+          scope: activeScope,
+          limit: 40,
+          offset: items.value.length,
+          ...(activeQuery ? { q: activeQuery } : {}),
+          ...(activeAsUserId ? { asUserId: activeAsUserId } : {}),
+        },
+      });
+      if (sequence !== requestSequence) return;
+      const existingIds = new Set(items.value.map((item) => item.id));
+      items.value = [...items.value, ...(data.items ?? []).filter((item) => !existingIds.has(item.id))];
+      hasMore.value = data.hasMore === true;
+    } finally {
+      if (sequence === requestSequence) loadingMore.value = false;
     }
   }
 
@@ -127,5 +178,5 @@ export function useConversationWorkItems() {
     socket = null;
   }
 
-  return { items, counts, loading, mutatingId, error, fetchItems, updateItem, stopRealtime };
+  return { items, counts, summary, loading, loadingMore, hasMore, mutatingId, error, fetchItems, loadMore, updateItem, stopRealtime };
 }

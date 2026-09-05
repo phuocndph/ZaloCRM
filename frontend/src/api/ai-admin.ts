@@ -17,7 +17,10 @@ export type AiReadinessCheckId =
   | 'base_url'
   | 'model_selected'
   | 'connection'
-  | 'model_available';
+  | 'model_available'
+  | 'active_agent'
+  | 'production_prompt'
+  | 'active_skill';
 
 export type AiReadinessCheckStatus = 'passed' | 'failed' | 'warning';
 export type AiModelAvailabilityStatus = 'missing' | 'unverified' | 'available' | 'unavailable';
@@ -58,6 +61,13 @@ export interface AiReadinessResponse {
     testedAt: string | null;
     latencyMs: number | null;
     errorCode: string | null;
+  };
+  runtime: {
+    agentId: string | null;
+    agentReady: boolean;
+    promptReady: boolean;
+    skillReady: boolean;
+    ready: boolean;
   };
   checks: AiReadinessCheck[];
 }

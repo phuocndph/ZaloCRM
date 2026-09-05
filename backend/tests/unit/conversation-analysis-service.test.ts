@@ -54,6 +54,11 @@ const emotion = {
   emotion: 'interested' as const, confidence: 0.75, intensity: 0.4,
   suggested_tone: 'warm' as const, escalation_required: false, explanation: 'Interested customer.',
 };
+const counterparty = {
+  role: 'prospect' as const,
+  confidence: 0.9,
+  reason: 'Đối phương đang hỏi mua sản phẩm của doanh nghiệp.',
+};
 
 function trigger(overrides: Record<string, unknown> = {}) {
   return {
@@ -89,7 +94,10 @@ describe('ConversationAnalysisService', () => {
     mocks.prisma.aiConfig.findUnique.mockResolvedValue({
       enabled: true, defaultModelConfig: { id: 'model-1', status: 'active', deletedAt: null },
     });
-    mocks.prisma.aiAgent.findFirst.mockResolvedValue({ id: 'agent-1', modelConfigId: 'model-1', promptVersionId: 'prompt-1' });
+    mocks.prisma.aiAgent.findFirst.mockResolvedValue({
+      id: 'agent-1', modelConfigId: 'model-1', promptVersionId: 'prompt-1',
+      modelConfig: { status: 'active', deletedAt: null },
+    });
     mocks.prisma.aiRun.create.mockResolvedValue({ id: 'run-1' });
     mocks.prisma.aiRun.update.mockResolvedValue({ id: 'run-1' });
     mocks.prisma.aiAuditLog.findFirst.mockResolvedValue(null);
@@ -105,6 +113,7 @@ describe('ConversationAnalysisService', () => {
       intent: { ...intent, primary_intent: 'not_interested' }, emotion,
       latestInboundText: 'Đừng nhắn tin và không liên hệ tôi nữa', hasOutboundQuote: false,
       crmStatus: 'Moi', needsReply: true, verifiedPaymentObligation: false,
+      counterparty,
     });
     expect(result).toMatchObject({
       stage: 'do_not_contact', nextAction: 'suppress_automation', recommendedWorkflowType: null,
@@ -117,6 +126,7 @@ describe('ConversationAnalysisService', () => {
       intent: { ...intent, primary_intent: 'payment_inquiry', suggested_skill: 'payment_reminder' }, emotion,
       latestInboundText: 'Minh thanh toan nhu the nao?', hasOutboundQuote: true,
       crmStatus: 'Tiep can', needsReply: true, verifiedPaymentObligation: false,
+      counterparty,
     });
     expect(result).toMatchObject({
       stage: 'negotiating', requiresHuman: true, nextAction: 'verify_payment_obligation',
@@ -130,6 +140,7 @@ describe('ConversationAnalysisService', () => {
       intent: { ...intent, primary_intent: 'order_intent' }, emotion,
       latestInboundText: 'Cho anh 20 cái ga', hasOutboundQuote: true,
       crmStatus: 'Moi', needsReply: true, verifiedPaymentObligation: false,
+      counterparty,
     });
     expect(result).toMatchObject({
       stage: 'won', nextAction: 'confirm_order_details', recommendedWorkflowType: null,
@@ -138,7 +149,7 @@ describe('ConversationAnalysisService', () => {
     expect(result.nextActionReason).toContain('tạo hoặc hoàn tất đơn hàng');
   });
 
-  it('keeps a confirmed order when the newest customer message is an image', () => {
+  it('asks staff to clarify a new image instead of reusing a stale order signal', () => {
     const result = buildShadowRecommendation({
       intent: { ...intent, primary_intent: 'follow_up_response', requires_human: true }, emotion,
       latestInboundText: '',
@@ -146,10 +157,11 @@ describe('ConversationAnalysisService', () => {
       currentTags: ['Đã mua'],
       hasOutboundQuote: true,
       crmStatus: 'Mới', needsReply: true, verifiedPaymentObligation: false,
+      counterparty,
     });
     expect(result).toMatchObject({
-      stage: 'won', requiresHuman: false, nextAction: 'confirm_order_details', recommendedWorkflowType: null,
-      signals: { crmWonSignal: true, explicitOrderConfirmed: true },
+      stage: 'won', requiresHuman: true, nextAction: 'clarify_latest_message', recommendedWorkflowType: null,
+      signals: { crmWonSignal: true, explicitOrderConfirmed: false, latestMessageNeedsClarification: true },
     });
   });
 
@@ -162,9 +174,42 @@ describe('ConversationAnalysisService', () => {
       currentTags: ['Đã mua'],
       hasOutboundQuote: true,
       crmStatus: 'Mới', needsReply: true, verifiedPaymentObligation: false,
+      counterparty,
     });
     expect(result).toMatchObject({
       stage: 'human_required', requiresHuman: true, nextAction: 'assign_to_human',
+    });
+  });
+
+  it('does not create customer work for a person selling to the business', () => {
+    const result = buildShadowRecommendation({
+      intent: { ...intent, primary_intent: 'product_inquiry' }, emotion,
+      latestInboundText: 'Bên em chuyên cung cấp phần mềm và xin phép gửi báo giá.',
+      recentConversationText: 'Công ty chúng tôi muốn giới thiệu dịch vụ đến quý công ty.',
+      currentTags: [], hasOutboundQuote: false, crmStatus: null, needsReply: true,
+      verifiedPaymentObligation: false,
+      counterparty: { role: 'vendor', confidence: 0.94, reason: 'Đang chào bán dịch vụ.' },
+    });
+    expect(result).toMatchObject({
+      stage: 'cold', nextAction: 'ignore_non_customer', recommendedWorkflowType: null,
+      signals: { workItemEligible: false, counterpartyRole: 'vendor' },
+      safeguards: { autoTagMutationAllowed: false, workflowEnrollmentAllowed: false },
+    });
+  });
+
+  it('keeps an explicitly unknown contact out of staff work and automation', () => {
+    const result = buildShadowRecommendation({
+      intent: { ...intent, primary_intent: 'follow_up_response' }, emotion,
+      latestInboundText: '', recentConversationText: '[Hình ảnh]\n[Hình ảnh]',
+      currentTags: [], hasOutboundQuote: false, crmStatus: null, needsReply: true,
+      verifiedPaymentObligation: false,
+      counterparty: { role: 'unknown', confidence: 0.91, reason: 'Chưa đủ bằng chứng xác định vai trò.' },
+    });
+
+    expect(result).toMatchObject({
+      stage: 'needs_reply', nextAction: 'verify_customer_identity', recommendedWorkflowType: null,
+      signals: { workItemEligible: false, counterpartyRole: 'unknown', counterpartyClassifierVersion: 2 },
+      safeguards: { autoTagMutationAllowed: false, workflowEnrollmentAllowed: false },
     });
   });
 
@@ -195,6 +240,24 @@ describe('ConversationAnalysisService', () => {
       data: expect.objectContaining({ summaryId: 'summary-1', status: 'active' }),
     }));
     expect(mocks.prisma.aiConversationInsight.create).not.toHaveBeenCalled();
+  });
+
+  it('uses the organization default model after a provider switch even when the agent still references the old model', async () => {
+    mocks.prisma.aiConfig.findUnique.mockResolvedValue({
+      enabled: true, defaultModelConfig: { id: 'model-new', status: 'approved', deletedAt: null },
+    });
+    mocks.prisma.aiAgent.findFirst.mockResolvedValue({
+      id: 'agent-1', modelConfigId: 'model-old', promptVersionId: 'prompt-1',
+      modelConfig: { status: 'approved', deletedAt: null },
+    });
+
+    await processConversationAnalysis({
+      orgId: 'org-1', conversationId: 'conversation-1', messageId: 'message-1', force: true,
+    });
+
+    expect(mocks.prisma.aiRun.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ modelConfigId: 'model-new' }),
+    }));
   });
 
   it('skips private conversations before loading AI runtime', async () => {

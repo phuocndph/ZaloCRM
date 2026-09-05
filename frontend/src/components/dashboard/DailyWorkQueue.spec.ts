@@ -57,7 +57,7 @@ describe('DailyWorkQueue', () => {
     expect(wrapper.text()).toContain('Khách đang khiếu nại giao sai sản phẩm.');
     expect(wrapper.text()).toContain('Ưu tiên nhân viên xử lý trực tiếp');
     expect(wrapper.text()).toContain('Nick bán hàng, Nick hỗ trợ');
-    expect(wrapper.text()).toContain('AI 91%');
+    expect(wrapper.text()).toContain('AI gợi ý');
     wrapper.unmount();
   });
 

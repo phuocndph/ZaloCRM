@@ -106,4 +106,22 @@ describe('ConversationContextBuilder', () => {
     expect(messages.at(-1)?.id).toBe('m-120');
     expect(messages.some((message) => message.id === 'm-1')).toBe(false);
   });
+
+  it('turns image JSON into a readable marker while preserving its media reference for vision', async () => {
+    mocks.prisma.message.findMany.mockResolvedValue([{
+      id: 'm-image', senderType: 'contact', senderName: 'Lan',
+      content: JSON.stringify({ href: '/files/media/example.jpg', title: 'Mẫu ga khách sạn' }),
+      contentType: 'image', sentAt: baseDate, metadata: null,
+    }]);
+
+    const context = await buildConversationContext(actor, 'conv-1', { maxTokens: 900 });
+    const recent = context.sections.find((section) => section.id === 'recent_messages')!;
+    const messages = recent.items as Array<{ content: string; mediaUrl: string | null }>;
+
+    expect(messages[0]).toMatchObject({
+      content: '[Hình ảnh: Mẫu ga khách sạn]',
+      mediaUrl: '/files/media/example.jpg',
+    });
+    expect(JSON.stringify(recent.items)).not.toContain('"href"');
+  });
 });

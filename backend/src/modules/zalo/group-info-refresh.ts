@@ -17,14 +17,31 @@ import { logger } from '../../shared/utils/logger.js';
 import { zaloOps } from '../../shared/zalo-operations.js';
 import { withTenant } from '../../shared/tenant/tenant-context.js';
 import { mirrorRemoteMediaUrl, isMirrorableUrl } from '../chat/message-handler.js';
+import { inferAutomaticGroupProfile } from './group-monitoring-policy.js';
 
 /** Giá trị group hiện tại trong DB để diff. */
 export interface GroupConvFields {
   groupName: string | null;
   groupAvatarUrl: string | null;
   groupMembersCount: number | null;
+  groupSdkType: number | null;
+  groupCategory: string;
+  groupMonitoringEnabled: boolean;
+  groupClassificationSource: string;
+  groupClassificationConfidence: number | null;
+  groupClassifiedAt: Date | null;
 }
-export type GroupUpdates = { groupName?: string; groupAvatarUrl?: string; groupMembersCount?: number };
+export type GroupUpdates = {
+  groupName?: string;
+  groupAvatarUrl?: string;
+  groupMembersCount?: number;
+  groupSdkType?: number | null;
+  groupCategory?: string;
+  groupMonitoringEnabled?: boolean;
+  groupClassificationSource?: string;
+  groupClassificationConfidence?: number | null;
+  groupClassifiedAt?: Date | null;
+};
 
 /**
  * Gọi getGroupInfo → mirror avatar → diff vs `existing`. Trả updates (chỉ field ĐỔI)
@@ -51,12 +68,28 @@ export async function buildGroupUpdates(
   }
   const newCount: number | undefined =
     typeof info.totalMember === 'number' ? info.totalMember : undefined;
+  const sdkType = typeof info.type === 'number' ? info.type : existing.groupSdkType;
+  const profile = inferAutomaticGroupProfile({
+    name: newName || existing.groupName,
+    sdkType,
+    current: existing as any,
+  });
 
   // Diff + guard: KHÔNG ghi đè bằng rỗng/null (giữ giá trị cũ nếu SDK trả trống).
   const updates: GroupUpdates = {};
   if (newName && newName !== existing.groupName) updates.groupName = newName;
   if (newAvatar && newAvatar !== existing.groupAvatarUrl) updates.groupAvatarUrl = newAvatar;
   if (newCount != null && newCount !== existing.groupMembersCount) updates.groupMembersCount = newCount;
+  if (profile.groupSdkType !== existing.groupSdkType) updates.groupSdkType = profile.groupSdkType ?? null;
+  if (profile.groupCategory !== existing.groupCategory) updates.groupCategory = profile.groupCategory;
+  if (profile.groupMonitoringEnabled !== existing.groupMonitoringEnabled) updates.groupMonitoringEnabled = profile.groupMonitoringEnabled;
+  if (profile.groupClassificationSource !== existing.groupClassificationSource) updates.groupClassificationSource = profile.groupClassificationSource;
+  if (profile.groupClassificationConfidence !== existing.groupClassificationConfidence) {
+    updates.groupClassificationConfidence = profile.groupClassificationConfidence;
+  }
+  if (profile.groupClassifiedAt?.getTime() !== existing.groupClassifiedAt?.getTime()) {
+    updates.groupClassifiedAt = profile.groupClassifiedAt;
+  }
 
   return Object.keys(updates).length ? updates : null;
 }
@@ -75,7 +108,11 @@ export async function refreshGroupInfoNow(
   const conv = await withTenant(orgId, () =>
     prisma.conversation.findFirst({
       where: { zaloAccountId: accountId, externalThreadId: groupId, threadType: 'group' },
-      select: { id: true, groupName: true, groupAvatarUrl: true, groupMembersCount: true },
+      select: {
+        id: true, groupName: true, groupAvatarUrl: true, groupMembersCount: true,
+        groupSdkType: true, groupCategory: true, groupMonitoringEnabled: true,
+        groupClassificationSource: true, groupClassificationConfidence: true, groupClassifiedAt: true,
+      },
     }),
   );
   if (!conv) return false; // nhóm chưa được track (chưa có hội thoại) → bỏ qua

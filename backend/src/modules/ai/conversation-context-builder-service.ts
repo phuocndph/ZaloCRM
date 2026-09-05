@@ -133,10 +133,40 @@ function compactObject<T extends Record<string, unknown>>(value: T): Partial<T> 
   return Object.fromEntries(Object.entries(value).filter(([, item]) => item !== null && item !== undefined && item !== '')) as Partial<T>;
 }
 
+function messagePayload(content: string | null) {
+  if (!content?.trim()) return {} as JsonRecord;
+  try {
+    return jsonObject(JSON.parse(content));
+  } catch {
+    return {} as JsonRecord;
+  }
+}
+
+function firstPayloadText(payload: JsonRecord, keys: string[]) {
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return '';
+}
+
 function messageText(message: { content: string | null; contentType: string; attachments?: unknown; metadata?: unknown }) {
-  if (message.content?.trim()) return trimText(message.content);
-  if (message.contentType !== 'text') return `[${message.contentType}]`;
-  return null;
+  if (message.contentType === 'text') return message.content?.trim() ? trimText(message.content) : null;
+  const payload = messagePayload(message.content);
+  const caption = firstPayloadText(payload, ['title', 'description', 'caption', 'name']);
+  const label = message.contentType === 'image' ? 'Hình ảnh'
+    : message.contentType === 'video' ? 'Video'
+      : message.contentType === 'file' ? 'Tệp đính kèm'
+        : message.contentType === 'voice' ? 'Tin nhắn thoại'
+          : message.contentType;
+  return trimText(caption ? `[${label}: ${caption}]` : `[${label}]`);
+}
+
+function messageMediaUrl(message: { content: string | null; contentType: string }) {
+  if (message.contentType !== 'image') return null;
+  return firstPayloadText(messagePayload(message.content), [
+    'hdUrl', 'href', 'normalUrl', 'url', 'thumbUrl', 'thumb', 'thumbnail',
+  ]) || null;
 }
 
 function extractLatestQuote(messages: Array<{ id: string; content: string | null; sentAt: Date; senderType: string }>) {
@@ -201,6 +231,12 @@ export async function buildConversationContext(
       contactId: true,
       threadType: true,
       groupName: true,
+      groupMembersCount: true,
+      groupSdkType: true,
+      groupCategory: true,
+      groupMonitoringEnabled: true,
+      groupClassificationSource: true,
+      groupClassificationConfidence: true,
       lastMessageAt: true,
       unreadCount: true,
       isReplied: true,
@@ -268,7 +304,7 @@ export async function buildConversationContext(
       where: { conversationId: conversation.id, isDeleted: false },
       orderBy: [{ sentAt: 'desc' }, { createdAt: 'desc' }],
       take: Math.min(MAX_RECENT_MESSAGES, Math.max(10, options.recentMessageLimit ?? MAX_RECENT_MESSAGES)),
-      select: { id: true, senderType: true, senderName: true, content: true, contentType: true, sentAt: true, metadata: true },
+      select: { id: true, senderType: true, senderUid: true, senderName: true, content: true, contentType: true, sentAt: true, metadata: true },
     }),
     prisma.aiConversationSummary.findFirst({
       where: { orgId: actor.orgId, conversationId: conversation.id, status: 'active' },
@@ -285,7 +321,7 @@ export async function buildConversationContext(
       orderBy: { createdAt: 'desc' },
       select: { id: true, label: true, confidence: true, intensity: true, secondary: true, reasonRedacted: true, createdAt: true, messageId: true },
     }),
-    conversation.contactId ? prisma.friend.findFirst({
+    conversation.threadType === 'user' && conversation.contactId ? prisma.friend.findFirst({
       where: { orgId: actor.orgId, contactId: conversation.contactId, zaloAccountId: conversation.zaloAccountId },
       select: {
         id: true, friendshipStatus: true, relationshipKind: true, crmTagsPerNick: true, zaloLabels: true,
@@ -293,7 +329,7 @@ export async function buildConversationContext(
         lastInboundAt: true, lastOutboundAt: true, lastInteractionAt: true,
       },
     }) : Promise.resolve(null),
-    conversation.contactId ? prisma.followupEnrollment.findMany({
+    conversation.threadType === 'user' && conversation.contactId ? prisma.followupEnrollment.findMany({
       where: { orgId: actor.orgId, contactId: conversation.contactId, status: { in: ['running', 'waiting', 'waiting_sale'] } },
       orderBy: [{ updatedAt: 'desc' }],
       take: 3,
@@ -305,7 +341,7 @@ export async function buildConversationContext(
     }) : Promise.resolve([]),
   ]);
 
-  const contact = conversation.contact;
+  const contact = conversation.threadType === 'user' ? conversation.contact : null;
   const propertyNeed = propertyNeedFrom(contact?.metadata);
   const messages = [...messagesDesc].reverse();
   const latestQuote = extractLatestQuote(messagesDesc);
@@ -314,6 +350,26 @@ export async function buildConversationContext(
   }));
 
   const sections: SectionDraft[] = [accessSection];
+
+  if (conversation.threadType === 'group') {
+    sections.push({
+      id: 'group_profile',
+      title: 'Group monitoring profile',
+      priority: 98,
+      items: {
+        conversationKind: 'group',
+        groupName: conversation.groupName || 'Nhóm',
+        memberCount: conversation.groupMembersCount,
+        sdkType: conversation.groupSdkType,
+        category: conversation.groupCategory,
+        monitoringEnabled: conversation.groupMonitoringEnabled,
+        classificationSource: conversation.groupClassificationSource,
+        classificationConfidence: conversation.groupClassificationConfidence,
+        safetyRule: 'community_excluded; no_auto_send; no_workflow; no_tag_or_crm_mutation',
+      },
+      sources: [convSource],
+    });
+  }
 
   if (summary?.summaryRedacted) {
     sections.push({
@@ -439,9 +495,11 @@ export async function buildConversationContext(
       id: message.id,
       sentAt: message.sentAt,
       senderType: message.senderType,
+      senderUid: message.senderUid,
       senderName: message.senderName,
       contentType: message.contentType,
       content: messageText(message),
+      mediaUrl: messageMediaUrl(message),
       sourceId: messageSources[index],
     }))
     .filter((message) => message.content);

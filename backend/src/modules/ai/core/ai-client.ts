@@ -142,7 +142,9 @@ export class AIClient {
     const requestId = randomUUID();
     const startedAt = this.now();
     const primary = await this.registry.resolve(request.orgId, request.modelConfigId);
-    const contentHash = AISafeLogger.hashContent(request.messages.map((message) => message.content).join('\n'));
+    const contentHash = AISafeLogger.hashContent(request.messages.map((message) => (
+      typeof message.content === 'string' ? message.content : JSON.stringify(message.content)
+    )).join('\n'));
     this.safeLogger.info('request_started', {
       requestId, orgId: request.orgId, provider: primary.provider, model: primary.model, taskType: request.taskType, contentHash,
     });

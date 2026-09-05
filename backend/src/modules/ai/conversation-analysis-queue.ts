@@ -10,6 +10,9 @@ import {
   type ConversationAnalysisJobData,
 } from './conversation-analysis-service.js';
 import { backfillCustomerAutomations } from './customer-automation-orchestrator.js';
+import { COUNTERPARTY_CLASSIFIER_VERSION } from './counterparty-role.js';
+import { isSupportedBusinessGroup } from '../zalo/group-monitoring-policy.js';
+import { isZaloFriendAcceptedNotification } from '../zalo/zalo-friend-accepted-notification.js';
 
 export const CONVERSATION_ANALYSIS_QUEUE = 'conversation-analysis';
 const configuredDebounceMs = Number(process.env.AI_CONVERSATION_ANALYSIS_DEBOUNCE_MS);
@@ -81,51 +84,76 @@ export async function enqueueConversationAnalysis(
 export async function backfillConversationAnalyses(options: { orgId?: string; batchSize?: number } = {}) {
   if (config.nodeEnv === 'test') return { scanned: 0, queued: 0 };
   const batchSize = Math.max(1, Math.min(200, Math.floor(options.batchSize ?? 50)));
-  const conversations = await prisma.conversation.findMany({
-    where: {
-      ...(options.orgId ? { orgId: options.orgId } : {}),
-      threadType: 'user',
-      contactId: { not: null },
-      deletedAt: null,
-      isPrivate: false,
-      zaloAccount: { archivedAt: null, privacyMode: { not: 'main' } },
-      messages: { some: { isDeleted: false, senderType: 'contact' } },
-    },
-    orderBy: { lastMessageAt: { sort: 'desc', nulls: 'last' } },
-    take: batchSize * 4,
-    select: {
-      id: true,
-      orgId: true,
-      messages: {
-        where: { isDeleted: false },
-        orderBy: [{ sentAt: 'desc' }, { createdAt: 'desc' }],
-        take: 1,
-        select: { id: true },
-      },
-      aiInsights: {
-        where: { status: 'active' },
-        orderBy: [{ version: 'desc' }, { createdAt: 'desc' }],
-        take: 1,
-        select: { sourceThroughMessageId: true },
-      },
-    },
-  });
-
+  const pageSize = 200;
+  let cursorId: string | undefined;
+  let scanned = 0;
   let queued = 0;
-  for (const conversation of conversations) {
-    const latest = conversation.messages[0];
-    if (!latest || conversation.aiInsights[0]?.sourceThroughMessageId === latest.id) continue;
-    try {
-      const result = await enqueueConversationAnalysis(
-        { orgId: conversation.orgId, conversationId: conversation.id, messageId: latest.id },
-      );
-      if (result.queued) queued += 1;
-    } catch (error) {
-      logger.warn(`[conversation-analysis-backfill] enqueue failed conversation=${conversation.id}: ${(error as Error).message}`);
+  while (queued < batchSize) {
+    const conversations = await prisma.conversation.findMany({
+      where: {
+        ...(options.orgId ? { orgId: options.orgId } : {}),
+        OR: [
+          { threadType: 'user', contactId: { not: null } },
+          {
+            threadType: 'group',
+            groupSdkType: { not: 2 },
+            groupMonitoringEnabled: true,
+            groupCategory: { in: ['sales', 'customer_care'] },
+          },
+        ],
+        deletedAt: null,
+        isPrivate: false,
+        zaloAccount: { archivedAt: null, privacyMode: { not: 'main' } },
+        messages: { some: { isDeleted: false, senderType: 'contact' } },
+      },
+      orderBy: [{ lastMessageAt: { sort: 'desc', nulls: 'last' } }, { id: 'asc' }],
+      take: pageSize,
+      ...(cursorId ? { cursor: { id: cursorId }, skip: 1 } : {}),
+      select: {
+        id: true,
+        orgId: true,
+        threadType: true,
+        messages: {
+          where: { isDeleted: false },
+          orderBy: [{ sentAt: 'desc' }, { createdAt: 'desc' }],
+          take: 1,
+          select: { id: true, content: true },
+        },
+        aiInsights: {
+          where: { status: 'active' },
+          orderBy: [{ version: 'desc' }, { createdAt: 'desc' }],
+          take: 1,
+          select: { sourceThroughMessageId: true, signals: true },
+        },
+      },
+    });
+    if (!conversations.length) break;
+    scanned += conversations.length;
+    for (const conversation of conversations) {
+      const latest = conversation.messages[0];
+      if (!latest) continue;
+      if (isZaloFriendAcceptedNotification(latest.content)) continue;
+      const activeInsight = conversation.aiInsights[0];
+      const signals = activeInsight?.signals && typeof activeInsight.signals === 'object' && !Array.isArray(activeInsight.signals)
+        ? activeInsight.signals as Record<string, unknown>
+        : {};
+      const classifierStale = conversation.threadType !== 'group'
+        && Number(signals.counterpartyClassifierVersion ?? 0) < COUNTERPARTY_CLASSIFIER_VERSION;
+      if (activeInsight?.sourceThroughMessageId === latest.id && !classifierStale) continue;
+      try {
+        const result = await enqueueConversationAnalysis(
+          { orgId: conversation.orgId, conversationId: conversation.id, messageId: latest.id, force: classifierStale },
+        );
+        if (result.queued) queued += 1;
+      } catch (error) {
+        logger.warn(`[conversation-analysis-backfill] enqueue failed conversation=${conversation.id}: ${(error as Error).message}`);
+      }
+      if (queued >= batchSize) break;
     }
-    if (queued >= batchSize) break;
+    cursorId = conversations.at(-1)?.id;
+    if (conversations.length < pageSize || !cursorId) break;
   }
-  return { scanned: conversations.length, queued };
+  return { scanned, queued };
 }
 
 let backfillTimer: ReturnType<typeof setInterval> | null = null;
@@ -168,10 +196,19 @@ export function startConversationAnalysisWorker() {
         where: { id: event.messageId, conversationId: event.conversationId, isDeleted: false },
         select: {
           id: true,
-          conversation: { select: { id: true, orgId: true, threadType: true, contactId: true, isPrivate: true } },
+          content: true,
+          conversation: {
+            select: {
+              id: true, orgId: true, threadType: true, contactId: true, isPrivate: true,
+              groupSdkType: true, groupCategory: true, groupMonitoringEnabled: true,
+            },
+          },
         },
       }).catch(() => null);
-      if (!activity?.conversation || activity.conversation.threadType !== 'user' || !activity.conversation.contactId) return;
+      if (!activity?.conversation) return;
+      if (isZaloFriendAcceptedNotification(activity.content)) return;
+      const directConversation = activity.conversation.threadType === 'user' && !!activity.conversation.contactId;
+      if (!directConversation && !isSupportedBusinessGroup(activity.conversation)) return;
       if (activity.conversation.isPrivate) return;
       await enqueueConversationAnalysis({
         orgId: activity.conversation.orgId,

@@ -194,6 +194,100 @@ describe('CustomerAutomationOrchestrator', () => {
     );
   });
 
+  it('blocks customer automation and replaces stale sales tags for a vendor', async () => {
+    mocks.prisma.aiConversationInsight.findUnique.mockResolvedValue(insight({
+      stage: 'cold', intentLabel: 'product_inquiry', recommendedWorkflowType: null,
+      nextAction: 'ignore_non_customer', analysisHash: 'hash-vendor',
+      signals: {
+        counterpartyRole: 'vendor',
+        counterpartyConfidence: 0.94,
+        counterpartyReason: 'Đối phương đang chào bán dịch vụ.',
+      },
+    }));
+    mocks.prisma.followupEnrollment.findFirst.mockResolvedValue(active('after_quote'));
+    mocks.prisma.contactTag.findMany.mockResolvedValue([
+      { tagId: 'tag-quoted', tag: { name: 'Đã báo giá' } },
+    ]);
+
+    const result = await reconcileCustomerAutomation('insight-1');
+
+    expect(result).toMatchObject({ outcome: 'blocked', reason: 'not_a_customer' });
+    expect(mocks.removeTag).toHaveBeenCalledWith({ contactId: 'contact-1', tagId: 'tag-quoted', removedBy: null });
+    expect(mocks.addTag).toHaveBeenCalledWith(expect.objectContaining({ tagName: 'Người chào hàng' }));
+    expect(mocks.stop).toHaveBeenCalledWith('enrollment-old', 'not_a_customer', expect.objectContaining({ actorType: 'system' }));
+    expect(mocks.enroll).not.toHaveBeenCalled();
+  });
+
+  it('does not stop a workflow that staff selected manually when classifying a vendor', async () => {
+    mocks.prisma.aiConversationInsight.findUnique.mockResolvedValue(insight({
+      stage: 'cold', intentLabel: 'product_inquiry', recommendedWorkflowType: null,
+      nextAction: 'ignore_non_customer', analysisHash: 'hash-manual-vendor',
+      signals: {
+        counterpartyRole: 'vendor',
+        counterpartyConfidence: 0.94,
+        counterpartyReason: 'Đối phương đang chào bán dịch vụ.',
+      },
+    }));
+    mocks.prisma.followupEnrollment.findFirst.mockResolvedValue(active('after_quote', 'Nguyễn Văn Sale'));
+
+    const result = await reconcileCustomerAutomation('insight-1');
+
+    expect(result).toMatchObject({ outcome: 'blocked', reason: 'not_a_customer', enrollmentId: 'enrollment-old' });
+    expect(mocks.stop).not.toHaveBeenCalled();
+  });
+
+  it('preserves tags and workflow when model fallback cannot confirm the customer role', async () => {
+    mocks.prisma.aiConversationInsight.findUnique.mockResolvedValue(insight({
+      analysisHash: 'hash-pending',
+      signals: {
+        counterpartyRole: 'unknown',
+        counterpartyConfidence: 0.4,
+        counterpartyReason: 'Chưa đủ dữ liệu.',
+        counterpartyClassifierVersion: 2,
+        workItemEligible: false,
+        analysisModelFallback: true,
+      },
+    }));
+    mocks.prisma.followupEnrollment.findFirst.mockResolvedValue(active('after_quote'));
+    mocks.prisma.contactTag.findMany.mockResolvedValue([
+      { tagId: 'tag-quoted', tag: { name: 'Đã báo giá' } },
+    ]);
+
+    const result = await reconcileCustomerAutomation('insight-1');
+
+    expect(result).toMatchObject({ outcome: 'no_change', reason: 'analysis_pending', enrollmentId: 'enrollment-old' });
+    expect(mocks.removeTag).not.toHaveBeenCalled();
+    expect(mocks.addTag).not.toHaveBeenCalled();
+    expect(mocks.stop).not.toHaveBeenCalled();
+  });
+
+  it('removes stale AI sales state when the current model explicitly remains uncertain', async () => {
+    mocks.prisma.aiConversationInsight.findUnique.mockResolvedValue(insight({
+      analysisHash: 'hash-unknown',
+      signals: {
+        counterpartyRole: 'unknown',
+        counterpartyConfidence: 0.87,
+        counterpartyReason: 'Chưa xác định được chiều mua bán.',
+        counterpartyClassifierVersion: 2,
+        workItemEligible: false,
+      },
+    }));
+    mocks.prisma.followupEnrollment.findFirst.mockResolvedValue(active('after_quote'));
+    mocks.prisma.contactTag.findMany.mockResolvedValue([
+      { tagId: 'tag-negotiating', tag: { name: 'Đang thương lượng' } },
+    ]);
+
+    const result = await reconcileCustomerAutomation('insight-1');
+
+    expect(result).toMatchObject({ outcome: 'success', reason: 'customer_identity_unconfirmed', enrollmentId: null });
+    expect(mocks.removeTag).toHaveBeenCalledWith({ contactId: 'contact-1', tagId: 'tag-negotiating', removedBy: null });
+    expect(mocks.stop).toHaveBeenCalledWith(
+      'enrollment-old',
+      'customer_identity_unconfirmed',
+      expect.objectContaining({ actorType: 'system' }),
+    );
+  });
+
   it('provisions and activates a safe wait-first workflow when none exists', async () => {
     mocks.prisma.followupWorkflow.findFirst.mockResolvedValue(null);
 

@@ -12,6 +12,14 @@ export type AiReadinessStatus = 'disabled' | 'not_configured' | 'needs_test' | '
 export type AiConnectionStatus = 'not_tested' | 'connected' | 'failed';
 export type AiCheckStatus = 'passed' | 'failed' | 'warning';
 
+type AiRuntimeReadiness = {
+  agentId: string | null;
+  agentReady: boolean;
+  promptReady: boolean;
+  skillReady: boolean;
+  ready: boolean;
+};
+
 type ConnectionProbe = {
   status: Exclude<AiConnectionStatus, 'not_tested'>;
   testedAt: string;
@@ -85,45 +93,117 @@ function check(id: string, status: AiCheckStatus, message: string) {
   return { id, status, message };
 }
 
+function runtimeReadiness(agent: {
+  id: string;
+  promptVersion: { status: string } | null;
+  skills: Array<{ id: string }>;
+} | null): AiRuntimeReadiness {
+  const agentReady = Boolean(agent);
+  const promptReady = agent?.promptVersion?.status === 'production';
+  const skillReady = Boolean(agent?.skills.length);
+  return {
+    agentId: agent?.id ?? null,
+    agentReady,
+    promptReady,
+    skillReady,
+    ready: agentReady && promptReady && skillReady,
+  };
+}
+
+function withRuntimeReadiness<T extends {
+  ready: boolean;
+  status: AiReadinessStatus;
+  checks: Array<{ id: string; status: AiCheckStatus; message: string }>;
+}>(base: T, runtime: AiRuntimeReadiness) {
+  const checks = [
+    ...base.checks,
+    check(
+      'active_agent',
+      runtime.agentReady ? 'passed' : 'failed',
+      runtime.agentReady ? 'Đã có tác nhân AI đang hoạt động.' : 'Chưa có tác nhân AI đang hoạt động.',
+    ),
+    check(
+      'production_prompt',
+      runtime.promptReady ? 'passed' : 'failed',
+      runtime.promptReady ? 'Prompt vận hành của tác nhân AI đã sẵn sàng.' : 'Tác nhân AI chưa có prompt Production.',
+    ),
+    check(
+      'active_skill',
+      runtime.skillReady ? 'passed' : 'failed',
+      runtime.skillReady ? 'Tác nhân AI đã có kỹ năng đang bật.' : 'Tác nhân AI chưa có kỹ năng đang bật.',
+    ),
+  ];
+  const providerReady = base.status === 'ready';
+  const status = !runtime.ready && ['ready', 'needs_test'].includes(base.status)
+    ? 'not_configured' as const
+    : base.status;
+  return {
+    ...base,
+    ready: providerReady && runtime.ready,
+    status,
+    checks,
+    runtime,
+  };
+}
+
 export async function getAiReadiness(orgId: string) {
-  const config = await prisma.aiConfig.findUnique({
-    where: { orgId },
-    select: {
-      enabled: true,
-      provider: true,
-      model: true,
-      defaultModelConfig: {
-        select: {
-          id: true,
-          name: true,
-          provider: true,
-          model: true,
-          status: true,
-          connection: {
-            select: {
-              id: true,
-              name: true,
-              adapter: true,
-              vendor: true,
-              baseUrl: true,
-              apiKeyLast4: true,
-              status: true,
-              lastTestStatus: true,
-              lastTestedAt: true,
-              lastLatencyMs: true,
-              lastErrorCode: true,
-              deletedAt: true,
+  const [config, agent] = await Promise.all([
+    prisma.aiConfig.findUnique({
+      where: { orgId },
+      select: {
+        enabled: true,
+        provider: true,
+        model: true,
+        defaultModelConfig: {
+          select: {
+            id: true,
+            name: true,
+            provider: true,
+            model: true,
+            status: true,
+            connection: {
+              select: {
+                id: true,
+                name: true,
+                adapter: true,
+                vendor: true,
+                baseUrl: true,
+                apiKeyLast4: true,
+                status: true,
+                lastTestStatus: true,
+                lastTestedAt: true,
+                lastLatencyMs: true,
+                lastErrorCode: true,
+                deletedAt: true,
+              },
             },
           },
         },
       },
-    },
-  });
+    }),
+    prisma.aiAgent.findFirst({
+      where: { orgId, status: 'active', deletedAt: null },
+      orderBy: { updatedAt: 'desc' },
+      select: {
+        id: true,
+        promptVersion: { select: { status: true } },
+        skills: {
+          where: { isEnabled: true, skill: { deletedAt: null } },
+          take: 1,
+          select: { id: true },
+        },
+      },
+    }),
+  ]);
+  const runtime = runtimeReadiness(agent);
   const persistent = config ? getPersistentAiReadiness({
     ...config,
     credentialDecryption: getTokenEncryptionKeyReadiness(),
   }) : null;
-  if (persistent) return persistent;
+  if (persistent) return withRuntimeReadiness({
+    ...persistent,
+    status: persistent.status as AiReadinessStatus,
+  }, runtime);
 
   // Compatibility fallback for organizations not bridged yet and for legacy
   // model configs that intentionally resolve credentials from an environment
@@ -186,7 +266,7 @@ export async function getAiReadiness(orgId: string) {
   else if (probe?.status === 'connected' && modelAvailable === true) status = 'ready';
   else status = 'needs_test';
 
-  return {
+  return withRuntimeReadiness({
     ready: status === 'ready',
     status,
     checkedAt: new Date().toISOString(),
@@ -217,7 +297,7 @@ export async function getAiReadiness(orgId: string) {
       errorCode: probe?.errorCode ?? null,
     },
     checks,
-  };
+  }, runtime);
 }
 
 export async function testProviderConnection(

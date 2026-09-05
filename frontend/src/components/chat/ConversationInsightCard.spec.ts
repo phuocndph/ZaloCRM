@@ -87,6 +87,49 @@ describe('ConversationInsightCard', () => {
     expect(wrapper.text()).not.toContain('Sản phẩm quan tâm');
   });
 
+  it('does not present an unconfirmed contact as mandatory sales work', async () => {
+    mocks.get.mockResolvedValue({
+      data: {
+        readiness: { aiStatus: 'ready', accountStatus: 'connected', accountName: 'Nick bán hàng' },
+        insight: {
+          id: 'insight-unknown', version: 3, mode: 'automatic_followup', stage: 'needs_reply', stageConfidence: 0.91,
+          stageReason: 'Chưa có đủ bằng chứng xác định đây là khách mua hàng.',
+          intent: { label: 'unknown', confidence: 0.7 },
+          emotion: { label: 'neutral', confidence: 0.8, intensity: 0.1 }, requiresHuman: false,
+          nextAction: {
+            key: 'verify_customer_identity',
+            reason: 'Chỉ xem thủ công khi có thêm bằng chứng người liên hệ đang mua hàng.',
+            workflowType: null,
+          },
+          signals: {
+            counterpartyClassifierVersion: 2,
+            counterpartyRole: 'unknown',
+            workItemEligible: false,
+          },
+          safeguards: { autoSendAllowed: false, workflowEnrollmentAllowed: false, autoTagMutationAllowed: false },
+          automation: {
+            enabled: true, outcome: 'success', reason: 'customer_identity_unconfirmed',
+            enrollmentId: null, updatedAt: '2026-08-30T08:01:00Z',
+          },
+          summary: {
+            id: 'summary-unknown', version: 3, sourceThroughMessageId: 'message-image', createdAt: '2026-08-30T08:00:00Z',
+            content: { currentDiscussion: 'Người liên hệ chỉ gửi hai ảnh, chưa có nội dung xác nhận nhu cầu mua hàng.', unansweredQuestions: [] },
+          },
+          memoryCandidates: [], createdAt: '2026-08-30T08:00:00Z', updatedAt: '2026-08-30T08:01:00Z',
+        },
+      },
+    });
+
+    const wrapper = mount(ConversationInsightCard, { props: { conversationId: 'conversation-unknown' } });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('Chưa tạo việc chăm sóc');
+    expect(wrapper.text()).toContain('AI không đưa vào danh sách công việc');
+    expect(wrapper.text()).toContain('Hướng xử lý');
+    expect(wrapper.text()).not.toContain('Nhân viên cần làm ngay');
+    expect(wrapper.text()).toContain('Không tự động chăm sóc khi chưa rõ vai trò');
+  });
+
   it('explains why an empty insight cannot update when Zalo and AI are unavailable', async () => {
     mocks.get.mockResolvedValue({
       data: {

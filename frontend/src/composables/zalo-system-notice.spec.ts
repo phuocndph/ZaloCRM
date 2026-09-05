@@ -20,6 +20,19 @@ describe('parseFriendAcceptedNotice', () => {
     })?.displayName).toBe('Lan');
   });
 
+  it('recognizes the reminder payload used by current Zalo clients', () => {
+    const payload = {
+      title: 'Bạn vừa kết bạn với Lan',
+      action: 'msginfo.actionlist',
+      params: JSON.stringify({ msg: { vi: '%1$s đã đồng ý kết bạn' } }),
+    };
+    expect(parseFriendAcceptedNotice(payload)).toEqual({ displayName: 'Lan', label: 'Lan đã đồng ý kết bạn' });
+    expect(parseFriendAcceptedNotice(JSON.stringify(payload))).toEqual({
+      displayName: 'Lan',
+      label: 'Lan đã đồng ý kết bạn',
+    });
+  });
+
   it('does not collapse normal chats or unrelated images', () => {
     expect(parseFriendAcceptedNotice('Lan đã đồng ý kết bạn')).toBeNull();
     expect(parseFriendAcceptedNotice(`Lan đã đồng ý kết bạn\nhttps://example.com/card.png`)).toBeNull();

@@ -1,4 +1,5 @@
 import {
+  type AIMessageContent,
   type AIProvider,
   type AIProviderContext,
   type AIProviderRequest,
@@ -12,6 +13,49 @@ import {
   normalizeOpenAICompatibleError,
   readOpenAICompatibleCompletion,
 } from '../providers/openai-compatible-client.js';
+
+function dataUri(value: string) {
+  const match = /^data:([^;,]+);base64,([a-z0-9+/=\r\n]+)$/i.exec(value);
+  return match ? { mimeType: match[1], data: match[2].replace(/\s+/g, '') } : null;
+}
+
+function textFromContent(content: AIMessageContent) {
+  if (typeof content === 'string') return content;
+  return content.map((part) => part.type === 'text' ? part.text : '[Hình ảnh đính kèm]').join('\n');
+}
+
+function anthropicContent(content: AIMessageContent) {
+  if (typeof content === 'string') return content;
+  const parts: Array<
+    { type: 'text'; text: string }
+    | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
+  > = [];
+  for (const part of content) {
+    if (part.type === 'text') {
+      parts.push({ type: 'text', text: part.text });
+      continue;
+    }
+    const parsed = dataUri(part.image_url.url);
+    if (parsed) parts.push({ type: 'image', source: { type: 'base64', media_type: parsed.mimeType, data: parsed.data } });
+    else parts.push({ type: 'text', text: '[Hình ảnh đính kèm không thể tải trực tiếp]' });
+  }
+  return parts;
+}
+
+function geminiParts(content: AIMessageContent) {
+  if (typeof content === 'string') return [{ text: content }];
+  const parts: Array<{ text: string } | { inlineData: { mimeType: string; data: string } }> = [];
+  for (const part of content) {
+    if (part.type === 'text') {
+      parts.push({ text: part.text });
+      continue;
+    }
+    const parsed = dataUri(part.image_url.url);
+    if (parsed) parts.push({ inlineData: { mimeType: parsed.mimeType, data: parsed.data } });
+    else parts.push({ text: '[Hình ảnh đính kèm không thể tải trực tiếp]' });
+  }
+  return parts;
+}
 
 async function readError(response: Response): Promise<never> {
   await response.body?.cancel().catch(() => undefined);
@@ -143,8 +187,11 @@ export class OpenAICompatibleProvider implements AIProvider {
 export class AnthropicProvider implements AIProvider {
   readonly id = 'anthropic';
   async complete(context: AIProviderContext, request: AIProviderRequest): Promise<AIProviderResponse> {
-    const system = request.messages.filter((message) => message.role === 'system').map((message) => message.content).join('\n');
-    const messages = request.messages.filter((message) => message.role !== 'system');
+    const system = request.messages.filter((message) => message.role === 'system').map((message) => textFromContent(message.content)).join('\n');
+    const messages = request.messages.filter((message) => message.role !== 'system').map((message) => ({
+      ...message,
+      content: anthropicContent(message.content),
+    }));
     const response = await postJson(context, '/v1/messages', {
       model: request.model,
       system: system || undefined,
@@ -179,10 +226,10 @@ export class AnthropicProvider implements AIProvider {
 export class GeminiProvider implements AIProvider {
   readonly id = 'gemini';
   async complete(context: AIProviderContext, request: AIProviderRequest): Promise<AIProviderResponse> {
-    const system = request.messages.filter((message) => message.role === 'system').map((message) => message.content).join('\n');
+    const system = request.messages.filter((message) => message.role === 'system').map((message) => textFromContent(message.content)).join('\n');
     const contents = request.messages.filter((message) => message.role !== 'system').map((message) => ({
       role: message.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: message.content }],
+      parts: geminiParts(message.content),
     }));
     const path = `/v1beta/models/${encodeURIComponent(request.model)}:generateContent?key=${encodeURIComponent(context.apiKey)}`;
     const response = await postJson(context, path, {

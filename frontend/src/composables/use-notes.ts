@@ -49,6 +49,14 @@ export interface ParsedAppointment {
   source?: 'ai' | 'fallback'; // 'ai'=Gemini OK, 'fallback'=rule-based khi AI fail
 }
 
+function normalizeNote(note: Note): Note {
+  return {
+    ...note,
+    reactions: Array.isArray(note.reactions) ? note.reactions : [],
+    replies: Array.isArray(note.replies) ? note.replies.map(normalizeNote) : [],
+  };
+}
+
 export function useNotes(getContactId: () => string | null) {
   const notes = ref<Note[]>([]);
   const loading = ref(false);
@@ -62,7 +70,7 @@ export function useNotes(getContactId: () => string | null) {
     loading.value = true;
     try {
       const { data } = await api.get(`/contacts/${contactId}/notes`);
-      notes.value = data.notes || [];
+      notes.value = Array.isArray(data.notes) ? data.notes.map(normalizeNote) : [];
     } catch (err) {
       console.error('[notes] fetch error', err);
       notes.value = [];
@@ -77,7 +85,7 @@ export function useNotes(getContactId: () => string | null) {
     saving.value = true;
     try {
       const { data } = await api.post(`/contacts/${contactId}/notes`, { body: body.trim(), parentNoteId });
-      const created: Note = data.note;
+      const created = normalizeNote(data.note as Note);
       if (parentNoteId) {
         const root = notes.value.find(n => n.id === parentNoteId);
         if (root) {
@@ -144,6 +152,7 @@ export function useNotes(getContactId: () => string | null) {
       const { data } = await api.post(`/notes/${noteId}/reactions`, { emoji });
       const note = findNote(noteId);
       if (!note) return;
+      note.reactions = Array.isArray(note.reactions) ? note.reactions : [];
       if (data.toggled === 'removed') {
         note.reactions = note.reactions.filter(r => !(r.userId === currentUserId && r.emoji === emoji));
       } else if (data.reaction) {

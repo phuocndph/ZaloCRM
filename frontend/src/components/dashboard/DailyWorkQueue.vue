@@ -9,6 +9,17 @@
       </button>
     </header>
 
+    <div v-if="!compact" class="dwq-tools">
+      <SearchIcon :size="15" aria-hidden="true" />
+      <input
+        v-model="searchQuery"
+        type="search"
+        placeholder="Tìm khách, nhóm, nick..."
+        aria-label="Tìm khách, nhóm hoặc nick"
+      />
+      <span v-if="summary.totalActive > 0" class="dwq-total">{{ summary.totalActive }} việc đang mở</span>
+    </div>
+
     <div v-if="!compact && !hideTabs" class="dwq-tabs" role="tablist" aria-label="Lọc công việc">
       <button
         v-for="tab in tabs"
@@ -53,21 +64,22 @@
             </time>
           </div>
 
-          <div class="dwq-context">
-            <span>Khách đang</span>
+          <div class="dwq-context" :class="{ 'dwq-context--verify': isVerification(item) }">
+            <span>{{ contextLabel(item) }}</span>
             <p>{{ item.customerSituation || 'Chưa có đủ nội dung để xác định tình huống hiện tại.' }}</p>
           </div>
           <div class="dwq-next">
             <ArrowRightCircleIcon :size="15" aria-hidden="true" />
-            <div><span>Làm tiếp</span><strong>{{ item.nextAction }}</strong></div>
+            <div><span>{{ isVerification(item) ? 'Cần xác minh' : 'Làm tiếp' }}</span><strong>{{ item.nextAction }}</strong></div>
           </div>
           <p v-if="item.reason" class="dwq-reason"><CircleHelpIcon :size="13" aria-hidden="true" /> {{ item.reason }}</p>
 
           <div class="dwq-meta">
             <span v-if="nickLabel(item)"><MessagesSquareIcon :size="13" aria-hidden="true" /> {{ nickLabel(item) }}</span>
+            <span v-if="item.metadata?.isGroup"><UsersRoundIcon :size="13" aria-hidden="true" /> Nhóm bán hàng</span>
             <span v-if="(item.metadata?.unreadCount ?? 0) > 0"><MailIcon :size="13" aria-hidden="true" /> {{ item.metadata?.unreadCount }} tin chưa đọc</span>
             <span v-if="(item.metadata?.signalCount ?? 0) > 1"><Layers3Icon :size="13" aria-hidden="true" /> {{ item.metadata?.signalCount }} việc đã gộp</span>
-            <span v-if="item.confidence != null"><BrainCircuitIcon :size="13" aria-hidden="true" /> AI {{ confidence(item.confidence) }}</span>
+            <span v-if="item.confidence != null"><BrainCircuitIcon :size="13" aria-hidden="true" /> AI gợi ý</span>
           </div>
         </div>
 
@@ -103,6 +115,10 @@
           </template>
         </div>
       </article>
+      <button v-if="hasMore && !compact" class="dwq-load-more" type="button" :disabled="loadingMore" @click="loadMore">
+        <RefreshCwIcon v-if="loadingMore" :size="14" class="dwq-spin" aria-hidden="true" />
+        {{ loadingMore ? 'Đang tải...' : 'Xem thêm công việc' }}
+      </button>
     </div>
 
     <button v-if="compact" class="dwq-all" type="button" @click="openAll">
@@ -129,6 +145,8 @@ import {
   Mail as MailIcon,
   MessageCircle as MessageCircleIcon,
   MessagesSquare as MessagesSquareIcon,
+  Search as SearchIcon,
+  UsersRound as UsersRoundIcon,
   RefreshCw as RefreshCwIcon,
   RotateCcw as RotateCcwIcon,
   Sparkles as SparklesIcon,
@@ -152,17 +170,20 @@ const emit = defineEmits<{ 'scope-change': [scope: WorkItemScope] }>();
 
 const router = useRouter();
 const toast = useToast();
-const { items, counts, loading, mutatingId, error, fetchItems, updateItem, stopRealtime } = useConversationWorkItems();
+const { items, counts, summary, loading, loadingMore, hasMore, mutatingId, error, fetchItems, loadMore, updateItem, stopRealtime } = useConversationWorkItems();
 const scope = ref<WorkItemScope>(props.initialScope);
+const searchQuery = ref('');
 const snoozeOpenId = ref<string | null>(null);
 const failedImages = reactive(new Set<string>());
 let timer: ReturnType<typeof setInterval> | null = null;
+let searchTimer: ReturnType<typeof setTimeout> | null = null;
 
 const tabs: Array<{ key: WorkItemScope; label: string }> = [
   { key: 'now', label: 'Cần làm ngay' },
   { key: 'today', label: 'Còn lại hôm nay' },
   { key: 'waiting', label: 'Đang hoãn' },
   { key: 'upcoming', label: 'Sắp tới' },
+  { key: 'verify', label: 'Cần xác minh' },
   { key: 'done', label: 'Đã xong' },
 ];
 
@@ -171,6 +192,7 @@ const emptyTitle = computed(() => ({
   today: 'Đã xử lý hết việc hôm nay',
   waiting: 'Không có việc đang hoãn',
   upcoming: 'Chưa có việc sắp tới',
+  verify: 'Không có việc cần xác minh',
   done: 'Chưa có việc đã hoàn thành',
 })[scope.value]);
 const emptyDescription = computed(() => scope.value === 'done'
@@ -181,11 +203,22 @@ const emptyDescription = computed(() => scope.value === 'done'
 const visibleItems = computed(() => props.compact ? items.value.slice(0, 4) : items.value);
 
 function refresh(quiet = true) {
-  return fetchItems(scope.value, props.asUserId, quiet);
+  return fetchItems(scope.value, props.asUserId, quiet, searchQuery.value);
 }
 
 function contactName(item: ConversationWorkItem) {
   return item.metadata?.contactName || item.contact?.crmName || item.contact?.fullName || 'Khách hàng';
+}
+
+function contextLabel(item: ConversationWorkItem) {
+  if (!item.metadata?.isGroup) return 'Tình huống';
+  const sender = item.metadata.actionableSenderName?.trim();
+  return sender || 'Thành viên';
+}
+
+function isVerification(item: ConversationWorkItem) {
+  const actionKey = (item.metadata as (ConversationWorkItem['metadata'] & { actionKey?: string }) | null)?.actionKey;
+  return item.kind === 'verification' || actionKey === 'clarify_latest_message' || actionKey === 'verify_customer_identity';
 }
 
 function avatar(item: ConversationWorkItem) {
@@ -198,11 +231,6 @@ function initial(item: ConversationWorkItem) {
 
 function priorityLabel(priority: WorkItemPriority) {
   return { critical: 'Khẩn cấp', high: 'Ưu tiên cao', normal: 'Bình thường', low: 'Theo dõi' }[priority];
-}
-
-function confidence(value: number) {
-  const normalized = value <= 1 ? value * 100 : value;
-  return `${Math.round(Math.max(0, Math.min(100, normalized)))}%`;
 }
 
 function nickLabel(item: ConversationWorkItem) {
@@ -303,6 +331,10 @@ watch(() => props.initialScope, (value) => {
   if (value !== scope.value) scope.value = value;
 });
 watch(() => props.asUserId, () => void refresh(false));
+watch(searchQuery, () => {
+  if (searchTimer) clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => void refresh(false), 250);
+});
 onMounted(() => {
   void refresh(false);
   timer = setInterval(() => void refresh(true), 60_000);
@@ -310,11 +342,12 @@ onMounted(() => {
 });
 onUnmounted(() => {
   if (timer) clearInterval(timer);
+  if (searchTimer) clearTimeout(searchTimer);
   stopRealtime();
   document.removeEventListener('click', closeMenus);
 });
 
-defineExpose({ refresh, counts });
+defineExpose({ refresh, counts, summary });
 </script>
 
 <style scoped>
@@ -327,6 +360,10 @@ defineExpose({ refresh, counts });
 .dwq-icon-btn:disabled, .dwq-actions button:disabled { opacity: .5; cursor: default; }
 .dwq-spin { animation: dwq-spin .8s linear infinite; }
 @keyframes dwq-spin { to { transform: rotate(360deg); } }
+.dwq-tools { display: flex; align-items: center; gap: 7px; min-height: 42px; padding: 6px 10px; border-bottom: 1px solid var(--dwq-border); color: #667085; }
+.dwq-tools input { min-width: 0; flex: 1; height: 30px; padding: 0 8px; border: 1px solid #d0d5dd; border-radius: 6px; color: #172033; background: #fff; font: inherit; font-size: 11.5px; outline: none; }
+.dwq-tools input:focus { border-color: #087daf; box-shadow: 0 0 0 2px rgba(8, 125, 175, .12); }
+.dwq-total { flex: 0 0 auto; color: #667085; font-size: 10.5px; white-space: nowrap; }
 .dwq-tabs { display: flex; gap: 2px; padding: 7px 10px; overflow-x: auto; border-bottom: 1px solid var(--dwq-border); scrollbar-width: none; }
 .dwq-tabs::-webkit-scrollbar { display: none; }
 .dwq-tabs button { min-height: 30px; display: inline-flex; align-items: center; gap: 5px; padding: 5px 9px; border: 0; border-radius: 6px; background: transparent; color: #667085; font: inherit; font-size: 11px; font-weight: 650; white-space: nowrap; cursor: pointer; }
@@ -334,6 +371,9 @@ defineExpose({ refresh, counts });
 .dwq-tabs button.active { background: #e9f5fb; color: #087daf; }
 .dwq-tabs span { min-width: 18px; padding: 1px 5px; border-radius: 999px; background: rgba(83, 96, 112, .1); font-size: 10px; text-align: center; }
 .dwq-list { max-height: 520px; overflow-y: auto; }
+.dwq-load-more { width: 100%; min-height: 38px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; border: 0; border-top: 1px solid var(--dwq-border); background: #fff; color: #087daf; font: inherit; font-size: 11.5px; font-weight: 750; cursor: pointer; }
+.dwq-load-more:hover:not(:disabled) { background: #f4fbfd; }
+.dwq-load-more:disabled { opacity: .65; cursor: default; }
 .dwq-all { width: 100%; min-height: 40px; display: flex; align-items: center; justify-content: center; gap: 6px; border: 0; border-top: 1px solid var(--dwq-border); border-radius: 0 0 8px 8px; background: #fff; color: #087daf; font: inherit; font-size: 11.5px; font-weight: 750; cursor: pointer; }
 .dwq-all:hover { background: #f4fbfd; }
 .dwq-row { position: relative; display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 11px; padding: 12px 13px; border-bottom: 1px solid var(--dwq-border); cursor: pointer; }
@@ -358,6 +398,8 @@ defineExpose({ refresh, counts });
 .dwq-context { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 6px; margin-top: 5px; }
 .dwq-context > span, .dwq-next span { color: #667085; font-size: 10px; font-weight: 650; }
 .dwq-context p { margin: 0; color: #344054; font-size: 11.5px; line-height: 1.45; overflow-wrap: anywhere; }
+.dwq-context p { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.dwq-context--verify p { color: #8a4b08; }
 .dwq-next { display: grid; grid-template-columns: 16px minmax(0, 1fr); gap: 5px; align-items: start; margin-top: 6px; color: #087daf; }
 .dwq-next > div { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 6px; }
 .dwq-next strong { color: #172033; font-size: 11.5px; line-height: 1.4; overflow-wrap: anywhere; }
@@ -380,6 +422,8 @@ defineExpose({ refresh, counts });
 @keyframes dwq-pulse { to { opacity: .5; } }
 .dwq--mobile { margin: 0 var(--m-sp-4, 16px) var(--m-sp-3, 12px); border: 0; border-radius: var(--m-r-lg, 8px); box-shadow: var(--m-e1, 0 1px 3px rgba(16, 24, 40, .12)); }
 .dwq--mobile .dwq-head { padding: 10px 12px; }
+.dwq--mobile .dwq-tools { padding: 6px 8px; }
+.dwq--mobile .dwq-total { display: none; }
 .dwq--mobile .dwq-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; padding: 6px 8px; overflow: visible; }
 .dwq--mobile .dwq-tabs button { min-width: 0; justify-content: center; padding-inline: 5px; white-space: normal; text-align: center; line-height: 1.2; }
 .dwq--mobile .dwq-list { max-height: none; }
@@ -390,6 +434,7 @@ defineExpose({ refresh, counts });
 .dwq--mobile .dwq-name { max-width: calc(100% - 80px); }
 .dwq--mobile .dwq-topline time { order: 2; }
 .dwq--mobile .dwq-context { grid-template-columns: 1fr; gap: 1px; }
+.dwq--mobile .dwq-context p { -webkit-line-clamp: 4; }
 .dwq--mobile .dwq-next > div { grid-template-columns: 1fr; gap: 1px; }
 .dwq--mobile .dwq-reason { display: none; }
 .dwq--mobile .dwq-meta { margin-top: 6px; }

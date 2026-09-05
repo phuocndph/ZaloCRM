@@ -10,6 +10,12 @@ import {
 import { enqueueConversationAnalysis } from './conversation-analysis-queue.js';
 import { getAiReadiness } from './ai-readiness-service.js';
 import { checkZaloAccess } from '../zalo/zalo-access-middleware.js';
+import { getIo } from '../../shared/event-buffer.js';
+import {
+  GROUP_CATEGORIES,
+  isSupportedBusinessGroup,
+  type GroupCategory,
+} from '../zalo/group-monitoring-policy.js';
 
 const conversationAccess = requireGrant('conversation', 'access');
 
@@ -28,6 +34,13 @@ async function assertConversationAccess(request: FastifyRequest, reply: FastifyR
       id: true,
       contactId: true,
       threadType: true,
+      groupName: true,
+      groupSdkType: true,
+      groupCategory: true,
+      groupMonitoringEnabled: true,
+      groupClassificationSource: true,
+      groupClassificationConfidence: true,
+      groupClassifiedAt: true,
       isPrivate: true,
       privateOwnerUserId: true,
       zaloAccountId: true,
@@ -86,6 +99,83 @@ export async function conversationAnalysisRoutes(app: FastifyInstance) {
     },
   );
 
+  app.patch(
+    '/api/v1/ai/insights/conversations/:conversationId/group-monitoring',
+    { preHandler: conversationAccess },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const conversationId = (request.params as { conversationId: string }).conversationId;
+        const conversation = await assertConversationAccess(request, reply, conversationId);
+        if (!conversation) return;
+        if (conversation.threadType !== 'group') {
+          return reply.status(400).send({ error: 'Cấu hình này chỉ áp dụng cho hội thoại nhóm.' });
+        }
+
+        const body = (request.body ?? {}) as { category?: string; enabled?: boolean };
+        const category = String(body.category ?? conversation.groupCategory) as GroupCategory;
+        if (!GROUP_CATEGORIES.includes(category)) {
+          return reply.status(400).send({ error: 'Loại nhóm không hợp lệ.' });
+        }
+        if (conversation.groupSdkType === 2 || category === 'community') {
+          if (body.enabled === true) {
+            return reply.status(400).send({ error: 'Nhóm cộng đồng không được bật theo dõi AI.' });
+          }
+        }
+        const enabled = body.enabled === true;
+        if (enabled && !['sales', 'customer_care'].includes(category)) {
+          return reply.status(400).send({ error: 'Chỉ nhóm bán hàng hoặc chăm sóc khách hàng mới được bật theo dõi AI.' });
+        }
+
+        const profile = await prisma.conversation.update({
+          where: { id: conversationId },
+          data: {
+            groupCategory: conversation.groupSdkType === 2 ? 'community' : category,
+            groupMonitoringEnabled: conversation.groupSdkType === 2 ? false : enabled,
+            groupClassificationSource: conversation.groupSdkType === 2 ? 'sdk' : 'manual',
+            groupClassificationConfidence: 1,
+            groupClassifiedAt: new Date(),
+          },
+          select: {
+            id: true, groupName: true, groupSdkType: true, groupCategory: true,
+            groupMonitoringEnabled: true, groupClassificationSource: true,
+            groupClassificationConfidence: true, groupClassifiedAt: true,
+          },
+        });
+
+        if (!profile.groupMonitoringEnabled) {
+          await prisma.aiConversationInsight.updateMany({
+            where: { conversationId, status: 'active' },
+            data: { status: 'archived' },
+          });
+        } else {
+          const latestActivity = await prisma.message.findFirst({
+            where: { conversationId, senderType: { in: ['contact', 'self'] }, isDeleted: false },
+            orderBy: [{ sentAt: 'desc' }, { createdAt: 'desc' }],
+            select: { id: true },
+          });
+          if (latestActivity) {
+            await enqueueConversationAnalysis(
+              { orgId: request.user!.orgId, conversationId, messageId: latestActivity.id, force: true },
+              { immediate: true },
+            );
+          }
+        }
+
+        getIo()?.to(`org:${request.user!.orgId}`).emit('chat:group-info-updated', {
+          conversationId,
+          ...profile,
+        });
+        getIo()?.to(`org:${request.user!.orgId}`).emit('work-items:updated', {
+          conversationId,
+          at: new Date().toISOString(),
+        });
+        return { groupMonitoring: profile };
+      } catch (error) {
+        return fail(reply, error);
+      }
+    },
+  );
+
   // Existing conversations do not have a new inbound event to trigger the
   // debounced worker. This endpoint lets the chat UI backfill the latest
   // analysis immediately after AI is configured or when a user requests it.
@@ -98,8 +188,10 @@ export async function conversationAnalysisRoutes(app: FastifyInstance) {
         const conversationId = (request.params as { conversationId: string }).conversationId;
         const conversation = await assertConversationAccess(request, reply, conversationId);
         if (!conversation) return;
-        if (conversation.threadType !== 'user' || !conversation.contactId) {
-          return reply.status(400).send({ error: 'Chỉ hỗ trợ phân tích hội thoại khách hàng 1-1.' });
+        const directConversation = conversation.threadType === 'user' && !!conversation.contactId;
+        const monitoredGroup = isSupportedBusinessGroup(conversation);
+        if (!directConversation && !monitoredGroup) {
+          return reply.status(400).send({ error: 'Chỉ hỗ trợ hội thoại 1-1 hoặc nhóm bán hàng/chăm sóc đã bật theo dõi.' });
         }
         if (conversation.isPrivate || conversation.zaloAccount.privacyMode === 'main') {
           return reply.status(403).send({ error: 'Cuộc hội thoại riêng tư không được AI đọc.', code: 'PRIVACY_LOCKED' });

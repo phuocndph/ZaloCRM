@@ -8,13 +8,16 @@ import { mockUser, mockZaloOps } from './test-helpers.js';
 
 // ── Hoisted mock state ─────────────────────────────────────────────────────────
 const zaloOpsMock = mockZaloOps();
+const prismaMock = {
+  zaloAccount: { findFirst: vi.fn() },
+  zaloAccountAccess: { findFirst: vi.fn() },
+  conversation: { findMany: vi.fn(), update: vi.fn() },
+  groupPoll: { create: vi.fn(), findFirst: vi.fn(), update: vi.fn() },
+  $transaction: vi.fn(),
+};
 
 vi.mock('../src/shared/database/prisma-client.js', () => ({
-  prisma: {
-    zaloAccount: { findFirst: vi.fn() },
-    zaloAccountAccess: { findFirst: vi.fn() },
-    groupPoll: { create: vi.fn(), findFirst: vi.fn(), update: vi.fn() },
-  },
+  prisma: prismaMock,
 }));
 vi.mock('../src/shared/zalo-operations.js', () => ({
   zaloOps: zaloOpsMock,
@@ -49,7 +52,12 @@ function buildApp(): FastifyInstance {
   return app;
 }
 
-beforeEach(() => { vi.clearAllMocks(); });
+beforeEach(() => {
+  vi.clearAllMocks();
+  prismaMock.conversation.findMany.mockResolvedValue([]);
+  prismaMock.conversation.update.mockImplementation((args) => args);
+  prismaMock.$transaction.mockResolvedValue([]);
+});
 
 // ── GET all groups ─────────────────────────────────────────────────────────────
 describe('GET /api/v1/zalo-accounts/:accountId/groups', () => {
@@ -79,6 +87,42 @@ describe('GET /api/v1/zalo-accounts/:accountId/groups', () => {
       groups: [{ id: 'g1', name: 'Nhóm B', totalMember: 5 }],
     });
     expect(zaloOpsMock.getGroupInfo).toHaveBeenCalledWith('za-1', ['g1']);
+  });
+
+  it('thiếu SDK type → lấy bổ sung và đồng bộ community vào hội thoại', async () => {
+    zaloOpsMock.getAllGroups.mockResolvedValueOnce({
+      gridVerMap: { g1: 7 },
+      gridInfoMap: { g1: { name: 'Cộng đồng bán hàng' } },
+    });
+    zaloOpsMock.getGroupInfo.mockResolvedValueOnce({
+      gridInfoMap: { g1: { name: 'Cộng đồng bán hàng', totalMember: 99, type: 2 } },
+    });
+    prismaMock.conversation.findMany.mockResolvedValueOnce([{
+      id: 'conv-1',
+      externalThreadId: 'g1',
+      groupName: 'Cộng đồng bán hàng',
+      groupSdkType: null,
+      groupCategory: 'sales',
+      groupMonitoringEnabled: true,
+      groupClassificationSource: 'manual',
+      groupClassificationConfidence: 1,
+      groupClassifiedAt: new Date('2026-08-30T00:00:00.000Z'),
+    }]);
+
+    const res = await buildApp().inject({ method: 'GET', url: BASE });
+
+    expect(res.statusCode).toBe(200);
+    expect(zaloOpsMock.getGroupInfo).toHaveBeenCalledWith('za-1', ['g1']);
+    expect(prismaMock.conversation.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'conv-1' },
+      data: expect.objectContaining({
+        groupSdkType: 2,
+        groupCategory: 'community',
+        groupMonitoringEnabled: false,
+        groupClassificationSource: 'sdk',
+      }),
+    }));
+    expect(prismaMock.$transaction).toHaveBeenCalledTimes(1);
   });
 });
 

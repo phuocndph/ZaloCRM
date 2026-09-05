@@ -10,6 +10,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),
+      '@ee': fileURLToPath(new URL('./src/_ee-stubs', import.meta.url)),
     },
   },
   test: {

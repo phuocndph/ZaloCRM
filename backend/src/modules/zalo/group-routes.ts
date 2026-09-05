@@ -6,8 +6,70 @@
  */
 import type { FastifyInstance } from 'fastify';
 import { authMiddleware } from '../auth/auth-middleware.js';
+import { prisma } from '../../shared/database/prisma-client.js';
 import { zaloOps } from '../../shared/zalo-operations.js';
 import { resolveAccount, checkAccess, handleError } from './zalo-route-helpers.js';
+import { inferAutomaticGroupProfile } from './group-monitoring-policy.js';
+
+type GroupInfo = {
+  name?: string;
+  groupName?: string;
+  totalMember?: number;
+  memberCount?: number;
+  memVerList?: unknown[];
+  type?: number;
+};
+
+async function syncDiscoveredGroupProfiles(input: {
+  orgId: string;
+  accountId: string;
+  groupIds: string[];
+  infoMap: Record<string, GroupInfo>;
+}) {
+  if (input.groupIds.length === 0) return;
+
+  const conversations = await prisma.conversation.findMany({
+    where: {
+      orgId: input.orgId,
+      zaloAccountId: input.accountId,
+      threadType: 'group',
+      externalThreadId: { in: input.groupIds },
+    },
+    select: {
+      id: true,
+      externalThreadId: true,
+      groupName: true,
+      groupSdkType: true,
+      groupCategory: true,
+      groupMonitoringEnabled: true,
+      groupClassificationSource: true,
+      groupClassificationConfidence: true,
+      groupClassifiedAt: true,
+    },
+  });
+
+  const updates = conversations.flatMap((conversation) => {
+    const group = input.infoMap[conversation.externalThreadId ?? ''];
+    const profile = inferAutomaticGroupProfile({
+      name: group?.name || group?.groupName || conversation.groupName,
+      sdkType: typeof group?.type === 'number' ? group.type : conversation.groupSdkType,
+      current: conversation as any,
+    });
+    const changed = profile.groupSdkType !== conversation.groupSdkType
+      || profile.groupCategory !== conversation.groupCategory
+      || profile.groupMonitoringEnabled !== conversation.groupMonitoringEnabled
+      || profile.groupClassificationSource !== conversation.groupClassificationSource
+      || profile.groupClassificationConfidence !== conversation.groupClassificationConfidence
+      || profile.groupClassifiedAt?.getTime() !== conversation.groupClassifiedAt?.getTime();
+    if (!changed) return [];
+    return [prisma.conversation.update({
+      where: { id: conversation.id },
+      data: profile,
+    })];
+  });
+
+  if (updates.length > 0) await prisma.$transaction(updates);
+}
 
 export async function groupRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authMiddleware);
@@ -25,26 +87,34 @@ export async function groupRoutes(app: FastifyInstance) {
       // KHÔNG phải mảng. Trước đây trả thẳng object này → FE (group-list.vue,
       // chatbot listGroups) làm Array.isArray → false → danh sách nhóm luôn rỗng.
       // Chuẩn hoá thành mảng [{id,name,totalMember}]: gridVerMap là nguồn ID đầy đủ.
-      type GInfo = { name?: string; groupName?: string; totalMember?: number; memberCount?: number; memVerList?: unknown[] };
       const raw = (await zaloOps.getAllGroups(accountId)) as {
         gridVerMap?: Record<string, unknown>;
-        gridInfoMap?: Record<string, GInfo>;
+        gridInfoMap?: Record<string, GroupInfo>;
       } | null;
       const verMap = raw?.gridVerMap ?? {};
-      const infoMap: Record<string, GInfo> = { ...(raw?.gridInfoMap ?? {}) };
+      const infoMap: Record<string, GroupInfo> = { ...(raw?.gridInfoMap ?? {}) };
       const ids = Object.keys(verMap).length ? Object.keys(verMap) : Object.keys(infoMap);
 
-      // getAllGroups thường KHÔNG kèm tên nhóm (gridInfoMap rỗng/thiếu name) → phải
-      // bù bằng getGroupInfo (nhận mảng id, trả gridInfoMap có name + totalMember).
+      // getAllGroups thường thiếu tên hoặc SDK type. Bù bằng getGroupInfo để vừa hiển thị
+      // đủ tên vừa phân biệt chắc chắn standard group với community (type=2).
       // Chunk 50 id/call để tránh request quá lớn bị Zalo từ chối.
-      const missing = ids.filter((id) => !(infoMap[id]?.name || infoMap[id]?.groupName));
-      for (let i = 0; i < missing.length; i += 50) {
-        const chunk = missing.slice(i, i + 50);
+      const incomplete = ids.filter((id) =>
+        !(infoMap[id]?.name || infoMap[id]?.groupName) || typeof infoMap[id]?.type !== 'number',
+      );
+      for (let i = 0; i < incomplete.length; i += 50) {
+        const chunk = incomplete.slice(i, i + 50);
         try {
-          const more = (await zaloOps.getGroupInfo(accountId, chunk)) as { gridInfoMap?: Record<string, GInfo> };
+          const more = (await zaloOps.getGroupInfo(accountId, chunk)) as { gridInfoMap?: Record<string, GroupInfo> };
           Object.assign(infoMap, more?.gridInfoMap ?? {});
         } catch { /* giữ id, tên để trống — vẫn gán bot được */ }
       }
+
+      await syncDiscoveredGroupProfiles({
+        orgId: request.user!.orgId,
+        accountId,
+        groupIds: ids,
+        infoMap,
+      });
 
       const groups = ids.map((id) => {
         const g = infoMap[id] ?? {};
@@ -53,6 +123,8 @@ export async function groupRoutes(app: FastifyInstance) {
           name: g.name || g.groupName || '',
           totalMember:
             g.totalMember ?? g.memberCount ?? (Array.isArray(g.memVerList) ? g.memVerList.length : 0),
+          sdkType: typeof g.type === 'number' ? g.type : null,
+          type: g.type === 2 ? 'community' : 'group',
         };
       });
       return { groups };

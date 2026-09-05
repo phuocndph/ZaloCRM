@@ -861,6 +861,13 @@ model Conversation {
   groupName          String?   @map("group_name")
   groupAvatarUrl     String?   @map("group_avatar_url")
   groupMembersCount  Int?      @map("group_members_count")
+  // Exact zca-js GroupType: 1=standard group, 2=community. Community is never AI-monitored.
+  groupSdkType                    Int?      @map("group_sdk_type")
+  groupCategory                   String    @default("unknown") @map("group_category")
+  groupMonitoringEnabled          Boolean   @default(false) @map("group_monitoring_enabled")
+  groupClassificationSource       String    @default("unclassified") @map("group_classification_source")
+  groupClassificationConfidence   Float?    @map("group_classification_confidence")
+  groupClassifiedAt               DateTime? @map("group_classified_at")
   lastMessageAt      DateTime? @map("last_message_at")
   unreadCount        Int       @default(0) @map("unread_count")
   isReplied          Boolean   @default(true) @map("is_replied")
@@ -920,6 +927,7 @@ model Conversation {
   // (filter theo threadType + accountId, sort lastMessageAt desc).
   // Trước fix: planner seq-scan + filter post-index → 1-3s lag chuyển tab.
   @@index([orgId, threadType, zaloAccountId, lastMessageAt(sort: Desc)])
+  @@index([orgId, groupMonitoringEnabled, groupCategory])
   // Tab Chính/Khác: filter tab + accountId, sort lastMessageAt desc.
   @@index([orgId, tab, zaloAccountId, lastMessageAt(sort: Desc)])
   @@map("conversations")

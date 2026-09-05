@@ -360,7 +360,7 @@ async function onTouchEnd() {
 }
 
 // ── Realtime: tin mới → cập nhật preview/badge/thứ tự ──
-function onSocketMessage(payload: { conversationId: string; message: Record<string, unknown> }) {
+function onSocketMessage(payload: { conversationId: string; message: Record<string, unknown>; systemNotification?: boolean }) {
   pendingRealtimeMoves.add(payload.conversationId);
   pendingRealtimeAnchor = captureConversationScrollAnchor(scroller.value, pendingRealtimeMoves)
     ?? pendingRealtimeAnchor;

@@ -1,8 +1,15 @@
 export type AIMessageRole = 'system' | 'user' | 'assistant';
 
+export type AITextContentPart = { type: 'text'; text: string };
+export type AIImageContentPart = {
+  type: 'image_url';
+  image_url: { url: string; detail?: 'auto' | 'low' | 'high' };
+};
+export type AIMessageContent = string | Array<AITextContentPart | AIImageContentPart>;
+
 export type AIMessage = {
   role: AIMessageRole;
-  content: string;
+  content: AIMessageContent;
 };
 
 export type AIStructuredOutput = {

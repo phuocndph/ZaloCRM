@@ -23,6 +23,8 @@ import { uploadBuffer, keyFromPublicUrl, type UploadResult } from '../../shared/
 import { recordMessageStorageReferences } from '../../shared/storage/storage-ledger.js';
 import { compressImage } from '../media/media-service.js';
 import { config } from '../../config/index.js';
+import { inferAutomaticGroupProfile } from '../zalo/group-monitoring-policy.js';
+import { isZaloFriendAcceptedNotification } from '../zalo/zalo-friend-accepted-notification.js';
 // Open-core: customer-reply care-session reaction moved to extension engine
 // (emitted via the shared automation event bus below).
 
@@ -58,6 +60,7 @@ export interface IncomingMessage {
   groupName?: string;       // group name if group message
   groupAvatarUrl?: string;  // group avatar URL from Zalo (via getGroupInfo.avt)
   groupMembersCount?: number; // total members in group
+  groupSdkType?: number;      // zca-js GroupType: 1=standard, 2=community
   attachments?: any[];
   quote?: unknown;
   albumKey?: string | null;
@@ -96,6 +99,13 @@ export interface HandleMessageResult {
   ownerUserId: string | null;
   conversationIsPrivate: boolean;
   conversationPrivateOwnerUserId: string | null;
+}
+
+function inferInitialGroupProfile(msg: IncomingMessage) {
+  return inferAutomaticGroupProfile({
+    name: msg.groupName,
+    sdkType: msg.groupSdkType ?? null,
+  });
 }
 
 // ── v3.3 mirror inbound media — copy Zalo CDN URL về MinIO/S3/R2 ───────────
@@ -351,10 +361,12 @@ export async function handleIncomingMessage(
     });
     if (!account) return null;
 
+    const isFriendAcceptedNotification = !msg.isSelf && isZaloFriendAcceptedNotification(msg.content);
+
     const contactId = await upsertContact(msg, account.orgId);
 
     // Update lastActivity for lead scoring freshness
-    if (contactId) {
+    if (contactId && !isFriendAcceptedNotification) {
       prisma.contact.update({
         where: { id: contactId },
         data: { lastActivity: new Date() },
@@ -637,7 +649,7 @@ export async function handleIncomingMessage(
       throw err;
     }
 
-    await updateConversationAfterMessage(conversation.id, sentAt, msg.isSelf);
+    await updateConversationAfterMessage(conversation.id, sentAt, msg.isSelf, isFriendAcceptedNotification);
 
     mirrorInboundMediaInBackground({
       msg,
@@ -666,12 +678,14 @@ export async function handleIncomingMessage(
       contactZaloDisplayName: msg.contactZaloDisplayName ?? null,
       contactZaloAvatarUrl: msg.contactZaloAvatarUrl ?? null,
     };
-    void applyContactAggregateFromMessage(aggregateInput);
-    void applyFriendAggregate(aggregateInput);
+    if (!isFriendAcceptedNotification) {
+      void applyContactAggregateFromMessage(aggregateInput);
+      void applyFriendAggregate(aggregateInput);
+    }
 
     // Phase 8 — Engagement daily aggregate hook (fire-and-forget).
     // Skip for group threads (only meaningful for 1-1 contact engagement).
-    if (msg.threadType !== 'group' && contactId) {
+    if (!isFriendAcceptedNotification && msg.threadType !== 'group' && contactId) {
       void (async () => {
         try {
           const { incrementDailyAggregate, messageEngagementInputs, parseCallMeta } =
@@ -724,7 +738,7 @@ export async function handleIncomingMessage(
     // Phase 6 — Lead scoring hook (fire-and-forget).
     // Resolve friendId by (zaloAccountId, externalThreadId) sau aggregate đã chạy.
     // Nếu Friend chưa exist (lần đầu chat), aggregate sẽ tạo row → hook sẽ chạy ở message kế.
-    if (msg.threadType !== 'group' && msg.threadId) {
+    if (!isFriendAcceptedNotification && msg.threadType !== 'group' && msg.threadId) {
       void (async () => {
         try {
           const friend = await prisma.friend.findUnique({
@@ -769,14 +783,16 @@ export async function handleIncomingMessage(
     }
 
     // Auto-sync Zalo reminder → Appointment (fire-and-forget, dedup theo externalRef)
-    void syncReminderFromMessage({
-      orgId: account.orgId,
-      contactId,
-      messageId: message.id,
-      content: message.content,
-      contentType: message.contentType,
-      senderUid: msg.senderUid,
-    });
+    if (!isFriendAcceptedNotification) {
+      void syncReminderFromMessage({
+        orgId: account.orgId,
+        contactId,
+        messageId: message.id,
+        content: message.content,
+        contentType: message.contentType,
+        senderUid: msg.senderUid,
+      });
+    }
 
     // Track first outbound contact date — set once when agent sends first message
     if (msg.isSelf && contactId) {
@@ -804,7 +820,7 @@ export async function handleIncomingMessage(
     // state from "customer is waiting" to "waiting for customer", so leaving
     // the previous inbound insight active would keep a stale work item open.
     // The BullMQ job is debounced and shadow-only; it never sends a reply.
-    if (msg.threadType === 'user' && contactId) {
+    if (!isFriendAcceptedNotification && msg.threadType === 'user' && contactId) {
       void enqueueConversationAnalysis({
         orgId: account.orgId,
         conversationId: conversation.id,
@@ -824,7 +840,7 @@ export async function handleIncomingMessage(
       sentAt: message.sentAt,
     });
 
-    if (!msg.isSelf) {
+    if (!msg.isSelf && !isFriendAcceptedNotification) {
       const org = await prisma.organization.findUnique({
         where: { id: account.orgId },
         select: { id: true, name: true },
@@ -1201,6 +1217,12 @@ async function findOrCreateConversation(
       groupName: true,
       groupAvatarUrl: true,
       groupMembersCount: true,
+      groupSdkType: true,
+      groupCategory: true,
+      groupMonitoringEnabled: true,
+      groupClassificationSource: true,
+      groupClassificationConfidence: true,
+      groupClassifiedAt: true,
       isPrivate: true,
       privateOwnerUserId: true,
     },
@@ -1209,7 +1231,7 @@ async function findOrCreateConversation(
   if (existing) {
     // Update group metadata if changed (sync mới hơn so với DB)
     if (msg.threadType === 'group') {
-      const updates: { groupName?: string; groupAvatarUrl?: string; groupMembersCount?: number } = {};
+      const updates: Record<string, unknown> = {};
       if (msg.groupName && msg.groupName !== existing.groupName) updates.groupName = msg.groupName;
       // Không ghi đè URL nội bộ (đã mirror lên S3 bởi group-info-sync-cron) bằng URL CDN
       // thô từ tin nhắn — cron sở hữu avatar đã cache, tránh flip-flop CDN↔S3 mỗi tin mới.
@@ -1223,6 +1245,17 @@ async function findOrCreateConversation(
       if (msg.groupMembersCount != null && msg.groupMembersCount !== existing.groupMembersCount) {
         updates.groupMembersCount = msg.groupMembersCount;
       }
+      const profile = inferAutomaticGroupProfile({
+        name: msg.groupName || existing.groupName,
+        sdkType: msg.groupSdkType ?? existing.groupSdkType,
+        current: existing as any,
+      });
+      if (profile.groupSdkType !== existing.groupSdkType) updates.groupSdkType = profile.groupSdkType ?? null;
+      if (profile.groupCategory !== existing.groupCategory) updates.groupCategory = profile.groupCategory;
+      if (profile.groupMonitoringEnabled !== existing.groupMonitoringEnabled) updates.groupMonitoringEnabled = profile.groupMonitoringEnabled;
+      if (profile.groupClassificationSource !== existing.groupClassificationSource) updates.groupClassificationSource = profile.groupClassificationSource;
+      if (profile.groupClassificationConfidence !== existing.groupClassificationConfidence) updates.groupClassificationConfidence = profile.groupClassificationConfidence;
+      if (profile.groupClassifiedAt?.getTime() !== existing.groupClassifiedAt?.getTime()) updates.groupClassifiedAt = profile.groupClassifiedAt;
       if (Object.keys(updates).length) {
         await prisma.conversation.update({ where: { id: existing.id }, data: updates });
       }
@@ -1261,9 +1294,22 @@ async function findOrCreateConversation(
       groupName: msg.threadType === 'group' ? msg.groupName : null,
       groupAvatarUrl: msg.threadType === 'group' ? msg.groupAvatarUrl : null,
       groupMembersCount: msg.threadType === 'group' ? msg.groupMembersCount : null,
+      ...(msg.threadType === 'group'
+        ? (() => {
+            const profile = inferInitialGroupProfile(msg);
+            return {
+              groupSdkType: profile.groupSdkType ?? null,
+              groupCategory: profile.groupCategory,
+              groupMonitoringEnabled: profile.groupMonitoringEnabled,
+              groupClassificationSource: profile.groupClassificationSource,
+              groupClassificationConfidence: profile.groupClassificationConfidence,
+              groupClassifiedAt: profile.groupClassifiedAt,
+            };
+          })()
+        : {}),
       lastMessageAt: new Date(msg.timestamp),
-      unreadCount: msg.isSelf ? 0 : 1,
-      isReplied: msg.isSelf,
+      unreadCount: msg.isSelf || isZaloFriendAcceptedNotification(msg.content) ? 0 : 1,
+      isReplied: msg.isSelf || isZaloFriendAcceptedNotification(msg.content),
     },
     select: { id: true, isPrivate: true, privateOwnerUserId: true },
   });
@@ -1274,11 +1320,14 @@ async function updateConversationAfterMessage(
   conversationId: string,
   sentAt: Date,
   isSelf: boolean,
+  suppressUnread = false,
 ): Promise<void> {
   const updateData: any = { lastMessageAt: sentAt };
   if (isSelf) {
     updateData.isReplied = true;
     updateData.unreadCount = 0;
+  } else if (suppressUnread) {
+    // System e-cards stay in history but do not become customer work.
   } else {
     updateData.unreadCount = { increment: 1 };
     updateData.isReplied = false;

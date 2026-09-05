@@ -91,13 +91,23 @@ export async function timelineRoutes(app: FastifyInstance): Promise<void> {
               include: {
                 author: { select: { id: true, fullName: true, email: true } },
                 reactions: {
-                  select: { emoji: true, userId: true, user: { select: { fullName: true } } },
+                  select: { id: true, emoji: true, userId: true, user: { select: { fullName: true } } },
                 },
                 replies: {
-                  include: { author: { select: { id: true, fullName: true } } },
+                  include: {
+                    author: { select: { id: true, fullName: true, email: true } },
+                    reactions: {
+                      select: { id: true, emoji: true, userId: true, user: { select: { fullName: true } } },
+                    },
+                    appointment: {
+                      select: { id: true, appointmentDate: true, appointmentTime: true, status: true, type: true },
+                    },
+                  },
                   orderBy: { createdAt: 'asc' },
                 },
-                appointment: { select: { id: true, appointmentDate: true, status: true } },
+                appointment: {
+                  select: { id: true, appointmentDate: true, appointmentTime: true, status: true, type: true },
+                },
               },
               orderBy: { createdAt: 'desc' },
               take: overfetch,

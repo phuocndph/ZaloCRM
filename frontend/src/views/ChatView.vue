@@ -178,7 +178,7 @@
 
     <!-- COL 4: contact info panel (chỉ hiện khi có contact) -->
     <ChatContactPanel
-      v-if="showContactPanel && selectedConv?.contact"
+      v-if="showContactPanel && selectedConv?.threadType === 'user' && selectedConv?.contact"
       ref="contactPanelRef"
       :contact-id="selectedConv.contact.id"
       :contact="selectedConv.contact"
@@ -199,6 +199,13 @@
       @saved="fetchConversations()"
       @status-changed="onPanelStatusChanged"
     />
+    <GroupMonitoringPanel
+      v-else-if="showContactPanel && selectedConv?.threadType === 'group'"
+      :conversation="selectedConv"
+      class="smax-info-col"
+      @close="showContactPanel = false"
+      @updated="onGroupMonitoringUpdated"
+    />
   </div>
 </template>
 
@@ -212,6 +219,7 @@ import { useToast } from '@/composables/use-toast';
 import ConversationList from '@/components/chat/ConversationList.vue';
 import MessageThread from '@/components/chat/MessageThread.vue';
 import ChatContactPanel from '@/components/chat/ChatContactPanel.vue';
+import GroupMonitoringPanel from '@/components/chat/GroupMonitoringPanel.vue';
 import ConversationContentPanel from '@/components/chat/ConversationContentPanel.vue';
 import ConversationFilterSidebar from '@/components/chat/ConversationFilterSidebar.vue';
 import ConversationFilterBar from '@/components/chat/ConversationFilterBar.vue';
@@ -948,6 +956,11 @@ function onPanelStatusChanged(statusId: string | null) {
   }
 }
 
+function onGroupMonitoringUpdated(patch: Record<string, unknown>) {
+  if (!selectedConv.value) return;
+  Object.assign(selectedConv.value, patch);
+}
+
 let searchTimeout: ReturnType<typeof setTimeout>;
 watch(searchQuery, () => {
   clearTimeout(searchTimeout);
@@ -1171,6 +1184,7 @@ watch(searchQuery, () => {
   box-shadow: 0 6px 18px #1e40af22;
   cursor: pointer;
 }
+
 .copilot-toggle:hover { background: #eff6ff; }
 .copilot-toggle:focus-visible { outline: 3px solid #93c5fd; outline-offset: 2px; }
 .copilot-toggle.with-contact-panel { right: 370px; }

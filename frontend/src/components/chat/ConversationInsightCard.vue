@@ -4,8 +4,8 @@
       <div class="ci-title">
         <BrainCircuitIcon :size="18" :stroke-width="1.9" aria-hidden="true" />
         <div>
-          <strong>Việc cần xử lý</strong>
-          <small>AI đã đọc và chắt lọc hội thoại</small>
+          <strong>{{ panelTitle }}</strong>
+          <small>{{ panelSubtitle }}</small>
         </div>
       </div>
       <div class="ci-head-actions">
@@ -68,7 +68,7 @@
       <section class="ci-brief ci-brief--need">
         <div class="ci-brief-icon"><MessageSquareTextIcon :size="18" aria-hidden="true" /></div>
         <div>
-          <span class="ci-label">Khách đang cần gì</span>
+          <span class="ci-label">{{ needLabel }}</span>
           <p>{{ customerNeed }}</p>
         </div>
       </section>
@@ -76,7 +76,7 @@
       <section class="ci-brief ci-brief--action" :class="{ 'ci-brief--urgent': insight.requiresHuman }">
         <div class="ci-brief-icon"><ArrowRightCircleIcon :size="19" aria-hidden="true" /></div>
         <div>
-          <span class="ci-label">Nhân viên cần làm ngay</span>
+          <span class="ci-label">{{ actionLabel }}</span>
           <strong>{{ nextActionLabel }}</strong>
           <p v-if="insight.nextAction.reason">{{ insight.nextAction.reason }}</p>
         </div>
@@ -156,6 +156,16 @@ const ACTION_LABELS: Record<string, string> = {
   prepare_quote: 'Chuẩn bị báo giá',
   review_quote_follow_up: 'Xem lại nội dung báo giá để follow-up',
   review_post_sale_care: 'Kiểm tra trước khi chăm sóc sau bán',
+  verify_customer_identity: 'Chưa cần tạo việc chăm sóc',
+  ignore_non_customer: 'Không tạo việc chăm sóc',
+};
+
+const NON_CUSTOMER_ROLE_LABELS: Record<string, string> = {
+  vendor: 'Người chào hàng',
+  partner: 'Đối tác',
+  recruiter: 'Liên hệ tuyển dụng',
+  personal: 'Liên hệ cá nhân',
+  spam: 'Tin quảng cáo',
 };
 
 const MEMORY_LABELS: Record<string, string> = {
@@ -193,7 +203,20 @@ const ATTENTION_MEMORY_KEYS = new Set([
   'personal_context',
 ]);
 
-const stageLabel = computed(() => STAGE_LABELS[insight.value?.stage || ''] || 'Chưa xác định');
+const classifierApplied = computed(() => Number(insight.value?.signals?.counterpartyClassifierVersion ?? 0) > 0);
+const workItemEligible = computed(() => insight.value?.signals?.workItemEligible);
+const counterpartyRole = computed(() => String(insight.value?.signals?.counterpartyRole ?? ''));
+const salesWorkSuppressed = computed(() => classifierApplied.value && workItemEligible.value === false);
+const nonCustomerRoleLabel = computed(() => NON_CUSTOMER_ROLE_LABELS[counterpartyRole.value] || 'Chưa xác định vai trò');
+const panelTitle = computed(() => salesWorkSuppressed.value ? 'Chưa tạo việc chăm sóc' : 'Việc cần xử lý');
+const panelSubtitle = computed(() => salesWorkSuppressed.value
+  ? `${nonCustomerRoleLabel.value} · AI không đưa vào danh sách công việc`
+  : 'AI đã đọc và chắt lọc hội thoại');
+const needLabel = computed(() => salesWorkSuppressed.value ? 'AI đang nhận định' : 'Khách đang cần gì');
+const actionLabel = computed(() => salesWorkSuppressed.value ? 'Hướng xử lý' : 'Nhân viên cần làm ngay');
+const stageLabel = computed(() => salesWorkSuppressed.value
+  ? nonCustomerRoleLabel.value
+  : STAGE_LABELS[insight.value?.stage || ''] || 'Chưa xác định');
 const nextActionLabel = computed(() => ACTION_LABELS[insight.value?.nextAction.key || ''] || 'Rà lại cuộc hội thoại');
 const discussion = computed(() => insight.value?.summary?.content?.currentDiscussion?.trim() || '');
 const unansweredQuestions = computed(() =>
@@ -210,6 +233,7 @@ const attentionItems = computed(() => [
 const automationLabel = computed(() => {
   const automation = insight.value?.automation;
   if (!automation) return '';
+  if (salesWorkSuppressed.value) return 'Không tự động chăm sóc khi chưa rõ vai trò';
   const reason = automation.reason || '';
   if (automation.enabled === false || reason === 'automation_disabled') return 'Đang tắt';
   if (['workflow_enrolled', 'workflow_switched', 'same_workflow_kept'].includes(reason)) return 'AI đã tự lên lịch chăm sóc';
@@ -221,6 +245,7 @@ const automationLabel = computed(() => {
   if (['human_required', 'payment_requires_verification', 'order_requires_staff_processing'].includes(reason)) return 'Đang chờ nhân viên xử lý';
   if (['do_not_contact', 'customer_not_interested'].includes(reason)) return 'Đã dừng liên hệ tự động';
   if (reason === 'no_safe_workflow_required') return 'Chưa cần lên lịch chăm sóc';
+  if (reason === 'customer_identity_unconfirmed') return 'Không tự động chăm sóc khi chưa rõ vai trò';
   if (automation.outcome === 'failed') return 'Tự động hóa đang gặp lỗi';
   return 'AI đã cập nhật trạng thái chăm sóc';
 });
@@ -245,6 +270,7 @@ const emptyDescription = computed(() => {
   return 'Cuộc trò chuyện cũ chưa có dữ liệu. Bạn có thể phân tích ngay để AI tóm tắt nội dung và đề xuất việc tiếp theo.';
 });
 const stageTone = computed(() => {
+  if (salesWorkSuppressed.value) return 'neutral';
   if (insight.value?.requiresHuman || ['human_required', 'do_not_contact'].includes(insight.value?.stage || '')) return 'danger';
   if (['qualified', 'quoted', 'negotiating'].includes(insight.value?.stage || '')) return 'warm';
   if (['won', 'post_sale'].includes(insight.value?.stage || '')) return 'success';
@@ -405,6 +431,7 @@ watch(
 .ci-stage-pill--warm { background: #fff0da; color: #9a5705; }
 .ci-stage-pill--success { background: #dcfae6; color: #067647; }
 .ci-stage-pill--info { background: #eaf2ff; color: #175cd3; }
+.ci-stage-pill--neutral { background: #f2f4f7; color: #475467; }
 .ci-label { color: #667085; font-size: 10px; line-height: 1.3; }
 .ci-brief {
   display: grid;

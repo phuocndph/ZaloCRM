@@ -12,6 +12,7 @@ import { prisma } from '../../shared/database/prisma-client.js';
 import { handleIncomingMessage, handleMessageUndo } from '../chat/message-handler.js';
 import { detectContentType, extractAlbumInfo, updateContactAvatar } from './zalo-message-helpers.js';
 import { isZaloBirthdayNotification } from './zalo-birthday-notification.js';
+import { isZaloFriendAcceptedNotification } from './zalo-friend-accepted-notification.js';
 import { handleFriendEvent } from './friend-event-handler.js';
 import { refreshGroupInfoNow } from './group-info-refresh.js';
 import { consumeIfExpected as consumeReactionEcho } from '../chat/reaction-echo-cache.js';
@@ -316,6 +317,7 @@ interface ResolvedGroup {
   avatar: string;
   membersCount: number | null;
   memberUids: string[];
+  sdkType: number | null;
 }
 
 export interface GroupInfoCacheEntry extends ResolvedGroup {
@@ -429,12 +431,13 @@ async function resolveGroupInfo(
       avatar: info?.avt || info?.fullAvt || info?.avatar || '',
       membersCount: Array.isArray(members) ? members.length : (info?.totalMember || null),
       memberUids: groupMemberUids(info),
+      sdkType: typeof info?.type === 'number' ? info.type : null,
     };
     cache.set(groupId, { ...resolved, cachedAt: Date.now() });
     return resolved;
   } catch (err) {
     logger.warn(`[zalo] getGroupInfo failed for ${groupId}:`, err);
-    return { name: '', avatar: '', membersCount: null, memberUids: [] };
+    return { name: '', avatar: '', membersCount: null, memberUids: [], sdkType: null };
   }
 }
 
@@ -785,12 +788,14 @@ export function attachZaloListener(ctx: ListenerContext): void {
       let groupName: string | undefined;
       let groupAvatarUrl: string | undefined;
       let groupMembersCount: number | undefined;
+      let groupSdkType: number | undefined;
       let groupMemberUids: string[] = [];
       if (isGroup && message.threadId) {
         const groupInfo = await resolveGroupInfo(api, message.threadId, groupInfoCache);
         groupName = groupInfo.name || undefined;
         groupAvatarUrl = groupInfo.avatar || undefined;
         groupMembersCount = groupInfo.membersCount ?? undefined;
+        groupSdkType = groupInfo.sdkType ?? undefined;
         groupMemberUids = groupInfo.memberUids;
       }
 
@@ -799,6 +804,7 @@ export function attachZaloListener(ctx: ListenerContext): void {
         typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent || '');
       const contentType = detectContentType(message.data?.msgType, rawContent);
       const album = extractAlbumInfo(contentType, rawContent);
+      const isFriendAcceptedNotification = !message.isSelf && isZaloFriendAcceptedNotification(content);
 
       const result = await handleIncomingMessage({
         accountId,
@@ -829,6 +835,7 @@ export function attachZaloListener(ctx: ListenerContext): void {
         groupName,
         groupAvatarUrl,
         groupMembersCount,
+        groupSdkType,
         attachments: [],
         quote: message.data?.quote,
         albumKey: album.albumKey,
@@ -868,6 +875,7 @@ export function attachZaloListener(ctx: ListenerContext): void {
           privateOwnerUserId: result.conversationPrivateOwnerUserId,
           extra: {
             threadType: isGroup ? 'group' : 'user',
+            systemNotification: isFriendAcceptedNotification,
             groupName: isGroup ? (groupName || null) : null,
             groupAvatarUrl: isGroup ? (groupAvatarUrl || null) : null,
             senderAvatarUrl: !isGroup ? (contactZaloAvatarUrl || null) : null,
@@ -1095,12 +1103,14 @@ export function attachZaloListener(ctx: ListenerContext): void {
         let groupName: string | undefined;
         let groupAvatarUrl: string | undefined;
         let groupMembersCount: number | undefined;
+        let groupSdkType: number | undefined;
         let groupMemberUids: string[] = [];
         if (threadType === 'group' && resolvedThreadId) {
           const groupInfo = await resolveGroupInfo(api, resolvedThreadId, groupInfoCache);
           groupName = groupInfo.name || undefined;
           groupAvatarUrl = groupInfo.avatar || undefined;
           groupMembersCount = groupInfo.membersCount ?? undefined;
+          groupSdkType = groupInfo.sdkType ?? undefined;
           groupMemberUids = groupInfo.memberUids;
         }
 
@@ -1113,6 +1123,7 @@ export function attachZaloListener(ctx: ListenerContext): void {
           typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent || '');
         const contentType = detectContentType(message.data?.msgType, rawContent);
         const album = extractAlbumInfo(contentType, rawContent);
+        const isFriendAcceptedNotification = !message.isSelf && isZaloFriendAcceptedNotification(content);
 
         const result = await handleIncomingMessage({
           accountId,
@@ -1131,6 +1142,7 @@ export function attachZaloListener(ctx: ListenerContext): void {
           groupName,
           groupAvatarUrl,
           groupMembersCount,
+          groupSdkType,
           attachments: [],
           quote: message.data?.quote,
           albumKey: album.albumKey,
@@ -1166,6 +1178,7 @@ export function attachZaloListener(ctx: ListenerContext): void {
             privateOwnerUserId: result.conversationPrivateOwnerUserId,
             extra: {
               threadType,
+              systemNotification: isFriendAcceptedNotification,
               groupName: threadType === 'group' ? (groupName || null) : null,
               groupAvatarUrl: threadType === 'group' ? (groupAvatarUrl || null) : null,
               senderAvatarUrl: threadType === 'user' ? (contactZaloAvatarUrl || null) : null,

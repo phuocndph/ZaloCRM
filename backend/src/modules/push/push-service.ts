@@ -22,6 +22,7 @@ import { logger } from '../../shared/utils/logger.js';
 import { resolvePushTargetUserIds } from './push-targets.js';
 import { sendWebPushToUsers } from './web-push-service.js';
 import { getUsersViewing } from './presence.js';
+import { isZaloFriendAcceptedNotification } from '../zalo/zalo-friend-accepted-notification.js';
 
 // firebase-admin chỉ import động khi thật sự có creds (tránh khởi tạo thừa ở chế độ NO-OP).
 type FirebaseMessaging = {
@@ -225,6 +226,9 @@ function buildPreviewBody(message: any): string {
 export async function notifyNewInboundMessage(args: NotifyNewInboundArgs): Promise<void> {
   try {
     const { orgId, conversationId, zaloAccountId, privacyMode, ownerUserId, message } = args;
+    // Zalo emits accepted-friend e-cards as inbound messages. Keep them in history,
+    // but do not create persistent, native, or web notifications.
+    if (isZaloFriendAcceptedNotification(message?.content)) return;
 
     const titleCandidate = args.senderName ?? message?.senderName;
     const title = typeof titleCandidate === 'string' && titleCandidate.trim()

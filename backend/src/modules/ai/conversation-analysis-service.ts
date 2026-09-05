@@ -6,13 +6,22 @@ import { analyzeConversationEmotion, type EmotionOutput } from './emotion-engine
 import { analyzeConversationIntent, type IntentOutput } from './intent-engine-service.js';
 import { buildConversationContext } from './conversation-context-builder-service.js';
 import { analyzePreparedConversation } from './conversation-analysis-ai-service.js';
+import {
+  COUNTERPARTY_CLASSIFIER_VERSION,
+  isConfirmedNonCustomer,
+  resolveCounterpartyAssessment,
+  shouldCreateSalesWorkItem,
+  type CounterpartyAssessment,
+} from './counterparty-role.js';
 import { reconcileCustomerAutomation } from './customer-automation-orchestrator.js';
+import { isZaloFriendAcceptedNotification } from '../zalo/zalo-friend-accepted-notification.js';
 import {
   ContextBuilderError,
   proposeCustomerMemoriesFromConversation,
   refreshConversationSummary,
   type MemoryActor,
 } from './conversation-memory-service.js';
+import { isSupportedBusinessGroup } from '../zalo/group-monitoring-policy.js';
 
 export const AI_CONVERSATION_STAGES = [
   'needs_reply',
@@ -47,6 +56,7 @@ type RecommendationInput = {
   crmStatus: string | null;
   needsReply: boolean;
   verifiedPaymentObligation: boolean;
+  counterparty: CounterpartyAssessment;
 };
 
 export type ShadowRecommendation = {
@@ -65,6 +75,24 @@ const OPT_OUT_PATTERN = /\b(dung nhan|khong lien he|xoa so|bo theo doi)\b/i;
 const QUOTE_PATTERN = /\b(bao gia|quotation|quote|gia la)\b|\b\d+[,.]?\d*\s*(tr|trieu|ty|vnd|vnd|d)\b/i;
 const WON_STATUS_PATTERN = /\b(chot|won|thanh cong|da mua)\b/i;
 const EXPLICIT_ORDER_PATTERN = /\b(?:cho|lay|dat|mua|chot)\b.{0,40}\b\d+(?:[.,]\d+)?\s*(?:cai|bo|chiec|san pham|sp|tam|met|m|kg|hop|goi|thung|chai|loc|cuon)\b|\b(?:chot|dat|mua|lay)\s+(?:don|hang)\b/i;
+
+function isMediaOnlyMessage(value: string) {
+  const raw = String(value ?? '').trim();
+  const normalized = normalizeSearch(raw);
+  if (!normalized || /^(?:\[)?(?:hinh anh|anh|video|tep tin|file|media)(?:\])?$/i.test(normalized)) return true;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false;
+    const hasMediaReference = ['href', 'thumb', 'url', 'mediaUrl', 'fileUrl'].some((key) => typeof parsed[key] === 'string' && parsed[key]);
+    const text = [parsed.title, parsed.description, parsed.text, parsed.caption]
+      .filter((part): part is string => typeof part === 'string')
+      .join(' ')
+      .trim();
+    return hasMediaReference && !text;
+  } catch {
+    return false;
+  }
+}
 
 function normalizeSearch(value: string) {
   return value
@@ -86,19 +114,27 @@ function redactedReason(value: string) {
 }
 
 export function buildShadowRecommendation(input: RecommendationInput): ShadowRecommendation {
-  const explicitOptOut = OPT_OUT_PATTERN.test(normalizeSearch(input.latestInboundText));
+  const latestInbound = normalizeSearch(input.latestInboundText);
+  const latestMessageNeedsClarification = input.needsReply && isMediaOnlyMessage(input.latestInboundText);
+  const explicitOptOut = OPT_OUT_PATTERN.test(latestInbound);
   const currentTags = (input.currentTags ?? []).map(normalizeSearch);
   const wonByCrm = (!!input.crmStatus && WON_STATUS_PATTERN.test(normalizeSearch(input.crmStatus)))
     || currentTags.some((tag) => WON_STATUS_PATTERN.test(tag));
-  const orderEvidence = normalizeSearch([
-    input.latestInboundText,
-    input.recentConversationText ?? '',
-  ].filter(Boolean).join('\n'));
-  const explicitOrderConfirmed = EXPLICIT_ORDER_PATTERN.test(orderEvidence)
+  // Historical order text can remain in the rolling context after the order
+  // is already handled. Only the newest inbound message may advance a fresh
+  // conversation to "won" from an explicit quantity/order request.
+  const explicitOrderConfirmed = EXPLICIT_ORDER_PATTERN.test(latestInbound)
     && ['order_intent', 'follow_up_response'].includes(input.intent.primary_intent);
   const riskyIntent = ['complaint', 'return_or_refund', 'human_request'].includes(input.intent.primary_intent);
   const paymentNeedsVerification = input.intent.primary_intent === 'payment_inquiry' && !input.verifiedPaymentObligation;
   const confirmedBusinessProgress = wonByCrm || explicitOrderConfirmed;
+  const workItemEligible = shouldCreateSalesWorkItem({
+    assessment: input.counterparty,
+    messages: [{ senderType: 'contact', content: input.recentConversationText || input.latestInboundText }],
+    intent: input.intent.primary_intent,
+  });
+  const nonCustomer = isConfirmedNonCustomer(input.counterparty);
+  const identityUnconfirmed = !nonCustomer && !workItemEligible;
   // Models often set requires_human for ordinary operational work such as
   // checking an image or completing an order. That should create a staff task,
   // not downgrade a confirmed sale into an escalation state.
@@ -106,7 +142,7 @@ export function buildShadowRecommendation(input: RecommendationInput): ShadowRec
     && !confirmedBusinessProgress
     && !paymentNeedsVerification;
   const hardEscalation = riskyIntent || input.emotion.escalation_required || modelHumanEscalation;
-  const requiresHuman = hardEscalation || paymentNeedsVerification;
+  const requiresHuman = hardEscalation || paymentNeedsVerification || latestMessageNeedsClarification;
 
   let stage: AiConversationStage = 'needs_reply';
   let stageConfidence = Math.max(0.55, input.intent.confidence);
@@ -115,7 +151,17 @@ export function buildShadowRecommendation(input: RecommendationInput): ShadowRec
   if (explicitOptOut) {
     stage = 'do_not_contact';
     stageConfidence = 0.99;
-    stageReason = 'Khách đã yêu cầu không tiếp tục liên hệ.';
+    stageReason = 'Người liên hệ đã yêu cầu không tiếp tục liên hệ.';
+  } else if (nonCustomer) {
+    stage = 'cold';
+    stageConfidence = input.counterparty.confidence;
+    stageReason = input.counterparty.role === 'vendor'
+      ? 'Đối phương đang chào bán sản phẩm hoặc dịch vụ cho doanh nghiệp, không phải khách mua hàng.'
+      : 'Đối phương không được xác định là khách mua hàng của doanh nghiệp.';
+  } else if (identityUnconfirmed) {
+    stage = 'needs_reply';
+    stageConfidence = input.counterparty.confidence;
+    stageReason = 'Chưa có đủ bằng chứng để xác định người liên hệ là khách mua hàng; không tạo việc chăm sóc hoặc follow-up tự động.';
   } else if (hardEscalation) {
     stage = 'human_required';
     stageConfidence = Math.max(input.intent.confidence, input.emotion.confidence, 0.8);
@@ -157,7 +203,13 @@ export function buildShadowRecommendation(input: RecommendationInput): ShadowRec
 
   if (stage === 'do_not_contact') {
     nextAction = 'suppress_automation';
-    nextActionReason = 'Không đưa khách vào workflow và không gửi follow-up tự động.';
+    nextActionReason = 'Không đưa người liên hệ vào workflow và không gửi follow-up tự động.';
+  } else if (nonCustomer) {
+    nextAction = 'ignore_non_customer';
+    nextActionReason = 'Không tạo việc chăm sóc hoặc follow-up bán hàng cho đối tượng này.';
+  } else if (identityUnconfirmed) {
+    nextAction = 'verify_customer_identity';
+    nextActionReason = 'Chưa cần tạo việc chăm sóc. Chỉ xem thủ công khi có thêm bằng chứng người liên hệ đang mua hoặc cần hỗ trợ từ doanh nghiệp.';
   } else if (stage === 'human_required') {
     nextAction = 'assign_to_human';
     nextActionReason = 'Nhân viên phải xử lý hội thoại này trước khi cân nhắc bất kỳ tự động hóa nào.';
@@ -180,6 +232,12 @@ export function buildShadowRecommendation(input: RecommendationInput): ShadowRec
     recommendedWorkflowType = 'post_sale';
   }
 
+  if (latestMessageNeedsClarification && !explicitOptOut && !nonCustomer && !identityUnconfirmed) {
+    nextAction = 'clarify_latest_message';
+    nextActionReason = 'Tin nhắn mới nhất chưa có nội dung rõ ràng; cần mở hội thoại, xem ảnh hoặc tệp và xác nhận khách đang cần hỗ trợ gì.';
+    recommendedWorkflowType = null;
+  }
+
   return {
     stage,
     stageConfidence: clamp(stageConfidence),
@@ -194,15 +252,21 @@ export function buildShadowRecommendation(input: RecommendationInput): ShadowRec
       hasOutboundQuote: input.hasOutboundQuote,
       crmWonSignal: wonByCrm,
       explicitOrderConfirmed,
+      latestMessageNeedsClarification,
       customerNotInterested: input.intent.primary_intent === 'not_interested',
       verifiedPaymentObligation: input.verifiedPaymentObligation,
       paymentVerificationRequired: paymentNeedsVerification,
+      counterpartyRole: input.counterparty.role,
+      counterpartyConfidence: input.counterparty.confidence,
+      counterpartyReason: input.counterparty.reason,
+      counterpartyClassifierVersion: COUNTERPARTY_CLASSIFIER_VERSION,
+      workItemEligible,
     },
     safeguards: {
       mode: 'automatic_followup',
-      autoSendAllowed: !!recommendedWorkflowType && !requiresHuman && !explicitOptOut && !input.needsReply && !explicitOrderConfirmed,
-      workflowEnrollmentAllowed: !!recommendedWorkflowType && !requiresHuman && !explicitOptOut && !input.needsReply && !explicitOrderConfirmed,
-      autoTagMutationAllowed: true,
+      autoSendAllowed: workItemEligible && !!recommendedWorkflowType && !requiresHuman && !explicitOptOut && !input.needsReply && !explicitOrderConfirmed,
+      workflowEnrollmentAllowed: workItemEligible && !!recommendedWorkflowType && !requiresHuman && !explicitOptOut && !input.needsReply && !explicitOrderConfirmed,
+      autoTagMutationAllowed: workItemEligible,
       crmStatusMutationAllowed: false,
       paymentReminderRequiresVerifiedObligation: true,
     },
@@ -247,19 +311,31 @@ async function configuredRuntime(orgId: string) {
         orgId,
         status: 'active',
         deletedAt: null,
-        modelConfig: { status: { in: ['active', 'approved'] }, deletedAt: null },
       },
       orderBy: { updatedAt: 'desc' },
-      select: { id: true, modelConfigId: true, promptVersionId: true },
+      select: {
+        id: true,
+        modelConfigId: true,
+        promptVersionId: true,
+        modelConfig: { select: { status: true, deletedAt: true } },
+      },
     }),
   ]);
   if (!config?.enabled) return { enabled: false, agent: null, modelConfigId: null };
   const defaultModel = config.defaultModelConfig;
   const defaultReady = defaultModel && !defaultModel.deletedAt && ['active', 'approved'].includes(defaultModel.status);
+  const agentModelReady = agent?.modelConfigId
+    && agent.modelConfig
+    && !agent.modelConfig.deletedAt
+    && ['active', 'approved'].includes(agent.modelConfig.status);
   return {
     enabled: true,
     agent,
-    modelConfigId: agent?.modelConfigId ?? (defaultReady ? defaultModel.id : null),
+    // The model selected by the administrator is authoritative. An active
+    // agent may still reference the previous provider after an upgrade or a
+    // provider switch; using that stale reference makes the connection test
+    // green while background analysis continues to call the old connection.
+    modelConfigId: defaultReady ? defaultModel.id : agentModelReady ? agent.modelConfigId : null,
   };
 }
 
@@ -291,6 +367,10 @@ export async function processConversationAnalysis(data: ConversationAnalysisJobD
           orgId: true,
           contactId: true,
           threadType: true,
+          groupName: true,
+          groupSdkType: true,
+          groupCategory: true,
+          groupMonitoringEnabled: true,
           isReplied: true,
           isPrivate: true,
           privateOwnerUserId: true,
@@ -306,8 +386,13 @@ export async function processConversationAnalysis(data: ConversationAnalysisJobD
     },
   });
   if (!trigger) return { skipped: true, reason: 'trigger_not_found' };
+  if (isZaloFriendAcceptedNotification(trigger.content)) {
+    return { skipped: true, reason: 'system_notification' };
+  }
   const conversation = trigger.conversation;
-  if (conversation.threadType !== 'user' || !conversation.contactId) {
+  const isGroup = conversation.threadType === 'group';
+  const isDirect = conversation.threadType === 'user' && !!conversation.contactId;
+  if (!isDirect && !isSupportedBusinessGroup(conversation)) {
     return { skipped: true, reason: 'unsupported_conversation' };
   }
   if (conversation.isPrivate || conversation.zaloAccount.privacyMode === 'main') {
@@ -342,7 +427,7 @@ export async function processConversationAnalysis(data: ConversationAnalysisJobD
     where: { conversationId: conversation.id, isDeleted: false },
     orderBy: [{ sentAt: 'desc' }, { createdAt: 'desc' }],
     take: 30,
-    select: { id: true, senderType: true, content: true, sentAt: true },
+    select: { id: true, senderType: true, senderUid: true, senderName: true, content: true, sentAt: true },
   });
   const hasOutboundQuote = recentMessages.some(
     (message) => message.senderType === 'self' && QUOTE_PATTERN.test(normalizeSearch(message.content ?? '')),
@@ -366,7 +451,7 @@ export async function processConversationAnalysis(data: ConversationAnalysisJobD
           modelConfigId: runtime.modelConfigId,
           inputHash,
           contextManifest: {
-            mode: 'automatic_followup',
+            mode: isGroup ? 'group_monitoring' : 'automatic_followup',
             sourceThroughMessageId: trigger.id,
             rawContentStored: false,
             autoSendAllowed: false,
@@ -402,16 +487,22 @@ export async function processConversationAnalysis(data: ConversationAnalysisJobD
           analyzeConversationIntent(actor, conversation.id, { maxTokens: 1400, context }),
           analyzeConversationEmotion(actor, conversation.id, { maxTokens: 1600, context }),
         ]);
-    const memories = await proposeCustomerMemoriesFromConversation(actor, conversation.id, {
-      runId: run.id,
-      maxTokens: 2600,
-      context,
-      preparedCandidates: combined?.memories,
-    });
+    const memories = isGroup
+      ? { contactId: conversation.contactId, candidates: [] as Array<{ id: string }> }
+      : await proposeCustomerMemoriesFromConversation(actor, conversation.id, {
+          runId: run.id,
+          maxTokens: 2600,
+          context,
+          preparedCandidates: combined?.memories,
+        });
 
     const summary = 'summary' in summaryResult ? summaryResult.summary : await latestSummary(conversation.id);
     const summaryPayload = parseSummary(summary?.summaryRedacted);
-    const latestInbound = recentMessages.find((message) => message.senderType === 'contact');
+    const groupAction = isGroup ? combined?.groupAction ?? null : null;
+    const relevantInboundMessages = isGroup && groupAction?.senderUid
+      ? recentMessages.filter((message) => message.senderType === 'contact' && message.senderUid === groupAction.senderUid)
+      : recentMessages.filter((message) => message.senderType === 'contact');
+    const latestInbound = relevantInboundMessages[0];
     const contextTags = (() => {
       const items = context?.sections?.find((section) => section.id === 'tags')?.items;
       if (!items || typeof items !== 'object' || Array.isArray(items)) return [];
@@ -423,12 +514,22 @@ export async function processConversationAnalysis(data: ConversationAnalysisJobD
       : '';
     const recentConversationText = [
       currentDiscussion,
-      ...recentMessages
-        .filter((message) => message.senderType === 'contact' && message.content)
+      ...relevantInboundMessages
+        .filter((message) => message.content)
         .slice(0, 12)
         .map((message) => message.content ?? ''),
     ].filter(Boolean).join('\n');
-    const recommendation = buildShadowRecommendation({
+    const counterparty = resolveCounterpartyAssessment(
+      combined?.counterparty,
+      [...(isGroup ? relevantInboundMessages : recentMessages)].reverse().map((message) => ({ senderType: message.senderType, content: message.content })),
+    );
+    const groupEvidenceIndex = groupAction?.messageId
+      ? recentMessages.findIndex((message) => message.id === groupAction.messageId)
+      : -1;
+    const groupNeedsReply = groupEvidenceIndex >= 0
+      ? !recentMessages.slice(0, groupEvidenceIndex).some((message) => message.senderType === 'self')
+      : false;
+    const baseRecommendation = buildShadowRecommendation({
       intent: intentResult.output,
       emotion: emotionResult.output,
       latestInboundText: latestInbound?.content ?? '',
@@ -439,9 +540,43 @@ export async function processConversationAnalysis(data: ConversationAnalysisJobD
       // `isReplied` is maintained by the chat writer. Re-checking the latest
       // activity makes an outbound staff reply immediately move the insight to
       // "waiting for customer", even when an echo arrives out of order.
-      needsReply: trigger.senderType !== 'self' && !conversation.isReplied,
+      needsReply: isGroup ? groupNeedsReply : trigger.senderType !== 'self' && !conversation.isReplied,
       verifiedPaymentObligation: false,
+      counterparty,
     });
+    const recommendation: ShadowRecommendation = isGroup
+      ? {
+          ...baseRecommendation,
+          stage: groupAction ? baseRecommendation.stage : 'cold',
+          stageConfidence: groupAction ? baseRecommendation.stageConfidence : 0.95,
+          stageReason: groupAction?.reason || 'Chưa xác định được thành viên nào đang có yêu cầu mua hàng hoặc cần doanh nghiệp hỗ trợ.',
+          requiresHuman: !!groupAction && baseRecommendation.requiresHuman,
+          nextAction: groupAction ? baseRecommendation.nextAction : 'ignore_non_customer',
+          nextActionReason: groupAction?.requiredAction || groupAction?.reason || 'Không tạo việc từ trao đổi nhóm chưa có yêu cầu kinh doanh rõ ràng.',
+          recommendedWorkflowType: null,
+          signals: {
+            ...baseRecommendation.signals,
+            groupMonitoring: true,
+            groupCategory: conversation.groupCategory,
+            groupName: conversation.groupName,
+            groupActionable: !!groupAction && baseRecommendation.signals.workItemEligible === true,
+            actionableSenderUid: groupAction?.senderUid ?? null,
+            actionableSenderName: groupAction?.senderName ?? null,
+            actionableMessageId: groupAction?.messageId ?? null,
+            actionableRequest: groupAction?.request ?? null,
+            requiredEmployeeAction: groupAction?.requiredAction ?? null,
+          },
+          safeguards: {
+            mode: 'group_monitoring',
+            autoSendAllowed: false,
+            workflowEnrollmentAllowed: false,
+            autoTagMutationAllowed: false,
+            crmStatusMutationAllowed: false,
+            memoryMutationAllowed: false,
+            paymentReminderRequiresVerifiedObligation: true,
+          },
+        }
+      : baseRecommendation;
     const outputHash = createHash('sha256')
       .update(JSON.stringify({ recommendation, intent: intentResult.output, emotion: emotionResult.output, summaryId: summary?.id ?? null }))
       .digest('hex');
@@ -507,7 +642,7 @@ export async function processConversationAnalysis(data: ConversationAnalysisJobD
           sourceThroughMessageId: trigger.id,
           version: duplicate?.version ?? ((latest?.version ?? 0) + 1),
           status: 'active',
-          mode: 'automatic_followup',
+          mode: isGroup ? 'group_monitoring' : 'automatic_followup',
           stage: recommendation.stage,
           stageConfidence: recommendation.stageConfidence,
           stageReasonRedacted: recommendation.stageReason,
@@ -560,7 +695,7 @@ export async function processConversationAnalysis(data: ConversationAnalysisJobD
           inputHash,
           outputHash,
           metadata: {
-            mode: 'automatic_followup',
+            mode: isGroup ? 'group_monitoring' : 'automatic_followup',
             stage: insight.stage,
             nextAction: insight.nextAction,
             autoSendAllowed: recommendation.safeguards.autoSendAllowed,
@@ -571,10 +706,12 @@ export async function processConversationAnalysis(data: ConversationAnalysisJobD
       return { ...insight, duplicate: !!duplicate, refreshed: !!duplicate && !!data.force };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 
-    const automation = await reconcileCustomerAutomation(created.id).catch((error) => {
-      logger.error(`[customer-automation] reconcile failed insight=${created.id}: ${(error as Error).message}`);
-      return { enabled: true, outcome: 'failed', reason: (error as Error).message };
-    });
+    const automation = isGroup
+      ? { enabled: false, outcome: 'skipped', reason: 'group_monitoring_never_auto_sends' }
+      : await reconcileCustomerAutomation(created.id).catch((error) => {
+          logger.error(`[customer-automation] reconcile failed insight=${created.id}: ${(error as Error).message}`);
+          return { enabled: true, outcome: 'failed', reason: (error as Error).message };
+        });
     return { skipped: false, insight: created, automation };
   } catch (error) {
     await prisma.aiRun.update({
