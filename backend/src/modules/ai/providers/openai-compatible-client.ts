@@ -38,7 +38,10 @@ export type OpenAICompatibleCompletionPayload = {
   };
 };
 
-const DEFAULT_TIMEOUT_MS = 15_000;
+// F5Quota can take several seconds to return a completion under load. Keep
+// the probe timeout aligned with the runtime model timeout instead of marking
+// a usable provider as failed after the shorter transport default.
+const DEFAULT_TIMEOUT_MS = 30_000;
 const DEVELOPMENT_HTTP_HOSTS = ['host.docker.internal', '9router'] as const;
 const TERMINAL_RESOURCE_SUFFIXES = [
   ['chat', 'completions'],
