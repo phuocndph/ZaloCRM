@@ -364,7 +364,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, watch, onMounted } from 'vue';
-import { useRouter } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { useOutreach, useOutreachSocket, type OutreachTemplate, type ImageAsset, type OutreachCampaign, type AudiencePreviewItem } from '@/composables/use-outreach';
 import { useCustomerLists } from '@/composables/use-customer-lists';
 import { useZaloAccounts } from '@/composables/use-zalo-accounts';
@@ -372,6 +372,7 @@ import { useToast } from '@/composables/use-toast';
 import { useCrmTagDefs } from '@/composables/use-crm-tag-defs';
 import { api } from '@/api/index';
 
+const route = useRoute();
 const router = useRouter();
 const toast = useToast();
 const { campaigns, fetchCampaigns, createCampaign, control, remove, previewAudience, fetchImageAssets } = useOutreach();
@@ -409,6 +410,23 @@ const audience = reactive({ total: 0, eligible: 0, skipped: 0 });
 const previewLoading = ref(false);
 const preview = reactive({ open: false, loading: false, search: '', items: [] as AudiencePreviewItem[] });
 const friendTags = ref<Array<{ id: string; name: string; color: string }>>([]);
+
+async function prefillFromListQuery() {
+  const listId = typeof route.query.listId === 'string' ? route.query.listId : '';
+  if (!listId) return;
+  form.audienceSource = 'customer_list';
+  form.customerListId = listId;
+  form.zaloAccountId = '';
+  showCreate.value = true;
+  try {
+    const { data } = await api.get(`/customer-lists/${encodeURIComponent(listId)}/auto-assign`);
+    const ids = Array.isArray(data?.zaloAccountIds) ? data.zaloAccountIds : [];
+    const available = new Set(accounts.value.map((account) => account.id));
+    form.zaloAccountId = ids.find((id: unknown): id is string => typeof id === 'string' && available.has(id)) ?? '';
+  } catch {
+    // The campaign form remains usable; the user can select the assigned nick.
+  }
+}
 
 const audienceReady = computed(() => form.audienceSource === 'friend_pool'
   ? form.sourceAccountIds.length > 0
@@ -663,6 +681,7 @@ useOutreachSocket((p) => {
 
 onMounted(async () => {
   await Promise.all([fetchCampaigns(), fetchLists(), fetchAccounts(), loadTagDefs()]);
+  await prefillFromListQuery();
   try {
     const [friendRes, crmRes] = await Promise.all([
       api.get('/tags', { params: { scope: 'friend', limit: 500 } }),
