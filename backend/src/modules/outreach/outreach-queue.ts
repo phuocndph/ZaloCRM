@@ -351,16 +351,39 @@ async function processAddFriend(data: AddFriendJob) {
     c = await prisma.outreachCampaign.findUnique({ where: { id: data.campaignId } });
     if (!c || c.state === 'cancelled' || c.state === 'completed') return;
 
-    const entry = await prisma.customerListEntry.findUnique({
-      where: { id: data.entryId },
-      select: { id: true, contactId: true, phoneE164: true, phoneLocal: true, phoneRaw: true, phoneValid: true, nameRaw: true, zaloName: true },
-    });
+    const [entry, account] = await Promise.all([
+      prisma.customerListEntry.findUnique({
+        where: { id: data.entryId },
+        select: {
+          id: true, contactId: true, phoneE164: true, phoneLocal: true, phoneRaw: true,
+          phoneValid: true, nameRaw: true, zaloName: true, hasZalo: true,
+          assignedZaloAccountId: true,
+        },
+      }),
+      prisma.zaloAccount.findFirst({
+        where: { id: c.zaloAccountId ?? '', orgId: c.orgId, archivedAt: null },
+        select: { status: true },
+      }),
+    ]);
     if (!entry) { await recordAdd(c, data.entryId, '', null, 'failed', 'entry_not_found', started); counted = true; return; }
     const phone = entry.phoneLocal || entry.phoneE164 || entry.phoneRaw || '';
     const name = entry.zaloName || entry.nameRaw || null;
 
     // Đánh dấu "Đang xử lý" ngay khi bắt đầu xử lý số này (UI hiện realtime).
     await upsertPhone(c, entry.id, phone, { overall: 'processing' });
+
+    // Revalidate ownership at send time. A lead can be reassigned after the
+    // campaign is drafted or queued, and the former nick must not contact it.
+    const invalidOwnershipReason = entry.assignedZaloAccountId !== c.zaloAccountId || entry.hasZalo !== true || !entry.contactId
+      ? 'Bỏ qua - data không còn được giao cho nick này'
+      : account?.status !== 'connected'
+        ? 'Bỏ qua - nick Zalo chưa kết nối'
+        : null;
+    if (invalidOwnershipReason) {
+      await recordAdd(c, entry.id, phone, entry.contactId, 'no_zalo', invalidOwnershipReason, started);
+      counted = true;
+      return;
+    }
 
     // SĐT không hợp lệ → BỎ QUA (không gọi Zalo), vẫn báo cáo.
     if (!entry.phoneValid || !entry.phoneE164) {
@@ -528,6 +551,40 @@ async function processSendMessage(data: SendMessageJob) {
         await writeLog({
           campaignId: c.id, entryId: data.entryId, contactId: data.contactId, phone: data.phone,
           actionType: 'send_message', status: 'skipped', errorMessage: `Bỏ qua - ${invalidReason}`,
+        });
+        counted = true;
+        await upsertPhone(c, data.entryId, data.phone, { messageStatus: 'failed', note: invalidReason });
+        await emitProgress(ioRef, c.orgId, c.id);
+        return;
+      }
+    } else {
+      // A delayed message can outlive the add-friend job. Re-check the list
+      // assignment immediately before sending so a reassigned lead is never
+      // contacted by the former nick.
+      const [entry, account] = await Promise.all([
+        prisma.customerListEntry.findFirst({
+          where: { id: data.entryId, customerList: { orgId: c.orgId } },
+          select: { contactId: true, hasZalo: true, assignedZaloAccountId: true },
+        }),
+        prisma.zaloAccount.findFirst({
+          where: { id: data.zaloAccountId, orgId: c.orgId, archivedAt: null },
+          select: { status: true },
+        }),
+      ]);
+      const invalidReason = !entry
+        ? 'Data không còn tồn tại'
+        : entry.assignedZaloAccountId !== data.zaloAccountId
+          ? 'Data đã được điều chuyển sang nick khác'
+          : entry.hasZalo !== true || !entry.contactId
+            ? 'Data không còn đủ điều kiện Zalo'
+            : account?.status !== 'connected'
+              ? 'Nick Zalo chưa kết nối'
+              : null;
+      if (invalidReason) {
+        await prisma.outreachCampaign.update({ where: { id: c.id }, data: { totalSkipped: { increment: 1 } } });
+        await writeLog({
+          campaignId: c.id, entryId: data.entryId, contactId: entry?.contactId ?? data.contactId,
+          phone: data.phone, actionType: 'send_message', status: 'skipped', errorMessage: `Bỏ qua - ${invalidReason}`,
         });
         counted = true;
         await upsertPhone(c, data.entryId, data.phone, { messageStatus: 'failed', note: invalidReason });

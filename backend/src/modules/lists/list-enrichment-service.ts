@@ -27,6 +27,7 @@ import { recomputeListCounters } from './list-entry-routes.js';
 import { appendSystemMessage } from './list-system-messages.js';
 import { withTenant, runSystemQuery } from '../../shared/tenant/tenant-context.js';
 import { automationEventBus } from '../../shared/ee-registry/event-bus.js';
+import { assignListEntry } from './list-lead-assignment-service.js';
 
 const CHUNK_SIZE = 200;
 const TICK_INTERVAL_MS = 30 * 1000; // 30 seconds
@@ -190,6 +191,7 @@ async function enrichListOnce(listId: string): Promise<{ processed: number; enri
         // Lead-notify Nhịp 1 (EE seam) — entry vừa có contactId (chokepoint mọi nguồn) → emit
         // lên shared-bus; EE lead-notify-listener subscribe → tự giao sale + báo. Community = no-op.
         if (contactId) {
+          void assignListEntry(entry.id).catch((err) => logger.warn({ err, entryId: entry.id }, '[list-auto-assign] event assignment failed'));
           automationEventBus.emit({
             type: 'customer_list_entry_created',
             orgId: list.orgId,

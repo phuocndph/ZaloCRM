@@ -62,6 +62,7 @@ export type SystemMessageType =
   | 'ENRICHED_NO_MATCH'
   // Lead-notify Nhịp 1 — trạng thái tự-giao-sale (cột "Trạng thái giao")
   | 'ASSIGNED_TO_SALE'
+  | 'ASSIGNED_TO_ZALO_ACCOUNT'
   | 'ASSIGN_FAILED';
 
 export interface SystemMessage {
@@ -91,6 +92,8 @@ export interface CustomerListEntry {
   zaloName: string | null;
   resolvedByNickId: string | null;
   resolvedByNick: { id: string; displayName: string | null; phone: string | null } | null;
+  assignedZaloAccountId: string | null;
+  assignedZaloAccount: { id: string; displayName: string | null; phone: string | null; status?: string; liveStatus?: string } | null;
   multiNickCount: number;
   hasZalo: boolean | null;
   dupInListWithEntryId: string | null;

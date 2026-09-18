@@ -30,11 +30,12 @@
             </select>
             <span v-if="errors.customerListId" class="oc-errtxt">{{ errors.customerListId }}</span>
           </label>
-          <label>Nick Zalo gửi *
+          <label>Nick Zalo được giao data *
             <select v-model="form.zaloAccountId" :class="{ 'oc-err': errors.zaloAccountId }">
-              <option :value="''" disabled>— Chọn nick —</option>
+              <option :value="''" disabled>— Chọn nick đã nhận data —</option>
               <option v-for="a in accounts" :key="a.id" :value="a.id">{{ a.displayName || a.phone || a.id }}</option>
             </select>
+            <small class="oc-field-help">Chiến dịch chỉ lấy các số trong tệp đã được gán cho nick này.</small>
             <span v-if="errors.zaloAccountId" class="oc-errtxt">{{ errors.zaloAccountId }}</span>
           </label>
         </div>
@@ -546,7 +547,7 @@ function closePicker() { picker.open = false; }
 function validate(): boolean {
   Object.keys(errors).forEach(k => delete errors[k]);
   if (form.audienceSource === 'customer_list' && !form.customerListId) errors.customerListId = 'Vui lòng chọn danh sách SĐT';
-  if (form.audienceSource === 'customer_list' && !form.zaloAccountId) errors.zaloAccountId = 'Vui lòng chọn nick Zalo';
+  if (form.audienceSource === 'customer_list' && !form.zaloAccountId) errors.zaloAccountId = 'Vui lòng chọn nick Zalo đã được giao data';
   if (form.audienceSource === 'friend_pool' && !form.sourceAccountIds.length) errors.sourceAccountIds = 'Chọn ít nhất một nick Zalo để theo dõi';
   const nm = form.name.trim();
   if (nm.length < 3) errors.name = 'Tên chiến dịch bắt buộc (tối thiểu 3 ký tự)';

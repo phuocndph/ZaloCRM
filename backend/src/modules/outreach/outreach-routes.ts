@@ -8,6 +8,7 @@ import type { FastifyInstance } from 'fastify';
 import { prisma } from '../../shared/database/prisma-client.js';
 import { authMiddleware } from '../auth/auth-middleware.js';
 import { getZaloScope } from '../zalo/zalo-scope.js';
+import { getOwnerScope, applyOwnerScope } from '../rbac/owner-scope.js';
 import { logger } from '../../shared/utils/logger.js';
 import { startCampaign, pauseCampaign, resumeCampaign, cancelCampaign, restartCampaign } from './outreach-queue.js';
 import {
@@ -82,8 +83,21 @@ export async function outreachRoutes(app: FastifyInstance): Promise<void> {
     }
     let validatedAccountIds: string[] = [];
     if (audienceSource === 'customer_list') {
+      const ownerScope = await getOwnerScope({
+        userId: user.id,
+        orgId: user.orgId,
+        legacyRole: user.role,
+        resource: 'customer_list',
+      });
       const [list, accounts] = await Promise.all([
-        prisma.customerList.findFirst({ where: { id: b.customerListId!, orgId: user.orgId }, select: { id: true } }),
+        prisma.customerList.findFirst({
+          where: {
+            id: b.customerListId!,
+            orgId: user.orgId,
+            ...applyOwnerScope(ownerScope),
+          },
+          select: { id: true },
+        }),
         accessibleAccounts(user, [b.zaloAccountId!]),
       ]);
       if (!list) return reply.status(400).send({ success: false, error: 'VALIDATION_ERROR', errors: { customerListId: 'Danh sách SĐT không hợp lệ' } });
@@ -160,8 +174,21 @@ export async function outreachRoutes(app: FastifyInstance): Promise<void> {
       evaluated = await evaluateFriendPoolAudience(user.orgId, ids, filter, b.deduplicateContacts !== false);
     } else {
       if (!b.customerListId || !b.zaloAccountId) return reply.status(400).send({ error: 'customerListId + zaloAccountId bắt buộc' });
+      const ownerScope = await getOwnerScope({
+        userId: user.id,
+        orgId: user.orgId,
+        legacyRole: user.role,
+        resource: 'customer_list',
+      });
       const [list, accounts] = await Promise.all([
-        prisma.customerList.findFirst({ where: { id: b.customerListId, orgId: user.orgId }, select: { id: true } }),
+        prisma.customerList.findFirst({
+          where: {
+            id: b.customerListId,
+            orgId: user.orgId,
+            ...applyOwnerScope(ownerScope),
+          },
+          select: { id: true },
+        }),
         accessibleAccounts(user, [b.zaloAccountId]),
       ]);
       if (!list || accounts.length !== 1) return reply.status(400).send({ error: 'Tệp hoặc nick không hợp lệ' });

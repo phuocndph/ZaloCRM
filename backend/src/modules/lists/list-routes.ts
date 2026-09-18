@@ -24,8 +24,10 @@ import { kickoffEnrichment } from './list-enrichment-service.js';
 import { buildMessagesFromState, type SystemMessage } from './list-system-messages.js';
 import { randomUUID } from 'node:crypto';
 import { getOwnerScope, applyOwnerScope } from '../rbac/owner-scope.js';
+import { getZaloScope } from '../zalo/zalo-scope.js';
 // Phase Multi-Source Lead Ads 2026-05-27 — cache invalidation khi đổi integrationKey
 import { invalidateCacheForList } from '../integrations/_shared/meta-campaign-cache.service.js';
+import { assignPendingListEntries } from './list-lead-assignment-service.js';
 
 // Phase Multi-Source Lead Ads 2026-05-27 — #KEY validation (A-Z0-9 + dash, 1-32)
 // Normalize uppercase. UI auto-uppercase trước khi gửi, server gate lại.
@@ -106,6 +108,7 @@ export async function customerListRoutes(app: FastifyInstance): Promise<void> {
               displayInlineFields: true,
               shareableToPool: true,
               leadNotifyEnabled: true,
+              zaloAssignments: { where: { enabled: true }, select: { id: true } },
             },
           }),
           prisma.customerList.count({ where }),
@@ -167,6 +170,7 @@ export async function customerListRoutes(app: FastifyInstance): Promise<void> {
           lists: lists.map((l) => ({
             ...l,
             createdBy: creatorMap.get(l.createdById) ?? null,
+            leadNotifyEnabled: l.leadNotifyEnabled && l.zaloAssignments.length > 0,
             fbLocked: fbLockedIds.has(l.id),
             // Nền tảng có lead trong tệp (['fb-leadads','tiktok-leadgen','zalo-ads']); rỗng = thủ công/chưa có lead.
             platforms: platformsByList.get(l.id) ?? [],
@@ -465,6 +469,109 @@ export async function customerListRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
+  app.get<{ Params: { id: string } }>('/api/v1/customer-lists/:id/auto-assign', async (request, reply) => {
+    const user = request.user!;
+    const ownerScope = await getOwnerScope({
+      userId: user.id,
+      orgId: user.orgId,
+      legacyRole: user.role,
+      resource: 'customer_list',
+    });
+    const list = await prisma.customerList.findFirst({
+      where: {
+        id: request.params.id,
+        orgId: user.orgId,
+        ...applyOwnerScope(ownerScope),
+      },
+      select: {
+        leadNotifyEnabled: true,
+        notifyIndividual: true,
+        zaloAssignments: { where: { enabled: true }, select: { zaloAccountId: true } },
+      },
+    });
+    if (!list) return reply.status(404).send({ error: 'not_found' });
+    return {
+      enabled: list.leadNotifyEnabled,
+      notifyIndividual: list.notifyIndividual,
+      zaloAccountIds: list.zaloAssignments.map((item) => item.zaloAccountId),
+    };
+  });
+
+  app.put<{
+    Params: { id: string };
+    Body: { enabled?: boolean; zaloAccountIds?: string[]; notifyIndividual?: boolean };
+  }>('/api/v1/customer-lists/:id/auto-assign', async (request, reply) => {
+    const user = request.user!;
+    const { enabled = false, zaloAccountIds = [], notifyIndividual = true } = request.body ?? {};
+    const uniqueIds = [...new Set(Array.isArray(zaloAccountIds)
+      ? zaloAccountIds.filter((id): id is string => typeof id === 'string')
+      : [])];
+    if (enabled && !uniqueIds.length) {
+      return reply.status(400).send({ error: 'Chọn ít nhất một nick Zalo quản lý data' });
+    }
+    const configuredIds = enabled ? uniqueIds : [];
+
+    const ownerScope = await getOwnerScope({
+      userId: user.id,
+      orgId: user.orgId,
+      legacyRole: user.role,
+      resource: 'customer_list',
+    });
+    const list = await prisma.customerList.findFirst({
+      where: {
+        id: request.params.id,
+        orgId: user.orgId,
+        ...applyOwnerScope(ownerScope),
+      },
+      select: { id: true },
+    });
+    if (!list) return reply.status(404).send({ error: 'not_found' });
+
+    const scope = await getZaloScope(user.id, user.orgId, user.role);
+    const validAccounts = await prisma.zaloAccount.findMany({
+      where: {
+        id: { in: configuredIds },
+        orgId: user.orgId,
+        archivedAt: null,
+        ...(scope.isOrgAdmin ? {} : { id: { in: configuredIds.filter((id) => scope.accessibleIds.includes(id)) } }),
+      },
+      select: { id: true },
+    });
+    if (validAccounts.length !== configuredIds.length) {
+      return reply.status(400).send({ error: 'Danh sách nick Zalo không hợp lệ hoặc bạn không có quyền quản lý' });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.customerList.update({
+        where: { id: list.id },
+        data: { leadNotifyEnabled: !!enabled, notifyIndividual: !!notifyIndividual },
+      });
+      const existing = await tx.customerListZaloAssignment.findMany({
+        where: { customerListId: list.id },
+        select: { zaloAccountId: true },
+      });
+      const configuredSet = new Set(configuredIds);
+      const removedIds = existing
+        .map((item) => item.zaloAccountId)
+        .filter((id) => !configuredSet.has(id));
+      if (removedIds.length) {
+        await tx.customerListZaloAssignment.deleteMany({
+          where: { customerListId: list.id, zaloAccountId: { in: removedIds } },
+        });
+      }
+      const existingSet = new Set(existing.map((item) => item.zaloAccountId));
+      const addedIds = configuredIds.filter((id) => !existingSet.has(id));
+      if (addedIds.length) {
+        await tx.customerListZaloAssignment.createMany({
+          data: addedIds.map((zaloAccountId) => ({ customerListId: list.id, zaloAccountId })),
+        });
+      }
+      if (!enabled) await tx.zaloAssignmentState.deleteMany({ where: { customerListId: list.id } });
+    });
+
+    const assigned = enabled ? await assignPendingListEntries(list.id) : 0;
+    return { ok: true, assigned, zaloAccountIds: configuredIds };
+  });
   // ─── GET /customer-lists/:id ───
   app.get<{ Params: { id: string } }>('/api/v1/customer-lists/:id', async (request, reply) => {
     const user = request.user!;
@@ -478,6 +585,7 @@ export async function customerListRoutes(app: FastifyInstance): Promise<void> {
       Object.assign(lWhere, applyOwnerScope(ownerScope));
       const list = await prisma.customerList.findFirst({
         where: lWhere,
+        include: { zaloAssignments: { where: { enabled: true }, select: { id: true } } },
       });
       if (!list) return reply.status(404).send({ error: 'not_found' });
 
@@ -485,7 +593,12 @@ export async function customerListRoutes(app: FastifyInstance): Promise<void> {
         where: { id: list.createdById },
         select: { id: true, fullName: true, email: true },
       });
-      return { ...list, createdBy: creator };
+      const { zaloAssignments, ...listWithoutAssignmentMeta } = list;
+      return {
+        ...listWithoutAssignmentMeta,
+        leadNotifyEnabled: list.leadNotifyEnabled && zaloAssignments.length > 0,
+        createdBy: creator,
+      };
     } catch (err) {
       logger.error({ err, id }, '[customer-lists] get failed');
       return reply.status(500).send({ error: 'internal_error' });

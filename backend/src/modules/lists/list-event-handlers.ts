@@ -22,6 +22,7 @@ import { prisma } from '../../shared/database/prisma-client.js';
 import { logger } from '../../shared/utils/logger.js';
 import { automationEventBus } from '../../shared/ee-registry/event-bus.js';
 import { recomputeListCounters } from './list-entry-routes.js';
+import { assignListEntry } from './list-lead-assignment-service.js';
 
 /**
  * Core reverse-update: phone resolves → UID khá đầy đủ thông tin.
@@ -104,6 +105,12 @@ export async function onPhoneUidResolved(payload: {
           });
         }
       }
+    }
+
+    // Reverse-update cũng là đường vào của thao tác Tìm Zalo thủ công và đồng bộ Friend.
+    // Khi entry vừa chuyển sang hasZalo=true, chạy cùng bộ chia tự động của tệp.
+    for (const entry of entries) {
+      void assignListEntry(entry.id).catch((err) => logger.warn({ err, entryId: entry.id }, '[list-auto-assign] reverse-update assignment failed'));
     }
 
     // Recompute counters cho parent lists bị ảnh hưởng

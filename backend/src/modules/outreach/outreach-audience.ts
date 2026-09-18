@@ -4,7 +4,7 @@
  * Outreach audience evaluation shared by preview and queue seeding.
  *
  * Sources:
- * - customer_list: legacy phone list + one sender account.
+ * - customer_list: only entries assigned to the selected sender account.
  * - friend_pool: accepted friends aggregated from selected Zalo accounts; each
  *   recipient is sent from the account that owns that Friend identity.
  */
@@ -112,7 +112,7 @@ function evaluate(entry: Omit<EvaluatedEntry, 'eligible' | 'reason'>, filter: Au
   const skipMs = filter.skipChattedDays ? filter.skipChattedDays * 86400000 : null;
   let reason: string | null = null;
 
-  if (entry.source === 'friend_pool' && entry.accountStatus !== 'connected') {
+  if (entry.accountStatus !== 'connected') {
     reason = 'Nick Zalo chưa kết nối';
   }
   if (!reason && entry.source === 'friend_pool' && !entry.zaloUid) reason = 'Thiếu Zalo UID';
@@ -139,7 +139,15 @@ export async function evaluateCustomerListAudience(
   filter: AudienceFilter,
 ): Promise<EvaluatedEntry[]> {
   const entries = await prisma.customerListEntry.findMany({
-    where: { customerListId },
+    // The list assignment is the ownership boundary. A campaign must never
+    // send a lead through a different nick simply because that nick can see
+    // the list or has a matching Friend record.
+    where: {
+      customerListId,
+      assignedZaloAccountId: zaloAccountId,
+      contactId: { not: null },
+      hasZalo: true,
+    },
     select: { id: true, contactId: true, phoneLocal: true, phoneE164: true, phoneRaw: true, nameRaw: true, zaloName: true },
   });
   const contactIds = entries.map((entry) => entry.contactId).filter((id): id is string => !!id);

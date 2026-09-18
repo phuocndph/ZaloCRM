@@ -134,7 +134,7 @@ export async function customerListEntryRoutes(app: FastifyInstance): Promise<voi
       ]);
 
       // Enrich resolvedByNickId → displayName + initials
-      const nickIds = [...new Set(entries.map((e) => e.resolvedByNickId).filter((x): x is string => !!x))];
+      const nickIds = [...new Set(entries.flatMap((e) => [e.resolvedByNickId, e.assignedZaloAccountId]).filter((x): x is string => !!x))];
       const nicks = nickIds.length
         ? await prisma.zaloAccount.findMany({
             where: { id: { in: nickIds } },
@@ -185,6 +185,7 @@ export async function customerListEntryRoutes(app: FastifyInstance): Promise<voi
         entries: entries.map((e) => ({
           ...e,
           resolvedByNick: e.resolvedByNickId ? nickMap.get(e.resolvedByNickId) ?? null : null,
+          assignedZaloAccount: e.assignedZaloAccountId ? nickMap.get(e.assignedZaloAccountId) ?? null : null,
           dupWithListName: e.dupWithListId ? dupListMap.get(e.dupWithListId) ?? null : null,
           // #4: số lần gắn sequence (mức Cha qua contactId) — tổng + đang chạy.
           sequenceAttachCount: e.contactId ? seqCountMap.get(e.contactId)?.total ?? 0 : 0,

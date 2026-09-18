@@ -144,7 +144,7 @@
                         color="primary"
                         title="Tệp khoá: tạo tự động từ Facebook Lead Form — không thể xoá/đổi tên"
                       >mdi-lock</v-icon>
-                      <span v-if="list.leadNotifyEnabled" class="ln-badge" title="Tự động giao sale & báo lead ĐANG CHẠY cho tệp này">
+                      <span v-if="list.leadNotifyEnabled" class="ln-badge" title="Tự động gán nick Zalo & báo lead ĐANG CHẠY cho tệp này">
                         <span class="ln-dot"></span> Đang chạy
                       </span>
                     </div>

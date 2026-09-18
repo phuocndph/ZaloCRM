@@ -466,6 +466,8 @@ model ZaloAccount {
   dailyStats         DailyMessageStat[]
   friendshipAttempts FriendshipAttempt[]
   friends            Friend[]
+  listLeadAssignments CustomerListEntry[]      @relation("CustomerListEntryAssignedNick")
+  listAssignmentRules CustomerListZaloAssignment[]
   zaloLabelsList     ZaloLabel[]
   crmTagGroups       CrmTagGroup[]
   // Phase 6+ — Inbox Triage Filter (junction folder membership)
@@ -888,6 +890,9 @@ model Conversation {
   privateOwnerUserId String?   @map("private_owner_user_id")
   privateEnabledAt   DateTime? @map("private_enabled_at")
   privateDisabledAt  DateTime? @map("private_disabled_at")
+  // Loại trừ vĩnh viễn khỏi phân tích AI và công việc hội thoại.
+  analysisExcludedAt       DateTime? @map("analysis_excluded_at")
+  analysisExcludedByUserId String?   @map("analysis_excluded_by_user_id")
   createdAt          DateTime  @default(now()) @map("created_at")
 
   org                    Organization            @relation(fields: [orgId], references: [id], onDelete: Cascade)
@@ -923,6 +928,7 @@ model Conversation {
   @@index([orgId, zaloAccountId, lastMessageAt])
   @@index([orgId, tab, lastMessageAt])
   @@index([orgId, deletedAt])
+  @@index([orgId, analysisExcludedAt])
   // M-tier tab-switch fix (2026-05-21): index riêng cho tab Cá Nhân/Nhóm
   // (filter theo threadType + accountId, sort lastMessageAt desc).
   // Trước fix: planner seq-scan + filter post-index → 1-3s lag chuyển tab.
@@ -3112,6 +3118,8 @@ model CustomerList {
   facebookFormMappings FacebookFormMapping[]
   saleAssignments      CustomerListSaleAssignment[]
   assignmentState      SaleAssignmentState?
+  zaloAssignments      CustomerListZaloAssignment[]
+  zaloAssignmentState  ZaloAssignmentState?
 
   @@unique([orgId, integrationKey])
   @@index([orgId, status, createdAt(sort: Desc)])
@@ -3163,6 +3171,8 @@ model CustomerListEntry {
   zaloGlobalId     String?  @map("zalo_global_id") // cross-nick identity
   zaloName         String?  @map("zalo_name") // display name từ Zalo SDK
   resolvedByNickId String?  @map("resolved_by_nick_id") // ZaloAccount nào tìm ra UID này
+  assignedZaloAccountId String? @map("assigned_zalo_account_id") // Nick chịu trách nhiệm quản lý lead này
+  assignedZaloAccount   ZaloAccount? @relation("CustomerListEntryAssignedNick", fields: [assignedZaloAccountId], references: [id], onDelete: SetNull)
   multiNickCount   Int      @default(0) @map("multi_nick_count") // số nick khác cùng tìm ra
   hasZalo          Boolean? @map("has_zalo") // null=chưa scan, true/false=đã scan
 
@@ -3216,6 +3226,7 @@ model CustomerListEntry {
   @@index([customerListId, status])
   @@index([phoneE164]) // hot index for cross-list dedup + reverse update
   @@index([phoneLocal])
+  @@index([assignedZaloAccountId])
   @@index([customerListId, fbCampaignId])
   @@index([customerListId, fbFormId])
   @@map("customer_list_entries")
@@ -3921,6 +3932,38 @@ model CustomerListSaleAssignment {
   @@map("customer_list_sale_assignments")
 }
 
+// Nick Zalo chịu trách nhiệm quản lý lead trong một tệp. Khác với
+// CustomerListSaleAssignment: không gán Contact cho User CRM và không làm đổi
+// Contact.assignedUserId. Cấu hình chỉ là pool để round-robin cho lead mới.
+model CustomerListZaloAssignment {
+  id             String   @id @default(cuid())
+  customerListId String   @map("customer_list_id")
+  zaloAccountId  String   @map("zalo_account_id")
+  weight         Int      @default(1)
+  enabled        Boolean  @default(true)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  customerList CustomerList @relation(fields: [customerListId], references: [id], onDelete: Cascade)
+  zaloAccount  ZaloAccount  @relation(fields: [zaloAccountId], references: [id], onDelete: Cascade)
+
+  @@unique([customerListId, zaloAccountId])
+  @@index([zaloAccountId])
+  @@map("customer_list_zalo_assignments")
+}
+
+model ZaloAssignmentState {
+  id                        String   @id @default(cuid())
+  orgId                     String   @map("org_id")
+  customerListId            String   @unique @map("customer_list_id")
+  lastAssignedZaloAccountId String?  @map("last_assigned_zalo_account_id")
+  counter                   Int      @default(0)
+  updatedAt                 DateTime @updatedAt @map("updated_at")
+
+  customerList CustomerList @relation(fields: [customerListId], references: [id], onDelete: Cascade)
+
+  @@index([orgId])
+  @@map("zalo_assignment_states")
+}
 model SaleAssignmentState {
   id                 String   @id @default(cuid())
   orgId              String   @map("org_id")

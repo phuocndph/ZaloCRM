@@ -50,11 +50,11 @@
           <button
             class="btn btn-sm"
             :class="currentList?.leadNotifyEnabled ? 'btn-running' : 'btn-ghost'"
-            :title="currentList?.leadNotifyEnabled ? 'Tự động giao & báo ĐANG CHẠY — bấm để cấu hình' : 'Tự động giao sale + báo lead mới khi vào tệp'"
+            :title="currentList?.leadNotifyEnabled ? 'Tự động gán nick Zalo & báo ĐANG CHẠY — bấm để cấu hình' : 'Tự động gán nick Zalo quản lý + báo lead mới khi vào tệp'"
             @click="showLeadNotify = true"
           >
             <v-icon size="16">{{ currentList?.leadNotifyEnabled ? 'mdi-checkbox-blank-circle' : 'mdi-bell-ring-outline' }}</v-icon>
-            {{ currentList?.leadNotifyEnabled ? 'Đang chạy' : 'Tự động giao & báo' }}
+            {{ currentList?.leadNotifyEnabled ? 'Đang chạy' : 'Gán nick Zalo & báo' }}
           </button>
           <button class="btn btn-ghost btn-sm" @click="onRescan">
             <v-icon size="16">mdi-refresh</v-icon>
@@ -256,7 +256,7 @@
               Ngày cập nhật <v-icon size="12" class="th-i">{{ sortIcon('updatedAt') }}</v-icon>
             </th>
             <th v-show="isColVisible('source')" title="Nguồn lead: Facebook / TikTok / Zalo / Thủ công">Nguồn</th>
-            <th v-show="isColVisible('assignStatus')" title="Lead đã được tự động giao cho sale nào chưa (ô Tự động giao & báo)">Trạng thái giao</th>
+            <th v-show="isColVisible('assignStatus')" title="Lead đã được tự động gán cho nick Zalo nào chưa">Trạng thái giao</th>
             <th v-show="isColVisible('phoneRaw')"       title="Phone gốc anh paste">Phone (paste)</th>
             <th v-show="isColVisible('phoneE164')" class="sortable" :class="{ sorted: entrySort === 'phoneE164' }" title="Phone E.164 chuẩn quốc tế — bấm để sắp xếp" @click="toggleSort('phoneE164')">Phone (+84) <v-icon size="12" class="th-i">{{ sortIcon('phoneE164') }}</v-icon></th>
             <th v-show="isColVisible('phoneLocal')"     title="Phone local VN (0xxx)">Phone (local)</th>
@@ -270,7 +270,7 @@
             <th v-show="isColVisible('zaloUid')">Zalo UID</th>
             <th v-show="isColVisible('resolvedByNick')">Nick tìm ra</th>
             <th v-show="isColVisible('zaloGlobalId')">Global ID</th>
-            <th v-show="isColVisible('systemMessages')" title="Stack thông báo hệ thống — trùng, sale loại, số sai cụ thể... (newest top, hover xem full)">Thông báo hệ thống</th>
+            <th v-show="isColVisible('systemMessages')" title="Stack thông báo hệ thống — trùng, loại, số sai cụ thể... (newest top, hover xem full)">Thông báo hệ thống</th>
             <th v-show="isColVisible('fbCampaign')"     title="Tên chiến dịch quảng cáo Facebook">Chiến dịch</th>
             <th v-show="isColVisible('fbAdset')"        title="Nhóm quảng cáo (ad set)">Nhóm quảng cáo</th>
             <th v-show="isColVisible('fbAd')"           title="Tên quảng cáo (ad creative)">Quảng cáo</th>
@@ -607,7 +607,6 @@ import LeadDetailPanel from '@/components/lists/LeadDetailPanel.vue';
 import { sourceBadge } from '@/lib/source-badge';
 // Phase 2026-05-30 — nút Tìm Zalo: cần danh sách nick theo quyền cho popup
 import { useZaloAccounts } from '@/composables/use-zalo-accounts';
-import { useUsers } from '@/composables/use-users';
 import NickPickerPopup, { type NickPickerAccount } from '@/components/zalo-accounts/NickPickerPopup.vue';
 import LeadNotifyConfigDrawer from '@ee/automation/components/LeadNotifyConfigDrawer.vue';
 import LeadNotifyTimeline from '@ee/automation/components/LeadNotifyTimeline.vue';
@@ -644,32 +643,28 @@ async function copyPhone(phone: string) {
 }
 // Lead-notify Nhịp 1 — drawer cấu hình "Tự động giao & báo lead" per-tệp.
 const showLeadNotify = ref(false);
-function onLeadNotifySaved() {
-  toast.success('Đã lưu cấu hình tự động giao & báo lead');
-  fetchEntries(listId.value);
+async function onLeadNotifySaved() {
+  toast.success('Đã lưu cấu hình gán nick Zalo & báo lead');
+  await Promise.all([fetchEntries(listId.value), fetchListById(listId.value)]);
 }
-// Lead-notify Nhịp 1 — cột "Trạng thái giao": đọc systemMessages + map userId→tên sale.
-const { users: orgUsers, fetchUsers: fetchOrgUsers } = useUsers();
-fetchOrgUsers().catch(() => {});
-const userNameById = computed(() => {
-  const m = new Map<string, string>();
-  for (const u of orgUsers.value) m.set(u.id, u.fullName || u.id);
-  return m;
-});
+// Cột "Trạng thái giao": field assignment là nguồn chuẩn, system message chỉ là audit/fallback.
 function assignStatus(entry: CustomerListEntry): { state: string; label: string; title: string } {
   const msgs = entry.systemMessages ?? [];
-  const assigned = msgs.find((m) => m.type === 'ASSIGNED_TO_SALE');
-  if (assigned) {
-    const uid = assigned.payload?.userId as string | undefined;
-    const name = (uid && userNameById.value.get(uid)) || 'sale';
-    return { state: 'done', label: `✅ Đã giao · ${name}`, title: `Đã giao cho ${name} + đã báo nhóm/cá nhân` };
+  const assigned = msgs.find((m) => m.type === 'ASSIGNED_TO_ZALO_ACCOUNT');
+  const messageAccountId = assigned?.payload?.zaloAccountId as string | undefined;
+  const accountId = entry.assignedZaloAccountId || messageAccountId;
+  if (accountId || assigned) {
+    const name = entry.assignedZaloAccount?.displayName || (accountId ? `nick ${accountId.slice(0, 8)}` : 'nick Zalo');
+    return { state: 'done', label: `✅ Đã gán · ${name}`, title: `Đã gán cho ${name} + đã báo người sở hữu nick` };
   }
+  // Hiển thị dữ liệu cũ do phiên bản trước ghi, nhưng không tạo thêm assignment kiểu sale.
+  const legacy = msgs.find((m) => m.type === 'ASSIGNED_TO_SALE');
+  if (legacy) return { state: 'done', label: '✅ Đã giao (cũ)', title: 'Dòng này được giao bởi phiên bản cũ theo User CRM' };
   if (msgs.some((m) => m.type === 'ASSIGN_FAILED')) {
-    return { state: 'failed', label: '⚠️ Hết pool', title: 'Chưa giao được — pool sale của tệp đang rỗng' };
+    return { state: 'failed', label: '⚠️ Chưa có nick', title: 'Chưa giao được — pool nick Zalo của tệp đang rỗng' };
   }
-  return { state: 'none', label: '—', title: 'Chưa có hoạt động tự-giao (tệp chưa bật hoặc lead chưa xử lý)' };
-}
-// Timeline chấm → mở hồ sơ lead (giống click hàng).
+  return { state: 'none', label: '—', title: 'Chưa có hoạt động tự-gán (tệp chưa bật hoặc lead chưa xử lý)' };
+}// Timeline chấm → mở hồ sơ lead (giống click hàng).
 function onTimelineOpenEntry(entryId: string) {
   detailPanelEntryId.value = entryId;
   showDetailPanel.value = true;
