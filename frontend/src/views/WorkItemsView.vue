@@ -72,8 +72,18 @@ async function refresh() {
 </script>
 
 <style scoped>
-.wi-page { min-height: calc(100vh - var(--smax-topnav-h, 60px)); padding: 24px 28px 40px; background: var(--smax-grey-100, #f4f6f8); }
-.wi-shell { width: min(1180px, 100%); margin: 0 auto; }
+.wi-page {
+  box-sizing: border-box;
+  height: calc(100dvh - var(--smax-topnav-h, 48px));
+  min-height: 0;
+  padding: 24px 28px 40px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  background: var(--smax-grey-100, #f4f6f8);
+}
+.wi-shell { width: min(1180px, 100%); margin: 0 auto; padding-bottom: 1px; }
+.wi-page :deep(.dwq-list) { max-height: none; overflow: visible; }
 .wi-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 18px; }
 .wi-eyebrow { display: flex; align-items: center; gap: 7px; color: #087daf; font-size: 11px; font-weight: 800; letter-spacing: .06em; }
 .wi-header h1 { margin: 6px 0 5px; color: #172033; font-size: 26px; line-height: 1.2; }
@@ -89,7 +99,7 @@ async function refresh() {
 .wi-stat-value { color: #172033; font-size: 21px; font-weight: 800; line-height: 1; }
 .wi-stat-label { color: #667085; font-size: 11px; font-weight: 650; }
 @media (max-width: 720px) {
-  .wi-page { padding: 16px 12px 28px; }
+  .wi-page { height: calc(100dvh - var(--smax-topnav-h, 48px)); padding: 16px 12px 28px; }
   .wi-header { gap: 12px; }
   .wi-header h1 { font-size: 21px; }
   .wi-header p { font-size: 12px; }
