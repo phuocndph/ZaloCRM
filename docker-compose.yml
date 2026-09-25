@@ -217,7 +217,12 @@ services:
 
 volumes:
   pg_data:
+    name: ${ZALOCRM_PG_VOLUME:-zalocrm_pg_data}
   file_storage:
+    name: ${ZALOCRM_FILE_VOLUME:-zalocrm_file_storage}
   redis_data:
+    name: ${ZALOCRM_REDIS_VOLUME:-zalocrm_redis_data}
   minio_data:
+    name: ${ZALOCRM_MINIO_VOLUME:-zalocrm_minio_data}
   clamav_data:
+    name: ${ZALOCRM_CLAMAV_VOLUME:-zalocrm_clamav_data}

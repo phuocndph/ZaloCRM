@@ -652,10 +652,12 @@ async function bootstrap() {
     // động server → tránh tranh chấp session với nick thật ngay sau boot.
     const accounts = await prisma.zaloAccount.findMany({
       where: { sessionData: { not: Prisma.JsonNull }, archivedAt: null, zaloUid: { not: null } },
-      select: { id: true, sessionData: true, proxyUrl: true },
+      select: { id: true, displayName: true, sessionData: true, proxyUrl: true },
     });
     const BOOT_RECONNECT_STAGGER_MS = 7_000;
-    logger.info(`Scheduling reconnect for ${accounts.length} Zalo account(s), staggered by ${BOOT_RECONNECT_STAGGER_MS}ms`);
+    let scheduled = 0;
+    let skippedWithoutImei = 0;
+    logger.info(`[zalo-boot] found ${accounts.length} saved Zalo session(s); scheduling reconnect staggered by ${BOOT_RECONNECT_STAGGER_MS}ms`);
     for (const [index, account] of accounts.entries()) {
       const session = account.sessionData as {
         cookie: any;
@@ -663,14 +665,18 @@ async function bootstrap() {
         userAgent: string;
       } | null;
       if (session?.imei) {
+        scheduled++;
         const timer = setTimeout(() => {
-          zaloPool.reconnect(account.id, session, account.proxyUrl).catch((err) => {
-            logger.warn(`Boot reconnect failed for account ${account.id}:`, err);
-          });
+          void zaloPool.reconnect(account.id, session, account.proxyUrl)
+            .then(() => logger.info(`[zalo-boot] reconnect attempt finished for ${account.displayName || account.id}; liveStatus=${zaloPool.getStatus(account.id)}`))
+            .catch((err) => logger.warn(`[zalo-boot] reconnect failed for ${account.displayName || account.id}:`, err));
         }, index * BOOT_RECONNECT_STAGGER_MS);
         timer.unref();
+      } else {
+        skippedWithoutImei++;
       }
     }
+    logger.info(`[zalo-boot] scheduled=${scheduled} skippedWithoutImei=${skippedWithoutImei}; saved session data is retained until Zalo invalidates it`);
   } catch (err) {
     logger.error('Failed to load accounts for reconnect:', err);
   }

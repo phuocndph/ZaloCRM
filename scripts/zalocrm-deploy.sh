@@ -40,6 +40,52 @@ env_val() {  # đọc giá trị KEY từ .env; rỗng nếu chưa có .env / kh
 }
 gen() { openssl rand -hex "${1:-32}"; }
 
+# Keep the volume that is already mounted on the running deployment. Zalo
+# sessions are stored in PostgreSQL session_data.
+volume_name() {
+  local service="$1" destination="$2"
+  docker inspect "$service" --format "{{range .Mounts}}{{if eq .Destination \"$destination\"}}{{.Name}}{{end}}{{end}}" 2>/dev/null || true
+}
+
+bind_existing_volumes() {
+  docker inspect "$DB" >/dev/null 2>&1 || return 0
+  local pair key service destination actual configured
+  for pair in \
+    "ZALOCRM_PG_VOLUME:$DB:/var/lib/postgresql/data" \
+    "ZALOCRM_REDIS_VOLUME:zalo-crm-redis:/data" \
+    "ZALOCRM_MINIO_VOLUME:zalo-crm-minio:/data" \
+    "ZALOCRM_FILE_VOLUME:zalo-crm-app:/var/lib/zalo-crm/files" \
+    "ZALOCRM_CLAMAV_VOLUME:zalo-crm-clamav:/var/lib/clamav"; do
+    key="${pair%%:*}"; pair="${pair#*:}"; service="${pair%%:*}"; destination="${pair#*:}"
+    actual="$(volume_name "$service" "$destination")"
+    [ -n "$actual" ] || continue
+    configured="$(env_val "$key")"
+    if [ -n "$configured" ] && [ "$configured" != "$actual" ]; then
+      warn "$key=$configured but the running container uses $actual; keeping the mounted volume."
+    fi
+    set_env "$key" "$actual"
+    ok "$key=$actual"
+  done
+}
+
+saved_session_count() {
+  docker inspect "$DB" >/dev/null 2>&1 || return 1
+  local count
+  count="$(docker exec "$DB" psql -U "$DBUSER" -d "$DBNAME" -tAc \
+    "SELECT count(*) FROM zalo_accounts WHERE session_data IS NOT NULL AND archived_at IS NULL;" \
+    2>/dev/null | tr -d '[:space:]')" || return 1
+  [[ "$count" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\n' "$count"
+}
+
+audit_saved_sessions() {
+  local count="$1" label="$2"
+  case "$count" in
+    ''|*[!0-9]*) warn "$label: could not read saved Zalo session count (value=$count)." ;;
+    *) log "$label: $count saved Zalo session(s) in PostgreSQL." ;;
+  esac
+}
+
 # ── Kiểm tra & né port trùng ──────────────────────────────────────────────────
 # port_in_use PORT → 0 nếu CÓ gì đó đang LISTEN ở 127.0.0.1:PORT.
 # Dùng /dev/tcp của bash (chạy được Linux/macOS/Git Bash trên Windows); dự phòng
@@ -213,10 +259,19 @@ if [ "$MODE" = "install" ]; then
 else
   echo "═══ NÂNG CẤP ZCRM Community (giữ dữ liệu) ═══"
   [ -f .env ] || die "Không thấy .env — đây không phải bản đang chạy. Dùng 'install' để cài mới."
+  bind_existing_volumes
+  EXPECTED_SAVED_SESSIONS="$(saved_session_count)" || die "Không đọc được session Zalo từ PostgreSQL trước nâng cấp — dừng để bảo vệ dữ liệu."
+  audit_saved_sessions "$EXPECTED_SAVED_SESSIONS" "Before upgrade"
   backup_db
   build_up         # up -d --build, KHÔNG -v → GIỮ database
   wait_app
   migrate
+  ACTUAL_SAVED_SESSIONS="$(saved_session_count)" || die "Không đọc được session Zalo từ PostgreSQL sau migration — dừng để bảo vệ dữ liệu."
+  audit_saved_sessions "$ACTUAL_SAVED_SESSIONS" "After migration"
+  if [[ "$EXPECTED_SAVED_SESSIONS" =~ ^[0-9]+$ && "$ACTUAL_SAVED_SESSIONS" =~ ^[0-9]+$ ]] &&
+     [ "$ACTUAL_SAVED_SESSIONS" -lt "$EXPECTED_SAVED_SESSIONS" ]; then
+    die "Saved Zalo sessions dropped from $EXPECTED_SAVED_SESSIONS to $ACTUAL_SAVED_SESSIONS; stopping to avoid the wrong DB/volume."
+  fi
   cutover
   restart_app
   health
