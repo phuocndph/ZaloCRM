@@ -19,6 +19,10 @@ import {
   listTemplates, listCategories, getTemplate, templateDetail, templateToWorkflowInput,
 } from './followup-templates.js';
 import {
+  getCampaignTemplate, listCampaignTemplateCategories,
+  listCampaignTemplates, type CampaignTemplateKind,
+} from '../campaign/campaign-templates.js';
+import {
   enrollContact, stopEnrollment, completeSaleTask, simulateWorkflow,
 } from './followup-engine.js';
 
@@ -143,6 +147,50 @@ export async function followupRoutes(app: FastifyInstance): Promise<void> {
     }
     return { success: true, ...res };
   });
+
+  // ══════════ Kho chiến dịch mẫu dùng chung ══════════
+
+  app.get<{ Querystring: { kind?: string } }>('/api/v1/campaign-templates', async (request, reply) => {
+    const kind = request.query?.kind;
+    if (kind && kind !== 'followup' && kind !== 'outreach') {
+      return reply.status(400).send({ success: false, error: 'invalid_kind' });
+    }
+    const selected = kind as CampaignTemplateKind | undefined;
+    return {
+      success: true,
+      templates: listCampaignTemplates(selected),
+      categories: listCampaignTemplateCategories(selected),
+    };
+  });
+
+  app.get<{ Params: { key: string } }>('/api/v1/campaign-templates/:key', async (request, reply) => {
+    const result = getCampaignTemplate(request.params.key);
+    if (!result) return reply.status(404).send({ success: false, error: 'template_not_found' });
+    return { success: true, ...result };
+  });
+
+  // Follow-up tạo workflow nháp ngay; Outreach cần tệp/nick nên FE mở form với
+  // templateKey để người dùng kiểm tra và chọn context trước khi lưu.
+  app.post<{ Params: { key: string }; Body: { name?: string } }>(
+    '/api/v1/campaign-templates/:key/use', async (request, reply) => {
+      const result = getCampaignTemplate(request.params.key);
+      if (!result) return reply.status(404).send({ success: false, error: 'template_not_found' });
+      if (result.kind === 'outreach') {
+        return reply.status(409).send({
+          success: false, error: 'context_required',
+          message: 'Mẫu Outreach cần chọn tệp khách hàng và nick Zalo trước khi tạo bản nháp.',
+          template: result.template,
+        });
+      }
+      const original = getTemplate(result.key.slice('followup:'.length));
+      if (!original) return reply.status(404).send({ success: false, error: 'template_not_found' });
+      const input = templateToWorkflowInput(original);
+      if (request.body?.name?.trim()) input.name = request.body.name.trim();
+      const user = request.user as JwtUser;
+      const workflow = await createWorkflow(user.orgId, { id: user.id, fullName: await displayName(user.id) }, input);
+      return reply.status(201).send({ success: true, workflow, fromTemplate: result.key });
+    },
+  );
 
   // ══════════ Kho chiến dịch mẫu (template = code, bất biến) ══════════
 

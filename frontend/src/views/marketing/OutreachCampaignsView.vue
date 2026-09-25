@@ -10,10 +10,16 @@
       <button class="oc-btn primary" @click="showCreate = !showCreate">
         {{ showCreate ? '× Đóng' : '+ Tạo chiến dịch' }}
       </button>
+      <button v-if="!showCreate" class="oc-btn" @click="router.push({ path: '/marketing/campaign-templates', query: { kind: 'outreach' } })">
+        Chọn từ kho mẫu
+      </button>
     </div>
 
     <!-- ════ FORM TẠO CHIẾN DỊCH ════ -->
     <div v-if="showCreate" class="oc-card oc-form">
+      <div v-if="appliedTemplateName" class="oc-template-banner">
+        Đang dùng mẫu <b>{{ appliedTemplateName }}</b>. Bạn có thể chỉnh sửa trước khi lưu nháp; chưa có gì được gửi.
+      </div>
       <!-- Bước 1: nguồn + tên -->
       <section class="oc-step">
         <h3>1. Chọn nguồn đối tượng</h3>
@@ -382,6 +388,7 @@ const { tagDefs, loadTagDefs, tagColor } = useCrmTagDefs();
 
 const showCreate = ref(false);
 const submitting = ref(false);
+const appliedTemplateName = ref('');
 const imageAssets = ref<ImageAsset[]>([]);
 const errors = reactive<Record<string, string>>({});
 
@@ -425,6 +432,53 @@ async function prefillFromListQuery() {
     form.zaloAccountId = ids.find((id: unknown): id is string => typeof id === 'string' && available.has(id)) ?? '';
   } catch {
     // The campaign form remains usable; the user can select the assigned nick.
+  }
+}
+
+async function applyTemplateFromQuery() {
+  const templateKey = typeof route.query.templateKey === 'string' ? route.query.templateKey : '';
+  if (!templateKey) return;
+  try {
+    const { data } = await api.get(`/campaign-templates/${encodeURIComponent(templateKey)}`);
+    if (data?.kind !== 'outreach' || !data.template?.config) return;
+    const t = data.template;
+    const c = t.config;
+    form.audienceSource = c.audienceSource === 'friend_pool' ? 'friend_pool' : 'customer_list';
+    form.name = t.name || form.name;
+    form.description = t.shortDescription || '';
+    form.enableAutoAdd = !!c.enableAutoAdd;
+    form.addFriendMessage = c.addFriendMessage || '';
+    form.maxAddPerDay = c.maxAddPerDay ?? form.maxAddPerDay;
+    form.enableAutoMessage = c.enableAutoMessage !== false;
+    form.maxMsgPerDay = c.maxMsgPerDay ?? form.maxMsgPerDay;
+    form.deduplicateContacts = c.deduplicateContacts !== false;
+    addMinS.value = Math.max(1, Math.round((c.addDelayMinMs ?? 2000) / 1000));
+    addMaxS.value = Math.max(addMinS.value + 1, Math.round((c.addDelayMaxMs ?? 5000) / 1000));
+    waitMinS.value = Math.max(0, Math.round((c.waitAfterAddMinMs ?? 60000) / 1000));
+    waitMaxS.value = Math.max(waitMinS.value + 1, Math.round((c.waitAfterAddMaxMs ?? 120000) / 1000));
+    msgMinS.value = Math.max(1, Math.round((c.msgDelayMinMs ?? 3000) / 1000));
+    msgMaxS.value = Math.max(msgMinS.value + 1, Math.round((c.msgDelayMaxMs ?? 8000) / 1000));
+    form.templates = (c.templates ?? []).map((item: any) => ({
+      title: item.title ?? null, content: item.content ?? '', weight: item.weight ?? 1,
+      imageAssetIds: Array.isArray(item.imageAssetIds) ? item.imageAssetIds : [],
+    }));
+    if (!form.templates.length) addTemplate();
+    filters.requireTags = Array.isArray(c.filterRequireTags) ? [...c.filterRequireTags] : [];
+    filters.excludeTags = Array.isArray(c.filterExcludeTags) ? [...c.filterExcludeTags] : [];
+    filters.friendRelation = c.filterFriendRelation || (form.audienceSource === 'friend_pool' ? 'friend_only' : 'any');
+    if ([1, 3, 7, 15, 30].includes(c.filterSkipChattedDays)) {
+      chatDaysPreset.value = String(c.filterSkipChattedDays) as typeof chatDaysPreset.value;
+    } else if (c.filterSkipChattedDays) {
+      chatDaysPreset.value = 'custom'; chatDaysCustom.value = c.filterSkipChattedDays;
+    } else {
+      chatDaysPreset.value = '';
+    }
+    appliedTemplateName.value = t.name || '';
+    showCreate.value = true;
+    if (form.audienceSource === 'friend_pool') selectConnectedAccounts();
+    scheduleRefresh();
+  } catch {
+    toast.error('Không tải được cấu hình mẫu Outreach');
   }
 }
 
@@ -681,6 +735,7 @@ useOutreachSocket((p) => {
 
 onMounted(async () => {
   await Promise.all([fetchCampaigns(), fetchLists(), fetchAccounts(), loadTagDefs()]);
+  await applyTemplateFromQuery();
   await prefillFromListQuery();
   try {
     const [friendRes, crmRes] = await Promise.all([
@@ -712,6 +767,7 @@ onMounted(async () => {
 .oc-card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-lg, 14px); box-shadow: var(--sh-sm); margin-bottom: 18px; }
 .oc-table-wrap { overflow-x: auto; }
 .oc-form { padding: 18px 20px; }
+.oc-template-banner { margin: -4px 0 12px; padding: 10px 12px; border: 1px solid #b9dced; border-radius: var(--r-sm, 8px); background: #eff8fc; color: #14536c; font-size: 12.5px; }
 .oc-step { padding: 12px 0; border-bottom: 1px solid var(--line-2); }
 .oc-step:last-of-type { border-bottom: none; }
 .oc-step h3 { margin: 0 0 10px; font-size: 14px; font-weight: 700; color: var(--ink); }

@@ -4246,12 +4246,15 @@ model MediaAlbum {
   // kind: 'folder' (thư mục thường) | 'favorite' (bộ sưu tập Yêu thích cá nhân tự động).
   kind        String   @default("folder")
   visibility  String   @default("private")
+  parentId    String?  @map("parent_id")
   ownerUserId String?  @map("owner_user_id")
   createdById String   @map("created_by_id")
   createdAt   DateTime @default(now()) @map("created_at")
   updatedAt   DateTime @updatedAt @map("updated_at")
 
   org       Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  parent    MediaAlbum?      @relation("MediaAlbumTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children  MediaAlbum[]     @relation("MediaAlbumTree")
   owner     User?            @relation("MediaAlbumOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
   createdBy User             @relation("MediaAlbumCreatedBy", fields: [createdById], references: [id])
   items     MediaAlbumItem[]
@@ -4260,6 +4263,7 @@ model MediaAlbum {
   @@index([orgId, visibility])
   @@index([orgId, ownerUserId])
   @@index([orgId, kind])
+  @@index([orgId, parentId])
   @@map("media_albums")
 }
 

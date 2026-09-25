@@ -255,6 +255,7 @@ const routes: RouteRecordRaw[] = [
           // Outreach Campaign — kết bạn + nhắn tin tự động cho tệp khách đã đồng ý.
           { path: 'campaigns', name: 'CE.Outreach', component: () => import('@/views/marketing/OutreachCampaignsView.vue'), meta: { requiresAuth: true } },
           { path: 'campaigns/:id', name: 'CE.OutreachProgress', component: () => import('@/views/marketing/OutreachProgressView.vue'), meta: { requiresAuth: true } },
+          { path: 'campaign-templates', name: 'CE.CampaignTemplates', component: () => import('@/views/marketing/FollowupTemplatesView.vue'), meta: { requiresAuth: true } },
           // Follow-up Workflow — engine chăm sóc/bám đuổi KH nhiều bước.
           { path: 'followup', name: 'CE.Followup', component: () => import('@/views/marketing/FollowupWorkflowsView.vue'), meta: { requiresAuth: true } },
           // Kho chiến dịch mẫu — đặt TRƯỚC 'followup/:id' để 'templates' không bị nuốt làm :id.

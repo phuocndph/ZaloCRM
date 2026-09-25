@@ -66,6 +66,8 @@
           </template>
           <dt>Loại</dt>
           <dd>{{ kindText }} · đã dùng {{ asset.usageCount }} lần</dd>
+          <dt>Thư mục</dt>
+          <dd><FolderIcon :size="13" :stroke-width="1.9" class="dd-ic" /> {{ folderPathText }}</dd>
         </dl>
       </div>
 
@@ -133,7 +135,7 @@ import { updateMedia, archiveMedia, watermarkMedia, removeWatermark, toggleFavor
 import { useToast } from '@/composables/use-toast';
 import MediaSendPicker from '@/components/media/MediaSendPicker.vue';
 import ConfirmShareDialog from '@/components/media/ConfirmShareDialog.vue';
-import { Image as ImageIcon, FileText as FileIcon, Video as VideoIcon, Smartphone as NickIcon, Upload as UploadIcon, Send as SendIcon, Star as StarIcon, Trash2 as Trash2Icon } from 'lucide-vue-next';
+import { Image as ImageIcon, FileText as FileIcon, Video as VideoIcon, Folder as FolderIcon, Smartphone as NickIcon, Upload as UploadIcon, Send as SendIcon, Star as StarIcon, Trash2 as Trash2Icon } from 'lucide-vue-next';
 
 const props = defineProps<{ asset: MediaAssetItem; folders: MediaFolder[] }>();
 const emit = defineEmits<{ close: []; updated: [patch: Partial<MediaAssetItem>]; archived: [id: string] }>();
@@ -177,6 +179,18 @@ const sourceText = computed(() => {
   return 'Tải lên thủ công';
 });
 const kindText = computed(() => props.asset.kind === 'video' ? 'Video' : props.asset.kind === 'file' ? 'Tệp' : 'Ảnh');
+const folderPathText = computed(() => {
+  if (!props.asset.folderId) return 'Chưa phân loại';
+  const names: string[] = [];
+  const seen = new Set<string>();
+  let current = props.folders.find((folder) => folder.id === props.asset.folderId);
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id);
+    names.unshift(current.name);
+    current = current.parentId ? props.folders.find((folder) => folder.id === current!.parentId) : undefined;
+  }
+  return names.length ? names.join(' / ') : 'Chưa phân loại';
+});
 // Kích thước px: ảnh mới có width/height; ảnh cũ chưa đo → '—'.
 const dimText = computed(() => {
   const w = props.asset.width; const h = props.asset.height;

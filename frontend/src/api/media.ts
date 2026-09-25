@@ -18,6 +18,9 @@ export interface MediaAssetItem {
   sizeBytes: number | null;
   durationSec?: number | null;
   createdAt: string;
+  folderId?: string | null;
+  folderName?: string | null;
+  folderKind?: string | null;
   // Watermark per-ảnh (GĐ2) — backend trả khi list/detail.
   watermarkEnabled?: boolean;
   watermarkPosition?: 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left' | 'center';
@@ -77,6 +80,30 @@ export async function listMediaUploaders(
 /** Số tệp tối đa mỗi request — PHẢI khớp `limits.files` của @fastify/multipart
  *  trong backend/src/app.ts. Vượt ngưỡng, busboy huỷ request ("reach files limit"). */
 const MAX_FILES_PER_REQUEST = 10;
+// Upload ảnh có thể phải quét, resize WebP và ghi storage tuần tự; không dùng
+// timeout 30s chung của API vì batch hợp lệ dễ bị frontend hủy giữa chừng.
+const MEDIA_UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
+
+export interface MediaUploadAsset {
+  id: string;
+  name: string;
+  kind: 'image' | 'video' | 'file';
+  mimeType: string;
+  sizeBytes: number;
+  deduped: boolean;
+  compressed: boolean;
+}
+
+export class MediaUploadError extends Error {
+  readonly uploadedAssets: MediaUploadAsset[];
+
+  constructor(cause: unknown, uploadedAssets: MediaUploadAsset[]) {
+    super('Media upload failed');
+    this.name = 'MediaUploadError';
+    this.cause = cause;
+    this.uploadedAssets = uploadedAssets;
+  }
+}
 
 function buildUploadForm(
   files: File[],
@@ -95,17 +122,25 @@ function buildUploadForm(
 export async function uploadMedia(
   files: File[],
   opts: { visibility?: 'private' | 'public'; folderId?: string; tagIds?: string[] } = {},
-): Promise<{ assets: Array<{ id: string; name: string; deduped: boolean }> }> {
+): Promise<{ assets: MediaUploadAsset[] }> {
   // ≤ giới hạn (kể cả rỗng) → giữ nguyên hành vi cũ, 1 request.
   if (files.length <= MAX_FILES_PER_REQUEST) {
-    const { data } = await api.post('/media/upload', buildUploadForm(files, opts));
-    return data;
+      const { data } = await api.post('/media/upload', buildUploadForm(files, opts), {
+        timeout: MEDIA_UPLOAD_TIMEOUT_MS,
+      });
+      return data;
   }
-  const assets: Array<{ id: string; name: string; deduped: boolean }> = [];
+  const assets: MediaUploadAsset[] = [];
   for (let i = 0; i < files.length; i += MAX_FILES_PER_REQUEST) {
     const chunk = files.slice(i, i + MAX_FILES_PER_REQUEST);
-    const { data } = await api.post('/media/upload', buildUploadForm(chunk, opts));
-    assets.push(...((data?.assets ?? []) as typeof assets));
+    try {
+      const { data } = await api.post('/media/upload', buildUploadForm(chunk, opts), {
+        timeout: MEDIA_UPLOAD_TIMEOUT_MS,
+      });
+      assets.push(...((data?.assets ?? []) as MediaUploadAsset[]));
+    } catch (error) {
+      throw new MediaUploadError(error, assets);
+    }
   }
   return { assets };
 }
@@ -179,6 +214,9 @@ export interface MediaFolder {
   kind: string;
   visibility: 'private' | 'public';
   ownerUserId: string | null;
+  parentId: string | null;
+
+  assetCount: number;
 }
 
 /** Sửa quyền/tên/tag/thư mục của 1 asset. confirmShare=true: xác nhận chia sẻ ảnh nick Riêng tư (D11). */
@@ -310,8 +348,9 @@ export async function listMediaTags(
 export async function createMediaFolder(
   name: string,
   visibility: 'private' | 'public' = 'private',
-): Promise<{ folder: { id: string; name: string } }> {
-  const { data } = await api.post('/media/folders', { name, visibility });
+  parentId?: string | null,
+): Promise<{ folder: MediaFolder }> {
+  const { data } = await api.post('/media/folders', { name, visibility, parentId: parentId ?? null });
   return data;
 }
 

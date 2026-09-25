@@ -10,14 +10,16 @@
           <span class="i">🔍</span>
           <input v-model="search" placeholder="Tìm ảnh, tag dự án…" @input="debouncedReload" />
         </div>
-        <button class="btn-dark" @click="triggerUpload">+ Tải lên</button>
-        <button v-if="!trashMode" class="btn-multi" :class="{ on: multiMode }" :title="multiMode ? 'Tắt chọn nhiều' : 'Chọn nhiều ảnh'" @click="toggleMultiMode">
+        <button class="btn-dark" :disabled="folderUploadSaving || fileUploadSaving" @click="triggerUpload">+ Tải nhiều tệp</button>
+        <button class="btn-folder-upload" :disabled="folderUploadSaving" @click="openFolderUploadDialog"><FolderUpIcon :size="15" :stroke-width="1.9" /> {{ folderUploadSaving ? 'Đang tải thư mục…' : 'Tải cả thư mục' }}</button>
+        <button v-if="!trashMode" class="btn-multi" :class="{ on: multiMode }" :title="multiMode ? 'Tắt chọn nhiều mục' : 'Chọn nhiều mục trong kho'" @click="toggleMultiMode">
           <CheckSquareIcon :size="15" :stroke-width="1.9" /> Chọn nhiều
         </button>
         <button class="btn-trash" :class="{ on: trashMode }" :title="trashMode ? 'Đóng thùng rác' : 'Mở thùng rác'" @click="trashMode ? closeTrash() : openTrash()">
           <Trash2Icon :size="15" :stroke-width="1.9" /> Thùng rác
         </button>
-        <input ref="fileInput" type="file" multiple accept="image/*,video/*,.pdf,.xlsx,.docx,.zip" hidden @change="onFilesPicked" />
+        <input ref="fileInput" type="file" multiple accept="image/*,video/*,.pdf,.txt,.csv,.xlsx,.xls,.docx,.doc,.pptx,.ppt,.zip,.rar,.7z" hidden @change="onFilesPicked" />
+        <input ref="folderInput" type="file" webkitdirectory directory multiple hidden @change="onFolderFilesPicked" />
       </div>
     </header>
 
@@ -111,8 +113,8 @@
           <button class="addf" title="Tạo thư mục" @click="onCreateFolder">＋</button>
         </div>
         <div class="f" :class="{ on: !activeFolder }" @click="setFolder(null)"><FolderIcon :size="13" :stroke-width="1.9" /> Tất cả</div>
-        <div v-for="f in folders" :key="f.id" class="f" :class="{ on: activeFolder === f.id }" @click="setFolder(f.id)">
-          <FolderIcon :size="13" :stroke-width="1.9" /> {{ f.name }} <LockIcon v-if="f.visibility === 'private'" class="lk" :size="11" :stroke-width="2" />
+        <div v-for="f in folderTree" :key="f.id" class="f" :class="{ on: activeFolder === f.id }" :style="{ paddingLeft: `${8 + f.depth * 16}px` }" @click="setFolder(f.id)">
+          <FolderIcon :size="13" :stroke-width="1.9" /> {{ f.name }} <span class="folder-count">{{ f.assetCount }}</span> <component :is="f.visibility === 'public' ? GlobeIcon : LockIcon" class="folder-visibility-icon" :class="f.visibility" :size="11" :stroke-width="2" :title="f.visibility === 'public' ? 'Thư mục công khai' : 'Thư mục riêng tư'" />
         </div>
       </aside>
 
@@ -152,6 +154,9 @@
               <div class="fmeta">
                 {{ fmtSize(a.sizeBytes) }} · {{ a.visibility === 'public' ? 'Công khai' : 'Riêng tư' }} · đã dùng {{ a.usageCount }}
               </div>
+              <div v-if="a.folderId" class="fmeta folder-meta" :title="folderPath(a.folderId)">
+                <FolderIcon :size="11" :stroke-width="2" /> {{ folderPath(a.folderId) }} · {{ kindLabel(a.kind) }}
+              </div>
               <div class="fmeta src-row" :title="sourceLabel(a)">
                 <component :is="sourceIcon(a)" :size="11" :stroke-width="2" /> {{ sourceLabel(a) }}
               </div>
@@ -177,9 +182,13 @@
                 <component :is="sourceIcon(a)" :size="11" :stroke-width="2" />
                 <span>{{ sourceLabel(a) }}</span>
               </div>
+              <div v-if="a.folderId" class="src folder-meta" :title="folderPath(a.folderId)">
+                <FolderIcon :size="11" :stroke-width="2" />
+                <span>{{ folderPath(a.folderId) }}</span>
+              </div>
               <div class="stat" :class="a.visibility === 'public' ? 'pub' : 'lk'">
                 <component :is="a.visibility === 'public' ? GlobeIcon : LockIcon" :size="11" :stroke-width="2" />
-                {{ a.visibility === 'public' ? 'Công khai' : 'Riêng tư' }} · {{ a.usageCount }} lần
+                {{ kindLabel(a.kind) }} · {{ a.visibility === 'public' ? 'Công khai' : 'Riêng tư' }} · {{ a.usageCount }} lần
               </div>
             </div>
           </div>
@@ -203,6 +212,155 @@
         @archived="onAssetArchived"
       />
     </div>
+
+    <div v-if="fileUploadDialogOpen" class="folder-modal-backdrop" @click.self="closeFileUploadDialog">
+      <section class="folder-upload-modal file-upload-modal" role="dialog" aria-modal="true" aria-labelledby="file-upload-title">
+        <header class="folder-modal-head">
+          <div>
+            <h2 id="file-upload-title">Tải nhiều tệp</h2>
+            <p>Chọn nhiều tệp cùng lúc, kéo thả hoặc thêm tiếp trước khi tải lên.</p>
+          </div>
+          <button class="folder-modal-close" type="button" title="Đóng" :disabled="fileUploadSaving" @click="closeFileUploadDialog"><XIcon :size="16" :stroke-width="2" /></button>
+        </header>
+
+        <button
+          class="folder-dropzone"
+          :class="{ over: fileDragOver }"
+          type="button"
+          :disabled="fileUploadSaving"
+          @click="triggerFilePicker"
+          @dragenter.prevent="fileDragOver = true"
+          @dragover.prevent="fileDragOver = true"
+          @dragleave.prevent="fileDragOver = false"
+          @drop.prevent="onFileDrop"
+        >
+          <UploadCloudIcon :size="28" :stroke-width="1.6" />
+          <strong>Kéo nhiều tệp vào đây</strong>
+          <span>hoặc bấm để chọn nhiều tệp từ máy tính</span>
+        </button>
+        <div class="upload-access">
+          <div class="upload-access-copy"><strong>Quyền truy cập</strong><span>Áp dụng cho toàn bộ tệp trong lần tải này.</span></div>
+          <div class="access-segmented" role="radiogroup" aria-label="Quyền truy cập tệp tải lên">
+            <button type="button" :class="{ on: fileUploadVisibility === 'private' }" :aria-pressed="fileUploadVisibility === 'private'" :disabled="fileUploadSaving" @click="fileUploadVisibility = 'private'"><LockIcon :size="13" :stroke-width="2" /> Riêng tư</button>
+            <button type="button" :class="{ on: fileUploadVisibility === 'public' }" :aria-pressed="fileUploadVisibility === 'public'" :disabled="fileUploadSaving" @click="fileUploadVisibility = 'public'"><GlobeIcon :size="13" :stroke-width="2" /> Công khai</button>
+          </div>
+        </div>
+
+        <div v-if="fileUploadQueue.length" class="folder-upload-summary">
+          <span>{{ fileUploadQueue.length }} tệp</span>
+          <span>{{ fmtSize(fileUploadTotalBytes) }}</span>
+        </div>
+        <div v-if="fileUploadQueue.length" class="folder-upload-list">
+          <div v-for="entry in fileUploadQueue" :key="entry.id" class="folder-upload-row">
+            <FileIcon :size="17" :stroke-width="1.8" />
+            <div>
+              <strong :title="entry.file.name">{{ entry.file.name }}</strong>
+              <span>{{ fmtSize(entry.file.size) }}</span>
+            </div>
+            <button type="button" title="Bỏ tệp này" :disabled="fileUploadSaving" @click="removeQueuedFile(entry.id)"><XIcon :size="15" :stroke-width="2" /></button>
+          </div>
+        </div>
+        <p v-else class="folder-upload-empty">Chưa có tệp nào trong danh sách.</p>
+
+        <footer class="folder-modal-actions folder-upload-actions">
+          <button class="folder-cancel" type="button" :disabled="fileUploadSaving" @click="triggerFilePicker">Thêm tệp</button>
+          <button class="folder-submit" type="button" :disabled="fileUploadSaving || fileUploadQueue.length === 0" @click="uploadQueuedFiles">
+            {{ fileUploadSaving ? `Đang tải ${fileUploadQueue.length} tệp…` : `Tải lên ${fileUploadQueue.length} tệp` }}
+          </button>
+        </footer>
+      </section>
+    </div>    <div v-if="folderUploadDialogOpen" class="folder-modal-backdrop" @click.self="closeFolderUploadDialog">
+      <section class="folder-upload-modal" role="dialog" aria-modal="true" aria-labelledby="folder-upload-title">
+        <header class="folder-modal-head">
+          <div>
+            <h2 id="folder-upload-title">Tải cả thư mục</h2>
+            <p>Chọn một thư mục gốc. Tên thư mục, thư mục con và vị trí ảnh sẽ được giữ nguyên.</p>
+          </div>
+          <button class="folder-modal-close" type="button" title="Đóng" :disabled="folderUploadSaving" @click="closeFolderUploadDialog"><XIcon :size="16" :stroke-width="2" /></button>
+        </header>
+
+        <button
+          class="folder-dropzone"
+          :class="{ over: folderDragOver }"
+          type="button"
+          :disabled="folderUploadSaving"
+          @click="triggerFolderPicker"
+          @dragenter.prevent="folderDragOver = true"
+          @dragover.prevent="folderDragOver = true"
+          @dragleave.prevent="folderDragOver = false"
+          @drop.prevent="onFolderDrop"
+        >
+          <FolderUpIcon :size="28" :stroke-width="1.6" />
+          <strong>Kéo thư mục gốc vào đây</strong>
+          <span>hoặc bấm “Chọn thư mục” để hệ thống tự tạo đúng cấu trúc trên máy tính</span>
+        </button>
+        <div class="upload-access">
+          <div class="upload-access-copy"><strong>Quyền của cả thư mục</strong><span>Áp dụng cho thư mục gốc, mọi thư mục con và toàn bộ tệp bên trong.</span></div>
+          <div class="access-segmented" role="radiogroup" aria-label="Quyền truy cập thư mục tải lên">
+            <button type="button" :class="{ on: folderUploadVisibility === 'private' }" :aria-pressed="folderUploadVisibility === 'private'" :disabled="folderUploadSaving" @click="folderUploadVisibility = 'private'"><LockIcon :size="13" :stroke-width="2" /> Riêng tư</button>
+            <button type="button" :class="{ on: folderUploadVisibility === 'public' }" :aria-pressed="folderUploadVisibility === 'public'" :disabled="folderUploadSaving" @click="folderUploadVisibility = 'public'"><GlobeIcon :size="13" :stroke-width="2" /> Công khai</button>
+          </div>
+        </div>
+
+        <div v-if="folderUploadQueue.length" class="folder-upload-summary">
+          <span>{{ folderUploadQueue.length }} thư mục</span>
+          <span>{{ folderUploadFileCount }} tệp · {{ fmtSize(folderUploadTotalBytes) }}</span>
+        </div>
+        <div v-if="folderUploadQueue.length" class="folder-upload-list">
+          <div v-for="batch in folderUploadQueue" :key="batch.id" class="folder-upload-row">
+            <FolderIcon :size="17" :stroke-width="1.8" />
+            <div>
+              <strong :title="batch.name">{{ batch.name }}</strong>
+              <span>{{ batch.files.length }} tệp · {{ fmtSize(batch.sizeBytes) }}</span>
+            </div>
+            <button type="button" title="Bỏ thư mục này" :disabled="folderUploadSaving" @click="removeQueuedFolder(batch.id)"><XIcon :size="15" :stroke-width="2" /></button>
+          </div>
+        </div>
+        <p v-else class="folder-upload-empty">Chưa có thư mục nào trong danh sách.</p>
+
+        <footer class="folder-modal-actions folder-upload-actions">
+          <button class="folder-cancel" type="button" :disabled="folderUploadSaving" @click="triggerFolderPicker">Chọn thư mục</button>
+          <button class="folder-submit" type="button" :disabled="folderUploadSaving || folderUploadQueue.length === 0" @click="uploadQueuedFolders">
+            {{ folderUploadSaving ? `Đang tải ${folderUploadFileCount} tệp…` : `Tải lên ${folderUploadFileCount} tệp` }}
+          </button>
+        </footer>
+      </section>
+    </div>
+    <div v-if="folderDialogOpen" class="folder-modal-backdrop" @click.self="closeFolderDialog">
+      <section class="folder-modal" role="dialog" aria-modal="true" aria-labelledby="folder-dialog-title">
+        <header class="folder-modal-head">
+          <div>
+            <h2 id="folder-dialog-title">Tạo thư mục</h2>
+            <p>Nhóm ảnh, tệp và video để tìm lại nhanh hơn.</p>
+          </div>
+          <button class="folder-modal-close" type="button" title="Đóng" @click="closeFolderDialog"><XIcon :size="16" :stroke-width="2" /></button>
+        </header>
+        <label class="folder-field">
+          <span>Tên thư mục</span>
+          <input
+            v-model="folderName"
+            autofocus
+            maxlength="80"
+            placeholder="Ví dụ: Bảng giá 2026"
+            @keyup.enter="submitFolder"
+          />
+        </label>
+        <div class="upload-access folder-create-access">
+          <div class="upload-access-copy"><strong>Quyền của thư mục</strong><span>Riêng tư chỉ bạn sử dụng; Công khai cho mọi người trong tổ chức.</span></div>
+          <div class="access-segmented" role="radiogroup" aria-label="Quyền truy cập thư mục mới">
+            <button type="button" :class="{ on: folderVisibility === 'private' }" :aria-pressed="folderVisibility === 'private'" :disabled="folderSaving" @click="folderVisibility = 'private'"><LockIcon :size="13" :stroke-width="2" /> Riêng tư</button>
+            <button type="button" :class="{ on: folderVisibility === 'public' }" :aria-pressed="folderVisibility === 'public'" :disabled="folderSaving" @click="folderVisibility = 'public'"><GlobeIcon :size="13" :stroke-width="2" /> Công khai</button>
+          </div>
+        </div>
+        <p v-if="folderDialogError" class="folder-error">{{ folderDialogError }}</p>
+        <footer class="folder-modal-actions">
+          <button class="folder-cancel" type="button" @click="closeFolderDialog">Hủy</button>
+          <button class="folder-submit" type="button" :disabled="folderSaving || !folderName.trim()" @click="submitFolder">
+            {{ folderSaving ? 'Đang tạo…' : 'Tạo thư mục' }}
+          </button>
+        </footer>
+      </section>
+    </div>
   </div>
 </template>
 
@@ -212,7 +370,7 @@ import {
   listMediaPaged, listMediaUploaders, uploadMedia, listMediaFolders, createMediaFolder,
   listTrash, restoreMedia, permanentDeleteMedia, emptyTrash,
   archiveMedia, bulkUpdateMedia,
-  type MediaAssetItem, type MediaFolder, type TrashItem,
+  type MediaAssetItem, type MediaFolder, type TrashItem, MediaUploadError,
 } from '@/api/media';
 import { useToast } from '@/composables/use-toast';
 import MediaDetailPanel from '@/components/media/MediaDetailPanel.vue';
@@ -220,8 +378,8 @@ import R2StorageManager from '@/components/media/R2StorageManager.vue';
 import {
   Trash2 as Trash2Icon, RotateCcw as RotateCcwIcon, X as XIcon, CheckSquare as CheckSquareIcon,
   Globe as GlobeIcon, Lock as LockIcon, Smartphone as NickIcon, Upload as UploadIcon,
-  Image as ImageIcon, FileText as FileIcon, Video as VideoIcon, Folder as FolderIcon,
-  Lightbulb as LightbulbIcon,
+  Image as ImageIcon, FileText as FileIcon, Video as VideoIcon, Folder as FolderIcon, FolderUp as FolderUpIcon,
+  Lightbulb as LightbulbIcon, UploadCloud as UploadCloudIcon,
 } from 'lucide-vue-next';
 
 // Icon placeholder theo loại media (thay emoji 🎬📄🖼 — Lucide, thống nhất 2026-06-15).
@@ -259,6 +417,31 @@ const activeFolder = ref<string | null>(null);
 const activeTags = ref<string[]>([]);
 const selected = ref<MediaAssetItem | null>(null);
 const fileInput = ref<HTMLInputElement | null>(null);
+const folderInput = ref<HTMLInputElement | null>(null);
+const folderUploadSaving = ref(false);
+const fileUploadSaving = ref(false);
+const fileUploadDialogOpen = ref(false);
+const fileDragOver = ref(false);
+type MediaVisibility = 'private' | 'public';
+const fileUploadVisibility = ref<MediaVisibility>('private');
+
+type FileUploadEntry = { id: string; file: File };
+const fileUploadQueue = ref<FileUploadEntry[]>([]);
+const fileUploadTotalBytes = computed(() => fileUploadQueue.value.reduce((sum, entry) => sum + entry.file.size, 0));
+const folderUploadDialogOpen = ref(false);
+const folderDragOver = ref(false);
+const folderUploadVisibility = ref<MediaVisibility>('private');
+
+type FolderUploadFile = { file: File; relativePath: string };
+type FolderUploadBatch = { id: string; name: string; files: FolderUploadFile[]; sizeBytes: number };
+const folderUploadQueue = ref<FolderUploadBatch[]>([]);
+const folderUploadFileCount = computed(() => folderUploadQueue.value.reduce((sum, batch) => sum + batch.files.length, 0));
+const folderUploadTotalBytes = computed(() => folderUploadQueue.value.reduce((sum, batch) => sum + batch.sizeBytes, 0));
+const folderDialogOpen = ref(false);
+const folderName = ref('');
+const folderSaving = ref(false);
+const folderDialogError = ref('');
+const folderVisibility = ref<MediaVisibility>('private');
 
 // LEVER 2 (lọc sâu — anh chốt 2026-06-12).
 const showLever2 = ref(false);
@@ -277,6 +460,24 @@ const total = ref(0);
 const totalPages = computed(() => Math.max(1, Math.ceil(total.value / PAGE_SIZE)));
 
 const activeFolderName = computed(() => folders.value.find((f) => f.id === activeFolder.value)?.name ?? '');
+const folderTree = computed(() => {
+  const byParent = new Map<string | null, MediaFolder[]>();
+  for (const folder of folders.value) {
+    const siblings = byParent.get(folder.parentId) ?? [];
+    siblings.push(folder);
+    byParent.set(folder.parentId, siblings);
+  }
+  for (const siblings of byParent.values()) siblings.sort((a, b) => a.name.localeCompare(b.name, 'vi'));
+  const output: Array<MediaFolder & { depth: number }> = [];
+  const visit = (parentId: string | null, depth: number) => {
+    for (const folder of byParent.get(parentId) ?? []) {
+      output.push({ ...folder, depth });
+      visit(folder.id, depth + 1);
+    }
+  };
+  visit(null, 0);
+  return output;
+});
 
 
 function sizeRange(): { sizeMin?: number; sizeMax?: number } {
@@ -435,32 +636,356 @@ function fmtSize(bytes: number | null | undefined): string {
   return bytes >= MB ? `${(bytes / MB).toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
 }
 
-function triggerUpload() { fileInput.value?.click(); }
-async function onFilesPicked(e: Event) {
-  const input = e.target as HTMLInputElement;
-  const files = Array.from(input.files ?? []);
-  if (!files.length) return;
+function currentFolderVisibility(): MediaVisibility {
+  return folders.value.find((folder) => folder.id === activeFolder.value)?.visibility === 'public' ? 'public' : 'private';
+}
+
+function triggerUpload() {
+  if (folderUploadSaving.value || fileUploadSaving.value) return;
+  if (!fileUploadQueue.value.length) fileUploadVisibility.value = currentFolderVisibility();
+  fileUploadDialogOpen.value = true;
+  fileDragOver.value = false;
+}
+function closeFileUploadDialog() {
+  if (fileUploadSaving.value) return;
+  fileUploadDialogOpen.value = false;
+  fileUploadQueue.value = [];
+  fileDragOver.value = false;
+}
+function triggerFilePicker() { fileInput.value?.click(); }
+function queueFiles(files: File[]) {
+  const unique = new Map(fileUploadQueue.value.map((entry) => [`${entry.file.name}|${entry.file.size}|${entry.file.lastModified}|${entry.file.type}`, entry]));
+  for (const file of files) unique.set(`${file.name}|${file.size}|${file.lastModified}|${file.type}`, { id: `${Date.now()}-${Math.random().toString(36).slice(2)}-${file.name}`, file });
+  fileUploadQueue.value = [...unique.values()];
+  fileUploadDialogOpen.value = true;
+}
+function onFileDrop(event: DragEvent) {
+  fileDragOver.value = false;
+  queueFiles(Array.from(event.dataTransfer?.files ?? []));
+}
+function removeQueuedFile(id: string) {
+  fileUploadQueue.value = fileUploadQueue.value.filter((entry) => entry.id !== id);
+}
+function openFolderUploadDialog() {
+  if (folderUploadSaving.value) return;
+  if (!folderUploadQueue.value.length) folderUploadVisibility.value = currentFolderVisibility();
+  folderUploadDialogOpen.value = true;
+  folderDragOver.value = false;
+}
+function closeFolderUploadDialog() {
+  if (folderUploadSaving.value) return;
+  folderUploadDialogOpen.value = false;
+  folderUploadQueue.value = [];
+  folderDragOver.value = false;
+}
+type DirectoryPickerEntry = {
+  kind: 'file' | 'directory';
+  name: string;
+  getFile?: () => Promise<File>;
+  values?: () => AsyncIterable<DirectoryPickerEntry>;
+};
+
+async function collectDirectoryHandle(handle: DirectoryPickerEntry, prefix = ''): Promise<FolderUploadFile[]> {
+  const path = prefix ? `${prefix}/${handle.name}` : handle.name;
+  if (handle.kind === 'file') return handle.getFile ? [{ file: await handle.getFile(), relativePath: path }] : [];
+  const result: FolderUploadFile[] = [];
+  if (!handle.values) return result;
+  for await (const child of handle.values()) result.push(...await collectDirectoryHandle(child, path));
+  return result;
+}
+
+async function triggerFolderPicker() {
+  if (folderUploadSaving.value) return;
+  const picker = (window as Window & { showDirectoryPicker?: () => Promise<DirectoryPickerEntry> }).showDirectoryPicker;
+  if (!picker) {
+    // Một số in-app browser không có showDirectoryPicker nhưng vẫn hỗ trợ
+    // bộ chọn thư mục Chromium qua webkitdirectory. Đây là input riêng,
+    // tuyệt đối không dùng lại input chọn từng tệp.
+    folderInput.value?.click();
+    return;
+  }
   try {
-    const res = await uploadMedia(files, { visibility: 'private', folderId: activeFolder.value ?? undefined });
-    const dup = res.assets.filter((a) => a.deduped).length;
-    toast.success(dup > 0 ? `Đã tải ${res.assets.length} tệp (${dup} đã có sẵn, không tốn thêm dung lượng)` : `Đã tải ${res.assets.length} tệp lên kho`);
-    reload();
-  } catch (err: any) {
-    toast.warning(err?.response?.data?.error || 'Tải lên thất bại');
-  } finally {
-    input.value = '';
+    const root = await picker();
+    const files = await collectDirectoryHandle(root);
+    queueFolderFiles(files);
+  } catch (error: any) {
+    // Người dùng bấm Cancel thì không hiện cảnh báo; không rơi về bộ chọn từng tệp.
+    if (error?.name === 'AbortError') return;
+    toast.warning('Không mở được bộ chọn thư mục. Hãy kéo nguyên thư mục vào vùng tải lên hoặc thử Chrome/Edge.');
   }
 }
 
-async function onCreateFolder() {
-  const name = window.prompt('Tên thư mục mới:');
-  if (!name?.trim()) return;
+function uploadSummary(assets: Array<{ kind: string; deduped: boolean; compressed: boolean }>): string {
+  const images = assets.filter((asset) => asset.kind === 'image').length;
+  const videos = assets.filter((asset) => asset.kind === 'video').length;
+  const files = assets.filter((asset) => asset.kind === 'file').length;
+  const compressed = assets.filter((asset) => asset.compressed).length;
+  const deduplicated = assets.filter((asset) => asset.deduped).length;
+  const kinds = [images ? `${images} ảnh` : '', videos ? `${videos} video` : '', files ? `${files} tệp` : ''].filter(Boolean).join(', ');
+  const details = [kinds, compressed ? `${compressed} ảnh đã nén WebP` : '', deduplicated ? `${deduplicated} tệp đã có sẵn` : ''].filter(Boolean).join(' · ');
+  return details ? `Đã tải ${assets.length} mục: ${details}` : `Đã tải ${assets.length} mục`;
+}
+
+function uploadErrorMessage(error: any): string {
+  const message = error?.response?.data?.error;
+  if (message) return message;
+  if (error?.code === 'ECONNABORTED' || error?.code === 'ETIMEDOUT') {
+    return 'Máy chủ xử lý tải lên quá lâu. Tệp có thể vẫn đang được xử lý; hãy chờ rồi tải lại danh sách trước khi thử lại.';
+  }
+  if (error?.code === 'ERR_NETWORK') return 'Không kết nối được máy chủ khi đang tải. Kiểm tra mạng hoặc thử lại sau.';
+  return 'Tải lên thất bại. Vui lòng thử lại.';
+}
+
+function onFilesPicked(e: Event) {
+  const input = e.target as HTMLInputElement;
+  queueFiles(Array.from(input.files ?? []));
+  input.value = '';
+}
+
+function onFolderFilesPicked(e: Event) {
+  const input = e.target as HTMLInputElement;
+  const files = Array.from(input.files ?? []);
+  input.value = '';
+  if (!files.length) return;
+  queueFolderFiles(files.map((file) => ({
+    file,
+    relativePath: (file as File & { webkitRelativePath?: string }).webkitRelativePath || file.name,
+  })));
+}
+
+async function uploadQueuedFiles() {
+  if (!fileUploadQueue.value.length || fileUploadSaving.value) return;
+  fileUploadSaving.value = true;
+  const files = fileUploadQueue.value.map((entry) => entry.file);
   try {
-    await createMediaFolder(name.trim(), 'private');
+    const res = await uploadMedia(files, { visibility: fileUploadVisibility.value, folderId: activeFolder.value ?? undefined });
+    toast.success(uploadSummary(res.assets));
+    fileUploadQueue.value = [];
+    fileUploadDialogOpen.value = false;
+    reload();
+  } catch (err: any) {
+    const uploadedAssets = err instanceof MediaUploadError ? err.uploadedAssets : [];
+    if (uploadedAssets.length) {
+      toast.warning(uploadSummary(uploadedAssets) + '. Các tệp còn lại chưa tải: ' + uploadErrorMessage(err.cause));
+      fileUploadQueue.value = files.slice(uploadedAssets.length).map((file) => ({ id: `${Date.now()}-${Math.random().toString(36).slice(2)}-${file.name}`, file }));
+      reload();
+    } else {
+      toast.warning(uploadErrorMessage(err));
+    }
+  } finally {
+    fileUploadSaving.value = false;
+  }
+}
+function relativeFolderParts(path: string): string[] {
+  return path.split('/').slice(0, -1).map((part) => part.trim()).filter(Boolean);
+}
+
+function kindLabel(kind: string): string {
+  return kind === 'video' ? 'Video' : kind === 'file' ? 'Tệp' : 'Ảnh';
+}
+
+function folderPath(folderId: string | null | undefined): string {
+  if (!folderId) return 'Chưa phân loại';
+  const names: string[] = [];
+  const seen = new Set<string>();
+  let current = folders.value.find((folder) => folder.id === folderId);
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id);
+    names.unshift(current.name);
+    current = current.parentId ? folders.value.find((folder) => folder.id === current!.parentId) : undefined;
+  }
+  return names.length ? names.join(' / ') : 'Chưa phân loại';
+}
+
+function queueFolderFiles(entries: FolderUploadFile[]) {
+  const grouped = new Map<string, FolderUploadFile[]>();
+  for (const entry of entries) {
+    const parts = entry.relativePath.split('/').filter(Boolean);
+    if (parts.length < 2) continue;
+    const rootName = parts[0];
+    const group = grouped.get(rootName) ?? [];
+    group.push({ ...entry, relativePath: parts.join('/') });
+    grouped.set(rootName, group);
+  }
+  if (!grouped.size) {
+    toast.warning('Không tìm thấy tệp trong thư mục đã chọn');
+    return;
+  }
+  const next = [...folderUploadQueue.value];
+  for (const [name, files] of grouped) {
+    const existing = next.find((batch) => batch.name === name);
+    const unique = new Map((existing?.files ?? []).map((entry) => [`${entry.relativePath}|${entry.file.size}|${entry.file.lastModified}`, entry]));
+    for (const entry of files) unique.set(`${entry.relativePath}|${entry.file.size}|${entry.file.lastModified}`, entry);
+    const mergedFiles = [...unique.values()];
+    const batch = { id: existing?.id ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`, name, files: mergedFiles, sizeBytes: mergedFiles.reduce((sum, entry) => sum + entry.file.size, 0) };
+    const index = existing ? next.indexOf(existing) : -1;
+    if (index >= 0) next[index] = batch;
+    else next.push(batch);
+  }
+  folderUploadQueue.value = next;
+  folderUploadDialogOpen.value = true;
+}
+
+interface FolderEntryLike {
+  name: string;
+  isFile: boolean;
+  isDirectory: boolean;
+  file?: (success: (file: File) => void, error?: (error: unknown) => void) => void;
+  createReader?: () => { readEntries: (success: (entries: FolderEntryLike[]) => void, error?: (error: unknown) => void) => void };
+}
+
+function readDroppedFile(entry: FolderEntryLike): Promise<File> {
+  return new Promise((resolve, reject) => entry.file?.(resolve, reject));
+}
+function readDroppedDirectory(entry: FolderEntryLike): Promise<FolderEntryLike[]> {
+  return new Promise((resolve, reject) => {
+    const reader = entry.createReader?.();
+    if (!reader) return resolve([]);
+    const all: FolderEntryLike[] = [];
+    const readNext = () => reader.readEntries((entries) => {
+      if (!entries.length) return resolve(all);
+      all.push(...entries);
+      readNext();
+    }, reject);
+    readNext();
+  });
+}
+async function collectDroppedEntry(entry: FolderEntryLike, prefix = ''): Promise<FolderUploadFile[]> {
+  const path = prefix ? `${prefix}/${entry.name}` : entry.name;
+  if (entry.isFile) return [{ file: await readDroppedFile(entry), relativePath: path }];
+  if (!entry.isDirectory) return [];
+  const children = await readDroppedDirectory(entry);
+  const result: FolderUploadFile[] = [];
+  for (const child of children) result.push(...await collectDroppedEntry(child, path));
+  return result;
+}
+async function onFolderDrop(e: DragEvent) {
+  folderDragOver.value = false;
+  const items = Array.from(e.dataTransfer?.items ?? []);
+  const entries = items.reduce<FolderEntryLike[]>((all, item) => {
+    const getEntry = (item as unknown as { webkitGetAsEntry?: () => FolderEntryLike | null }).webkitGetAsEntry;
+    const entry = getEntry?.() ?? null;
+    if (entry?.isDirectory) all.push(entry);
+    return all;
+  }, []);
+  if (!entries.length) {
+    toast.warning('Hãy kéo thư mục từ máy tính vào đây');
+    return;
+  }
+  try {
+    const files: FolderUploadFile[] = [];
+    for (const entry of entries) files.push(...await collectDroppedEntry(entry));
+    queueFolderFiles(files);
+  } catch {
+    toast.warning('Không đọc được thư mục đã kéo vào');
+  }
+}
+
+function removeQueuedFolder(id: string) {
+  if (folderUploadSaving.value) return;
+  folderUploadQueue.value = folderUploadQueue.value.filter((batch) => batch.id !== id);
+}
+
+async function onCreateFolder() {
+  folderName.value = '';
+  folderDialogError.value = '';
+  folderVisibility.value = currentFolderVisibility();
+  folderDialogOpen.value = true;
+}
+
+async function ensureFolderPath(parts: string[], folderByPath: Map<string, string>, visibility: MediaVisibility): Promise<string | null> {
+  let parentId = activeFolder.value;
+  let path = parentId ? `selected:${parentId}` : 'root';
+  for (const name of parts) {
+    path += `/${name}`;
+    const known = folderByPath.get(path);
+    if (known) { parentId = known; continue; }
+    let created: MediaFolder;
+    try {
+      created = (await createMediaFolder(name, visibility, parentId)).folder;
+    } catch (error: any) {
+      if (error?.response?.status !== 409) throw error;
+      await loadFolders();
+      const existing = folders.value.find((folder) => folder.parentId === parentId && folder.name === name);
+      if (!existing) throw error;
+      created = existing;
+    }
+    folders.value = [...folders.value.filter((folder) => folder.id !== created.id), created];
+    folderByPath.set(path, created.id);
+    parentId = created.id;
+  }
+  return parentId;
+}
+
+async function uploadQueuedFolders() {
+  if (!folderUploadQueue.value.length || folderUploadSaving.value) return;
+  folderUploadSaving.value = true;
+  try {
+    const folderByPath = new Map<string, string>();
+    const groups = new Map<string | null, File[]>();
+    for (const batch of folderUploadQueue.value) {
+      for (const entry of batch.files) {
+        const folderId = await ensureFolderPath(relativeFolderParts(entry.relativePath), folderByPath, folderUploadVisibility.value);
+        const group = groups.get(folderId) ?? [];
+        group.push(entry.file);
+        groups.set(folderId, group);
+      }
+    }
+    let uploaded = 0;
+    const uploadedAssets: Array<{ kind: string; deduped: boolean; compressed: boolean }> = [];
+    for (const [folderId, groupedFiles] of groups) {
+      const result = await uploadMedia(groupedFiles, { visibility: folderUploadVisibility.value, folderId: folderId ?? undefined });
+      uploaded += result.assets.length;
+      uploadedAssets.push(...result.assets);
+    }
+    const queueCount = folderUploadQueue.value.length;
+    const folderNames = folderUploadQueue.value.map((batch) => batch.name).slice(0, 3).join(', ');
+    const moreFolders = queueCount > 3 ? ` và ${queueCount - 3} thư mục khác` : '';
+    toast.success(`${uploadSummary(uploadedAssets)} từ ${queueCount} thư mục: ${folderNames}${moreFolders}`);
+    folderUploadQueue.value = [];
+    folderUploadDialogOpen.value = false;
+    await loadFolders();
+    reload();
+  } catch (error: any) {
+    const uploadedAssets = error instanceof MediaUploadError ? error.uploadedAssets : [];
+    if (uploadedAssets.length) {
+      toast.warning(uploadSummary(uploadedAssets) + '. Các tệp còn lại chưa tải: ' + uploadErrorMessage(error.cause));
+      reload();
+    } else {
+      toast.warning(uploadErrorMessage(error));
+    }
+  } finally {
+    folderUploadSaving.value = false;
+  }
+}
+function closeFolderDialog() {
+  if (folderSaving.value) return;
+  folderDialogOpen.value = false;
+  folderDialogError.value = '';
+}
+
+async function submitFolder() {
+  const name = folderName.value.trim();
+  if (!name) {
+    folderDialogError.value = 'Vui lòng nhập tên thư mục.';
+    return;
+  }
+  if (name.length > 80) {
+    folderDialogError.value = 'Tên thư mục tối đa 80 ký tự.';
+    return;
+  }
+  folderSaving.value = true;
+  folderDialogError.value = '';
+  try {
+    const res = await createMediaFolder(name, folderVisibility.value);
+    folders.value = [...folders.value.filter((folder) => folder.id !== res.folder.id), res.folder]
+      .sort((a, b) => a.name.localeCompare(b.name, 'vi'));
+    folderDialogOpen.value = false;
     toast.success('Đã tạo thư mục');
-    loadFolders();
   } catch (e: any) {
-    toast.warning(e?.response?.data?.error || 'Không tạo được thư mục');
+    folderDialogError.value = e?.response?.data?.error || 'Không tạo được thư mục.';
+  } finally {
+    folderSaving.value = false;
   }
 }
 
@@ -549,6 +1074,9 @@ onMounted(() => { reload(); loadFolders(); loadUploaders(); });
 .m-search { display:flex; align-items:center; gap:7px; border:1px solid var(--hairline); border-radius:var(--r-sm); padding:6px 12px; width:240px; }
 .m-search input { border:none; outline:none; font-size:13px; width:100%; background:transparent; color:var(--body); }
 .btn-dark { background:var(--ink); color:#fff; border:none; border-radius:var(--r-md); padding:8px 16px; font-size:13.5px; font-weight:500; cursor:pointer; }
+.btn-dark:disabled, .btn-folder-upload:disabled { opacity:.5; cursor:default; }
+.btn-folder-upload { display:inline-flex; align-items:center; gap:6px; background:#fff; color:var(--ink); border:1px solid var(--hairline); border-radius:var(--r-md); padding:7px 13px; font-size:13px; font-weight:600; cursor:pointer; }
+.btn-folder-upload:hover { border-color:#1786be; color:#1786be; }
 .m-tabs { display:flex; gap:2px; padding:0 24px; border-bottom:1px solid var(--hairline); }
 .tab { padding:11px 16px; font-size:14px; color:var(--muted); border:none; background:none; cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-1px; }
 .tab.on { color:var(--ink); font-weight:500; border-bottom-color:var(--ink); }
@@ -586,6 +1114,8 @@ onMounted(() => { reload(); loadFolders(); loadUploaders(); });
 .f { display:flex; align-items:center; gap:8px; padding:6px 8px; border-radius:var(--r-sm); font-size:13px; color:var(--body); cursor:pointer; }
 .f.on { background:var(--soft); color:var(--ink); font-weight:500; }
 .f .lk { margin-left:auto; font-size:11px; }
+.f .folder-visibility-icon { margin-left:6px; color:#6f7782; flex:0 0 auto; }
+.f .folder-visibility-icon.public { color:#1786be; }
 .m-grid-wrap { flex:1; padding:16px 24px; overflow:auto; min-width:0; }
 .m-pager { display:flex; align-items:center; justify-content:center; gap:14px; padding:16px 0 4px; }
 .pg-btn { border:1px solid var(--hairline); background:var(--canvas); border-radius:var(--r-sm,6px); padding:6px 14px; font-size:13px; cursor:pointer; color:var(--ink); }
@@ -652,6 +1182,55 @@ onMounted(() => { reload(); loadFolders(); loadUploaders(); });
 .t-perm { background:#fff; color:#c0392b; border:1px solid #f0c8c2; border-radius:var(--r-sm); padding:5px 9px; cursor:pointer; display:inline-flex; align-items:center; }
 .t-perm:hover { background:#c0392b; color:#fff; border-color:#c0392b; }
 
+/* Tạo thư mục dùng modal trong app thay vì window.prompt (không ổn định trong IAB/PWA). */
+.folder-modal-backdrop { position:fixed; inset:0; z-index:40; display:flex; align-items:center; justify-content:center; padding:20px; background:rgba(15,23,42,.34); }
+.folder-modal { width:min(420px, 100%); border:1px solid #d9dee5; border-radius:10px; background:#fff; box-shadow:0 18px 50px rgba(15,23,42,.2); color:var(--ink); }
+.folder-modal-head { display:flex; align-items:flex-start; justify-content:space-between; gap:14px; padding:18px 18px 12px; border-bottom:1px solid var(--hairline); }
+.folder-modal-head h2 { margin:0; font-size:17px; font-weight:600; }
+.folder-modal-head p { margin:5px 0 0; color:var(--muted); font-size:12px; }
+.folder-modal-close { display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px; border:1px solid var(--hairline); border-radius:6px; background:#fff; color:var(--muted); cursor:pointer; }
+.folder-field { display:flex; flex-direction:column; gap:6px; padding:18px; }
+.folder-field span { color:var(--ink); font-size:12.5px; font-weight:600; }
+.folder-field input { width:100%; box-sizing:border-box; border:1px solid #cfd5dc; border-radius:6px; padding:9px 10px; outline:none; color:var(--ink); font-size:13px; }
+.folder-field input:focus { border-color:#1786be; box-shadow:0 0 0 2px rgba(23,134,190,.12); }
+.folder-error { margin:-7px 18px 0; color:#b42318; font-size:12px; }
+.folder-modal-actions { display:flex; justify-content:flex-end; gap:8px; padding:12px 18px 18px; }
+.folder-cancel, .folder-submit { border-radius:6px; padding:8px 13px; font-size:13px; font-weight:600; cursor:pointer; }
+.folder-cancel { border:1px solid var(--hairline); background:#fff; color:var(--muted); }
+.folder-submit { border:1px solid var(--ink); background:var(--ink); color:#fff; }
+.folder-submit:disabled { opacity:.45; cursor:default; }
+
+.folder-upload-modal { width:min(560px, 100%); max-height:min(760px, calc(100vh - 40px)); overflow:auto; border:1px solid #d9dee5; border-radius:10px; background:#fff; box-shadow:0 18px 50px rgba(15,23,42,.2); color:var(--ink); }
+.folder-dropzone { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:7px; width:calc(100% - 36px); min-height:132px; margin:18px; border:1.5px dashed #b8c5d0; border-radius:8px; background:#f8fafc; color:var(--muted); cursor:pointer; }
+.folder-dropzone:hover, .folder-dropzone.over { border-color:#1786be; background:#eef8fc; color:#0b5880; }
+.folder-dropzone strong { color:var(--ink); font-size:13.5px; }
+.folder-dropzone span { font-size:12px; }
+.folder-dropzone:disabled { opacity:.55; cursor:default; }
+.upload-access { display:flex; align-items:center; justify-content:space-between; gap:16px; margin:0 18px 14px; padding:10px 12px; border:1px solid #dce3e9; border-radius:7px; background:#fbfcfd; }
+.upload-access-copy { display:flex; flex-direction:column; gap:3px; min-width:0; }
+.upload-access-copy strong { color:var(--ink); font-size:12.5px; }
+.upload-access-copy span { color:var(--muted); font-size:11.5px; line-height:1.35; }
+.access-segmented { display:inline-flex; flex:0 0 auto; border:1px solid #cfd8df; border-radius:6px; overflow:hidden; background:#fff; }
+.access-segmented button { display:inline-flex; align-items:center; gap:5px; border:0; border-right:1px solid #dbe2e7; background:#fff; color:var(--muted); padding:7px 10px; font-size:12px; font-weight:600; cursor:pointer; white-space:nowrap; }
+.access-segmented button:last-child { border-right:0; }
+.access-segmented button.on { background:#1c2733; color:#fff; }
+.access-segmented button:not(.on):hover { color:#1786be; background:#f2f8fb; }
+.access-segmented button:disabled { opacity:.5; cursor:default; }
+.folder-create-access { margin-top:0; margin-bottom:4px; }
+.folder-upload-summary { display:flex; justify-content:space-between; gap:10px; margin:0 18px 8px; color:var(--muted); font-size:12.5px; font-weight:600; }
+.folder-upload-list { display:flex; flex-direction:column; gap:6px; max-height:260px; overflow:auto; margin:0 18px; }
+.folder-upload-row { display:flex; align-items:center; gap:10px; min-width:0; padding:9px 10px; border:1px solid var(--hairline); border-radius:7px; background:#fff; }
+.folder-upload-row > svg { flex:0 0 auto; color:#1786be; }
+.folder-upload-row > div { display:flex; flex-direction:column; gap:2px; min-width:0; flex:1; }
+.folder-upload-row strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:13px; }
+.folder-upload-row span { color:var(--muted); font-size:11.5px; }
+.folder-upload-row button { display:inline-flex; align-items:center; justify-content:center; flex:0 0 auto; width:28px; height:28px; border:1px solid var(--hairline); border-radius:6px; background:#fff; color:var(--muted); cursor:pointer; }
+.folder-upload-row button:hover { color:#b42318; border-color:#e8b5aa; }
+.folder-upload-row button:disabled { opacity:.45; cursor:default; }
+.folder-upload-empty { margin:0 18px 8px; color:var(--muted); font-size:12.5px; }
+.folder-upload-actions { justify-content:space-between; }
+.folder-upload-actions .folder-cancel { margin-right:auto; }
+.folder-cancel:disabled, .folder-submit:disabled, .folder-modal-close:disabled { opacity:.45; cursor:default; }
 /* ── GĐ12: Chọn nhiều + thao tác hàng loạt ── */
 .btn-multi { display:inline-flex; align-items:center; gap:6px; background:#fff; color:var(--muted); border:1px solid var(--hairline); border-radius:var(--r-md); padding:7px 13px; font-size:13px; font-weight:500; cursor:pointer; }
 .btn-multi:hover { border-color:#1786be; color:#1786be; }
@@ -666,4 +1245,7 @@ onMounted(() => { reload(); loadFolders(); loadUploaders(); });
 .bulk-trash { display:inline-flex; align-items:center; gap:5px; background:#fff; border:1px solid #f0c8c2; color:#c0392b; border-radius:var(--r-sm); padding:6px 11px; font-size:12.5px; font-weight:600; cursor:pointer; }
 .bulk-trash:hover { background:#c0392b; color:#fff; border-color:#c0392b; }
 .bulk-clear { margin-left:auto; background:none; border:none; color:#0b5880; font-size:12.5px; font-weight:600; cursor:pointer; }
+.folder-count { margin-left: auto; min-width: 18px; text-align: center; color: var(--muted); font-size: 11px; }
+.folder-meta { color: #526273; }
+.folder-meta svg { flex: 0 0 auto; color: #1786be; }
 </style>

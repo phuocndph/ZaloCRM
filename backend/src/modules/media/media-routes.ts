@@ -31,21 +31,22 @@ import { recordMessageStorageReferences, uploadResultFromBlob } from '../../shar
 import { scanOrPass } from '../../shared/security/clamav-client.js';
 import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
+import { extname } from 'node:path';
 import { logger } from '../../shared/utils/logger.js';
 
-const ALLOWED_IMAGE = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
-const ALLOWED_VIDEO = ['video/mp4', 'video/quicktime', 'video/webm'];
-// File types: tái dùng list của chat-attachment (KHÔNG mở rộng tùy tiện — checklist reuse).
+const ALLOWED_IMAGE = ['image/jpeg', 'image/png', 'image/webp', 'image/gif', 'image/avif', 'image/heic', 'image/heif', 'image/bmp', 'image/tiff'];
+const ALLOWED_VIDEO = ['video/mp4', 'video/quicktime', 'video/webm', 'video/x-matroska', 'video/x-msvideo', 'video/3gpp', 'video/mpeg'];
+// MIME khác nhau giữa trình duyệt/Windows, nên classifyUpload chỉ fallback bằng extension whitelist.
 const ALLOWED_FILE = [
-  'application/pdf',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  'application/vnd.ms-excel', 'text/csv',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'application/msword',
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  'application/vnd.ms-powerpoint',
-  'application/zip', 'application/x-zip-compressed',
+  'application/pdf', 'text/plain', 'text/csv',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/msword',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation', 'application/vnd.ms-powerpoint',
+  'application/zip', 'application/x-zip-compressed', 'application/x-rar-compressed', 'application/x-7z-compressed',
 ];
+const IMAGE_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.avif', '.heic', '.heif', '.bmp', '.tif', '.tiff']);
+const VIDEO_EXTENSIONS = new Set(['.mp4', '.mov', '.webm', '.mkv', '.avi', '.m4v', '.3gp', '.mpeg', '.mpg']);
+const FILE_EXTENSIONS = new Set(['.pdf', '.txt', '.csv', '.xlsx', '.xls', '.docx', '.doc', '.pptx', '.ppt', '.zip', '.rar', '.7z']);
 // Giới hạn (design review E5): ảnh >15MB báo quá lớn.
 const IMAGE_MAX = 15 * 1024 * 1024;
 const VIDEO_MAX = 500 * 1024 * 1024;
@@ -57,13 +58,31 @@ export const TRASH_RETENTION_DAYS = 30;
 const TRASH_EMPTY_BATCH = 500;
 
 
-function classify(mime: string): MediaKind | null {
-  if (ALLOWED_IMAGE.includes(mime)) return 'image';
-  if (ALLOWED_VIDEO.includes(mime)) return 'video';
-  if (ALLOWED_FILE.includes(mime)) return 'file';
+function classifyUpload(mime: string | undefined, filename: string | undefined): MediaKind | null {
+  const normalizedMime = String(mime ?? '').toLowerCase().trim();
+  if (ALLOWED_IMAGE.includes(normalizedMime) || normalizedMime === 'image/jpg' || normalizedMime === 'image/pjpeg') return 'image';
+  if (ALLOWED_VIDEO.includes(normalizedMime)) return 'video';
+  if (ALLOWED_FILE.includes(normalizedMime)) return 'file';
+  const extension = extname(String(filename ?? '')).toLowerCase();
+  if (IMAGE_EXTENSIONS.has(extension)) return 'image';
+  if (VIDEO_EXTENSIONS.has(extension)) return 'video';
+  if (FILE_EXTENSIONS.has(extension)) return 'file';
   return null;
 }
 
+function normalizedUploadMime(mime: string | undefined, filename: string | undefined, kind: MediaKind): string {
+  const value = String(mime ?? '').toLowerCase().trim();
+  // Preserve a trustworthy browser MIME; normalize aliases and opaque generic values from Windows.
+  if (value && value !== 'application/octet-stream') {
+    if (value === 'image/jpg' || value === 'image/pjpeg') return 'image/jpeg';
+    return value;
+  }
+  const extension = extname(String(filename ?? '')).toLowerCase();
+  const imageMimes: Record<string, string> = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.webp': 'image/webp', '.gif': 'image/gif', '.avif': 'image/avif', '.heic': 'image/heic', '.heif': 'image/heif', '.bmp': 'image/bmp', '.tif': 'image/tiff', '.tiff': 'image/tiff' };
+  const videoMimes: Record<string, string> = { '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.webm': 'video/webm', '.mkv': 'video/x-matroska', '.avi': 'video/x-msvideo', '.3gp': 'video/3gpp', '.mpeg': 'video/mpeg', '.mpg': 'video/mpeg' };
+  const fileMimes: Record<string, string> = { '.pdf': 'application/pdf', '.txt': 'text/plain', '.csv': 'text/csv', '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', '.xls': 'application/vnd.ms-excel', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', '.doc': 'application/msword', '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation', '.ppt': 'application/vnd.ms-powerpoint', '.zip': 'application/zip', '.rar': 'application/x-rar-compressed', '.7z': 'application/x-7z-compressed' };
+  return (kind === 'image' ? imageMimes[extension] : kind === 'video' ? videoMimes[extension] : fileMimes[extension]) || value || 'application/octet-stream';
+}
 // Nhận diện loại media THẬT theo ĐUÔI file (anh chốt 2026-06-12). Zalo nhiều khi gửi
 // video/ảnh dưới dạng ĐÍNH KÈM FILE (contentType='file') → mặc định lưu thành kind='file'
 // → video lọt tab Tệp, gửi đi mất player. Đuôi cho biết thật sự là gì → nâng cấp kind.
@@ -355,6 +374,7 @@ export async function mediaRoutes(app: FastifyInstance) {
           include: {
             blobs: { where: { variantType: { in: ['original', 'watermarked'] } } },
             owner: { select: { fullName: true } },
+            folder: { select: { id: true, name: true, parentId: true, kind: true } },
             sourceZaloAccount: { select: { displayName: true } },
           },
         }),
@@ -390,6 +410,9 @@ export async function mediaRoutes(app: FastifyInstance) {
           sizeBytes: blob?.sizeBytes ?? null,
           durationSec: blob?.durationSec ?? null,
           createdAt: a.createdAt,
+          folderId: a.folder?.id ?? null,
+          folderName: a.folder?.name ?? null,
+          folderKind: a.folder?.kind ?? null,
           // Watermark per-ảnh (GĐ2).
           watermarkEnabled: a.watermarkEnabled,
           watermarkPosition: a.watermarkPosition,
@@ -481,9 +504,9 @@ export async function mediaRoutes(app: FastifyInstance) {
             continue;
           }
           if (part.type !== 'file') continue;
-          const kind = classify(part.mimetype);
+          const kind = classifyUpload(part.mimetype, part.filename);
           if (!kind) {
-            return reply.status(415).send({ error: `Loại tệp không hỗ trợ: ${part.mimetype}` });
+            return reply.status(415).send({ error: 'Loại tệp không hỗ trợ: ' + (part.filename || part.mimetype || 'không rõ định dạng') });
           }
           const buf = await part.toBuffer();
           const max = kind === 'image' ? IMAGE_MAX : kind === 'video' ? VIDEO_MAX : FILE_MAX;
@@ -495,7 +518,21 @@ export async function mediaRoutes(app: FastifyInstance) {
           // GĐ13b: quét virus (fail-open mặc định; AV tắt → skip ngay). Chặn nếu nhiễm.
           const av = await scanOrPass(buf, { filename: part.filename, userId });
           if (av.blocked) return reply.status(422).send({ error: av.reason, code: 'AV_BLOCKED' });
-          pending.push({ buffer: buf, mimeType: part.mimetype, kind, filename: part.filename });
+          pending.push({ buffer: buf, mimeType: normalizedUploadMime(part.mimetype, part.filename, kind), kind, filename: part.filename });
+        }
+
+        if (folderId) {
+          const canViewAll = await userHasGrant(userId, 'media', 'view_all');
+          const folder = await prisma.mediaAlbum.findFirst({
+            where: {
+              id: folderId,
+              orgId: user.orgId,
+              kind: 'folder',
+              ...(canViewAll ? {} : { OR: [{ ownerUserId: userId }, { visibility: 'public' }] }),
+            },
+            select: { id: true },
+          });
+          if (!folder) return reply.status(404).send({ error: 'Không tìm thấy thư mục đích hoặc bạn không có quyền ghi vào thư mục này' });
         }
 
         // Register SAU khi đã đọc hết parts → visibility/folderId/tagIds chắc chắn đầy đủ.
@@ -514,7 +551,7 @@ export async function mediaRoutes(app: FastifyInstance) {
             tagIds,
             folderId,
           });
-          created.push({ id: res.asset.id, name: res.asset.name, deduped: res.deduped });
+          created.push({ id: res.asset.id, name: res.asset.name, kind: res.asset.kind, mimeType: res.blob.mimeType, sizeBytes: res.blob.sizeBytes, deduped: res.deduped, compressed: res.compressed });
         }
         if (created.length === 0) return reply.status(400).send({ error: 'Không có tệp nào' });
         return { assets: created };
@@ -1262,12 +1299,13 @@ export async function mediaRoutes(app: FastifyInstance) {
       const folders = await prisma.mediaAlbum.findMany({
         where: {
           orgId: user.orgId,
+          kind: 'folder',
           ...(canViewAll ? {} : { OR: [{ ownerUserId: userId }, { visibility: 'public' }] }),
         },
-        orderBy: { name: 'asc' },
-        select: { id: true, name: true, kind: true, visibility: true, ownerUserId: true },
+        orderBy: [{ parentId: 'asc' }, { name: 'asc' }],
+        select: { id: true, name: true, kind: true, visibility: true, ownerUserId: true, parentId: true, _count: { select: { assets: true } } },
       });
-      return { folders };
+      return { folders: folders.map(({ _count, ...folder }) => ({ ...folder, assetCount: _count.assets })) };
     },
   );
 
@@ -1278,19 +1316,44 @@ export async function mediaRoutes(app: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       const user = request.user!;
       const userId = (user as any).userId ?? user.id;
-      const body = request.body as { name: string; visibility?: 'private' | 'public' };
-      if (!body?.name?.trim()) return reply.status(400).send({ error: 'Tên thư mục bắt buộc' });
+      const body = request.body as { name: string; visibility?: 'private' | 'public'; parentId?: string | null };
+      const name = String(body?.name ?? '').trim();
+      if (!name) return reply.status(400).send({ error: 'Tên thư mục bắt buộc' });
+      if (name.length > 80) return reply.status(400).send({ error: 'Tên thư mục tối đa 80 ký tự' });
+      const visibility = body?.visibility === 'public' ? 'public' : 'private';
+      const parentId = body?.parentId || null;
+
+      if (parentId) {
+        const parent = await prisma.mediaAlbum.findFirst({
+          where: {
+            id: parentId,
+            orgId: user.orgId,
+            kind: 'folder',
+            ...(await userHasGrant(userId, 'media', 'view_all') ? {} : { OR: [{ ownerUserId: userId }, { visibility: 'public' }] }),
+          },
+          select: { id: true },
+        });
+        if (!parent) return reply.status(404).send({ error: 'Không tìm thấy thư mục cha' });
+      }
+
+      const duplicate = await prisma.mediaAlbum.findFirst({
+        where: { orgId: user.orgId, kind: 'folder', ownerUserId: userId, parentId, name },
+        select: { id: true },
+      });
+      if (duplicate) return reply.status(409).send({ error: 'Bạn đã có thư mục cùng tên' });
+
       const folder = await prisma.mediaAlbum.create({
         data: {
           orgId: user.orgId,
-          name: body.name.trim(),
+          name,
           kind: 'folder',
-          visibility: body.visibility ?? 'private',
+          visibility,
+          parentId,
           ownerUserId: userId,
           createdById: userId,
         },
       });
-      return { folder: { id: folder.id, name: folder.name } };
+      return { folder: { id: folder.id, name: folder.name, parentId: folder.parentId, kind: folder.kind, visibility: folder.visibility, ownerUserId: folder.ownerUserId } };
     },
   );
 

@@ -85,6 +85,8 @@ export interface RegisterAssetResult {
   blob: MediaBlob;
   /** true nếu bytes đã tồn tại từ trước (không tốn thêm ô lưu trữ MinIO). */
   deduped: boolean;
+  /** true khi ảnh đầu vào đã được resize/chuyển WebP trước khi lưu. */
+  compressed: boolean;
 }
 
 /**
@@ -283,6 +285,10 @@ export async function registerAsset(input: RegisterAssetInput): Promise<Register
         ...(shouldRestore ? { archivedAt: null, trashedById: null } : {}),
         ...(shouldArmPrivate ? { sourceIsPrivateNick: true } : {}),
         ...(shouldSetSourceNick ? { sourceZaloAccountId } : {}),
+        // Upload lại cùng file vào thư mục khác vẫn phải cập nhật phân loại.
+        // Chỉ thay đổi khi caller truyền folderId rõ ràng; luồng lưu từ chat
+        // không truyền field này nên không làm mất thư mục hiện tại.
+        ...(input.folderId !== undefined ? { folderId } : {}),
       },
     });
     if (shouldArmPrivate) {
@@ -323,7 +329,8 @@ export async function registerAsset(input: RegisterAssetInput): Promise<Register
         referenceKey: `asset:${asset.id}:video-thumbnail`, source: 'media_asset', purpose: 'video-thumbnail',
         zaloAccountId: asset.sourceZaloAccountId, mediaAssetId: asset.id, storageDriver: config.storageDriver,
       });
-    }    return { asset, blob: activeBlob, deduped: true };
+    }
+    return { asset, blob: activeBlob, deduped: true, compressed: processed.compressed };
   }
   // S8: log MISS (bytes mới hoàn toàn) — để tính hit-rate = hit/(hit+miss).
   logger.info(`[media][dedup] miss org=${orgId} hash=${up.contentHash.slice(0, 12)} source=${source}`);
@@ -384,7 +391,8 @@ export async function registerAsset(input: RegisterAssetInput): Promise<Register
         referenceKey: `asset:${result.asset.id}:video-thumbnail`, source: 'media_asset', purpose: 'video-thumbnail',
         zaloAccountId: result.asset.sourceZaloAccountId, mediaAssetId: result.asset.id, storageDriver: config.storageDriver,
       });
-    }    return { ...result, deduped: up.deduped };
+    }
+    return { ...result, deduped: up.deduped, compressed: processed.compressed };
   } catch (err) {
     // D10(1): 2 sale upload cùng bytes đồng thời → 1 ăn P2002 trên [orgId,contentHash].
     // Coi như dedup-hit: đọc lại blob bản kia + tăng usageCount, KHÔNG báo lỗi 500.
@@ -396,9 +404,13 @@ export async function registerAsset(input: RegisterAssetInput): Promise<Register
       if (blob) {
         const asset = await prisma.mediaAsset.update({
           where: { id: blob.assetId },
-          data: { usageCount: { increment: 1 }, lastUsedAt: new Date() },
+          data: {
+            usageCount: { increment: 1 },
+            lastUsedAt: new Date(),
+            ...(input.folderId !== undefined ? { folderId } : {}),
+          },
         });
-        return { asset, blob, deduped: true };
+        return { asset, blob, deduped: true, compressed: processed.compressed };
       }
     }
     throw err;

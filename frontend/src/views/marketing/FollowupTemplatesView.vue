@@ -19,7 +19,9 @@
     <div class="ft-filters">
       <input v-model="search" class="ft-search" type="search" placeholder="Tìm theo tên, mục tiêu, thẻ…" />
       <div class="ft-chips">
-        <button class="ft-chip" :class="{ on: category === null && !favOnly }" @click="category = null; favOnly = false">Tất cả</button>
+        <button class="ft-chip" :class="{ on: kind === null && category === null && !favOnly }" @click="kind = null; category = null; favOnly = false">Tất cả</button>
+        <button class="ft-chip" :class="{ on: kind === 'followup' }" @click="kind = kind === 'followup' ? null : 'followup'; category = null; favOnly = false">Follow-up</button>
+        <button class="ft-chip" :class="{ on: kind === 'outreach' }" @click="kind = kind === 'outreach' ? null : 'outreach'; category = null; favOnly = false">Outreach</button>
         <button class="ft-chip" :class="{ on: favOnly }" @click="favOnly = !favOnly">★ Yêu thích ({{ favorites.size }})</button>
         <button
           v-for="c in categories" :key="c" class="ft-chip"
@@ -36,7 +38,7 @@
     <div v-else class="ft-grid">
       <div v-for="t in filtered" :key="t.key" class="ft-card" @click="openDetail(t.key)">
         <div class="ft-card-top">
-          <span class="ft-cat">{{ t.category }}</span>
+          <div class="ft-card-labels"><span class="ft-kind">{{ t.kind === 'outreach' ? 'OUTREACH' : 'FOLLOW-UP' }}</span><span class="ft-cat">{{ t.category }}</span></div>
           <button class="ft-fav" :class="{ on: favorites.has(t.key) }" :aria-label="'Yêu thích ' + t.name" @click.stop="toggleFav(t.key)">
             {{ favorites.has(t.key) ? '★' : '☆' }}
           </button>
@@ -50,10 +52,11 @@
         </dl>
 
         <div class="ft-stats">
-          <span :title="t.saleTaskCount ? 'Chưa tính thời gian chờ Sale hoàn thành công việc' : ''">
+          <span v-if="t.kind === 'followup'" :title="t.saleTaskCount ? 'Chưa tính thời gian chờ Sale hoàn thành công việc' : ''">
             ⏱ ~{{ t.estimatedDays }} ngày<b v-if="t.saleTaskCount" class="ft-plus"> + chờ Sale</b>
           </span>
-          <span>🔢 {{ t.stepCount }} bước</span>
+          <span v-else>⚙ {{ t.audienceSource === 'friend_pool' ? 'Bạn bè đa nick' : 'Tệp khách hàng' }}</span>
+          <span>🔢 {{ t.stepCount }} {{ t.kind === 'outreach' ? 'bước gửi' : 'bước' }}</span>
           <span>✉️ {{ t.sendCount }} tin</span>
         </div>
 
@@ -69,10 +72,7 @@
         <v-card-title class="ft-dlg-title">
           <div>
             <div class="text-h6">{{ detail.name }}</div>
-            <div class="ft-dlg-sub">
-              {{ detail.category }} · ~{{ detail.estimatedDays }} ngày<span v-if="detail.saleTaskCount"> + chờ Sale</span>
-              · {{ detail.stepCount }} bước · {{ detail.sendCount }} tin
-            </div>
+            <div class="ft-dlg-sub">{{ detail.kind === 'outreach' ? 'OUTREACH' : 'FOLLOW-UP' }} · {{ detail.category }} · {{ detail.stepCount }} bước · {{ detail.sendCount }} tin</div>
           </div>
           <v-btn icon="mdi-close" variant="text" size="small" @click="detailOpen = false" />
         </v-card-title>
@@ -88,7 +88,7 @@
             <ul><li v-for="(w, i) in detail.whenToUse" :key="i">{{ w }}</li></ul>
           </section>
 
-          <section class="ft-sec">
+          <section v-if="detail.kind === 'followup'" class="ft-sec">
             <h4>Luồng hoạt động</h4>
             <div class="ft-flow">
               <template v-for="(s, i) in detail.steps" :key="s.key">
@@ -105,6 +105,21 @@
             </div>
           </section>
 
+          <section v-else class="ft-sec">
+            <h4>Cấu hình chiến dịch</h4>
+            <div class="ft-outreach-grid">
+              <div><b>Nguồn:</b> {{ detail.audienceSource === 'friend_pool' ? 'Bạn bè đã kết bạn từ nhiều nick' : 'Tệp khách hàng + nick được giao data' }}</div>
+              <div><b>Kết bạn:</b> {{ detail.config.enableAutoAdd ? 'Tự động gửi lời mời' : 'Không gửi lời mời' }}</div>
+              <div><b>Tin nhắn:</b> {{ detail.config.templates?.length || 0 }} mẫu, chọn ngẫu nhiên theo tỷ lệ</div>
+              <div><b>Giới hạn:</b> {{ detail.config.maxMsgPerDay }} tin/ngày · {{ detail.config.msgDelayMinMs / 1000 }}–{{ detail.config.msgDelayMaxMs / 1000 }} giây/tin</div>
+              <div><b>Lọc gần đây:</b> {{ detail.config.filterSkipChattedDays ? `Không gửi nếu đã chat trong ${detail.config.filterSkipChattedDays} ngày` : 'Không giới hạn' }}</div>
+              <div><b>Quan hệ:</b> {{ detail.config.filterFriendRelation === 'friend_only' ? 'Chỉ bạn bè' : detail.config.filterFriendRelation === 'non_friend_only' ? 'Chưa là bạn' : 'Không giới hạn' }}</div>
+            </div>
+            <div class="ft-message-preview">
+              <div v-for="(m, i) in detail.config.templates" :key="i"><span>Mẫu {{ Number(i) + 1 }}</span><p>{{ m.content }}</p></div>
+            </div>
+          </section>
+
           <section class="ft-sec">
             <h4>Điều kiện kết thúc</h4>
             <ul><li v-for="(e, i) in detail.endConditions" :key="i">{{ e }}</li></ul>
@@ -115,7 +130,7 @@
             <p>{{ detail.expectedOutcome }}</p>
           </section>
 
-          <section class="ft-sec ft-guard">
+          <section v-if="detail.kind === 'followup'" class="ft-sec ft-guard">
             <h4>Giới hạn an toàn của mẫu</h4>
             <p>
               Gửi trong khung {{ minToTime(detail.config.sendWindowStart) }}–{{ minToTime(detail.config.sendWindowEnd) }},
@@ -125,7 +140,17 @@
             </p>
           </section>
 
-          <section v-if="detail.saleTaskCount" class="ft-sec ft-note">
+          <section v-else class="ft-sec ft-guard">
+            <h4>Giới hạn an toàn của mẫu</h4>
+            <p>
+              Tối đa <b>{{ detail.config.maxMsgPerDay }}</b> tin/ngày,
+              delay giữa tin {{ detail.config.msgDelayMinMs / 1000 }}–{{ detail.config.msgDelayMaxMs / 1000 }} giây.
+              <span v-if="detail.config.enableAutoAdd">Lời mời kết bạn tối đa {{ detail.config.maxAddPerDay }}/ngày.</span>
+              Luôn kiểm tra lại nick được giao data và trạng thái kết nối trước khi gửi.
+            </p>
+          </section>
+
+          <section v-if="detail.kind === 'followup' && detail.saleTaskCount" class="ft-sec ft-note">
             <h4>Về thời gian dự kiến</h4>
             <p>
               <b>~{{ detail.estimatedDays }} ngày</b> chỉ tính các bước <b>Chờ</b>.
@@ -151,11 +176,12 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue';
-import { useRouter } from 'vue-router';
+import { useRoute, useRouter } from 'vue-router';
 import { api } from '@/api/index';
 import { useToast } from '@/composables/use-toast';
 
 interface TemplateSummary {
+  kind: 'followup' | 'outreach'; source: 'system' | 'organization'; audienceSource?: 'customer_list' | 'friend_pool' | null;
   key: string; name: string; category: string; tags: string[];
   goal: string; audience: string; shortDescription: string;
   estimatedDays: number; stepCount: number; sendCount: number; saleTaskCount: number;
@@ -163,18 +189,20 @@ interface TemplateSummary {
 interface TemplateStep { key: string; type: string; config?: any; explain: string; transition?: string | null }
 interface TemplateDetail extends TemplateSummary {
   intro: string; whenToUse: string[]; endConditions: string[]; expectedOutcome: string;
-  config: { maxMessages: number; stopOnTags: string[]; stopOnPurchase: boolean; sendWindowStart?: number; sendWindowEnd?: number; minGapMinutes?: number };
+  config: any;
   steps: TemplateStep[];
 }
 
 const FAV_KEY = 'followup.templates.favorites';
 
+const route = useRoute();
 const router = useRouter();
 const toast = useToast();
 const templates = ref<TemplateSummary[]>([]);
 const categories = ref<string[]>([]);
 const loading = ref(true);
 const search = ref('');
+const kind = ref<'followup' | 'outreach' | null>(null);
 const category = ref<string | null>(null);
 const favOnly = ref(false);
 const favorites = ref<Set<string>>(new Set());
@@ -197,6 +225,7 @@ function toggleFav(key: string) {
 const filtered = computed(() => {
   const q = search.value.trim().toLowerCase();
   return templates.value.filter((t) => {
+    if (kind.value && t.kind !== kind.value) return false;
     if (favOnly.value && !favorites.value.has(t.key)) return false;
     if (category.value && t.category !== category.value) return false;
     if (!q) return true;
@@ -238,7 +267,7 @@ function minToTime(m?: number) {
 async function load() {
   loading.value = true;
   try {
-    const res = await api.get('/followup/templates');
+    const res = await api.get('/campaign-templates');
     templates.value = res.data.templates ?? [];
     categories.value = res.data.categories ?? [];
   } catch {
@@ -252,8 +281,8 @@ async function openDetail(key: string) {
   detail.value = null;
   detailOpen.value = true;
   try {
-    const res = await api.get(`/followup/templates/${key}`);
-    detail.value = res.data.template;
+    const res = await api.get(`/campaign-templates/${encodeURIComponent(key)}`);
+    detail.value = { ...res.data.template, kind: res.data.kind, source: res.data.source, key: res.data.key };
   } catch {
     toast.error('Không tải được chi tiết mẫu');
     detailOpen.value = false;
@@ -263,7 +292,15 @@ async function openDetail(key: string) {
 async function useTemplate(key: string) {
   using.value = true;
   try {
-    const res = await api.post(`/followup/templates/${key}/use`);
+    const current = detail.value;
+    if (current?.kind === 'outreach') {
+      const query: Record<string, string> = { templateKey: key };
+      if (typeof route.query.listId === 'string') query.listId = route.query.listId;
+      detailOpen.value = false;
+      await router.push({ path: '/marketing/campaigns', query });
+      return;
+    }
+    const res = await api.post(`/campaign-templates/${encodeURIComponent(key)}/use`);
     const id = res.data.workflow?.id;
     detailOpen.value = false;
     toast.success('Đã tạo chiến dịch nháp từ mẫu — bạn có thể chỉnh sửa trước khi kích hoạt');
@@ -275,9 +312,16 @@ async function useTemplate(key: string) {
   }
 }
 
-function goBack() { router.push({ name: 'CE.Followup' }); }
+function goBack() {
+  router.push({ name: route.name === 'CE.FollowupTemplates' ? 'CE.Followup' : 'CE.Outreach' });
+}
 
-onMounted(() => { loadFavorites(); load(); });
+onMounted(() => {
+  const queryKind = route.query.kind;
+  if (queryKind === 'followup' || queryKind === 'outreach') kind.value = queryKind;
+  else if (route.name === 'CE.FollowupTemplates') kind.value = 'followup';
+  loadFavorites(); load();
+});
 </script>
 
 <style scoped>
@@ -299,6 +343,8 @@ onMounted(() => { loadFavorites(); load(); });
 .ft-card { background: var(--smax-bg, #fff); border-radius: 14px; padding: 16px; box-shadow: 0 1px 3px rgba(15,23,42,.06); cursor: pointer; transition: box-shadow .15s, transform .1s; display: flex; flex-direction: column; }
 .ft-card:hover { box-shadow: 0 6px 18px rgba(15,23,42,.10); transform: translateY(-1px); }
 .ft-card-top { display: flex; align-items: center; justify-content: space-between; }
+.ft-card-labels { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.ft-kind { font-size: 10px; font-weight: 800; color: #49606b; background: #edf1f3; border-radius: 5px; padding: 2px 6px; }
 .ft-cat { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--smax-primary-700, #0b5880); background: var(--smax-primary-soft, #e4f1f8); border-radius: 6px; padding: 2px 8px; }
 .ft-fav { border: 0; background: none; font-size: 19px; line-height: 1; color: #cbd5e1; cursor: pointer; }
 .ft-fav.on { color: #f59e0b; }
@@ -334,8 +380,14 @@ onMounted(() => { loadFavorites(); load(); });
 .ft-node-explain { font-size: 12.5px; color: var(--smax-grey-700, #5a6478); line-height: 1.5; margin-top: 2px; }
 .ft-node-trans { font-size: 11.5px; color: var(--smax-primary-700, #0b5880); margin-top: 3px; }
 .ft-arrow { text-align: center; color: var(--smax-grey-300, #d4d8de); font-size: 15px; line-height: 1.4; }
+.ft-outreach-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 16px; font-size: 13px; line-height: 1.5; }
+.ft-message-preview { display: grid; gap: 8px; margin-top: 12px; }
+.ft-message-preview > div { padding: 9px 11px; border: 1px solid var(--smax-grey-200, #ebedf0); border-radius: 8px; background: var(--smax-grey-50, #fafbfc); }
+.ft-message-preview span { font-size: 11px; font-weight: 700; color: var(--smax-grey-700, #5a6478); text-transform: uppercase; }
+.ft-message-preview p { margin: 3px 0 0; font-size: 13px; line-height: 1.5; }
 
 .ft-dlg-actions { padding: 12px 16px; }
 .ft-fav-lg { border: 1px solid var(--smax-grey-200, #ebedf0); background: none; border-radius: 8px; padding: 7px 14px; font-size: 13px; font-weight: 600; color: var(--smax-grey-700, #5a6478); cursor: pointer; }
 .ft-fav-lg.on { color: #b45309; border-color: #fcd34d; background: #fffbeb; }
+@media (max-width: 720px) { .ft-wrap { padding: 14px; } .ft-grid { grid-template-columns: 1fr; } .ft-outreach-grid { grid-template-columns: 1fr; } }
 </style>
