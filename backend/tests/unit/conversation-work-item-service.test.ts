@@ -7,6 +7,7 @@ import {
   collectAllPages,
   deriveConversationSignal,
   isConversationEligibleForSalesWork,
+  isContactWorkItemEligibleForAssignee,
   isVerificationCandidate,
   matchesWorkItemScope,
 } from '../../src/modules/dashboard/conversation-work-item-service.js';
@@ -262,6 +263,31 @@ describe('ConversationWorkItemService', () => {
       { id: '1' }, { id: '2' }, { id: '3' }, { id: '4' }, { id: '5' },
     ]);
     expect(fetchPage).toHaveBeenCalledTimes(3);
+  });
+
+  it('creates the same contact work candidate for every explicitly responsible user', () => {
+    const responsibleUserIds = new Set(['primary-user', 'collaborator-user']);
+
+    expect(isContactWorkItemEligibleForAssignee({
+      assigneeUserId: 'primary-user', responsibleUserIds, hasAppointmentSignal: false, hasOwnerAccountSignal: false,
+    })).toBe(true);
+    expect(isContactWorkItemEligibleForAssignee({
+      assigneeUserId: 'collaborator-user', responsibleUserIds, hasAppointmentSignal: false, hasOwnerAccountSignal: false,
+    })).toBe(true);
+    expect(isContactWorkItemEligibleForAssignee({
+      assigneeUserId: 'unrelated-user', responsibleUserIds, hasAppointmentSignal: false, hasOwnerAccountSignal: true,
+    })).toBe(false);
+  });
+
+  it('keeps unassigned contact work with the nick owner instead of every shared nick user', () => {
+    const unassigned = new Set<string>();
+
+    expect(isContactWorkItemEligibleForAssignee({
+      assigneeUserId: 'nick-owner', responsibleUserIds: unassigned, hasAppointmentSignal: false, hasOwnerAccountSignal: true,
+    })).toBe(true);
+    expect(isContactWorkItemEligibleForAssignee({
+      assigneeUserId: 'nick-reader', responsibleUserIds: unassigned, hasAppointmentSignal: false, hasOwnerAccountSignal: false,
+    })).toBe(false);
   });
 
   it('keeps snoozed and completed items out of active scopes', () => {

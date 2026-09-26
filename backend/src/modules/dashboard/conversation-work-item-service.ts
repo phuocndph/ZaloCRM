@@ -45,7 +45,7 @@ type Signal = {
 
 type ContactBucket = {
   contactId: string;
-  assignedUserId: string | null;
+  responsibleUserIds: Set<string>;
   contactName: string;
   contactAvatar: string | null;
   signals: Signal[];
@@ -120,7 +120,7 @@ function bucketFor(map: Map<string, ContactBucket>, contact: any) {
   if (!bucket) {
     bucket = {
       contactId: contact.id,
-      assignedUserId: contact.assignedUserId ?? null,
+      responsibleUserIds: new Set<string>(),
       contactName: normalizeText(contact.crmName || contact.fullName || 'Khách hàng', 180),
       contactAvatar: contact.avatarUrl ?? null,
       signals: [],
@@ -130,7 +130,25 @@ function bucketFor(map: Map<string, ContactBucket>, contact: any) {
     };
     map.set(contact.id, bucket);
   }
+  if (contact.assignedUserId) bucket.responsibleUserIds.add(contact.assignedUserId);
+  for (const access of Array.isArray(contact.contactAccess) ? contact.contactAccess : []) {
+    if (access?.userId) bucket.responsibleUserIds.add(access.userId);
+  }
   return bucket;
+}
+
+export function isContactWorkItemEligibleForAssignee(input: {
+  assigneeUserId: string;
+  responsibleUserIds: ReadonlySet<string>;
+  hasAppointmentSignal: boolean;
+  hasOwnerAccountSignal: boolean;
+}) {
+  if (input.hasAppointmentSignal) return true;
+  if (input.responsibleUserIds.has(input.assigneeUserId)) return true;
+  // Contacts that have not been assigned to anyone still go only to the
+  // owner of the nick that produced the signal. Nick access alone is not
+  // enough to duplicate unassigned work across every shared user.
+  return input.responsibleUserIds.size === 0 && input.hasOwnerAccountSignal;
 }
 
 function addSignal(bucket: ContactBucket, signal: Signal, nickName?: string | null) {
@@ -639,6 +657,7 @@ export async function reconcileConversationWorkItems(input: {
     contact: {
       select: {
         id: true, fullName: true, crmName: true, avatarUrl: true, priorityScore: true, status: true, assignedUserId: true,
+        contactAccess: { select: { userId: true } },
         statusRef: { select: { isTerminal: true } },
       },
     },
@@ -715,7 +734,12 @@ export async function reconcileConversationWorkItems(input: {
       where: { orgId: input.orgId, assignedUserId: input.assigneeUserId, status: 'scheduled', appointmentDate: { lt: appointmentWindowEnd(now, timezone) } },
       select: {
         id: true, contactId: true, appointmentDate: true, appointmentTime: true, title: true, notes: true, type: true, status: true,
-        contact: { select: { id: true, fullName: true, crmName: true, avatarUrl: true } },
+        contact: {
+          select: {
+            id: true, fullName: true, crmName: true, avatarUrl: true, assignedUserId: true,
+            contactAccess: { select: { userId: true } },
+          },
+        },
       },
       orderBy: [{ appointmentDate: 'asc' }, { id: 'asc' }],
       take: 200,
@@ -836,7 +860,10 @@ export async function reconcileConversationWorkItems(input: {
   const followupContacts = followupContactIds.length
     ? await prisma.contact.findMany({
         where: { orgId: input.orgId, id: { in: followupContactIds } },
-        select: { id: true, fullName: true, crmName: true, avatarUrl: true, assignedUserId: true },
+        select: {
+          id: true, fullName: true, crmName: true, avatarUrl: true, assignedUserId: true,
+          contactAccess: { select: { userId: true } },
+        },
       })
     : [];
   const followupContactMap = new Map(followupContacts.map((contact) => [contact.id, contact]));
@@ -850,11 +877,12 @@ export async function reconcileConversationWorkItems(input: {
 
   const candidates = [...buckets.values()]
     .filter((bucket) => bucket.signals.length)
-    // Explicit CRM ownership wins over nick access. Only unassigned contacts
-    // are routed to the account owner/access holder that is reconciling them.
-    .filter((bucket) => bucket.signals.some((signal) => signal.kind === 'appointment')
-      || bucket.assignedUserId === input.assigneeUserId
-      || (bucket.assignedUserId == null && bucket.signals.some((signal) => !!signal.zaloAccountId && ownerAccountIds.has(signal.zaloAccountId))))
+    .filter((bucket) => isContactWorkItemEligibleForAssignee({
+      assigneeUserId: input.assigneeUserId,
+      responsibleUserIds: bucket.responsibleUserIds,
+      hasAppointmentSignal: bucket.signals.some((signal) => signal.kind === 'appointment'),
+      hasOwnerAccountSignal: bucket.signals.some((signal) => !!signal.zaloAccountId && ownerAccountIds.has(signal.zaloAccountId)),
+    }))
     .map((bucket) => buildCandidate(bucket, input.orgId, input.assigneeUserId));
   const groupCandidates = monitoredGroups
     .map((conversation) => buildGroupCandidate(conversation, input.orgId, input.assigneeUserId))
