@@ -104,8 +104,8 @@ export function useConversationWorkItems() {
   function startRealtime() {
     if (socket) return;
     socket = createAppSocket();
-    const refreshOnActivity = (payload: { conversationId?: string; itemId?: string } = {}) => {
-      if (payload.conversationId || payload.itemId) scheduleRefresh();
+    const refreshOnActivity = (payload: { conversationId?: string; itemId?: string; reason?: string } = {}) => {
+      if (payload.conversationId || payload.itemId || payload.reason === 'responsibility_changed') scheduleRefresh();
     };
     socket.on('chat:message', refreshOnActivity);
     socket.on('work-items:updated', refreshOnActivity);

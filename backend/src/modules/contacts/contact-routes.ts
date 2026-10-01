@@ -28,6 +28,7 @@ import { runAutomationRules } from '../../shared/ee-registry/automation.js';
 import { normalizePhone } from '../../shared/utils/phone.js';
 import { logActivity, computeDiff } from '../activity/activity-logger.js';
 import { emitWebhook } from '../api/webhook-service.js';
+import { invalidateConversationWorkItemsForUsers } from '../dashboard/conversation-work-item-service.js';
 
 type QueryParams = Record<string, string>;
 
@@ -527,6 +528,15 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
       const user = request.user!;
       const body = request.body as Record<string, any>;
 
+      const requestedAssignedUserId = body.assignedUserId === '' ? null : body.assignedUserId;
+      if (requestedAssignedUserId !== undefined && requestedAssignedUserId !== null) {
+        const assignedUser = await prisma.user.findFirst({
+          where: { id: requestedAssignedUserId, orgId: user.orgId, isActive: true },
+          select: { id: true },
+        });
+        if (!assignedUser) return reply.status(400).send({ error: 'assigned_user_invalid' });
+      }
+
       // Hồ sơ KH tổng (form Thêm KH style Smax 2026-06-03): demographic + multi-phone.
       const createBirthYear = (() => {
         if (body.birthYear === undefined || body.birthYear === null || body.birthYear === '') return undefined;
@@ -553,7 +563,7 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
           sourceDate: body.sourceDate ? new Date(body.sourceDate) : undefined,
           status: body.status ?? 'new',
           nextAppointment: body.nextAppointment ? new Date(body.nextAppointment) : undefined,
-          assignedUserId: body.assignedUserId,
+          assignedUserId: requestedAssignedUserId,
           notes: body.notes,
           tags: body.tags ?? [],
           metadata: body.metadata ?? {},
@@ -1005,6 +1015,21 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
       });
       if (!existing) return reply.status(404).send({ error: 'Contact not found' });
 
+      const assignmentProvided = Object.prototype.hasOwnProperty.call(body, 'assignedUserId');
+      const requestedAssignedUserId = assignmentProvided
+        ? (body.assignedUserId === '' ? null : body.assignedUserId)
+        : existing.assignedUserId;
+      if (assignmentProvided && requestedAssignedUserId !== null && typeof requestedAssignedUserId !== 'string') {
+        return reply.status(400).send({ error: 'assigned_user_invalid' });
+      }
+      if (assignmentProvided && requestedAssignedUserId !== null && requestedAssignedUserId !== existing.assignedUserId) {
+        const assignedUser = await prisma.user.findFirst({
+          where: { id: requestedAssignedUserId, orgId: user.orgId, isActive: true },
+          select: { id: true },
+        });
+        if (!assignedUser) return reply.status(400).send({ error: 'assigned_user_invalid' });
+      }
+
       // M55 2026-05-30: Gate edit theo ContactAccess (RBAC hole trước đây — ai
       // trong org cũng PUT được). Bây giờ chỉ owner/admin + primary/collaborator
       // mới sửa được. Sale khác → 403 "KH không thuộc danh sách chăm của bạn".
@@ -1069,7 +1094,7 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
         sourceDate: body.sourceDate ? new Date(body.sourceDate) : undefined,
         status: body.status,
         nextAppointment: body.nextAppointment ? new Date(body.nextAppointment) : undefined,
-        assignedUserId: body.assignedUserId,
+        ...(assignmentProvided ? { assignedUserId: requestedAssignedUserId } : {}),
         notes: body.notes,
         tags: body.tags,
         metadata: body.metadata,
@@ -1102,15 +1127,46 @@ export async function contactRoutes(app: FastifyInstance): Promise<void> {
         updateData.firstContactDate = body.firstContactDate ? new Date(body.firstContactDate) : null;
       }
 
-      const updated = await prisma.contact.update({
-        where: { id },
-        data: updateData,
-        include: {
-          assignedUser: { select: { id: true, fullName: true, email: true } },
-          appointments: { orderBy: { appointmentDate: 'desc' }, take: 10 },
-          _count: { select: { conversations: true } },
-        },
+      const updated = await prisma.$transaction(async (tx) => {
+        const next = await tx.contact.update({
+          where: { id },
+          data: updateData,
+          include: {
+            assignedUser: { select: { id: true, fullName: true, email: true } },
+            appointments: { orderBy: { appointmentDate: 'desc' }, take: 10 },
+            _count: { select: { conversations: true } },
+          },
+        });
+        if (assignmentProvided && existing.assignedUserId !== requestedAssignedUserId) {
+          if (requestedAssignedUserId) {
+            await tx.contactAccess.upsert({
+              where: { contactId_userId: { contactId: id, userId: requestedAssignedUserId } },
+              update: { role: 'primary' },
+              create: {
+                orgId: user.orgId,
+                contactId: id,
+                userId: requestedAssignedUserId,
+                role: 'primary',
+                source: 'auto_from_assignment',
+              },
+            });
+          }
+          if (existing.assignedUserId) {
+            await tx.contactAccess.updateMany({
+              where: { contactId: id, userId: existing.assignedUserId, role: 'primary' },
+              data: { role: 'collaborator' },
+            });
+          }
+        }
+        return next;
       });
+
+      if (assignmentProvided && existing.assignedUserId !== requestedAssignedUserId) {
+        invalidateConversationWorkItemsForUsers({
+          orgId: user.orgId,
+          userIds: [existing.assignedUserId, requestedAssignedUserId].filter((value): value is string => !!value),
+        });
+      }
 
       if (existing.status !== updated.status) {
         const org = await prisma.organization.findUnique({

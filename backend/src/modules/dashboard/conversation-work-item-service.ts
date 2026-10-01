@@ -66,6 +66,21 @@ export function emitConversationWorkItemsUpdated(args: {
   });
 }
 
+export function invalidateConversationWorkItemsForUsers(args: {
+  orgId: string;
+  userIds: Iterable<string>;
+}) {
+  const userIds = [...new Set([...args.userIds].filter(Boolean))];
+  for (const userId of userIds) invalidateReconciliationCache(args.orgId, userId);
+  if (userIds.length > 0) {
+    getIo()?.to(`org:${args.orgId}`).emit('work-items:updated', {
+      reason: 'responsibility_changed',
+      userIds,
+      at: new Date().toISOString(),
+    });
+  }
+}
+
 const ACTIVE_STAGES = new Set(['qualified', 'quoted', 'negotiating', 'payment_pending']);
 const PRIORITY_ORDER = { critical: 4, high: 3, normal: 2, low: 1 } as const;
 const ACTION_LABELS: Record<string, string> = {

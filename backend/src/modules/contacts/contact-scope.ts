@@ -17,6 +17,7 @@
  * Lưu ý: org-admin trả `isOrgAdmin=true` + `accessibleContactIds=null` (caller bỏ filter).
  */
 import { prisma } from '../../shared/database/prisma-client.js';
+import { invalidateConversationWorkItemsForUsers } from '../dashboard/conversation-work-item-service.js';
 
 export interface ContactScope {
   /** True nếu user có quyền view toàn org (skip filter) */
@@ -165,6 +166,7 @@ export async function ensureContactCollaborator(args: {
         source: 'auto_from_friend',
       },
     });
+    invalidateConversationWorkItemsForUsers({ orgId: args.orgId, userIds: [account.ownerUserId] });
   } catch {
     // best-effort, nuốt lỗi
   }
@@ -202,6 +204,8 @@ export async function attachContactCollaboratorByUser(args: {
         source: args.source,
       },
     });
+
+    invalidateConversationWorkItemsForUsers({ orgId: args.orgId, userIds: [args.userId] });
 
     // M57 v2 2026-06-01: trigger recompute auto-tag "Cùng chăm" sau khi
     // ContactAccess count có thể đổi. Fire-and-forget, không block flow.
