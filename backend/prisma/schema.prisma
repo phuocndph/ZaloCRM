@@ -990,6 +990,14 @@ model Message {
   //   + M11 (2026-06-02): metadata.sender = { kind, name, detail?, sequenceId?, stepIdx? }
   isLocal             Boolean   @default(false) @map("is_local")
   metadata            Json?
+  // Durable inbound media mirror state. CDN URLs from Zalo are short-lived;
+  // the worker retries until every media URL is copied to our storage.
+  mediaMirrorState       String?   @map("media_mirror_state")
+  mediaMirrorAttempts    Int       @default(0) @map("media_mirror_attempts")
+  mediaMirrorNextAttemptAt DateTime? @map("media_mirror_next_attempt_at")
+  mediaMirrorLockedAt    DateTime? @map("media_mirror_locked_at")
+  mediaMirrorLastError   String?   @map("media_mirror_last_error")
+  mediaMirroredAt        DateTime? @map("media_mirrored_at")
   // ── Mention metadata Anh chốt 2026-06-03 ──
   // Persist Zalo SDK TGroupMessage.mentions để FE render chính xác theo
   // pos+len thay vì đoán regex. Chỉ group message có mentions; user 1-1 null.
@@ -1042,6 +1050,7 @@ model Message {
   @@index([automationTaskId, sentAt])
   @@index([sentVia, conversationId])
   @@index([deliveryState, deliveryLeaseUntil])
+  @@index([mediaMirrorState, mediaMirrorNextAttemptAt])
   @@map("messages")
 }
 

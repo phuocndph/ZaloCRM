@@ -22,7 +22,7 @@ import { syncReminderFromMessage } from '../contacts/reminder-sync.js';
 import { uploadBuffer, keyFromPublicUrl, type UploadResult } from '../../shared/storage/minio-client.js';
 import { recordMessageStorageReferences } from '../../shared/storage/storage-ledger.js';
 import { compressImage } from '../media/media-service.js';
-import { config } from '../../config/index.js';
+import { reconcileMessageStorage } from '../media/storage-reconciliation.js';
 import { inferAutomaticGroupProfile } from '../zalo/group-monitoring-policy.js';
 import { isZaloFriendAcceptedNotification } from '../zalo/zalo-friend-accepted-notification.js';
 // Open-core: customer-reply care-session reaction moved to extension engine
@@ -112,7 +112,7 @@ function inferInitialGroupProfile(msg: IncomingMessage) {
 // Inbound image/video/voice/file/gif: tin từ Zalo có URL CDN expire ngắn.
 // Mirror sang storage để bubble preview luôn-luôn-hiển-thị, không phụ thuộc CDN.
 
-const MIRROR_CONTENT_TYPES = new Set(['image', 'video', 'file', 'gif', 'voice', 'audio']);
+export const MIRROR_CONTENT_TYPES = new Set(['image', 'video', 'file', 'gif', 'voice', 'audio']);
 const MEDIA_URL_FIELDS = ['hdUrl', 'href', 'normalUrl', 'fileUrl', 'url', 'thumbUrl', 'thumb', 'thumbnail'] as const;
 
 function safeParseJsonObject(value: string): Record<string, unknown> | null {
@@ -139,6 +139,25 @@ export function isMirrorableUrl(value: unknown): value is string {
   return typeof value === 'string' &&
     /^https?:\/\//i.test(value) && // URL tương đối (/files/...) = của mình → không mirror
     !isLocalStorageUrl(value);
+}
+
+/** Return only CDN URLs in the media fields that need durable mirroring. */
+export function findMirrorableMediaUrls(content: string, contentType: string): string[] {
+  if (!MIRROR_CONTENT_TYPES.has(contentType) || !content) return [];
+  const urls = new Set<string>();
+  if (isMirrorableUrl(content)) urls.add(content);
+  const parsed = safeParseJsonObject(content);
+  if (!parsed) return [...urls];
+  for (const field of MEDIA_URL_FIELDS) {
+    const value = parsed[field];
+    if (isMirrorableUrl(value)) urls.add(value);
+  }
+  const params = typeof parsed.params === 'string' ? safeParseJsonObject(parsed.params) : null;
+  for (const field of ['rawUrl', 'hd'] as const) {
+    const value = params?.[field];
+    if (isMirrorableUrl(value)) urls.add(value);
+  }
+  return [...urls];
 }
 
 function fileNameFromUrl(url: string, contentType: string, mimeType: string): string {
@@ -299,6 +318,121 @@ async function mirrorInboundMediaContent(
   return JSON.stringify(parsed);
 }
 
+const MIRROR_LOCK_MS = 10 * 60_000;
+const MIRROR_RETRY_BASE_MS = 15_000;
+const MIRROR_RETRY_MAX_MS = 24 * 60 * 60_000;
+
+function nextMirrorAttempt(attempts: number): Date {
+  const delay = Math.min(MIRROR_RETRY_MAX_MS, MIRROR_RETRY_BASE_MS * (2 ** Math.min(Math.max(attempts - 1, 0), 10)));
+  return new Date(Date.now() + delay);
+}
+
+/**
+ * Claim and process one persisted media message. The claim/state lives in
+ * PostgreSQL, so a restart cannot lose a mirror that was waiting or in-flight.
+ */
+export async function processPersistedMessageMediaMirror(messageId: string): Promise<boolean> {
+  const now = new Date();
+  const staleBefore = new Date(now.getTime() - MIRROR_LOCK_MS);
+  const claimed = await prisma.message.updateMany({
+    where: {
+      id: messageId,
+      contentType: { in: [...MIRROR_CONTENT_TYPES] },
+      AND: [
+        { OR: [{ mediaMirrorState: null }, { mediaMirrorState: { in: ['pending', 'retrying', 'missing'] } }] },
+        { OR: [{ mediaMirrorNextAttemptAt: null }, { mediaMirrorNextAttemptAt: { lte: now } }] },
+        { OR: [{ mediaMirrorLockedAt: null }, { mediaMirrorLockedAt: { lt: staleBefore } }] },
+      ],
+    },
+    data: {
+      mediaMirrorState: 'processing',
+      mediaMirrorLockedAt: now,
+      mediaMirrorAttempts: { increment: 1 },
+    },
+  });
+  if (claimed.count === 0) return false;
+
+  const message = await prisma.message.findUnique({
+    where: { id: messageId },
+    select: {
+      id: true, content: true, contentType: true, sentAt: true,
+      conversationId: true,
+      conversation: { select: { orgId: true, zaloAccountId: true } },
+      mediaMirrorAttempts: true,
+    },
+  });
+  if (!message) return false;
+
+  try {
+    const originalContent = message.content || '';
+    const uploads: Array<{ upload: UploadResult; purpose: string }> = [];
+    const mirroredContent = await mirrorInboundMediaContent({
+      content: originalContent,
+      contentType: message.contentType,
+    } as IncomingMessage, uploads);
+
+    if (mirroredContent !== originalContent) {
+      await prisma.message.update({ where: { id: message.id }, data: { content: mirroredContent } });
+    }
+    if (uploads.length) {
+      await recordMessageStorageReferences({
+        orgId: message.conversation.orgId,
+        zaloAccountId: message.conversation.zaloAccountId,
+        conversationId: message.conversationId,
+        messageId: message.id,
+        uploads,
+        createdAt: message.sentAt,
+      });
+    }
+
+    const reconciled = await reconcileMessageStorage({
+      orgId: message.conversation.orgId,
+      messageId: message.id,
+      content: mirroredContent,
+      contentType: message.contentType,
+      sentAt: message.sentAt,
+      conversationId: message.conversationId,
+      zaloAccountId: message.conversation.zaloAccountId,
+    });
+    const remaining = findMirrorableMediaUrls(mirroredContent, message.contentType);
+    const missing = reconciled.missing > 0;
+    const complete = remaining.length === 0 && !missing;
+    await prisma.message.update({
+      where: { id: message.id },
+      data: complete
+        ? {
+            mediaMirrorState: 'completed', mediaMirrorNextAttemptAt: null,
+            mediaMirrorLockedAt: null, mediaMirrorLastError: null, mediaMirroredAt: new Date(),
+          }
+        : {
+            mediaMirrorState: missing ? 'missing' : 'retrying',
+            mediaMirrorNextAttemptAt: nextMirrorAttempt(message.mediaMirrorAttempts),
+            mediaMirrorLockedAt: null,
+            mediaMirrorLastError: missing
+              ? `Không tìm thấy ${reconciled.missing} object nội bộ sau khi mirror.`
+              : `Còn ${remaining.length} URL CDN chưa mirror được.`,
+          },
+    });
+    return complete;
+  } catch (err) {
+    await prisma.message.update({
+      where: { id: message.id },
+      data: {
+        mediaMirrorState: 'retrying',
+        mediaMirrorNextAttemptAt: nextMirrorAttempt(message.mediaMirrorAttempts),
+        mediaMirrorLockedAt: null,
+        mediaMirrorLastError: String((err as Error)?.message || err).slice(0, 1000),
+      },
+    }).catch(() => {});
+    logger.warn('[message-handler] durable media mirror attempt failed', {
+      messageId: message.id,
+      attempt: message.mediaMirrorAttempts,
+      err: (err as Error)?.message || String(err),
+    });
+    return false;
+  }
+}
+
 /**
  * Keep the Zalo CDN URL on the realtime path, then mirror it after the message
  * is visible. A slow CDN or image compression must never delay a chat event.
@@ -314,25 +448,17 @@ function mirrorInboundMediaInBackground(args: {
   if (!MIRROR_CONTENT_TYPES.has(args.msg.contentType) || !args.msg.content) return;
 
   void (async () => {
-    const uploads: Array<{ upload: UploadResult; purpose: string }> = [];
     try {
-      const mirroredContent = await mirrorInboundMediaContent(args.msg, uploads);
-      if (mirroredContent !== args.msg.content) {
-        await prisma.message.update({
-          where: { id: args.messageId },
-          data: { content: mirroredContent },
-        });
-      }
-      if (uploads.length) {
-        await recordMessageStorageReferences({
-          orgId: args.orgId,
-          zaloAccountId: args.accountId,
-          conversationId: args.conversationId,
-          messageId: args.messageId,
-          uploads,
-          createdAt: args.createdAt,
-        });
-      }
+      await prisma.message.updateMany({
+        where: { id: args.messageId },
+        data: {
+          mediaMirrorState: 'pending',
+          mediaMirrorNextAttemptAt: new Date(),
+          mediaMirrorLockedAt: null,
+          mediaMirrorLastError: null,
+        },
+      });
+      await processPersistedMessageMediaMirror(args.messageId);
     } catch (err) {
       logger.warn('[message-handler] background inbound media mirror failed', {
         messageId: args.messageId,
@@ -426,6 +552,10 @@ export async function handleIncomingMessage(
               zaloMsgIdNum: dupNum,
               content: msg.content || '',
               attachments: msg.attachments ?? [],
+              ...(MIRROR_CONTENT_TYPES.has(msg.contentType) && {
+                mediaMirrorState: 'pending',
+                mediaMirrorNextAttemptAt: new Date(),
+              }),
               ...(msg.cliMsgId ? { zaloCliMsgId: msg.cliMsgId } : {}),
               ...(msg.albumKey ? { albumKey: msg.albumKey, albumIndex: msg.albumIndex ?? 0, albumTotal: msg.albumTotal ?? null } : {}),
               deliveryState: 'accepted',
@@ -603,6 +733,10 @@ export async function handleIncomingMessage(
           content: storedContent || '',
           contentType: msg.contentType || 'text',
           attachments: msg.attachments ?? [],
+          ...(MIRROR_CONTENT_TYPES.has(msg.contentType) && {
+            mediaMirrorState: 'pending',
+            mediaMirrorNextAttemptAt: new Date(),
+          }),
           quote: msg.quote ?? undefined,
           albumKey: msg.albumKey ?? null,
           albumIndex: msg.albumIndex ?? null,

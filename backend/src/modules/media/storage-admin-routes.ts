@@ -146,10 +146,11 @@ async function cleanupProgress(run: any) {
   const grouped = await prisma.storageCleanupItem.groupBy({ by: ['status'], where: { runId: run.id }, _count: { _all: true } });
   const counts = Object.fromEntries(grouped.map((row) => [row.status, row._count._all])) as Record<string, number>;
   const total = Object.values(counts).reduce((sum, value) => sum + value, 0);
-  const processed = (counts.deleted || 0) + (counts.failed || 0);
+  const processed = (counts.deleted || 0) + (counts.failed || 0) + (counts.protected || 0);
   return {
     ...formatRun(run), totalItems: total, processedItems: processed, pendingItems: counts.pending || 0,
     processingItems: (counts.processing || 0) + (counts.deleting || 0), deletedItems: counts.deleted || 0,
+    protectedItems: counts.protected || 0,
     percent: total ? Math.round(processed / total * 100) : 100,
     workerActive: cleanupWorkers.has(run.id),
   };
@@ -179,13 +180,32 @@ async function processCleanupBatch(runId: string, orgId: string, retryFailed = f
       // metadata for a file that has already been physically removed.
       const prepared = await prisma.$transaction(async (tx) => {
         const locked = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`SELECT id FROM storage_objects WHERE id=${item.objectId} FOR UPDATE`);
-        if (!locked.length) return { objectMissing: true, needsPhysicalDelete: false, links: 0 };
+        if (!locked.length) return { protected: false, objectMissing: true, needsPhysicalDelete: false, links: 0 };
+        // A chat media object is durable history. Even an old cleanup snapshot
+        // must not remove references for a message still visible in chat.
+        const activeMessage = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          SELECT m.id
+          FROM storage_object_references r
+          JOIN messages m ON m.id=r.message_id
+          WHERE r.object_id=${item.objectId}
+            AND r.source='chat_message'
+            AND m.is_deleted=false
+            AND m.hidden_at IS NULL
+            AND m.content_type IN ('image','video','file','gif','voice','audio')
+          LIMIT 1`);
+        if (activeMessage.length > 0) {
+          return { protected: true, objectMissing: false, needsPhysicalDelete: false, links: 0 };
+        }
         const removed = await tx.storageObjectReference.deleteMany({ where: { id: { in: item.referenceIds }, orgId, source: 'chat_message' } });
         const remaining = await tx.storageObjectReference.count({ where: { objectId: item.objectId } });
-        if (remaining > 0) return { objectMissing: false, needsPhysicalDelete: false, links: removed.count };
+        if (remaining > 0) return { protected: false, objectMissing: false, needsPhysicalDelete: false, links: removed.count };
         await tx.storageCleanupItem.update({ where: { id: item.id }, data: { status: 'deleting', error: null } });
-        return { objectMissing: false, needsPhysicalDelete: true, links: removed.count };
+        return { protected: false, objectMissing: false, needsPhysicalDelete: true, links: removed.count };
       }, { maxWait: 10_000, timeout: 60_000 });
+      if (prepared.protected) {
+        await prisma.storageCleanupItem.update({ where: { id: item.id }, data: { status: 'protected', error: 'Chat media is retained while its message remains active.' } });
+        continue;
+      }
       linksRemoved += prepared.links;
       if (!prepared.needsPhysicalDelete) {
         await prisma.storageCleanupItem.update({ where: { id: item.id }, data: { status: 'deleted', error: null } });
@@ -479,6 +499,16 @@ export async function storageAdminRoutes(app: FastifyInstance) {
                  ARRAY_AGG(r.id ORDER BY r.id) AS reference_ids
           FROM storage_object_references r JOIN storage_objects o ON o.id=r.object_id
           WHERE r.org_id=${principal.orgId} AND r.source='chat_message' AND r.created_at < ${before}
+            AND NOT EXISTS (
+              SELECT 1
+              FROM storage_object_references protected_ref
+              JOIN messages protected_message ON protected_message.id=protected_ref.message_id
+              WHERE protected_ref.object_id=o.id
+                AND protected_ref.source='chat_message'
+                AND protected_message.is_deleted=false
+                AND protected_message.hidden_at IS NULL
+                AND protected_message.content_type IN ('image','video','file','gif','voice','audio')
+            )
             AND o.file_type IN (${kindSql(kinds)}) ${targetCondition}
           GROUP BY o.id,o.object_key,o.storage_driver,o.size_bytes,o.file_type
         )

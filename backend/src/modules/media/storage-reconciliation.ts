@@ -31,6 +31,72 @@ export function extractStorageKeys(content: string): string[] {
   return [...values].sort();
 }
 
+/**
+ * Reconcile one chat message without treating a single existing reference as
+ * proof that every media URL in the message is tracked. Older messages can
+ * contain multiple images where only the first upload was recorded.
+ */
+export async function reconcileMessageStorage(args: {
+  orgId: string;
+  messageId: string;
+  content: string;
+  contentType: string;
+  sentAt: Date;
+  conversationId: string;
+  zaloAccountId: string;
+}) {
+  const keys = extractStorageKeys(args.content);
+  if (keys.length === 0) return { references: 0, missing: 0 };
+
+  const tracked = await prisma.storageObjectReference.findMany({
+    where: { orgId: args.orgId, messageId: args.messageId, source: 'chat_message' },
+    select: { object: { select: { storageDriver: true, objectKey: true } } },
+  });
+  const trackedKeys = new Set(tracked.map((row) => `${row.object.storageDriver}:${row.object.objectKey}`));
+  let references = 0;
+  let missing = 0;
+
+  for (const key of keys) {
+    // Prefer the driver already recorded for legacy objects. Otherwise use the
+    // currently configured driver for newly mirrored content.
+    const known = await prisma.storageObject.findFirst({
+      where: { objectKey: key },
+      select: { storageDriver: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    const storageDriver = known?.storageDriver === 'r2' ? 'r2' : known?.storageDriver === 'local' ? 'local' : config.storageDriver;
+    if (trackedKeys.has(`${storageDriver}:${key}`)) continue;
+
+    const metadata = await statObjectFrom(storageDriver, key);
+    if (!metadata) {
+      missing += 1;
+      continue;
+    }
+    const match = key.match(/([a-f0-9]{64})(?:\.[^/]*)?$/i);
+    const contentHash = match?.[1]?.toLowerCase() || createHash('sha256').update(key).digest('hex');
+    const mimeType = metadata.mimeType && metadata.mimeType !== 'application/octet-stream'
+      ? metadata.mimeType : fallbackMime(args.contentType, key);
+    await recordStorageReference({
+      upload: {
+        key, url: publicUrlFrom(storageDriver, key), size: metadata.size,
+        mimeType, contentHash, deduped: true,
+      },
+      orgId: args.orgId,
+      referenceKey: `message:${args.messageId}:reconciled:${createHash('sha256').update(`${storageDriver}:${key}`).digest('hex').slice(0, 32)}`,
+      source: 'chat_message',
+      purpose: 'reconciled',
+      zaloAccountId: args.zaloAccountId,
+      conversationId: args.conversationId,
+      messageId: args.messageId,
+      createdAt: args.sentAt,
+      storageDriver,
+    });
+    references += 1;
+  }
+
+  return { references, missing };
+}
+
 function fallbackMime(contentType: string, key: string) {
   const lower = key.toLowerCase();
   if (contentType === 'image' || contentType === 'gif') {
@@ -60,41 +126,19 @@ export async function reconcileChatStorage(args: { orgId: string; cursor?: strin
   let references = 0;
   let missing = 0;
   let skipped = 0;
-  const statCache = new Map<string, Awaited<ReturnType<typeof statObjectFrom>>>();
   for (const message of messages) {
-    const alreadyTracked = await prisma.storageObjectReference.findFirst({
-      where: { orgId: args.orgId, messageId: message.id, source: 'chat_message' }, select: { id: true },
+    const result = await reconcileMessageStorage({
+      orgId: args.orgId,
+      messageId: message.id,
+      content: message.content || '',
+      contentType: message.contentType,
+      sentAt: message.sentAt,
+      conversationId: message.conversationId,
+      zaloAccountId: message.conversation.zaloAccountId,
     });
-    if (alreadyTracked) { skipped += 1; continue; }
-    const keys = extractStorageKeys(message.content || '');
-    let index = 0;
-    for (const key of keys) {
-      let metadata = statCache.get(key);
-      if (metadata === undefined) {
-        metadata = await statObjectFrom(config.storageDriver, key);
-        statCache.set(key, metadata);
-      }
-      if (!metadata) { missing += 1; continue; }
-      const match = key.match(/([a-f0-9]{64})(?:\.[^/]*)?$/i);
-      const contentHash = match?.[1]?.toLowerCase() || createHash('sha256').update(key).digest('hex');
-      const mimeType = metadata.mimeType && metadata.mimeType !== 'application/octet-stream'
-        ? metadata.mimeType : fallbackMime(message.contentType, key);
-      await recordStorageReference({
-        upload: {
-          key, url: publicUrlFrom(config.storageDriver, key), size: metadata.size,
-          mimeType, contentHash, deduped: true,
-        },
-        orgId: args.orgId,
-        referenceKey: `message:${message.id}:reconciled:${index++}`,
-        source: 'chat_message',
-        purpose: 'reconciled',
-        zaloAccountId: message.conversation.zaloAccountId,
-        conversationId: message.conversationId,
-        messageId: message.id,
-        createdAt: message.sentAt,
-      });
-      references += 1;
-    }
+    references += result.references;
+    missing += result.missing;
+    if (result.references === 0 && result.missing === 0) skipped += 1;
   }
 
   return {

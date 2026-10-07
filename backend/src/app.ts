@@ -100,6 +100,7 @@ import {
   stopConversationAnalysisWorker,
 } from './modules/ai/conversation-analysis-queue.js';
 import { chatOperationsRoutes, registerChatSocketHandlers } from './modules/chat/chat-operations-routes.js';
+import { startChatMediaMirrorWorker, stopChatMediaMirrorWorker } from './modules/chat/chat-media-mirror-worker.js';
 import { groupRoutes } from './modules/zalo/group-routes.js';
 import { groupScanRoutes } from './modules/zalo/group-scan-routes.js';
 import { startGroupScanWorker, stopGroupScanWorker } from './modules/zalo/group-scan-queue.js';
@@ -591,6 +592,7 @@ async function bootstrap() {
       startMediaTrashGcCron();
       const { startChatUploadTempGcCron } = await import('./modules/chat/chat-upload-temp-gc-cron.js');
       startChatUploadTempGcCron();
+      startChatMediaMirrorWorker();
     }
     // Facebook Lead Ads workers (outbox dispatch, pull worker, form ingestion,
     // token refresh) → started by extension bundle (startExtensionJobs).
@@ -627,6 +629,7 @@ async function bootstrap() {
         await stopGroupScanWorker().catch((e) => logger.warn('[shutdown] stopGroupScanWorker lỗi:', e));
         await stopOutreachWorker().catch((e) => logger.warn('[shutdown] stopOutreachWorker lỗi:', e));
         await stopFollowupWorker().catch((e) => logger.warn('[shutdown] stopFollowupWorker lỗi:', e));
+        stopChatMediaMirrorWorker();
         stopConversationAnalysisBackfill();
         await stopConversationAnalysisWorker().catch((e) => logger.warn('[shutdown] stopConversationAnalysisWorker failed:', e));
         // Close Zalo listeners before Docker replaces the process. Credentials stay in DB.
