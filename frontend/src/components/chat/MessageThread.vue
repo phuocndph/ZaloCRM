@@ -533,6 +533,7 @@
               @contextmenu="onContextMenu($event, item.msg)"
               @preview-image="openMessageImageLightbox($event, item.msg)"
               @preview-video="onPreviewVideo"
+              @preview-file="onPreviewFile"
               @toggle-reaction="onToggleReaction(item.msg, $event)"
               @sender-click="onSenderClick(item.msg)"
               @callback="onMessageCallback(item.msg)"
@@ -942,6 +943,49 @@
       </div>
     </v-dialog>
 
+    <!-- Xem trước file: PDF đọc trực tiếp, XLSX dựng bảng từ sheet đầu tiên. -->
+    <v-dialog v-model="showFilePreview" max-width="1100" content-class="elevation-0">
+      <div class="file-preview-dialog">
+        <header class="file-preview-header">
+          <div class="file-preview-title" :title="previewFile?.name">{{ previewFile?.name }}</div>
+          <button type="button" class="file-preview-close" title="Đóng" @click="showFilePreview = false">×</button>
+        </header>
+        <div class="file-preview-body">
+          <div v-if="previewFile?.loading" class="file-preview-state">
+            <v-progress-circular indeterminate color="primary" size="34" />
+            <span>Đang tải bản xem trước...</span>
+          </div>
+          <iframe
+            v-else-if="previewFile?.kind === 'pdf' && previewFile.previewUrl"
+            :src="previewFile.previewUrl"
+            class="file-preview-frame"
+            title="Xem trước PDF"
+          />
+          <div v-else-if="previewFile?.kind === 'xlsx' && previewFile.rows?.length" class="xlsx-preview-wrap">
+            <table class="xlsx-preview-table">
+              <tbody>
+                <tr v-for="(row, rowIndex) in previewFile.rows" :key="rowIndex">
+                  <td v-for="(cell, cellIndex) in row" :key="`${rowIndex}-${cellIndex}`">{{ cell }}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <pre v-else-if="previewFile?.kind === 'text' && previewFile.text" class="text-preview">{{ previewFile.text }}</pre>
+          <div v-else class="file-preview-state">
+            <v-icon size="54" color="primary">mdi-file-document-outline</v-icon>
+            <strong>{{ previewFile?.error || 'Định dạng này chưa hỗ trợ xem trực tiếp trên trình duyệt.' }}</strong>
+            <span>Hãy tải tệp xuống để mở bằng Excel, Word, PowerPoint hoặc ứng dụng phù hợp.</span>
+          </div>
+        </div>
+        <footer class="file-preview-footer">
+          <span class="file-preview-hint">{{ previewFile?.kind === 'xlsx' ? 'Đang hiển thị sheet đầu tiên.' : '' }}</span>
+          <button type="button" class="file-preview-download" @click="downloadPreviewFile">
+            <DownloadIcon :size="16" :stroke-width="2" /> Tải xuống
+          </button>
+        </footer>
+      </div>
+    </v-dialog>
+
     <!-- Zalo user info dialog — click avatar/sender trong group → mở -->
     <ZaloUserInfoDialog
       v-model="userInfoDialog"
@@ -1306,6 +1350,93 @@ function onLightboxKey(e: KeyboardEvent): void {
 const previewVideoUrl = ref('');
 const previewVideoName = ref('');
 const showVideoPreview = computed({ get: () => !!previewVideoUrl.value, set: (v) => { if (!v) { previewVideoUrl.value = ''; previewVideoName.value = ''; } } });
+
+type DesktopFilePreview = {
+  url: string;
+  name: string;
+  kind: 'pdf' | 'xlsx' | 'text' | 'other';
+  loading: boolean;
+  previewUrl?: string;
+  text?: string;
+  rows?: string[][];
+  error?: string;
+};
+const previewFile = ref<DesktopFilePreview | null>(null);
+const showFilePreview = computed({
+  get: () => !!previewFile.value,
+  set: (value) => { if (!value) closeFilePreview(); },
+});
+const filePreviewObjectUrl = ref<string | null>(null);
+
+function fileExtension(nameOrUrl: string): string {
+  return (nameOrUrl.split('?')[0].match(/\.([A-Za-z0-9]{2,8})$/)?.[1] || '').toLowerCase();
+}
+
+function closeFilePreview() {
+  if (filePreviewObjectUrl.value) URL.revokeObjectURL(filePreviewObjectUrl.value);
+  filePreviewObjectUrl.value = null;
+  previewFile.value = null;
+}
+
+async function onPreviewFile(url: string, name: string) {
+  if (!url) return;
+  closeFilePreview();
+  const safeName = name || 'Tệp đính kèm';
+  const ext = fileExtension(safeName) || fileExtension(url);
+  const kind: DesktopFilePreview['kind'] = ext === 'pdf'
+    ? 'pdf'
+    : ext === 'xlsx'
+      ? 'xlsx'
+      : ['txt', 'csv'].includes(ext) ? 'text' : 'other';
+  previewFile.value = { url, name: safeName, kind, loading: kind !== 'other' };
+  if (kind === 'other') return;
+
+  try {
+    const endpoint = kind === 'xlsx' ? '/media/download' : '/media/preview';
+    const response = await api.get(endpoint, {
+      params: { url, name: safeName },
+      responseType: 'blob',
+      timeout: 120000,
+    });
+    if (!previewFile.value || previewFile.value.url !== url) return;
+    if (kind === 'pdf') {
+      const objectUrl = URL.createObjectURL(response.data as Blob);
+      filePreviewObjectUrl.value = objectUrl;
+      previewFile.value.previewUrl = objectUrl;
+    } else if (kind === 'text') {
+      previewFile.value.text = await (response.data as Blob).text();
+    } else {
+      const ExcelJS = (await import('exceljs')).default;
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(await (response.data as Blob).arrayBuffer());
+      const sheet = workbook.worksheets[0];
+      const rows: string[][] = [];
+      if (sheet) {
+        sheet.eachRow({ includeEmpty: true }, (row) => {
+          if (rows.length >= 200) return;
+          const values = Array.isArray(row.values) ? row.values.slice(1, 31) : [];
+          rows.push(values.map((value: unknown) => {
+            if (value && typeof value === 'object' && 'text' in value) return String((value as { text?: unknown }).text ?? '');
+            return value == null ? '' : String(value);
+          }));
+        });
+      }
+      previewFile.value.rows = rows;
+      if (!rows.length) previewFile.value.error = 'Tệp Excel không có dữ liệu để hiển thị.';
+    }
+  } catch (error) {
+    console.error('[file-preview] lỗi:', error);
+    if (previewFile.value?.url === url) {
+      previewFile.value.error = 'Không thể đọc bản xem trước. Bạn có thể tải tệp xuống để mở.';
+    }
+  } finally {
+    if (previewFile.value?.url === url) previewFile.value.loading = false;
+  }
+}
+
+function downloadPreviewFile() {
+  if (previewFile.value) downloadViaGateway(previewFile.value.url, previewFile.value.name);
+}
 
 // Mở modal video kèm TÊN tải (zaloMsgId.mp4 — khớp tên Zalo thật, do message-bubble tính).
 function onPreviewVideo(url: string, name?: string) {
@@ -2550,6 +2681,7 @@ function onPasteImage(files: File[]) { queueAttachments(files); }
 onBeforeUnmount(() => {
   attachmentPreviewUrls.forEach((url) => URL.revokeObjectURL(url));
   attachmentPreviewUrls.clear();
+  closeFilePreview();
 });
 function hasDraggedFiles(event: DragEvent): boolean {
   return Array.from(event.dataTransfer?.types || []).includes('Files');
@@ -4286,6 +4418,24 @@ onBeforeUnmount(() => messageResizeObserver?.disconnect());
   padding: 4px 10px; border-radius: 12px;
   white-space: nowrap;
 }
+.file-preview-dialog { display: flex; flex-direction: column; width: min(96vw, 1100px); height: min(86vh, 820px); overflow: hidden; background: #fff; border-radius: 10px; }
+.file-preview-header, .file-preview-footer { display: flex; align-items: center; gap: 12px; padding: 12px 16px; border-bottom: 1px solid #e5e7eb; }
+.file-preview-footer { justify-content: space-between; border-top: 1px solid #e5e7eb; border-bottom: 0; }
+.file-preview-title { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; color: #1f2937; }
+.file-preview-close { width: 30px; height: 30px; border: 0; border-radius: 6px; background: transparent; color: #6b7280; font-size: 24px; line-height: 1; cursor: pointer; }
+.file-preview-close:hover { background: #f3f4f6; color: #111827; }
+.file-preview-body { flex: 1; min-height: 0; overflow: auto; background: #f4f6f8; }
+.file-preview-frame { display: block; width: 100%; height: 100%; min-height: 560px; border: 0; background: #fff; }
+.file-preview-state { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; min-height: 280px; padding: 32px; text-align: center; color: #667085; }
+.file-preview-state strong { color: #344054; }
+.file-preview-hint { color: #667085; font-size: 12px; }
+.file-preview-download { display: inline-flex; align-items: center; gap: 7px; padding: 8px 13px; border: 0; border-radius: 6px; background: #1786be; color: #fff; font-weight: 600; cursor: pointer; }
+.file-preview-download:hover { background: #126d9a; }
+.xlsx-preview-wrap { min-width: 100%; padding: 18px; }
+.xlsx-preview-table { min-width: 100%; border-collapse: collapse; background: #fff; font-size: 13px; }
+.xlsx-preview-table td { max-width: 320px; padding: 8px 10px; border: 1px solid #d8dee6; white-space: pre-wrap; vertical-align: top; }
+.xlsx-preview-table tr:first-child td { background: #eef6fb; font-weight: 600; }
+.text-preview { min-height: 100%; margin: 0; padding: 20px; background: #fff; color: #1f2937; white-space: pre-wrap; font: 13px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .msg-divider::before,
 .msg-divider::after {
   content: ''; display: inline-block;

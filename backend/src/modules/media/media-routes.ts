@@ -57,6 +57,24 @@ const FILE_MAX = 1024 * 1024 * 1024;
 export const TRASH_RETENTION_DAYS = 30;
 const TRASH_EMPTY_BATCH = 500;
 
+function mediaMimeFromName(name: string): string {
+  const ext = extname(name.split('?')[0]).toLowerCase();
+  const mimeByExt: Record<string, string> = {
+    '.pdf': 'application/pdf',
+    '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp',
+    '.mp4': 'video/mp4', '.webm': 'video/webm',
+    '.txt': 'text/plain; charset=utf-8', '.csv': 'text/csv; charset=utf-8',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.xls': 'application/vnd.ms-excel',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.doc': 'application/msword',
+    '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    '.ppt': 'application/vnd.ms-powerpoint',
+    '.zip': 'application/zip', '.rar': 'application/vnd.rar', '.7z': 'application/x-7z-compressed',
+  };
+  return mimeByExt[ext] || 'application/octet-stream';
+}
+
 
 function classifyUpload(mime: string | undefined, filename: string | undefined): MediaKind | null {
   const normalizedMime = String(mime ?? '').toLowerCase().trim();
@@ -1073,20 +1091,8 @@ export async function mediaRoutes(app: FastifyInstance) {
       const buf = await getObjectBuffer(key);
       if (!buf) return reply.status(404).send({ error: 'Không tìm thấy tệp' });
 
-      const name = (q.name || key.split('/').pop() || '').toLowerCase();
-      const mimeByExt: Record<string, string> = {
-        '.pdf': 'application/pdf',
-        '.jpg': 'image/jpeg',
-        '.jpeg': 'image/jpeg',
-        '.png': 'image/png',
-        '.gif': 'image/gif',
-        '.webp': 'image/webp',
-        '.mp4': 'video/mp4',
-        '.webm': 'video/webm',
-        '.txt': 'text/plain; charset=utf-8',
-      };
-      const ext = Object.keys(mimeByExt).find((candidate) => name.endsWith(candidate));
-      const contentType = ext ? mimeByExt[ext] : 'application/octet-stream';
+      const name = q.name || key.split('/').pop() || '';
+      const contentType = mediaMimeFromName(name);
 
       return reply
         .header('Content-Disposition', 'inline')
@@ -1114,11 +1120,11 @@ export async function mediaRoutes(app: FastifyInstance) {
       if (!buf) return reply.status(404).send({ error: 'Không tìm thấy tệp' });
       // Tên tải về: name truyền lên (đã có đuôi) → fallback basename của key. Lọc ký tự cấm header.
       const rawName = (q.name && q.name.trim()) || decodeURIComponent(key.split('/').pop() || 'tep');
-      const safeName = rawName.replace(/["\r\n]/g, '').slice(0, 200);
+      const safeName = rawName.replace(/[\\/:*?"<>|\r\n]/g, '_').replace(/^\.+/, '').trim().slice(0, 200) || 'tep';
       // RFC5987 cho tên Unicode (tiếng Việt) — filename* để trình duyệt giữ dấu.
       reply
         .header('Content-Disposition', `attachment; filename="${safeName}"; filename*=UTF-8''${encodeURIComponent(safeName)}`)
-        .header('Content-Type', 'application/octet-stream')
+        .header('Content-Type', mediaMimeFromName(safeName))
         .header('Content-Length', String(buf.length))
         .header('Cache-Control', 'private, max-age=0');
       return reply.send(buf);

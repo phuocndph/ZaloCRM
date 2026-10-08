@@ -536,21 +536,31 @@ function getVideoUrl(msg: Message): string | null {
 
 function getFileInfo(msg: Message): { name: string; size: string; href: string } | null {
   if (!msg.content?.startsWith('{')) return null;
-  const fmtSize = (b: number) => b > 1048576 ? `${(b / 1048576).toFixed(1)} MB` : b > 0 ? `${Math.round(b / 1024)} KB` : '';
+  const fmtSize = (raw: unknown) => {
+    const b = typeof raw === 'number' ? raw : Number(raw || 0);
+    return b > 1048576 ? `${(b / 1048576).toFixed(1)} MB` : b > 0 ? `${Math.max(1, Math.round(b / 1024))} KB` : '';
+  };
   try {
     const p = JSON.parse(msg.content);
     const mime = typeof p.mime === 'string' ? p.mime : '';
     const isImgVid = mime.startsWith('image/') || mime.startsWith('video/');
+    const href = String(p.href || p.fileUrl || p.url || p.normalUrl || '').trim();
+    const params = typeof p.params === 'string' ? safeParse(p.params) : p.params;
+    const fileExt = String(params?.fileExt || '').replace(/^\./, '').toLowerCase();
+    const urlName = href.split('?')[0].split('/').pop() || '';
+    const rawName = String(p.name || p.fileName || p.title || urlName || '').trim();
+    const name = rawName
+      ? (fileExt && !/\.[A-Za-z0-9]{2,8}$/.test(rawName) ? `${rawName}.${fileExt}` : rawName)
+      : (fileExt ? `file.${fileExt}` : 'Tệp đính kèm');
+    const size = fmtSize(p.size ?? p.totalSize ?? params?.fileSize);
     // 2026-06-13 (anh báo tải file gửi đi không ra): NỚI điều kiện — tin contentType='file' HOẶC
     // có {href,name} mà KHÔNG phải ảnh/video → render file-card + nút tải. KHÔNG bắt buộc mime
     // (file cũ persist mime="" trước fix → trước đây rơi về text '🔗 url', không có nút tải).
-    if (p.href && p.name && (msg.contentType === 'file' || (!isImgVid && !p.thumb))) {
-      return { name: p.name, size: fmtSize(typeof p.size === 'number' ? p.size : 0), href: p.href };
+    if (href && (msg.contentType === 'file' || (!isImgVid && !p.thumb))) {
+      return { name, size, href };
     }
-    const params = typeof p.params === 'string' ? JSON.parse(p.params) : p.params;
     if (params?.fileExt || params?.fType === 1) {
-      const bytes = parseInt(params.fileSize || '0');
-      return { name: p.title || `file.${params.fileExt || 'unknown'}`, size: fmtSize(bytes), href: p.href || '' };
+      return { name, size, href };
     }
   } catch {}
   return null;
