@@ -5,6 +5,7 @@
     <div
       v-if="modelValue"
       class="ctx-menu-overlay"
+      :style="layer ? { zIndex: layer } : undefined"
       @click.self="close"
       @contextmenu.prevent="close"
     >
@@ -153,6 +154,7 @@ const props = defineProps<{
   modelValue: boolean;
   // Conversation Content Library 2026-07-11 — trạng thái ghim của tin (do MessageThread truyền).
   isPinned?: boolean;
+  layer?: number;
 }>();
 
 const emit = defineEmits<{
@@ -230,6 +232,7 @@ function recompute() {
 }
 
 const menuStyle = computed(() => ({
+  ...(props.layer ? { zIndex: props.layer + 1 } : {}),
   top: `${computedTop.value}px`,
   left: `${computedLeft.value}px`,
 }));

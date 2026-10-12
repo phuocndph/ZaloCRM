@@ -876,6 +876,9 @@ export function attachZaloListener(ctx: ListenerContext): void {
           extra: {
             threadType: isGroup ? 'group' : 'user',
             systemNotification: isFriendAcceptedNotification,
+            notificationMuted: result.zaloNotificationsMuted && (
+              !result.zaloMutedUntil || result.zaloMutedUntil.getTime() > Date.now()
+            ),
             groupName: isGroup ? (groupName || null) : null,
             groupAvatarUrl: isGroup ? (groupAvatarUrl || null) : null,
             senderAvatarUrl: !isGroup ? (contactZaloAvatarUrl || null) : null,
@@ -1179,6 +1182,9 @@ export function attachZaloListener(ctx: ListenerContext): void {
             extra: {
               threadType,
               systemNotification: isFriendAcceptedNotification,
+              notificationMuted: result.zaloNotificationsMuted && (
+                !result.zaloMutedUntil || result.zaloMutedUntil.getTime() > Date.now()
+              ),
               groupName: threadType === 'group' ? (groupName || null) : null,
               groupAvatarUrl: threadType === 'group' ? (groupAvatarUrl || null) : null,
               senderAvatarUrl: threadType === 'user' ? (contactZaloAvatarUrl || null) : null,

@@ -1,48 +1,84 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Màn hình tác nghiệp hằng ngày: mở mặc định ở các việc cần xử lý ngay. -->
 <template>
-  <div class="wi-page">
-    <div class="wi-shell">
+  <div ref="page" class="wi-page" :class="{ 'wi-page--preview': selectedConversationId }">
+    <div class="wi-shell" :class="{ 'wi-shell--preview': selectedConversationId }">
       <header class="wi-header">
         <div>
           <div class="wi-eyebrow"><ListTodoIcon :size="15" aria-hidden="true" /> TÁC NGHIỆP HẰNG NGÀY</div>
-          <h1>Công việc khách hàng</h1>
-          <p>Danh sách đã được gom theo khách hàng, nick Zalo và tín hiệu từ cuộc hội thoại. Mở việc, xử lý rồi đánh dấu hoàn thành.</p>
+          <h1>{{ viewMode === 'load' ? 'Phân công hội thoại' : 'Công việc khách hàng' }}</h1>
+          <p v-if="viewMode === 'load'">Xem nhanh mỗi hội thoại đang do nhân viên nào phụ trách, nick nào đang xử lý và trạng thái hiện tại.</p>
+          <p v-else>Danh sách đã được gom theo khách hàng, nick Zalo và tín hiệu từ cuộc hội thoại. Mở việc, xử lý rồi đánh dấu hoàn thành.</p>
         </div>
-        <button class="wi-refresh" type="button" :disabled="refreshing" title="Tải lại danh sách" aria-label="Tải lại danh sách" @click="refresh">
-          <RefreshCwIcon :size="17" :class="{ spin: refreshing }" aria-hidden="true" />
-          <span>Tải lại</span>
-        </button>
+        <div class="wi-header-actions">
+          <div class="wi-mode" role="tablist" aria-label="Chế độ xem công việc">
+            <button type="button" :class="{ active: viewMode === 'queue' }" role="tab" :aria-selected="viewMode === 'queue'" @click="setViewMode('queue')"><ListTodoIcon :size="14" aria-hidden="true" /> Công việc</button>
+            <button type="button" :class="{ active: viewMode === 'load' }" role="tab" :aria-selected="viewMode === 'load'" @click="setViewMode('load')"><UsersRoundIcon :size="14" aria-hidden="true" /> Phân công</button>
+          </div>
+          <button v-if="viewMode === 'queue'" class="wi-refresh" type="button" :disabled="refreshing" title="Tải lại danh sách" aria-label="Tải lại danh sách" @click="refresh">
+            <RefreshCwIcon :size="17" :class="{ spin: refreshing }" aria-hidden="true" />
+            <span>Tải lại</span>
+          </button>
+        </div>
       </header>
 
-      <section class="wi-summary" role="tablist" aria-label="Lọc công việc">
+      <section v-if="viewMode === 'queue'" class="wi-summary" role="tablist" aria-label="Lọc công việc">
         <button v-for="stat in summaryStats" :key="stat.key" class="wi-stat" :class="{ active: currentScope === stat.key }" type="button" role="tab" :aria-selected="currentScope === stat.key" @click="setScope(stat.key)">
           <span class="wi-stat-value">{{ counts[stat.key] ?? 0 }}</span>
           <span class="wi-stat-label">{{ stat.label }}</span>
         </button>
       </section>
 
-      <DailyWorkQueue
-        ref="queue"
-        hide-tabs
-        :initial-scope="currentScope"
-        @scope-change="onScopeChange"
-      />
+      <WorkloadOverview v-if="viewMode === 'load'" />
+      <div v-else class="wi-workspace" :class="{ 'wi-workspace--preview': selectedConversationId }">
+        <DailyWorkQueue
+          ref="queue"
+          hide-tabs
+          preview-enabled
+          :selected-conversation-id="selectedConversationId"
+          :initial-scope="currentScope"
+          @scope-change="onScopeChange"
+          @preview-conversation="openPreview"
+          @item-updated="onItemUpdated"
+        />
+        <WorkItemConversationPreview
+          v-if="selectedConversationId"
+          :conversation-id="selectedConversationId"
+          :item="selectedItem"
+          :busy="previewBusy || !!queue?.mutatingId"
+          :item-available="itemAvailable"
+          @close="closePreview"
+          @marked-read="queue?.refresh(true)"
+          @message-sent="queue?.refresh(true)"
+          @switch-conversation="openPreview($event, null)"
+          @action="onPreviewAction"
+        />
+      </div>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { ListTodo as ListTodoIcon, RefreshCw as RefreshCwIcon } from 'lucide-vue-next';
+import { ListTodo as ListTodoIcon, RefreshCw as RefreshCwIcon, UsersRound as UsersRoundIcon } from 'lucide-vue-next';
 import DailyWorkQueue from '@/components/dashboard/DailyWorkQueue.vue';
-import type { WorkItemCounts, WorkItemScope } from '@/composables/use-conversation-work-items';
+import WorkloadOverview from '@/components/dashboard/WorkloadOverview.vue';
+import WorkItemConversationPreview from '@/components/dashboard/WorkItemConversationPreview.vue';
+import type { ConversationWorkItem, WorkItemCounts, WorkItemScope } from '@/composables/use-conversation-work-items';
 
 const route = useRoute();
 const router = useRouter();
-const queue = ref<{ refresh: (quiet?: boolean) => Promise<unknown>; counts: WorkItemCounts } | null>(null);
+const queue = ref<InstanceType<typeof DailyWorkQueue> | null>(null);
+const page = ref<HTMLElement | null>(null);
+const selectedConversationId = ref<string | null>(null);
+const selectedItem = ref<ConversationWorkItem | null>(null);
+const previewBusy = ref(false);
+let savedScrollTop = 0;
+let returnFocus: HTMLElement | null = null;
+const itemAvailable = computed(() => !selectedItem.value || selectedItem.value.status === 'completed' || !!queue.value?.items.some((item) => item.id === selectedItem.value?.id));
 const refreshing = ref(false);
+const viewMode = computed<'queue' | 'load'>(() => route.query.view === 'load' ? 'load' : 'queue');
 
 const validScopes: WorkItemScope[] = ['now', 'today', 'waiting', 'upcoming', 'verify', 'done'];
 const currentScope = computed<WorkItemScope>(() => {
@@ -62,6 +98,10 @@ const summaryStats: Array<{ key: WorkItemScope; label: string }> = [
 function setScope(scope: WorkItemScope) {
   void router.replace({ query: { ...route.query, scope: scope === 'now' ? undefined : scope } });
 }
+function setViewMode(mode: 'queue' | 'load') {
+  closePreview();
+  void router.replace({ query: { ...route.query, view: mode === 'queue' ? undefined : 'load' } });
+}
 function onScopeChange(scope: WorkItemScope) {
   if (scope !== currentScope.value) setScope(scope);
 }
@@ -69,6 +109,39 @@ async function refresh() {
   refreshing.value = true;
   try { await queue.value?.refresh(); } finally { refreshing.value = false; }
 }
+
+function openPreview(conversationId: string, item: ConversationWorkItem | null) {
+  if (!selectedConversationId.value) {
+    savedScrollTop = page.value?.scrollTop ?? 0;
+    returnFocus = document.activeElement as HTMLElement | null;
+  }
+  const top = page.value?.scrollTop ?? 0;
+  selectedConversationId.value = conversationId;
+  selectedItem.value = item;
+  void nextTick(() => { if (page.value) page.value.scrollTop = top; });
+}
+function closePreview() {
+  if (!selectedConversationId.value) return;
+  selectedConversationId.value = null;
+  selectedItem.value = null;
+  void nextTick(() => {
+    if (page.value) page.value.scrollTop = savedScrollTop;
+    if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
+  });
+}
+function onItemUpdated(item: ConversationWorkItem) {
+  if (item.id === selectedItem.value?.id) selectedItem.value = { ...selectedItem.value, ...item };
+}
+async function onPreviewAction(action: 'complete' | 'reopen' | 'snooze', options?: { snoozeMinutes?: number; snoozedUntil?: string }) {
+  if (!selectedItem.value || previewBusy.value || !queue.value) return;
+  previewBusy.value = true;
+  try { await queue.value.performAction(selectedItem.value, action, options); }
+  finally { previewBusy.value = false; }
+}
+watch(() => queue.value?.items, (items) => {
+  const latest = items?.find((item) => item.id === selectedItem.value?.id);
+  if (latest) selectedItem.value = latest;
+});
 </script>
 
 <style scoped>
@@ -83,8 +156,15 @@ async function refresh() {
   background: var(--smax-grey-100, #f4f6f8);
 }
 .wi-shell { width: min(1180px, 100%); margin: 0 auto; padding-bottom: 1px; }
+.wi-shell--preview { width: min(1480px, 100%); }
+.wi-workspace { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 14px; }
+.wi-workspace--preview { grid-template-columns: minmax(0, 1fr) clamp(500px, 46%, 680px); }
 .wi-page :deep(.dwq-list) { max-height: none; overflow: visible; }
 .wi-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 18px; }
+.wi-header-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+.wi-mode { display: inline-flex; align-items: center; gap: 2px; padding: 3px; border: 1px solid #d0d5dd; border-radius: 7px; background: #fff; }
+.wi-mode button { display: inline-flex; align-items: center; gap: 5px; min-height: 30px; padding: 0 9px; border: 0; border-radius: 5px; background: transparent; color: #667085; font: inherit; font-size: 11px; font-weight: 750; cursor: pointer; }
+.wi-mode button.active { background: #e8f5f8; color: #087daf; }
 .wi-eyebrow { display: flex; align-items: center; gap: 7px; color: #087daf; font-size: 11px; font-weight: 800; letter-spacing: .06em; }
 .wi-header h1 { margin: 6px 0 5px; color: #172033; font-size: 26px; line-height: 1.2; }
 .wi-header p { max-width: 680px; margin: 0; color: #667085; font-size: 13px; line-height: 1.5; }
@@ -98,9 +178,14 @@ async function refresh() {
 .wi-stat:hover, .wi-stat.active { border-color: #8bcde3; background: #f4fbfd; }
 .wi-stat-value { color: #172033; font-size: 21px; font-weight: 800; line-height: 1; }
 .wi-stat-label { color: #667085; font-size: 11px; font-weight: 650; }
+@media (max-width: 1000px) {
+  .wi-workspace--preview { grid-template-columns: minmax(0, 1fr); }
+  .wi-page--preview { overflow: hidden; }
+}
 @media (max-width: 720px) {
   .wi-page { height: calc(100dvh - var(--smax-topnav-h, 48px)); padding: 16px 12px 28px; }
   .wi-header { gap: 12px; }
+  .wi-header-actions { align-items: flex-end; flex-direction: column; gap: 6px; }
   .wi-header h1 { font-size: 21px; }
   .wi-header p { font-size: 12px; }
   .wi-refresh span { display: none; }

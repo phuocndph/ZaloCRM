@@ -5,7 +5,10 @@ import { logger } from '../../shared/utils/logger.js';
 import { analyzeConversationEmotion, type EmotionOutput } from './emotion-engine-service.js';
 import { analyzeConversationIntent, type IntentOutput } from './intent-engine-service.js';
 import { buildConversationContext } from './conversation-context-builder-service.js';
-import { analyzePreparedConversation } from './conversation-analysis-ai-service.js';
+import {
+  analyzePreparedConversation,
+  shouldRetryConversationAnalysisAsWhole,
+} from './conversation-analysis-ai-service.js';
 import {
   COUNTERPARTY_CLASSIFIER_VERSION,
   isConfirmedNonCustomer,
@@ -22,6 +25,8 @@ import {
   type MemoryActor,
 } from './conversation-memory-service.js';
 import { isSupportedBusinessGroup } from '../zalo/group-monitoring-policy.js';
+import { emitConversationWorkItemsUpdated } from '../dashboard/conversation-work-item-service.js';
+import { resolveAnalysisProgress, type AnalysisStep } from './conversation-analysis-progress.js';
 
 export const AI_CONVERSATION_STAGES = [
   'needs_reply',
@@ -127,22 +132,21 @@ export function buildShadowRecommendation(input: RecommendationInput): ShadowRec
     && ['order_intent', 'follow_up_response'].includes(input.intent.primary_intent);
   const riskyIntent = ['complaint', 'return_or_refund', 'human_request'].includes(input.intent.primary_intent);
   const paymentNeedsVerification = input.intent.primary_intent === 'payment_inquiry' && !input.verifiedPaymentObligation;
-  const confirmedBusinessProgress = wonByCrm || explicitOrderConfirmed;
   const workItemEligible = shouldCreateSalesWorkItem({
     assessment: input.counterparty,
     messages: [{ senderType: 'contact', content: input.recentConversationText || input.latestInboundText }],
     intent: input.intent.primary_intent,
   });
   const nonCustomer = isConfirmedNonCustomer(input.counterparty);
-  const identityUnconfirmed = !nonCustomer && !workItemEligible;
+  // A media-only inbound message must be routed to the person handling the
+  // conversation. It is not evidence that the sender is not a customer.
+  // Treating it as an identity failure hid the exact work staff needed to do.
+  const identityUnconfirmed = !nonCustomer && !workItemEligible && !latestMessageNeedsClarification;
   // Models often set requires_human for ordinary operational work such as
   // checking an image or completing an order. That should create a staff task,
   // not downgrade a confirmed sale into an escalation state.
-  const modelHumanEscalation = input.intent.requires_human
-    && !confirmedBusinessProgress
-    && !paymentNeedsVerification;
-  const hardEscalation = riskyIntent || input.emotion.escalation_required || modelHumanEscalation;
-  const requiresHuman = hardEscalation || paymentNeedsVerification || latestMessageNeedsClarification;
+  const hardEscalation = riskyIntent || input.emotion.escalation_required;
+  const requiresHuman = hardEscalation || input.intent.requires_human || paymentNeedsVerification || latestMessageNeedsClarification;
 
   let stage: AiConversationStage = 'needs_reply';
   let stageConfidence = Math.max(0.55, input.intent.confidence);
@@ -232,7 +236,7 @@ export function buildShadowRecommendation(input: RecommendationInput): ShadowRec
     recommendedWorkflowType = 'post_sale';
   }
 
-  if (latestMessageNeedsClarification && !explicitOptOut && !nonCustomer && !identityUnconfirmed) {
+  if (latestMessageNeedsClarification && !explicitOptOut && !nonCustomer) {
     nextAction = 'clarify_latest_message';
     nextActionReason = 'Tin nhắn mới nhất chưa có nội dung rõ ràng; cần mở hội thoại, xem ảnh hoặc tệp và xác nhận khách đang cần hỗ trợ gì.';
     recommendedWorkflowType = null;
@@ -253,6 +257,7 @@ export function buildShadowRecommendation(input: RecommendationInput): ShadowRec
       crmWonSignal: wonByCrm,
       explicitOrderConfirmed,
       latestMessageNeedsClarification,
+      hardEscalation,
       customerNotInterested: input.intent.primary_intent === 'not_interested',
       verifiedPaymentObligation: input.verifiedPaymentObligation,
       paymentVerificationRequired: paymentNeedsVerification,
@@ -427,14 +432,24 @@ export async function processConversationAnalysis(data: ConversationAnalysisJobD
     where: { conversationId: conversation.id, isDeleted: false },
     orderBy: [{ sentAt: 'desc' }, { createdAt: 'desc' }],
     take: 30,
-    select: { id: true, senderType: true, senderUid: true, senderName: true, content: true, sentAt: true },
+    select: { id: true, senderType: true, senderUid: true, senderName: true, content: true, contentType: true, sentAt: true },
   });
+  if (!recentMessages.some((message) => message.senderType === 'contact'
+    && (message.content?.trim() || message.contentType !== 'text'))) {
+    return { skipped: true, reason: 'no_visible_customer_messages' };
+  }
   const hasOutboundQuote = recentMessages.some(
     (message) => message.senderType === 'self' && QUOTE_PATTERN.test(normalizeSearch(message.content ?? '')),
   );
   const inputHash = createHash('sha256')
     .update(JSON.stringify({ conversationId: conversation.id, triggerMessageId: trigger.id, latestSentAt: trigger.sentAt }))
     .digest('hex');
+  const contextManifest = {
+    mode: isGroup ? 'group_monitoring' : 'automatic_followup',
+    sourceThroughMessageId: trigger.id,
+    rawContentStored: false,
+    autoSendAllowed: false,
+  };
 
   const run = await prisma.aiRun.create({
         data: {
@@ -450,30 +465,39 @@ export async function processConversationAnalysis(data: ConversationAnalysisJobD
           promptVersionId: runtime.agent.promptVersionId,
           modelConfigId: runtime.modelConfigId,
           inputHash,
-          contextManifest: {
-            mode: isGroup ? 'group_monitoring' : 'automatic_followup',
-            sourceThroughMessageId: trigger.id,
-            rawContentStored: false,
-            autoSendAllowed: false,
-          },
+          contextManifest: { ...contextManifest, analysisStep: 'context' },
         },
         select: { id: true },
       });
 
+  const notifyProgress = () => emitConversationWorkItemsUpdated({ orgId: data.orgId, conversationId: conversation.id });
+  const reportStep = async (analysisStep: AnalysisStep) => {
+    await prisma.aiRun.update({
+      where: { id: run.id },
+      data: { contextManifest: { ...contextManifest, analysisStep } },
+    }).then(notifyProgress).catch((error) => {
+      logger.warn(`[conversation-analysis] progress update failed run=${run.id}: ${(error as Error).message}`);
+    });
+  };
+  notifyProgress();
+
   try {
     let modelFallback = false;
     const context = await buildConversationContext(actor, conversation.id, { maxTokens: 2600 });
+    await reportStep('model');
     const combined = await analyzePreparedConversation({
       orgId: data.orgId,
       modelConfigId: runtime.modelConfigId,
       runId: run.id,
       context,
     }).catch((error) => {
+      if (shouldRetryConversationAnalysisAsWhole(error)) throw error;
       modelFallback = true;
       logger.warn(`[conversation-analysis] combined model fallback conversation=${conversation.id}: ${(error as Error).message}`);
       return null;
     });
 
+    await reportStep('summary');
     const summaryResult = await refreshConversationSummary(actor, conversation.id, {
       force: true,
       runId: run.id,
@@ -481,12 +505,14 @@ export async function processConversationAnalysis(data: ConversationAnalysisJobD
       context,
       preparedSummary: combined?.summary,
     });
+    await reportStep('classification');
     const [intentResult, emotionResult] = combined
       ? [{ output: combined.intent }, { output: combined.emotion }]
       : await Promise.all([
           analyzeConversationIntent(actor, conversation.id, { maxTokens: 1400, context }),
           analyzeConversationEmotion(actor, conversation.id, { maxTokens: 1600, context }),
         ]);
+    if (!isGroup) await reportStep('memory');
     const memories = isGroup
       ? { contactId: conversation.contactId, candidates: [] as Array<{ id: string }> }
       : await proposeCustomerMemoriesFromConversation(actor, conversation.id, {
@@ -581,6 +607,7 @@ export async function processConversationAnalysis(data: ConversationAnalysisJobD
       .update(JSON.stringify({ recommendation, intent: intentResult.output, emotion: emotionResult.output, summaryId: summary?.id ?? null }))
       .digest('hex');
 
+    await reportStep('saving');
     const created = await prisma.$transaction(async (tx) => {
       const duplicate = await tx.aiConversationInsight.findUnique({
         where: {
@@ -591,7 +618,10 @@ export async function processConversationAnalysis(data: ConversationAnalysisJobD
         },
         select: { id: true, version: true },
       });
-      if (duplicate && !data.force) return { id: duplicate.id, duplicate: true };
+      if (duplicate && !data.force) {
+        await tx.aiRun.update({ where: { id: run.id }, data: { status: 'completed', completedAt: new Date() } });
+        return { id: duplicate.id, duplicate: true };
+      }
 
       const latest = await tx.aiConversationInsight.findFirst({
         where: { conversationId: conversation.id },
@@ -706,6 +736,7 @@ export async function processConversationAnalysis(data: ConversationAnalysisJobD
       return { ...insight, duplicate: !!duplicate, refreshed: !!duplicate && !!data.force };
     }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
 
+    notifyProgress();
     const automation = isGroup
       ? { enabled: false, outcome: 'skipped', reason: 'group_monitoring_never_auto_sends' }
       : await reconcileCustomerAutomation(created.id).catch((error) => {
@@ -718,41 +749,85 @@ export async function processConversationAnalysis(data: ConversationAnalysisJobD
       where: { id: run.id },
       data: { status: 'failed', errorCode: 'CONVERSATION_ANALYSIS_FAILED', completedAt: new Date() },
     }).catch(() => undefined);
+    notifyProgress();
     throw error;
   }
 }
 
-export async function getLatestConversationInsight(actor: MemoryActor, conversationId: string) {
+export async function getConversationAnalysisSnapshot(actor: MemoryActor, conversationId: string) {
   const { buildConversationContext } = await import('./conversation-context-builder-service.js');
   await buildConversationContext(actor, conversationId, { maxTokens: 500, recentMessageLimit: 10 });
-  const insight = await prisma.aiConversationInsight.findFirst({
-    where: { orgId: actor.orgId, conversationId, status: 'active' },
-    orderBy: [{ version: 'desc' }, { createdAt: 'desc' }],
-    select: {
-      id: true,
-      version: true,
-      mode: true,
-      stage: true,
-      stageConfidence: true,
-      stageReasonRedacted: true,
-      intentLabel: true,
-      intentConfidence: true,
-      emotionLabel: true,
-      emotionConfidence: true,
-      emotionIntensity: true,
-      requiresHuman: true,
-      nextAction: true,
-      nextActionReasonRedacted: true,
-      recommendedWorkflowType: true,
-      memoryCandidateIds: true,
-      signals: true,
-      safeguards: true,
-      createdAt: true,
-      updatedAt: true,
-      summary: { select: { id: true, version: true, summaryRedacted: true, sourceThroughMessageId: true, createdAt: true } },
-    },
-  });
-  if (!insight) return null;
+  const [insight, latestMessage, latestRun] = await Promise.all([
+    prisma.aiConversationInsight.findFirst({
+      where: { orgId: actor.orgId, conversationId, status: 'active' },
+      orderBy: [{ version: 'desc' }, { createdAt: 'desc' }],
+      select: {
+        id: true,
+        version: true,
+        mode: true,
+        stage: true,
+        stageConfidence: true,
+        stageReasonRedacted: true,
+        intentLabel: true,
+        intentConfidence: true,
+        emotionLabel: true,
+        emotionConfidence: true,
+        emotionIntensity: true,
+        requiresHuman: true,
+        nextAction: true,
+        nextActionReasonRedacted: true,
+        recommendedWorkflowType: true,
+        memoryCandidateIds: true,
+        signals: true,
+        safeguards: true,
+        sourceThroughMessageId: true,
+        generatedWithModel: true,
+        createdAt: true,
+        updatedAt: true,
+        summary: { select: { id: true, version: true, summaryRedacted: true, sourceThroughMessageId: true, createdAt: true } },
+      },
+    }),
+    prisma.message.findFirst({
+      where: { conversationId, isDeleted: false, senderType: { in: ['contact', 'self'] } },
+      orderBy: [{ sentAt: 'desc' }, { createdAt: 'desc' }],
+      select: { id: true, sentAt: true, senderType: true, contentType: true, content: true },
+    }),
+    prisma.aiRun.findFirst({
+      where: { orgId: actor.orgId, conversationId, taskType: 'conversation_analysis' },
+      orderBy: { createdAt: 'desc' },
+      select: { status: true, triggerMessageId: true, contextManifest: true, updatedAt: true, createdAt: true },
+    }),
+  ]);
+  const messageSnapshot = {
+    latestMessageId: latestMessage?.id ?? null,
+    latestMessageAt: latestMessage?.sentAt ?? null,
+    analysisAttempt: latestRun && latestRun.triggerMessageId === latestMessage?.id
+      ? { status: latestRun.status, updatedAt: latestRun.updatedAt, messageId: latestRun.triggerMessageId }
+      : null,
+  };
+  if (!insight) return {
+    ...messageSnapshot,
+    insight: null,
+    analysisProgress: resolveAnalysisProgress({ latestMessageId: messageSnapshot.latestMessageId, run: latestRun }),
+  };
+  // Existing insights created before the media-review fix can still describe
+  // the sender as "unknown". The latest message is authoritative for the
+  // immediate staff action, so expose a safe display override until the next
+  // explicit analysis refresh persists the newer recommendation.
+  const latestMessageNeedsClarification = latestMessage?.senderType === 'contact'
+    && (latestMessage.contentType !== 'text' || isMediaOnlyMessage(latestMessage.content ?? ''));
+  const contentVerification = latestMessageNeedsClarification
+    && insight.nextAction === 'verify_customer_identity';
+  const displayNextAction = contentVerification ? 'clarify_latest_message' : insight.nextAction;
+  const displayNextActionReason = contentVerification
+    ? 'Khách vừa gửi ảnh hoặc tệp chưa có mô tả. Mở hội thoại, xem nội dung và hỏi lại nhu cầu nếu chưa rõ.'
+    : insight.nextActionReasonRedacted;
+  const displaySignals = contentVerification
+    ? { ...(insight.signals as Record<string, unknown>), contentVerificationRequired: true }
+    : insight.signals;
+  const displayInsight = contentVerification
+    ? { ...insight, nextAction: displayNextAction, requiresHuman: true }
+    : insight;
   const [memories, automationAudit] = await Promise.all([
     insight.memoryCandidateIds.length
       ? prisma.aiCustomerMemory.findMany({
@@ -771,10 +846,18 @@ export async function getLatestConversationInsight(actor: MemoryActor, conversat
       select: { outcome: true, metadata: true, createdAt: true },
     }),
   ]);
-  return {
+  const dto = {
     id: insight.id,
     version: insight.version,
     mode: insight.mode,
+    sourceThroughMessageId: insight.sourceThroughMessageId,
+    latestMessageId: latestMessage?.id ?? null,
+    latestMessageAt: latestMessage?.sentAt ?? null,
+    analysisProgress: resolveAnalysisProgress({
+      latestMessageId: latestMessage?.id ?? null,
+      insight: displayInsight,
+      run: latestRun,
+    }),
     stage: insight.stage,
     stageConfidence: insight.stageConfidence,
     stageReason: insight.stageReasonRedacted,
@@ -784,13 +867,13 @@ export async function getLatestConversationInsight(actor: MemoryActor, conversat
       confidence: insight.emotionConfidence,
       intensity: insight.emotionIntensity,
     },
-    requiresHuman: insight.requiresHuman,
+    requiresHuman: displayInsight.requiresHuman,
     nextAction: {
-      key: insight.nextAction,
-      reason: insight.nextActionReasonRedacted,
+      key: displayNextAction,
+      reason: displayNextActionReason,
       workflowType: insight.recommendedWorkflowType,
     },
-    signals: insight.signals,
+    signals: displaySignals,
     safeguards: insight.safeguards,
     automation: automationAudit ? {
       outcome: automationAudit.outcome,
@@ -804,6 +887,11 @@ export async function getLatestConversationInsight(actor: MemoryActor, conversat
     createdAt: insight.createdAt,
     updatedAt: insight.updatedAt,
   };
+  return { ...messageSnapshot, insight: dto, analysisProgress: dto.analysisProgress };
+}
+
+export async function getLatestConversationInsight(actor: MemoryActor, conversationId: string) {
+  return (await getConversationAnalysisSnapshot(actor, conversationId)).insight;
 }
 
 export { ContextBuilderError };

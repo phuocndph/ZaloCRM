@@ -1,7 +1,9 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const mocks = vi.hoisted(() => ({ enrollment: vi.fn(), claim: vi.fn(), step: vi.fn() }));
 
 vi.mock('../../src/shared/database/prisma-client.js', () => ({
-  prisma: {},
+  prisma: { followupEnrollment: { findUnique: mocks.enrollment, updateMany: mocks.claim }, followupStep: { findUnique: mocks.step } },
   tenantTransaction: vi.fn(),
 }));
 vi.mock('../../src/shared/utils/logger.js', () => ({ logger: { warn: vi.fn(), error: vi.fn(), info: vi.fn() } }));
@@ -13,7 +15,13 @@ vi.mock('../../src/modules/followup/followup-queue.js', () => ({
 }));
 vi.mock('../../src/modules/followup/followup-lint.js', () => ({ lintWorkflow: vi.fn(() => []) }));
 
-import { checkFollowupStop, type ContactState } from '../../src/modules/followup/followup-engine.js';
+import { checkFollowupStop, completeSaleTask, type ContactState } from '../../src/modules/followup/followup-engine.js';
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.enrollment.mockResolvedValue({ id: 'enrollment', orgId: 'org', contactId: 'contact', zaloAccountId: 'other', status: 'waiting_sale', currentStepKey: 'sale', updatedAt: new Date() });
+  mocks.step.mockResolvedValue({ nextKey: 'send' }); mocks.claim.mockResolvedValue({ count: 0 });
+});
 
 function state(overrides: Partial<ContactState> = {}): ContactState {
   return {
@@ -46,5 +54,14 @@ describe('FollowupEngine safety stop', () => {
       .toMatchObject({ reason: 'customer_blocked' });
     expect(checkFollowupStop(workflow, state({ isFriend: false })))
       .toMatchObject({ reason: 'not_friend' });
+  });
+  it.each([{ allowedAccountIds: ['nick'] }, { allowedAccountIds: [] }])('does not claim or send a sale task moved outside the Agent sender scope: %j', async ({ allowedAccountIds }) => {
+    expect(await completeSaleTask('enrollment', { actorId: 'user' }, { orgId: 'org', contactId: 'contact', currentStepKey: 'sale', allowedAccountIds })).toBe(false);
+    expect(mocks.step).not.toHaveBeenCalled(); expect(mocks.claim).not.toHaveBeenCalled();
+  });
+  it('keeps the account constraint in the atomic claim if the sender changes after the read', async () => {
+    mocks.enrollment.mockResolvedValue({ id: 'enrollment', orgId: 'org', contactId: 'contact', zaloAccountId: 'nick', workflowId: 'workflow', status: 'waiting_sale', currentStepKey: 'sale', updatedAt: new Date() });
+    expect(await completeSaleTask('enrollment', { actorId: 'user' }, { orgId: 'org', contactId: 'contact', currentStepKey: 'sale', allowedAccountIds: ['nick'] })).toBe(false);
+    expect(mocks.claim).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ zaloAccountId: { in: ['nick'] } }) }));
   });
 });

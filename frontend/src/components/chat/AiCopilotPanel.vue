@@ -29,18 +29,30 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue';
 import { api } from '@/api/index';
 type Style = 'shorter'|'friendlier'|'professional'|'more_sales_focused';
   type CopilotResult = { runId?:string; suggestionId?:string; agent?:{id:string;name:string}; analysis?:{intent?:{primary_intent:string;confidence:number};emotion?:{emotion:string;suggested_tone?:string;confidence:number};skill?:{id:string;key:string;name:string};salesStage?:string|null}; runtime?:{mode:'model'|'deterministic'|'degraded';provider?:string;model?:string;usedFallback?:boolean;latencyMs?:number;errorCode?:string}; reply_text:string; alternative_replies:string[]; intent:string; tone:string; sources:Array<Record<string, any>>; confidence?:number; confidence_assessment?:{overall_confidence:number}; missing_information:string[]; suggested_actions:string[]; requires_human:boolean; do_not_send_reason:string|null };
-const props = defineProps<{ open:boolean; conversationId?:string|null; privateBlocked?:boolean; customerStage?:string }>();
-const emit = defineEmits<{ close:[]; action:[kind:string]; feedback:[kind:string, payload?:Record<string, unknown>] }>();
+const props = defineProps<{ open:boolean; conversationId?:string|null; privateBlocked?:boolean; customerStage?:string; localDraft?:boolean }>();
+const emit = defineEmits<{ close:[]; action:[kind:string]; feedback:[kind:string, payload?:Record<string, unknown>]; 'use-reply':[text:string] }>();
 const result=ref<CopilotResult|null>(null), loading=ref(false), error=ref(''); let controller:AbortController|null=null;
 const styles:Array<{key:Style;label:string}>=[{key:'shorter',label:'Ngắn hơn'},{key:'friendlier',label:'Thân thiện hơn'},{key:'professional',label:'Chuyên nghiệp hơn'},{key:'more_sales_focused',label:'Chốt sale hơn'}];
 const confidence=computed(()=>Math.round(result.value?.confidence_assessment?.overall_confidence ?? (result.value?.confidence||0)*100)); const emotion=computed(()=>result.value?.analysis?.emotion?.emotion||'neutral'); const customerStage=computed(()=>result.value?.analysis?.salesStage||props.customerStage||'Chưa xác định');
 const runtimeLabel=computed(()=>{const runtime=result.value?.runtime;if(runtime?.mode==='model')return `${runtime.provider||'AI'} · ${runtime.model||'model'}${runtime.usedFallback?' · đã dùng dự phòng':''}${runtime.latencyMs!=null?` · ${runtime.latencyMs} ms`:''}`;if(runtime?.mode==='degraded')return 'Model gặp lỗi, đang hiển thị gợi ý an toàn dự phòng.';return 'Đang hiển thị gợi ý theo quy tắc dự phòng.'});
 function cancel(){controller?.abort();controller=null;loading.value=false;}
-async function generate(style?:Style){ if(!props.conversationId||loading.value)return; if(props.privateBlocked){error.value='Bạn không có quyền xem nội dung hội thoại riêng tư này.';return;} cancel(); controller=new AbortController();loading.value=true;error.value='';try{const response=await api.post<CopilotResult>(`/ai/replies/conversations/${props.conversationId}/generate`,{employeeTone:style},{signal:controller.signal,timeout:90_000});result.value=response.data;}catch(e:any){if(e?.name==='CanceledError'||e?.code==='ERR_CANCELED')return;error.value=e?.response?.data?.error||e?.message||'Không thể tạo gợi ý AI.';}finally{if(controller){loading.value=false;controller=null;}}}
+async function generate(style?:Style){
+  if(!props.conversationId||loading.value)return;
+  if(props.privateBlocked){error.value='Bạn không có quyền xem nội dung hội thoại riêng tư này.';return;}
+  cancel(); const id=props.conversationId; const request=new AbortController(); controller=request;
+  loading.value=true;error.value='';
+  try{
+    const response=await api.post<CopilotResult>(`/ai/replies/conversations/${id}/generate`,{employeeTone:style},{signal:request.signal,timeout:90_000});
+    if(!request.signal.aborted&&controller===request&&props.conversationId===id&&!props.privateBlocked)result.value=response.data;
+  }catch(e:any){
+    if(request.signal.aborted||controller!==request||props.conversationId!==id)return;
+    error.value=e?.response?.data?.error||e?.message||'Không thể tạo gợi ý AI.';
+  }finally{if(controller===request){loading.value=false;controller=null;}}
+}
   function feedbackContext(){return {runId:result.value?.runId,suggestionId:result.value?.suggestionId,proposedReply:result.value?.reply_text,knowledgeRefs:result.value?.sources||[]}}
   function sendFeedback(type:string){ if(!result.value)return; emit('feedback',type,{...feedbackContext(),selectionStatus:'skipped'}); }
-  function useReply(text:string){if(!text)return; const selected=text===result.value?.reply_text; emit('feedback',selected?'good':'edited',{...feedbackContext(),finalReply:text,selectionStatus:selected?'selected':'edited'});window.dispatchEvent(new CustomEvent('chat:insert-suggestion',{detail:{text}}));}
-watch(()=>props.conversationId,()=>{cancel();result.value=null;error.value='';});onBeforeUnmount(cancel);
+  function useReply(text:string){if(!text||props.privateBlocked)return; const selected=text===result.value?.reply_text; emit('feedback',selected?'good':'edited',{...feedbackContext(),finalReply:text,selectionStatus:selected?'selected':'edited'});if(props.localDraft)emit('use-reply',text);else window.dispatchEvent(new CustomEvent('chat:insert-suggestion',{detail:{text,conversationId:props.conversationId}}));}
+watch(()=>[props.conversationId,props.privateBlocked],()=>{cancel();result.value=null;error.value='';});onBeforeUnmount(cancel);
 defineExpose({generate,cancel});
 </script>
 <style scoped>

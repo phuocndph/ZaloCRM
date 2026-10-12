@@ -13,6 +13,7 @@ import { classifyIncoming } from '@/composables/work-scope-logic';
 import { useToast } from '@/composables/use-toast';
 import { isConversationPrivateError } from '@/composables/use-conversation-privacy';
 import { parseFriendAcceptedNotice } from '@/composables/zalo-system-notice';
+import { normalizeChatMessage } from './normalize-chat-message';
 import {
   isSameMessageIdentity,
   messageEchoIdOf,
@@ -32,6 +33,7 @@ interface ZaloAccount {
   /** T11 2026-06-20: thời điểm nick bị XÓA (ẩn-mềm). !=null → badge "Đã xóa" + khóa ô soạn tin.
    *  KHÔNG suy ra từ status='disconnected' (nick sống cũng disconnected tạm). */
   archivedAt?: string | null;
+  status?: string;
 }
 
 export interface AiSentiment {
@@ -621,66 +623,7 @@ function buildChat() {
   }
 
   function normalizeMessage(message: RawMessage): Message {
-    const counts = new Map<string, number>();
-    const myEmojis = new Set<string>();
-    const myId = authStore.user?.id || '';
-    for (const reaction of message.reactions || []) {
-      counts.set(reaction.emoji, (counts.get(reaction.emoji) || 0) + 1);
-      if (myId && reaction.reactorId === myId) myEmojis.add(reaction.emoji);
-    }
-    const { reactions, quote, ...base } = message;
-
-    // Normalize quote: Zalo lưu với field 'msg' + 'fromD' thay vì 'content' + 'senderName'.
-    // Map sang ReplyMessageRef chuẩn để MessageBubble render đúng.
-    // - msgType derive từ cliMsgType (Zalo numeric enum) hoặc parse attach JSON
-    //   khi msg rỗng (vd reply tin ảnh: msg="" + attach có thumbUrl → infer 'image').
-    let reply: ReplyMessageRef | null = null;
-    if (quote) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const q = quote as any;
-      const cliType = Number(q.cliMsgType ?? 0);
-      let msgType = String(q.msgType ?? '');
-      if (!msgType && cliType) {
-        // Zalo cliMsgType enum (partial): 1=text, 19=link, 22=video, 23=sticker,
-        // 24=voice, 30=file, 32=image, 38=card, 46=location
-        msgType = ({ 1: 'text', 19: 'link', 22: 'video', 23: 'sticker',
-          24: 'voice', 30: 'file', 32: 'image', 38: 'card', 46: 'location',
-        } as Record<number, string>)[cliType] || '';
-      }
-      // Fallback: parse attach JSON nếu cliMsgType missing
-      if (!msgType && typeof q.attach === 'string' && q.attach.length > 2) {
-        try {
-          const a = JSON.parse(q.attach);
-          if (a.thumbUrl || a.oriUrl) msgType = 'image';
-          else if (a.href) msgType = 'link';
-        } catch { /* ignore */ }
-      }
-      reply = {
-        msgId: String(q.msgId || q.msg_id || q.globalMsgId || ''),
-        cliMsgId: q.cliMsgId,
-        content: String(q.msg ?? q.content ?? ''),
-        senderName: String(q.fromD ?? q.senderName ?? q.fromName ?? ''),
-        msgType,
-        uidFrom: String(q.uidFrom ?? q.uid_from ?? ''),
-        ts: String(q.ts ?? ''),
-        propertyExt: q.propertyExt,
-        ttl: q.ttl,
-      };
-    }
-
-    return {
-      ...base,
-      reply,
-      reactions: Array.from(counts.entries()).map(([emoji, count]) => ({ emoji, count, reacted: myEmojis.has(emoji) })),
-      // 2026-06-20: GIỮ per-user rows (reactorName từ BE) cho popup chi tiết — không vứt như trước.
-      reactionDetails: (message.reactions || []).map((r) => ({
-        reactorId: r.reactorId,
-        reactorName: r.reactorName ?? null,
-        reactorSource: r.reactorSource ?? null,
-        reactorAvatar: r.reactorAvatar ?? null,
-        emoji: r.emoji,
-      })),
-    };
+    return normalizeChatMessage(message, authStore.user?.id || '');
   }
 
   // 2026-06-12 (anh báo "tin nhắn dính lẫn giữa các hội thoại" — P0 lộ dữ liệu).

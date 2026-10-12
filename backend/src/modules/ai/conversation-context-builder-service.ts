@@ -7,6 +7,7 @@ export type ContextActor = {
   userId: string;
   role: string;
   privacyUnlocked?: boolean;
+  allowedAccountIds?: string[];
 };
 
 export type ContextSource = {
@@ -223,7 +224,8 @@ export async function buildConversationContext(
   const now = new Date().toISOString();
 
   const conversation = await prisma.conversation.findFirst({
-    where: { id: conversationId, orgId: actor.orgId, deletedAt: null },
+    where: { id: conversationId, orgId: actor.orgId, deletedAt: null,
+      ...(actor.allowedAccountIds ? { isPrivate: false, zaloAccountId: { in: actor.allowedAccountIds }, zaloAccount: { privacyMode: 'sub', archivedAt: null } } : {}) },
     select: {
       id: true,
       orgId: true,
@@ -258,6 +260,10 @@ export async function buildConversationContext(
   });
 
   if (!conversation) throw new ContextBuilderError('Conversation not found', 404, 'CONVERSATION_NOT_FOUND');
+  if (actor.allowedAccountIds && (!actor.allowedAccountIds.includes(conversation.zaloAccountId)
+    || conversation.isPrivate || conversation.zaloAccount.privacyMode !== 'sub')) {
+    throw new ContextBuilderError('Conversation is outside the agent scope', 403, 'CONVERSATION_ACCESS_DENIED');
+  }
 
   const access = await checkZaloAccess({
     userId: actor.userId,
@@ -330,7 +336,8 @@ export async function buildConversationContext(
       },
     }) : Promise.resolve(null),
     conversation.threadType === 'user' && conversation.contactId ? prisma.followupEnrollment.findMany({
-      where: { orgId: actor.orgId, contactId: conversation.contactId, status: { in: ['running', 'waiting', 'waiting_sale'] } },
+      where: { orgId: actor.orgId, contactId: conversation.contactId, status: { in: ['running', 'waiting', 'waiting_sale'] },
+        ...(actor.allowedAccountIds ? { zaloAccountId: { in: actor.allowedAccountIds } } : {}) },
       orderBy: [{ updatedAt: 'desc' }],
       take: 3,
       select: {

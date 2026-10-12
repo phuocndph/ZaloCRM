@@ -84,6 +84,25 @@ describe('ConversationContextBuilder', () => {
     } satisfies Partial<ContextBuilderError>);
     expect(mocks.prisma.message.findMany).not.toHaveBeenCalled();
   });
+  it('limits agent context and followup data to its selected active public nicks', async () => {
+    await buildConversationContext({ ...actor, allowedAccountIds: ['za-1'] }, 'conv-1');
+    expect(mocks.prisma.conversation.findFirst.mock.calls[0][0].where).toMatchObject({
+      isPrivate: false, zaloAccountId: { in: ['za-1'] }, zaloAccount: { privacyMode: 'sub', archivedAt: null },
+    });
+    expect(mocks.prisma.followupEnrollment.findMany.mock.calls[0][0].where).toMatchObject({
+      zaloAccountId: { in: ['za-1'] },
+    });
+  });
+  it.each([
+    { allowedAccountIds: ['other'] },
+    { allowedAccountIds: [] },
+    { allowedAccountIds: ['za-1'], overrides: { isPrivate: true, privateOwnerUserId: actor.userId } },
+    { allowedAccountIds: ['za-1'], overrides: { zaloAccount: { id: 'za-1', privacyMode: 'main', ownerUserId: actor.userId } } },
+  ])('blocks out-of-scope Agent context even when the backing employee could access it: %j', async ({ allowedAccountIds, overrides }) => {
+    mocks.prisma.conversation.findFirst.mockResolvedValue(conversation(overrides));
+    await expect(buildConversationContext({ ...actor, allowedAccountIds }, 'conv-1')).rejects.toMatchObject({ code: 'CONVERSATION_ACCESS_DENIED' });
+    expect(mocks.prisma.message.findMany).not.toHaveBeenCalled();
+  });
 
   it('trims long conversations to the token budget and keeps the newest messages', async () => {
     const longMessages = Array.from({ length: 120 }, (_, index) => ({

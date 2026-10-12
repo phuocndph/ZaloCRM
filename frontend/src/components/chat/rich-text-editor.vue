@@ -183,7 +183,7 @@
 <script setup lang="ts">
 import { watch, onBeforeUnmount, ref, computed } from 'vue';
 import { useEditor, EditorContent } from '@tiptap/vue-3';
-import { Mark, mergeAttributes } from '@tiptap/core';
+import { Mark, mergeAttributes, type JSONContent } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
 import Mention from '@tiptap/extension-mention';
@@ -670,9 +670,10 @@ function extractRichPayload(doc: TiptapNode | null): { text: string; styles: Zal
   return { text: textBuf, styles, mentions };
 }
 
-function getRichPayload(): { text: string; styles: ZaloStyle[]; mentions: ZaloMention[] } {
+function getRichPayload(): { text: string; styles: ZaloStyle[]; mentions: ZaloMention[]; document?: JSONContent } {
   if (!editor.value) return { text: '', styles: [], mentions: [] };
-  return extractRichPayload(editor.value.getJSON() as TiptapNode);
+  const document = editor.value.getJSON();
+  return { ...extractRichPayload(document as TiptapNode), document };
 }
 
 // ── AI Auto-format 2026-05-21 ───────────────────────────────────────────
@@ -711,10 +712,15 @@ async function onAiFormat() {
 // để nạp nội dung lúc mount KHÔNG cướp focus — fix bug nhiều editor (block stack) giành
 // focus, con trỏ loạn khi chuyển giữa các thành phần (anh báo 2026-06-08).
 function applyRichPayload(
-  payload: { text: string; styles?: Array<{ st: string; start: number; len: number }> },
+  payload: { text: string; styles?: Array<{ st: string; start: number; len: number }>; mentions?: ZaloMention[]; document?: JSONContent },
   opts: { focus?: boolean } = {},
 ) {
   if (!editor.value) return;
+  if (payload.document) {
+    editor.value.commands.setContent(payload.document);
+    if (opts.focus) editor.value.commands.focus('end');
+    return;
+  }
   const text = payload.text || '';
   if (!text) {
     // Vẫn clear nội dung cũ khi payload rỗng (đổi sang biến thể trống) để không sót text card trước.
@@ -761,6 +767,19 @@ function applyRichPayload(
     else continue;
 
     editor.value.chain().setTextSelection({ from, to }).setMark(markName, attrs || {}).run();
+  }
+  // Replace from right to left: each mention is one document token, not its display length.
+  let nextStart = text.length;
+  const mentions = [...(payload.mentions ?? [])].sort((a, b) => b.pos - a.pos);
+  for (const mention of mentions) {
+    const { pos, len, uid } = mention;
+    const display = text.slice(pos, pos + len);
+    if (!uid || !Number.isInteger(pos) || !Number.isInteger(len) || pos < 0 || len <= 1
+      || pos + len > nextStart || !display.startsWith('@') || display.includes('\n')) continue;
+    editor.value.commands.insertContentAt({ from: linearToDocPos(pos), to: linearToDocPos(pos + len) }, {
+      type: 'mention', attrs: { id: uid, label: display.slice(1) },
+    });
+    nextStart = pos;
   }
   // Chỉ focus khi caller yêu cầu (AI Format). Nạp lúc mount → KHÔNG focus → không cướp con trỏ.
   if (opts.focus) editor.value.commands.focus('end');

@@ -7,13 +7,13 @@ import type { Message } from '@/composables/use-chat';
 
 // Trạng thái typing và reply/edit
 const typingUsers = ref<Map<string, { userId: string; userName: string }[]>>(new Map());
-const replyingTo = ref<Message | null>(null);
-const editingMessage = ref<Message | null>(null);
 
 // Debounce typing — tránh spam server
 const typingTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 export function useChatOperations() {
+  const replyingTo = ref<Message | null>(null);
+  const editingMessage = ref<Message | null>(null);
   async function addReaction(convId: string, msgId: string, reaction: string): Promise<void> {
     try {
       await api.post(`/conversations/${convId}/reactions`, { msgId, reaction });

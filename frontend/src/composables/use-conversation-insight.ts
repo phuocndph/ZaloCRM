@@ -1,5 +1,7 @@
-import { ref } from 'vue';
+import { onScopeDispose, ref } from 'vue';
 import { api } from '@/api';
+import { createAppSocket } from '@/api/socket';
+import type { Socket } from 'socket.io-client';
 import type { AiReadinessStatus } from '@/api/ai-admin';
 
 export type ConversationInsightSummary = {
@@ -28,6 +30,14 @@ export type ConversationInsight = {
   id: string;
   version: number;
   mode: 'shadow' | 'automatic_followup';
+  sourceThroughMessageId?: string | null;
+  latestMessageId?: string | null;
+  latestMessageAt?: string | null;
+  analysisProgress?: {
+    aiStatus: 'pending' | 'queued' | 'analyzing' | 'ready' | 'verification' | 'failed' | 'not_applicable';
+    aiStatusLabel: string;
+    aiStatusDetail: string;
+  };
   stage: string;
   stageConfidence: number;
   stageReason: string | null;
@@ -77,117 +87,199 @@ export function useConversationInsight() {
   const readiness = ref<ConversationInsightReadiness | null>(null);
   const loading = ref(false);
   const error = ref('');
-  let requestVersion = 0;
+  const analysisProgress = ref<ConversationInsight['analysisProgress'] | null>(null);
+  const latestMessageId = ref<string | null>(null);
+  const invalidated = ref(false);
+  let activeConversationId: string | null = null;
+  let generation = 0;
+  let activityVersion = 0;
+  let socket: Socket | null = null;
+  let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  let inFlight: Promise<void> | null = null;
+  let refreshAgain = false;
+  let pollAttempts = 0;
+  let awaitingRefresh = false;
+  let previousMarker: string | null = null;
+  let previousAttemptMarker: string | null = null;
+  let attemptMarker: string | null = null;
+  let posting = false;
   const autoAnalyzeAttempted = new Set<string>();
+  const marker = () => insight.value ? `${insight.value.id}:${insight.value.version}:${insight.value.updatedAt}` : null;
+  const isBusy = () => ['queued', 'analyzing'].includes(analysisProgress.value?.aiStatus || '');
+  const isFresh = () => !!insight.value && !invalidated.value
+    && (!latestMessageId.value || insight.value.sourceThroughMessageId === latestMessageId.value);
 
-  const sleep = (milliseconds: number) => new Promise<void>((resolve) => {
-    window.setTimeout(resolve, milliseconds);
-  });
+  function cancelTimers() {
+    if (refreshTimer) clearTimeout(refreshTimer);
+    if (pollTimer) clearTimeout(pollTimer);
+    refreshTimer = null;
+    pollTimer = null;
+  }
 
-  async function analyzeInsight(conversationId: string) {
-    const currentRequest = ++requestVersion;
-    const previousInsightMarker = insight.value
-      ? `${insight.value.id}:${insight.value.version}:${insight.value.updatedAt}`
-      : null;
-    loading.value = true;
-    error.value = '';
-    try {
-      const queued = await api.post(
-        `/ai/insights/conversations/${conversationId}/analyze`,
-        {},
-        { timeout: 15_000 },
-      );
-      if (currentRequest !== requestVersion) return;
-      if (!queued.data?.queued) {
-        const latest = await api.get(`/ai/insights/conversations/${conversationId}`);
-        if (currentRequest === requestVersion) {
-          insight.value = latest.data.insight;
-          readiness.value = latest.data.readiness ?? readiness.value;
-        }
-        return;
-      }
-      // The worker uses one prepared conversation package for a combined AI
-      // analysis. Poll for the persisted result without blocking this request.
-      for (let attempt = 0; attempt < 45; attempt += 1) {
-        await sleep(2_000);
-        if (currentRequest !== requestVersion) return;
-        const latest = await api.get(`/ai/insights/conversations/${conversationId}`);
-        if (currentRequest !== requestVersion) return;
-        insight.value = latest.data.insight;
-        readiness.value = latest.data.readiness ?? readiness.value;
-        const latestMarker = insight.value
-          ? `${insight.value.id}:${insight.value.version}:${insight.value.updatedAt}`
-          : null;
-        if (latestMarker && latestMarker !== previousInsightMarker) break;
-      }
-    } catch (requestError: any) {
-      if (currentRequest !== requestVersion) return;
-      insight.value = null;
-      error.value = safeInsightError(requestError);
-    } finally {
-      if (currentRequest === requestVersion) loading.value = false;
-    }
+  function scheduleRefresh(delay = 350) {
+    if (!activeConversationId) return;
+    cancelTimers();
+    refreshTimer = setTimeout(() => { refreshTimer = null; void readSnapshot(); }, delay);
+  }
+
+  function schedulePoll() {
+    if (pollTimer || refreshTimer || posting || !activeConversationId || pollAttempts >= 450) return;
+    if (!isBusy() && !awaitingRefresh) return;
+    pollTimer = setTimeout(() => {
+      pollTimer = null;
+      pollAttempts += 1;
+      void readSnapshot();
+    }, 2_000);
+  }
+
+  function startRealtime() {
+    if (socket) return;
+    socket = createAppSocket({ onReconnect: () => scheduleRefresh(0) });
+    socket.on('chat:message', (payload: { conversationId?: string; systemNotification?: boolean }) => {
+      if (payload.conversationId !== activeConversationId || payload.systemNotification) return;
+      // Hide the previous recommendation immediately, before the status fetch.
+      invalidated.value = true;
+      analysisProgress.value = {
+        aiStatus: 'pending', aiStatusLabel: 'Chờ kết quả phân tích AI',
+        aiStatusDetail: 'Hội thoại vừa có tin nhắn mới, đang lấy trạng thái cập nhật.',
+      };
+      activityVersion += 1;
+      pollAttempts = 0;
+      scheduleRefresh();
+    });
+    socket.on('work-items:updated', (payload: { conversationId?: string }) => {
+      if (payload.conversationId === activeConversationId) scheduleRefresh();
+    });
   }
 
   function clear() {
-    requestVersion += 1;
+    generation += 1;
+    activeConversationId = null;
+    cancelTimers();
+    socket?.disconnect();
+    socket = null;
+    inFlight = null;
+    refreshAgain = false;
+    posting = false;
+    awaitingRefresh = false;
+    previousAttemptMarker = null;
+    attemptMarker = null;
+    pollAttempts = 0;
+    invalidated.value = false;
+    latestMessageId.value = null;
+    analysisProgress.value = null;
     insight.value = null;
     readiness.value = null;
     loading.value = false;
     error.value = '';
   }
 
-  async function fetchInsight(conversationId: string) {
-    const currentRequest = ++requestVersion;
-    loading.value = true;
-    error.value = '';
-    try {
-      const loadLatest = () => api.get<{
-        insight: ConversationInsight | null;
-        readiness?: ConversationInsightReadiness;
-      }>(`/ai/insights/conversations/${conversationId}`);
-      let response = await loadLatest();
-      if (currentRequest !== requestVersion) return;
-      insight.value = response.data.insight;
-      readiness.value = response.data.readiness ?? null;
+  function selectConversation(conversationId: string) {
+    if (activeConversationId === conversationId) return;
+    clear();
+    activeConversationId = conversationId;
+    startRealtime();
+  }
 
-      // A conversation imported before AI was configured has no inbound event
-      // left to trigger the debounced worker. Backfill it once on first view,
-      // then poll until the worker has persisted the insight.
-      const readyForBackfill = !insight.value
-        && ['ready', 'needs_test'].includes(readiness.value?.aiStatus || '')
-        && !autoAnalyzeAttempted.has(conversationId);
-      if (readyForBackfill) {
-        autoAnalyzeAttempted.add(conversationId);
-        const queued = await api.post(
-          `/ai/insights/conversations/${conversationId}/analyze`,
-          {},
-          { timeout: 15_000 },
-        );
-        if (currentRequest !== requestVersion) return;
-        if (queued.data?.queued) {
-          // F5Quota requests can take tens of seconds. Keep the panel in a
-          // loading state while checking, without blocking the HTTP request.
-          for (let attempt = 0; attempt < 45; attempt += 1) {
-            await sleep(2_000);
-            if (currentRequest !== requestVersion) return;
-            response = await loadLatest();
-            if (currentRequest !== requestVersion) return;
-            insight.value = response.data.insight;
-            readiness.value = response.data.readiness ?? readiness.value;
-            if (insight.value) break;
-          }
+  async function readSnapshot(quiet = true): Promise<void> {
+    if (!activeConversationId) return;
+    if (inFlight) { refreshAgain = true; return inFlight; }
+    const currentGeneration = generation;
+    const currentActivity = activityVersion;
+    const conversationId = activeConversationId;
+    if (!quiet) loading.value = true;
+    const request = (async () => {
+      try {
+        const { data } = await api.get<{
+          insight: ConversationInsight | null;
+          readiness?: ConversationInsightReadiness;
+          latestMessageId?: string | null;
+          analysisProgress?: ConversationInsight['analysisProgress'];
+          analysisAttempt?: { status: string; updatedAt: string; messageId: string } | null;
+        }>(`/ai/insights/conversations/${conversationId}`, { timeout: 15_000 });
+        if (currentGeneration !== generation) return;
+        if (currentActivity !== activityVersion) { refreshAgain = true; return; }
+        const wasBusy = isBusy();
+        insight.value = data.insight;
+        readiness.value = data.readiness ?? readiness.value;
+        latestMessageId.value = data.latestMessageId ?? data.insight?.latestMessageId ?? null;
+        analysisProgress.value = data.analysisProgress ?? data.insight?.analysisProgress ?? null;
+        attemptMarker = data.analysisAttempt ? `${data.analysisAttempt.status}:${data.analysisAttempt.updatedAt}` : null;
+        invalidated.value = false;
+        error.value = '';
+        if (!wasBusy && isBusy()) pollAttempts = 0;
+        if (analysisProgress.value?.aiStatus === 'failed'
+          || data.analysisAttempt?.status === 'failed' && attemptMarker !== previousAttemptMarker
+          || (isFresh() && !isBusy() && marker() !== previousMarker)) awaitingRefresh = false;
+      } catch (requestError: any) {
+        if (currentGeneration !== generation) return;
+        if ([401, 403, 404].includes(Number(requestError?.response?.status))) clear();
+        error.value = safeInsightError(requestError);
+      } finally {
+        if (currentGeneration === generation) {
+          inFlight = null;
+          if (!posting) loading.value = false;
+          if (refreshAgain) { refreshAgain = false; scheduleRefresh(0); }
+          else schedulePoll();
         }
       }
+    })();
+    inFlight = request;
+    return request;
+  }
+
+  async function analyzeInsight(conversationId: string) {
+    selectConversation(conversationId);
+    if (posting) return;
+    const currentGeneration = generation;
+    posting = true;
+    loading.value = true;
+    previousMarker = marker();
+    previousAttemptMarker = attemptMarker;
+    pollAttempts = 0;
+    error.value = '';
+    try {
+      const queued = await api.post(`/ai/insights/conversations/${conversationId}/analyze`, {}, { timeout: 15_000 });
+      if (currentGeneration !== generation) return;
+      awaitingRefresh = queued.data?.queued === true;
+      if (awaitingRefresh) {
+        analysisProgress.value = {
+          aiStatus: 'queued', aiStatusLabel: 'Đang chờ AI xử lý',
+          aiStatusDetail: 'Tin nhắn mới nhất đã được đưa vào hàng đợi phân tích.',
+        };
+      }
+      await readSnapshot();
     } catch (requestError: any) {
-      if (currentRequest !== requestVersion) return;
-      insight.value = null;
-      readiness.value = null;
-      error.value = safeInsightError(requestError);
+      if (currentGeneration === generation) error.value = safeInsightError(requestError);
     } finally {
-      if (currentRequest === requestVersion) loading.value = false;
+      if (currentGeneration === generation) {
+        posting = false;
+        loading.value = false;
+        schedulePoll();
+      }
     }
   }
 
-  return { insight, readiness, loading, error, fetchInsight, analyzeInsight, clear };
+  async function fetchInsight(conversationId: string) {
+    selectConversation(conversationId);
+    const currentGeneration = generation;
+    await readSnapshot(false);
+    if (currentGeneration !== generation || error.value) return;
+    // Only the initial view may backfill; live events only read persisted state.
+    if (!isFresh() && !isBusy()
+      && analysisProgress.value?.aiStatus !== 'failed'
+      && ['ready', 'needs_test'].includes(readiness.value?.aiStatus || '')
+      && !autoAnalyzeAttempted.has(conversationId)) {
+      autoAnalyzeAttempted.add(conversationId);
+      await analyzeInsight(conversationId);
+    }
+  }
+
+  onScopeDispose(clear);
+  function refreshStatus() {
+    pollAttempts = 0;
+    return readSnapshot(false);
+  }
+  return { insight, readiness, analysisProgress, latestMessageId, invalidated, loading, error, fetchInsight, analyzeInsight, refreshStatus, clear };
 }

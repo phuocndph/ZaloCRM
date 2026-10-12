@@ -114,7 +114,12 @@ export class AIClient {
           attempt: attempt + 1,
           errorCode: lastError.code,
         });
-        if (!lastError.retryable || attempt === config.maxRetries) break;
+        // Capacity failures need queue-level backoff. Retrying immediately
+        // spends the same provider quota again and can open the circuit.
+        if (!lastError.retryable
+          || lastError.code === 'RATE_LIMITED'
+          || lastError.code === 'CIRCUIT_OPEN'
+          || attempt === config.maxRetries) break;
         await this.sleep(Math.min(2_000, 100 * (2 ** attempt)));
       } finally {
         clearTimeout(timeout);
@@ -160,7 +165,10 @@ export class AIClient {
       });
     } catch (primaryError) {
       const normalized = AIErrorHandler.normalize(primaryError, primary.provider);
-      if (!primary.fallbackModelConfigId || !normalized.retryable) throw normalized;
+      if (!primary.fallbackModelConfigId
+        || !normalized.retryable
+        || normalized.code === 'RATE_LIMITED'
+        || normalized.code === 'CIRCUIT_OPEN') throw normalized;
       selected = await this.registry.resolve(request.orgId, primary.fallbackModelConfigId);
       if (selected.id === primary.id) throw normalized;
       usedFallback = true;

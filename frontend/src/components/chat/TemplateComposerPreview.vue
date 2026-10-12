@@ -106,7 +106,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, onBeforeUnmount } from 'vue';
 import { api } from '@/api/index';
 import { sendMediaToConversation } from '@/api/media';
 import { useToast } from '@/composables/use-toast';
@@ -127,6 +127,8 @@ const blocks = ref<TemplateBlock[]>(props.initialBlocks.map((b) => ({ ...b, stat
 const sending = ref(false);
 const defaultDelayMs = ref(300);
 let stopped = false;
+let disposed = false;
+onBeforeUnmount(() => { disposed = true; stopped = true; });
 
 // echoId ổn định / block (idempotency) — sinh 1 lần, retry dùng lại → server dedup, không gửi trùng.
 const echoIds = new Map<string, string>();
@@ -177,28 +179,38 @@ function splitBlock(i: number) {
 // ── Gửi tuần tự ──
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function sendTextBlock(b: TemplateBlock) {
-  await api.post(`/conversations/${props.conversationId}/messages`, {
+async function sendTextBlock(b: TemplateBlock, conversationId: string) {
+  const { data } = await api.post(`/conversations/${conversationId}/messages`, {
     content: b.content,
     echoId: echoFor(b.id), // idempotency: retry cùng echoId → BE dedup
   });
+  if (data.pendingConfirmation || data.deliveryState === 'uncertain' || data.metadata?.sendStatus === 'failed' || data.deliveryState === 'failed') {
+    throw new Error(data.metadata?.failReason || 'Zalo chưa xác nhận gửi. Thử lại dùng cùng mã tin, không gửi trùng.');
+  }
 }
-async function sendMediaBlock(b: TemplateBlock) {
+async function sendMediaBlock(b: TemplateBlock, conversationId: string) {
   for (const [index, a] of (b.attachments ?? []).entries()) {
+    if (stopped || disposed || props.conversationId !== conversationId || !props.canSend) {
+      stopped = true;
+      return;
+    }
     if (!a.assetId) throw new Error('Ảnh không có trong Kho Media — không gửi được');
-    await sendMediaToConversation(
+    const result = await sendMediaToConversation(
       a.assetId,
-      props.conversationId,
+      conversationId,
       undefined,
       undefined,
       echoFor(`${b.id}:media:${index}`),
     );
+    if (result.pendingConfirmation) throw new Error('Zalo đang xác nhận tệp. Kiểm tra kết quả trước khi gửi tiếp.');
   }
 }
 
 async function runPlan(fromBlockId?: string) {
+  if (sending.value || disposed) return;
   if (!props.canSend) { toast.push('Bạn không có quyền gửi trong hội thoại này'); return; }
   sending.value = true;
+  const conversationId = props.conversationId;
   stopped = false;
   // Reset lỗi cũ (giữ trạng thái 'sent' để KHÔNG gửi lại — chống trùng khi retry).
   for (const b of blocks.value) if (b.status === 'failed') b.error = null;
@@ -206,6 +218,7 @@ async function runPlan(fromBlockId?: string) {
   const plan = sendableBlocks(blocks.value);
   let started = !fromBlockId;
   for (const b of plan) {
+    if (props.conversationId !== conversationId || !props.canSend) stopped = true;
     if (fromBlockId && b.id === fromBlockId) started = true;
     if (!started) continue;
     if (b.status === 'sent') continue; // đã gửi thành công → bỏ qua (idempotent resume)
@@ -213,9 +226,9 @@ async function runPlan(fromBlockId?: string) {
     b.status = 'sending';
     try {
       if (b.type === 'delay') { await sleep(b.delayMs ?? 0); b.status = 'sent'; continue; }
-      if (b.type === 'text') await sendTextBlock(b);
-      else await sendMediaBlock(b);
-      b.status = 'sent';
+      if (b.type === 'text') await sendTextBlock(b, conversationId);
+      else await sendMediaBlock(b, conversationId);
+      b.status = stopped ? 'cancelled' : 'sent';
       b.error = null;
       if (defaultDelayMs.value > 0) await sleep(defaultDelayMs.value);
     } catch (e: any) {

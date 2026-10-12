@@ -195,6 +195,7 @@ const routes: RouteRecordRaw[] = [
 
       // 🛠 Dev & API
       { path: 'dev/api',           name: 'Settings.Api',          component: () => import('@/views/ApiSettingsView.vue'), meta: { resource: 'webhook' } },
+      { path: 'dev/agents', name: 'Settings.Agents', component: () => import('@/views/settings/AgentConnectionsPage.vue'), meta: { resource: 'webhook', action: 'edit' } },
       { path: 'dev/public-token',  name: 'Settings.PublicToken',  component: () => import('@/views/settings/SettingsComingSoon.vue'), props: { feature: 'public-token' }, meta: { resource: 'settings' } },
       { path: 'dev/feature-flags', name: 'Settings.FeatureFlags', component: () => import('@/views/settings/SettingsComingSoon.vue'), props: { feature: 'feature-flags' }, meta: { resource: 'settings' } },
       { path: 'dev/backup',        name: 'Settings.Backup',       component: () => import('@/views/settings/SettingsComingSoon.vue'), props: { feature: 'backup' }, meta: { resource: 'settings' } },
@@ -432,6 +433,7 @@ const ROUTE_TITLES: Record<string, string> = {
   'Settings.Automation': 'Cài đặt Automation',
   'Settings.Integrations': 'Tích hợp',
   'Settings.Api': 'API & Webhook',
+  'Settings.Agents': 'Kết nối Agent',
   'Settings.PublicToken': 'Public Token',
   'Settings.FeatureFlags': 'Feature Flags',
   'Settings.Backup': 'Sao lưu',

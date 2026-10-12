@@ -533,6 +533,11 @@ async function getPinConversations(accountId: string) {
     (api) => api.getPinConversations());
 }
 
+async function getMute(accountId: string) {
+  return exec({ accountId, category: 'query', operation: 'getMute' },
+    (api) => api.getMute());
+}
+
 // ─── Group Management ───────────────────────────────────────────────────────
 async function createGroup(accountId: string, options: { name: string; memberIds: string[] }) {
   return exec({ accountId, category: 'group_admin', operation: 'createGroup' },
@@ -841,6 +846,7 @@ export const zaloOps = {
   editMessage,
   pinConversation,
   getPinConversations,
+  getMute,
 
   // Group management
   createGroup,

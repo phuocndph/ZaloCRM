@@ -11,11 +11,23 @@
 import type { FastifyRequest, FastifyReply } from 'fastify';
 import { prisma } from '../../shared/database/prisma-client.js';
 import { enterTenantContext, runSystemQuery } from '../../shared/tenant/tenant-context.js';
+import { consumeInternalAgentIdentity } from '../../shared/internal-agent-identity.js';
 
 export async function authMiddleware(
   request: FastifyRequest,
   reply: FastifyReply,
 ): Promise<void> {
+  const capability = request.headers['x-crm-internal-agent'];
+  if (capability !== undefined) {
+    const identity = typeof capability === 'string'
+      ? consumeInternalAgentIdentity(capability, request.method, request.url) : null;
+    if (!identity) return reply.status(401).send({ error: 'Unauthorized' });
+    request.user = identity;
+    request.agentScope = identity.agentScope;
+    request.authCtx = { userId: identity.id, orgId: identity.orgId, role: identity.role };
+    enterTenantContext(request.authCtx);
+    return;
+  }
   try {
     await request.jwtVerify();
   } catch {

@@ -1,10 +1,13 @@
 import type { FastifyInstance } from 'fastify';
 import { prisma } from '../../shared/database/prisma-client.js';
 import { authMiddleware } from '../auth/auth-middleware.js';
-import { buildPrivacyContext } from '../privacy/redact.js';
+import { buildPrivacyContext, canSeeConversationContent, isConversationPrivateFor } from '../privacy/redact.js';
 import { getOwnerScope } from '../rbac/owner-scope.js';
 import {
+  listConversationLoadOverview,
+  listConversationAnalysisActivity,
   listConversationWorkItems,
+  reconcileConversationWorkItems,
   updateConversationWorkItem,
   type WorkItemScope,
 } from './conversation-work-item-service.js';
@@ -23,6 +26,30 @@ function validScope(value: unknown): value is WorkItemScope {
 
 export async function conversationWorkItemRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authMiddleware);
+
+  app.get('/api/v1/work-items/overview', async (request, reply) => {
+    const user = request.user as JwtUser;
+    const query = request.query as { q?: string; includeCompleted?: string };
+    const scope = await getOwnerScope({ userId: user.id, orgId: user.orgId, legacyRole: user.role, resource: 'conversation' });
+    const visibleUserIds = scope.canViewAll
+      ? (await prisma.user.findMany({ where: { orgId: user.orgId, isActive: true }, select: { id: true } })).map((row) => row.id)
+      : scope.visibleUserIds;
+    // Luôn làm mới materialized queue trước khi hiển thị tổng quan để nút tải lại
+    // phản ánh tin nhắn/phân công mới, không phải chờ cron 2 phút.
+    await Promise.all(visibleUserIds.map((assigneeUserId) => reconcileConversationWorkItems({
+      orgId: user.orgId,
+      assigneeUserId,
+      privacy: { viewerUserId: assigneeUserId, orgId: user.orgId, privacyUnlocked: false },
+    }).catch(() => [])));
+    const result = await listConversationLoadOverview({
+      orgId: user.orgId,
+      visibleUserIds,
+      viewerUserId: user.id,
+      query: query.q,
+      includeCompleted: query.includeCompleted === 'true',
+    });
+    return { ...result, canViewAll: scope.canViewAll };
+  });
 
   app.get('/api/v1/work-items', async (request, reply) => {
     const user = request.user as JwtUser;
@@ -49,7 +76,8 @@ export async function conversationWorkItemRoutes(app: FastifyInstance) {
       offset: Number.isFinite(offset) ? offset : undefined,
       query: query.q,
     });
-    return { ...result, assignee };
+    const aiActivity = await listConversationAnalysisActivity({ orgId: user.orgId, assigneeUserId });
+    return { ...result, assignee, aiActivity };
   });
 
   app.patch('/api/v1/work-items/:itemId', async (request, reply) => {
@@ -61,11 +89,28 @@ export async function conversationWorkItemRoutes(app: FastifyInstance) {
     }
     const existing = await prisma.conversationWorkItem.findFirst({
       where: { id: itemId, orgId: user.orgId },
-      select: { id: true, assigneeUserId: true },
+      select: {
+        id: true,
+        assigneeUserId: true,
+        conversation: {
+          select: {
+            isPrivate: true,
+            privateOwnerUserId: true,
+            zaloAccount: { select: { privacyMode: true, ownerUserId: true } },
+          },
+        },
+      },
     });
     if (!existing) return reply.status(404).send({ error: 'Không tìm thấy công việc', code: 'WORK_ITEM_NOT_FOUND' });
     if (!(await canViewAssignee(user, existing.assigneeUserId))) {
       return reply.status(403).send({ error: 'Bạn không có quyền cập nhật công việc này', code: 'WORK_ITEM_FORBIDDEN' });
+    }
+    const privacy = await buildPrivacyContext(request);
+    if (existing.conversation && (
+      isConversationPrivateFor(existing.conversation, privacy.viewerUserId)
+      || !canSeeConversationContent(existing.conversation, privacy)
+    )) {
+      return reply.status(403).send({ error: 'Công việc thuộc nội dung riêng tư chưa được mở khóa', code: 'WORK_ITEM_PRIVATE' });
     }
     let snoozedUntil: Date | null = null;
     if (body.action === 'snooze') {
@@ -77,9 +122,19 @@ export async function conversationWorkItemRoutes(app: FastifyInstance) {
       }
     }
     try {
-      const item = await updateConversationWorkItem({ orgId: user.orgId, itemId, action: body.action, snoozedUntil });
+      const item = await updateConversationWorkItem({
+        orgId: user.orgId,
+        itemId,
+        action: body.action,
+        snoozedUntil,
+        actor: { actorId: user.id },
+        allowedFollowupAccountIds: request.agentScope?.allowedAccountIds,
+      });
       return { item };
     } catch (error) {
+      if ((error as Error).message === 'WORK_ITEM_STALE') {
+        return reply.status(409).send({ error: 'Bước Follow-up đã thay đổi. Hãy tải lại danh sách trước khi hoàn thành.', code: 'WORK_ITEM_STALE' });
+      }
       if ((error as Error).message === 'SNOOZE_TIME_INVALID') {
         return reply.status(400).send({ error: 'Thời gian hoãn phải nằm trong tương lai', code: 'SNOOZE_TIME_INVALID' });
       }

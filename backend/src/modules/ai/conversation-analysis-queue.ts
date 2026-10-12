@@ -13,12 +13,25 @@ import { backfillCustomerAutomations } from './customer-automation-orchestrator.
 import { COUNTERPARTY_CLASSIFIER_VERSION } from './counterparty-role.js';
 import { isSupportedBusinessGroup } from '../zalo/group-monitoring-policy.js';
 import { isZaloFriendAcceptedNotification } from '../zalo/zalo-friend-accepted-notification.js';
+import { emitConversationWorkItemsUpdated } from '../dashboard/conversation-work-item-service.js';
 
 export const CONVERSATION_ANALYSIS_QUEUE = 'conversation-analysis';
 const configuredDebounceMs = Number(process.env.AI_CONVERSATION_ANALYSIS_DEBOUNCE_MS);
 export const CONVERSATION_ANALYSIS_DEBOUNCE_MS = Number.isFinite(configuredDebounceMs)
   ? Math.max(5_000, configuredDebounceMs)
   : 2 * 60 * 1000;
+
+function boundedInteger(value: string | undefined, fallback: number, min: number, max: number) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(min, Math.min(max, Math.floor(parsed))) : fallback;
+}
+
+export function resolveConversationAnalysisWorkerSettings(env: NodeJS.ProcessEnv = process.env) {
+  return {
+    concurrency: boundedInteger(env.AI_CONVERSATION_ANALYSIS_CONCURRENCY, 2, 1, 8),
+    startsPerMinute: boundedInteger(env.AI_CONVERSATION_ANALYSIS_STARTS_PER_MINUTE, 12, 1, 600),
+  };
+}
 
 const DEFAULT_JOB_OPTIONS = {
   removeOnComplete: { age: 24 * 60 * 60, count: 5000 },
@@ -73,7 +86,32 @@ export async function enqueueConversationAnalysis(
       keepLastIfActive: true,
     },
   });
+  emitConversationWorkItemsUpdated({ orgId: data.orgId, conversationId: data.conversationId });
   return { queued: true, jobId: job.id, delayMs: delay };
+}
+
+// Read only the deduplicated job for this conversation, never scan the queue.
+export async function getConversationAnalysisQueueState(orgId: string, conversationId: string, messageId: string | null) {
+  if (!messageId || config.nodeEnv === 'test') return null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      (async () => {
+        const queue = getQueue();
+        const id = await queue.getDeduplicationJobId(conversationId);
+        if (!id) return null;
+        const job = await queue.getJob(id);
+        if (!job || job.data.orgId !== orgId || job.data.conversationId !== conversationId || job.data.messageId !== messageId) return null;
+        const state = await job.getState();
+        return ['active', 'waiting', 'delayed', 'prioritized', 'waiting-children'].includes(state) ? state : null;
+      })(),
+      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), 1500); }),
+    ]);
+  } catch {
+    return null;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /**
@@ -190,6 +228,7 @@ export function stopConversationAnalysisBackfill() {
 
 export function startConversationAnalysisWorker() {
   if (workerInstance) return workerInstance;
+  const workerSettings = resolveConversationAnalysisWorkerSettings();
   persistedListener = (event) => {
     void (async () => {
       const activity = await prisma.message.findFirst({
@@ -225,19 +264,31 @@ export function startConversationAnalysisWorker() {
     CONVERSATION_ANALYSIS_QUEUE,
     async (job: Job<ConversationAnalysisJobData>) => {
       if (job.name !== 'analyze') return;
-      return withTenant(
+      const result = await withTenant(
         job.data.orgId,
         () => processConversationAnalysis(job.data),
         { userId: 'system', role: 'system' },
       );
+      emitConversationWorkItemsUpdated({
+        orgId: job.data.orgId,
+        conversationId: job.data.conversationId,
+      });
+      return result;
     },
-    { connection: workerConnection as ConnectionOptions, concurrency: 2 },
+    {
+      connection: workerConnection as ConnectionOptions,
+      concurrency: workerSettings.concurrency,
+      limiter: { max: workerSettings.startsPerMinute, duration: 60_000 },
+    },
   );
   workerInstance.on('failed', (job, error) => {
     logger.error(`[conversation-analysis-worker] failed job=${job?.id} attempt=${job?.attemptsMade}: ${error.message}`);
+    if (job) emitConversationWorkItemsUpdated({ orgId: job.data.orgId, conversationId: job.data.conversationId });
   });
   workerInstance.on('error', (error) => logger.error(`[conversation-analysis-worker] error: ${error.message}`));
-  logger.info('[conversation-analysis-worker] started with customer automation reconciliation');
+  logger.info(
+    `[conversation-analysis-worker] started concurrency=${workerSettings.concurrency} startsPerMinute=${workerSettings.startsPerMinute}`,
+  );
   return workerInstance;
 }
 

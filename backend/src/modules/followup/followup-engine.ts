@@ -637,18 +637,23 @@ export async function stopEnrollment(
 export async function completeSaleTask(
   enrollmentId: string,
   actor?: { actorId?: string | null; actorName?: string | null },
+  expected?: { orgId: string; contactId: string; currentStepKey: string; allowedAccountIds?: string[] },
 ): Promise<boolean> {
   const enr = await prisma.followupEnrollment.findUnique({ where: { id: enrollmentId } });
   if (!enr || enr.status !== 'waiting_sale' || !enr.currentStepKey) return false;
+  if (expected && (enr.orgId !== expected.orgId || enr.contactId !== expected.contactId || enr.currentStepKey !== expected.currentStepKey)) return false;
+  if (expected?.allowedAccountIds && !expected.allowedAccountIds.includes(enr.zaloAccountId)) return false;
   const step = await prisma.followupStep.findUnique({
     where: { workflowId_key: { workflowId: enr.workflowId, key: enr.currentStepKey } },
     select: { nextKey: true },
   });
-  await log(enr, 'sale_task_done', 'Sale hoàn thành công việc → tiếp tục', { actorType: 'sale', actorId: actor?.actorId, actorName: actor?.actorName });
-  await prisma.followupEnrollment.update({
-    where: { id: enr.id },
+  const claimed = await prisma.followupEnrollment.updateMany({
+    where: { id: enr.id, orgId: enr.orgId, status: 'waiting_sale', currentStepKey: enr.currentStepKey, updatedAt: enr.updatedAt,
+      ...(expected?.allowedAccountIds ? { zaloAccountId: { in: expected.allowedAccountIds } } : {}) },
     data: { status: 'running', currentStepKey: step?.nextKey ?? null, saleTaskTitle: null },
   });
+  if (claimed.count !== 1) return false;
+  await log(enr, 'sale_task_done', 'Sale hoàn thành công việc → tiếp tục', { actorType: 'sale', actorId: actor?.actorId, actorName: actor?.actorName });
   await recountWorkflow(enr.workflowId);
   await advanceEnrollment(enr.id);
   return true;

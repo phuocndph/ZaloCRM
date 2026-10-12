@@ -40,4 +40,30 @@ describe('WorkItemsView', () => {
     expect(mocks.get).toHaveBeenLastCalledWith('/work-items', expect.objectContaining({ params: expect.objectContaining({ scope: 'waiting' }) }));
     wrapper.unmount();
   });
+
+  it('keeps the route and filter unchanged when opening, changing and closing a preview', async () => {
+    const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/work-items', component: WorkItemsView }] });
+    await router.push('/work-items?scope=today');
+    const wrapper = mount(WorkItemsView, { global: { plugins: [router], stubs: { WorkItemConversationPreview: true } } });
+    await flushPromises();
+    const queue = wrapper.findComponent({ name: 'DailyWorkQueue' });
+    queue.vm.$emit('preview-conversation', 'first', null);
+    await flushPromises();
+    expect(wrapper.findComponent({ name: 'WorkItemConversationPreview' }).props('conversationId')).toBe('first');
+    queue.vm.$emit('preview-conversation', 'second', null);
+    await flushPromises();
+    const preview = wrapper.findComponent({ name: 'WorkItemConversationPreview' });
+    expect(preview.props('conversationId')).toBe('second');
+    expect(router.currentRoute.value.fullPath).toBe('/work-items?scope=today');
+    const previousReads = mocks.get.mock.calls.length;
+    preview.vm.$emit('message-sent', 'second');
+    await flushPromises();
+    expect(mocks.get.mock.calls.length).toBeGreaterThan(previousReads);
+    expect(router.currentRoute.value.fullPath).toBe('/work-items?scope=today');
+    preview.vm.$emit('close');
+    await flushPromises();
+    expect(wrapper.findComponent({ name: 'WorkItemConversationPreview' }).exists()).toBe(false);
+    expect(wrapper.find('input[type="search"]').exists()).toBe(true);
+    wrapper.unmount();
+  });
 });

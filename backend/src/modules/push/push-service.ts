@@ -165,6 +165,16 @@ export interface NotifyNewInboundArgs {
   senderUserId?: string | null;
 }
 
+async function isZaloNotificationMuted(conversationId: string): Promise<boolean> {
+  const conversation = await prisma.conversation.findUnique({
+    where: { id: conversationId },
+    select: { zaloNotificationsMuted: true, zaloMutedUntil: true },
+  });
+  if (!conversation) return true;
+  if (!conversation.zaloNotificationsMuted) return false;
+  return !conversation.zaloMutedUntil || conversation.zaloMutedUntil.getTime() > Date.now();
+}
+
 /** Exclude only users whose personal conversation mute is still active. */
 async function excludeMutedUsers(userIds: string[], conversationId: string): Promise<string[]> {
   if (!userIds.length) return userIds;
@@ -229,6 +239,7 @@ export async function notifyNewInboundMessage(args: NotifyNewInboundArgs): Promi
     // Zalo emits accepted-friend e-cards as inbound messages. Keep them in history,
     // but do not create persistent, native, or web notifications.
     if (isZaloFriendAcceptedNotification(message?.content)) return;
+    if (args.threadType === 'group' && await isZaloNotificationMuted(conversationId)) return;
 
     const titleCandidate = args.senderName ?? message?.senderName;
     const title = typeof titleCandidate === 'string' && titleCandidate.trim()

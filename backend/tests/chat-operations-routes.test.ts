@@ -234,7 +234,7 @@ describe('POST /api/v1/conversations/:id/forward', () => {
   });
 
   it('forwards image messages by resending the media file to targets', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(new Uint8Array([1, 2, 3]), { status: 200 }));
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(new Uint8Array([1, 2, 3]), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
     prismaMock.message.findFirst.mockResolvedValueOnce({
       id: 'msg-img-1',
@@ -273,6 +273,49 @@ describe('POST /api/v1/conversations/:id/forward', () => {
     expect(prismaMock.message.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ conversationId: 'conv-2', contentType: 'image', senderType: 'self' }),
     }));
+    vi.unstubAllGlobals();
+  });
+
+  it('forwards a large image album in Zalo-sized batches', async () => {
+    const fetchMock = vi.fn().mockImplementation(async () => new Response(new Uint8Array([1, 2, 3]), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const albumItems = Array.from({ length: 10 }, (_, index) => ({
+      content: JSON.stringify({ href: `http://localhost:9000/album/${index}.jpg` }),
+      contentType: 'image',
+    }));
+    prismaMock.message.findFirst.mockResolvedValueOnce({
+      id: 'msg-album-1',
+      zaloMsgId: 'zalo-album-1',
+      zaloCliMsgId: 'cli-album-1',
+      senderUid: 'customer-1',
+      senderType: 'contact',
+      repliedByUserId: null,
+      content: albumItems[0].content,
+      contentType: 'image',
+      sentAt: new Date('2026-05-25T00:00:00.000Z'),
+      albumKey: 'album-1',
+    });
+    prismaMock.message.findMany.mockResolvedValue(albumItems);
+    zaloOpsMock.sendFile.mockImplementation(async (_accountId: string, _threadId: string, _type: number, paths: string[]) => ({
+      attachment: paths.map((_, index) => ({ msgId: `zalo-forward-${index}` })),
+    }));
+    const target = { ...CONV, id: 'conv-2', zaloAccount: ACCOUNT };
+    prismaMock.conversation.findFirst.mockResolvedValueOnce(CONV);
+    prismaMock.conversation.findMany.mockResolvedValue([target]);
+
+    const app = buildApp();
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/v1/conversations/conv-1/forward',
+      payload: { msgId: 'msg-album-1', targetConversationIds: ['conv-2'] },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toMatchObject({ success: true, forwarded: 1, failed: 0 });
+    expect(zaloOpsMock.sendFile).toHaveBeenCalledTimes(2);
+    expect(zaloOpsMock.sendFile.mock.calls[0][3]).toHaveLength(9);
+    expect(zaloOpsMock.sendFile.mock.calls[1][3]).toHaveLength(1);
+    expect(prismaMock.message.create).toHaveBeenCalledTimes(10);
     vi.unstubAllGlobals();
   });
 

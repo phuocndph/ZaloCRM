@@ -1,14 +1,31 @@
 // @vitest-environment jsdom
 
-import { flushPromises, mount } from '@vue/test-utils';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ConversationInsightCard from './ConversationInsightCard.vue';
 
 const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }));
 vi.mock('@/api', () => ({ api: { get: mocks.get, post: mocks.post } }));
+vi.mock('@/api/socket', () => ({ createAppSocket: vi.fn(() => ({ on: vi.fn(), disconnect: vi.fn() })) }));
+enableAutoUnmount(afterEach);
 
 describe('ConversationInsightCard', () => {
   beforeEach(() => vi.clearAllMocks());
+  afterEach(() => vi.clearAllTimers());
+
+  it('shows the actual first-run step without any insight yet', async () => {
+    mocks.get.mockResolvedValue({ data: {
+      insight: null, latestMessageId: 'first',
+      analysisProgress: { aiStatus: 'analyzing', aiStatusLabel: 'AI đang phân tích tin nhắn mới', aiStatusDetail: 'Phân tích nhu cầu và cảm xúc' },
+      readiness: { aiStatus: 'ready', accountStatus: 'connected', accountName: 'Nick' },
+    } });
+    const wrapper = mount(ConversationInsightCard, { props: { conversationId: 'first-conversation' } });
+    await flushPromises();
+    expect(wrapper.get('[role="status"]').text()).toContain('Phân tích nhu cầu và cảm xúc');
+    expect(mocks.post).not.toHaveBeenCalled();
+    expect(wrapper.get('.ci-analyze').attributes('disabled')).toBeDefined();
+    wrapper.unmount();
+  });
 
   it('renders the insight and explains the automatic follow-up state', async () => {
     mocks.get.mockResolvedValue({
@@ -128,6 +145,73 @@ describe('ConversationInsightCard', () => {
     expect(wrapper.text()).toContain('Hướng xử lý');
     expect(wrapper.text()).not.toContain('Nhân viên cần làm ngay');
     expect(wrapper.text()).toContain('Không tự động chăm sóc khi chưa rõ vai trò');
+  });
+
+  it('keeps an image-only inbound message visible as a staff content-review task', async () => {
+    mocks.get.mockResolvedValue({
+      data: {
+        readiness: { aiStatus: 'ready', accountStatus: 'connected', accountName: 'Nick bán hàng' },
+        insight: {
+          id: 'insight-image', version: 4, mode: 'automatic_followup', stage: 'needs_reply', stageConfidence: 0.7,
+          stageReason: 'Khách vừa gửi ảnh chưa có mô tả.',
+          intent: { label: 'unknown', confidence: 0.7 }, emotion: { label: 'neutral', confidence: 0.8, intensity: 0.1 },
+          requiresHuman: true,
+          nextAction: { key: 'clarify_latest_message', reason: 'Mở hội thoại và xem nội dung ảnh.', workflowType: null },
+          signals: { counterpartyClassifierVersion: 2, counterpartyRole: 'unknown', workItemEligible: false, contentVerificationRequired: true },
+          safeguards: { autoSendAllowed: false, workflowEnrollmentAllowed: false },
+          automation: { enabled: false, outcome: 'blocked', reason: 'customer_identity_unconfirmed', updatedAt: '2026-08-30T08:01:00Z' },
+          summary: { id: 'summary-image', version: 4, sourceThroughMessageId: 'message-image', createdAt: '2026-08-30T08:00:00Z', content: { currentDiscussion: 'Khách vừa gửi ảnh.', unansweredQuestions: [] } },
+          memoryCandidates: [], createdAt: '2026-08-30T08:00:00Z', updatedAt: '2026-08-30T08:01:00Z',
+        },
+      },
+    });
+
+    const wrapper = mount(ConversationInsightCard, { props: { conversationId: 'conversation-image' } });
+    await flushPromises();
+
+    expect(wrapper.text()).toContain('Việc cần xử lý');
+    expect(wrapper.text()).toContain('Xem nội dung ảnh hoặc tệp khách gửi');
+    expect(wrapper.text()).toContain('Đang chờ nhân viên xem nội dung ảnh hoặc tệp');
+    expect(wrapper.text()).not.toContain('AI không đưa vào danh sách công việc');
+    expect(wrapper.find('.ci-brief--urgent').exists()).toBe(false);
+    expect(wrapper.find('.ci-brief--verification').exists()).toBe(true);
+  });
+
+  it('does not present a stale insight as the result for a newer message', async () => {
+    mocks.get.mockResolvedValue({
+      data: {
+        readiness: { aiStatus: 'ready', accountStatus: 'connected', accountName: 'Minh Roomqc' },
+        latestMessageId: 'message-new',
+        insight: {
+          id: 'insight-old', version: 3, mode: 'automatic_followup', sourceThroughMessageId: 'message-old',
+          latestMessageId: 'message-new',
+          analysisProgress: {
+            aiStatus: 'pending',
+            aiStatusLabel: 'Chờ kết quả phân tích AI',
+            aiStatusDetail: 'Tin nhắn mới đang chờ được phân tích.',
+          },
+          stage: 'quoted', stageConfidence: 0.9, stageReason: 'Kết quả cũ.',
+          intent: { label: 'quote_request', confidence: 0.9 },
+          emotion: { label: 'interested', confidence: 0.8, intensity: 0.4 }, requiresHuman: false,
+          nextAction: { key: 'review_quote_follow_up', reason: null, workflowType: null }, signals: {}, safeguards: {},
+          automation: null, summary: null, memoryCandidates: [],
+          createdAt: '2026-08-30T08:00:00Z', updatedAt: '2026-08-30T08:01:00Z',
+        },
+      },
+    });
+    mocks.post.mockResolvedValue({ data: { queued: false, reason: 'already_analyzed' } });
+
+    const wrapper = mount(ConversationInsightCard, { props: { conversationId: 'conversation-stale' } });
+    await flushPromises();
+
+    expect(mocks.post).toHaveBeenCalledWith(
+      '/ai/insights/conversations/conversation-stale/analyze',
+      {},
+      { timeout: 15_000 },
+    );
+    expect(wrapper.text()).toContain('Chưa có kết quả AI cho tin nhắn mới nhất');
+    expect(wrapper.text()).toContain('Tin nhắn mới đang chờ được phân tích.');
+    expect(wrapper.text()).not.toContain('Kết quả cũ.');
   });
 
   it('explains why an empty insight cannot update when Zalo and AI are unavailable', async () => {

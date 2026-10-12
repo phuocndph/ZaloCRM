@@ -82,6 +82,7 @@ import { searchRoutes } from './modules/search/search-routes.js';
 import { startZaloHealthCheck } from './modules/zalo/zalo-health-check.js';
 import { publicApiRoutes } from './modules/api/public-api-routes.js';
 import { webhookSettingsRoutes } from './modules/api/webhook-settings-routes.js';
+import { agentSettingsRoutes, agentApiRoutes } from './modules/agents/agent-routes.js';
 import { startContactIntelligence } from './modules/contacts/contact-intelligence.js';
 import { analyticsRoutes } from './modules/analytics/analytics-routes.js';
 import { savedReportRoutes } from './modules/analytics/saved-report-routes.js';
@@ -398,6 +399,8 @@ async function bootstrap() {
   await app.register(searchRoutes);
   await app.register(publicApiRoutes);
   await app.register(webhookSettingsRoutes);
+  await app.register(agentSettingsRoutes);
+  await app.register(agentApiRoutes);
   await app.register(analyticsRoutes);
   await app.register(savedReportRoutes);
   await app.register(integrationRoutes);
@@ -552,6 +555,9 @@ async function bootstrap() {
     // URL Zalo CDN hết hạn (nhóm im lặng lâu không có message để cập nhật thụ động).
     const { startGroupInfoSyncCron } = await import('./modules/zalo/group-info-sync-cron.js');
     startGroupInfoSyncCron();
+    // Đồng bộ trạng thái ẩn thông báo nhóm từ Zalo chính thức để CRM không push/đẩy việc.
+    const { startZaloMuteSyncCron } = await import('./modules/zalo/zalo-mute-sync-cron.js');
+    startZaloMuteSyncCron();
     // Tệp khách hàng (🟢 Community): enrichment worker + event handlers
     if (config.nodeEnv !== 'test') {
       const { startListEnrichmentWorker } = await import('./modules/lists/list-enrichment-service.js');

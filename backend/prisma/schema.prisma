@@ -870,6 +870,11 @@ model Conversation {
   groupClassificationSource       String    @default("unclassified") @map("group_classification_source")
   groupClassificationConfidence   Float?    @map("group_classification_confidence")
   groupClassifiedAt               DateTime? @map("group_classified_at")
+  // Trạng thái ẩn thông báo theo nick, đồng bộ từ Zalo chính thức.
+  // Khác ConversationUserState.notificationMute (mute riêng từng user trên CRM).
+  zaloNotificationsMuted Boolean   @default(false) @map("zalo_notifications_muted")
+  zaloMutedUntil         DateTime? @map("zalo_muted_until")
+  zaloMuteSyncedAt       DateTime? @map("zalo_mute_synced_at")
   lastMessageAt      DateTime? @map("last_message_at")
   unreadCount        Int       @default(0) @map("unread_count")
   isReplied          Boolean   @default(true) @map("is_replied")

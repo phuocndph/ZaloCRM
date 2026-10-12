@@ -155,6 +155,20 @@ describe('AI Core Service', () => {
     await expect(client.complete(baseRequest)).rejects.toMatchObject({ code: 'RATE_LIMITED' });
   });
 
+  it('leaves provider rate-limit retry to the background queue', async () => {
+    const provider: AIProvider = {
+      id: 'rate-limited-provider',
+      complete: vi.fn().mockRejectedValue(Object.assign(new Error('provider 429'), { status: 429 })),
+    };
+    const { client } = harness([
+      stored('primary', provider.id, { maxRetries: 3, fallbackModelConfigId: 'fallback' }),
+      stored('fallback', 'fallback-provider'),
+    ], [provider, new FakeProvider('fallback-provider')]);
+
+    await expect(client.complete(baseRequest)).rejects.toMatchObject({ code: 'RATE_LIMITED' });
+    expect(provider.complete).toHaveBeenCalledTimes(1);
+  });
+
   it('aborts a provider request at the configured timeout', async () => {
     vi.useFakeTimers();
     const provider: AIProvider = {

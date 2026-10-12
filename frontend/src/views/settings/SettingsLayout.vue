@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2026 Nguyễn Tiến Lộc -->
 <template>
-  <div class="settings-layout">
+  <div class="settings-layout" :class="{ 'settings-layout--agent': route.name === 'Settings.Agents' }">
     <!-- Sidebar -->
     <aside class="sl-sidebar" aria-label="Cài đặt sidebar">
       <header class="sl-header">
@@ -74,6 +74,9 @@
 
     <!-- Content panel -->
     <main class="sl-content" role="main">
+      <div v-if="route.name === 'Settings.Agents'" class="sl-agent-mobile-nav">
+        <v-select :model-value="route.path" :items="visibleGroups.flatMap(group => group.items.map(item => ({ title: item.label, value: item.route })))" label="Mục cài đặt" density="compact" hide-details @update:model-value="router.push($event)" />
+      </div>
       <header class="sl-breadcrumb" v-if="activeItem">
         <RouterLink to="/settings" class="bc-root">Cài đặt</RouterLink>
         <span class="bc-sep">/</span>
@@ -386,4 +389,12 @@ onMounted(() => {
 }
 .sl-content-body::-webkit-scrollbar { width: 8px; }
 .sl-content-body::-webkit-scrollbar-thumb { background: #D4D6DB; border-radius: 4px; }
+.settings-layout--agent { grid-template-columns: 260px minmax(0, 1fr); letter-spacing: 0; }
+.sl-agent-mobile-nav { display: none; }
+@media (max-width: 700px) {
+  .settings-layout--agent { grid-template-columns: minmax(0, 1fr); height: calc(100dvh - 112px); }
+  .settings-layout--agent .sl-sidebar, .settings-layout--agent .sl-breadcrumb { display: none; }
+  .settings-layout--agent .sl-agent-mobile-nav { display: block; padding: 12px 16px; background: white; border-bottom: 1px solid #E4E5E9; }
+  .settings-layout--agent .sl-content-body { min-width: 0; padding: 18px 16px; }
+}
 </style>

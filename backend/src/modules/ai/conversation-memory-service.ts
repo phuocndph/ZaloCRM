@@ -388,6 +388,51 @@ function memoryDto(memory: any) {
   };
 }
 
+type MemoryEvidenceTable = 'messages' | 'conversations' | 'ai_conversation_summaries' | 'ai_intent_analyses' | 'ai_emotion_analyses';
+function scopedEvidenceRefs(evidence: unknown): Array<{ table: MemoryEvidenceTable; id: string }> | null {
+  if (!Array.isArray(evidence) || !evidence.length) return null;
+  const refs: Array<{ table: MemoryEvidenceTable; id: string }> = [];
+  for (const entry of evidence) {
+    if (!entry || typeof entry !== 'object' || entry.type === 'manual') return null;
+    let found = false;
+    if (typeof entry.messageId === 'string' && entry.messageId) {
+      refs.push({ table: 'messages', id: entry.messageId }); found = true;
+    }
+    if (entry.sourceId != null) {
+      if (typeof entry.sourceId !== 'string') return null;
+      const [table, id] = entry.sourceId.split(':');
+      if (!id || !['messages', 'conversations', 'ai_conversation_summaries', 'ai_intent_analyses', 'ai_emotion_analyses'].includes(table)) return null;
+      refs.push({ table: table as MemoryEvidenceTable, id }); found = true;
+    }
+    if (!found) return null;
+  }
+  return refs;
+}
+
+async function filterAgentMemories(rows: any[], actor: MemoryActor, contactId: string) {
+  const candidates = rows.map(row => ({ row, refs: scopedEvidenceRefs(row.evidence) })).filter(candidate => candidate.refs !== null);
+  const ids = (table: MemoryEvidenceTable) => [...new Set(candidates.flatMap(candidate => candidate.refs!.filter(ref => ref.table === table).map(ref => ref.id)))];
+  const conversation = { orgId: actor.orgId, contactId, deletedAt: null, isPrivate: false,
+    zaloAccountId: { in: actor.allowedAccountIds! }, zaloAccount: { privacyMode: 'sub', archivedAt: null } };
+  const messageIds = ids('messages'), conversationIds = ids('conversations'), summaryIds = ids('ai_conversation_summaries');
+  const intentIds = ids('ai_intent_analyses'), emotionIds = ids('ai_emotion_analyses');
+  // A merged memory is safe only when every piece of evidence is still visible.
+  // Manual/legacy/profile-only evidence has no nick provenance and is omitted for Agents.
+  const [messages, conversations, summaries, intents, emotions] = await Promise.all([
+    messageIds.length ? prisma.message.findMany({ where: { id: { in: messageIds }, isDeleted: false, conversation }, select: { id: true } }) : [],
+    conversationIds.length ? prisma.conversation.findMany({ where: { ...conversation, id: { in: conversationIds } }, select: { id: true } }) : [],
+    summaryIds.length ? prisma.aiConversationSummary.findMany({ where: { orgId: actor.orgId, id: { in: summaryIds }, conversation }, select: { id: true } }) : [],
+    intentIds.length ? prisma.aiIntentAnalysis.findMany({ where: { orgId: actor.orgId, id: { in: intentIds }, conversation }, select: { id: true } }) : [],
+    emotionIds.length ? prisma.aiEmotionAnalysis.findMany({ where: { orgId: actor.orgId, id: { in: emotionIds }, conversation }, select: { id: true } }) : [],
+  ]);
+  const visible = new Set([
+    ...messages.map(row => `messages:${row.id}`), ...conversations.map(row => `conversations:${row.id}`),
+    ...summaries.map(row => `ai_conversation_summaries:${row.id}`), ...intents.map(row => `ai_intent_analyses:${row.id}`),
+    ...emotions.map(row => `ai_emotion_analyses:${row.id}`),
+  ]);
+  return candidates.filter(candidate => candidate.refs!.every(ref => visible.has(`${ref.table}:${ref.id}`))).map(candidate => candidate.row);
+}
+
 export async function listCustomerMemories(actor: MemoryActor, contactId: string) {
   const now = new Date();
   const rows = await prisma.aiCustomerMemory.findMany({
@@ -400,7 +445,8 @@ export async function listCustomerMemories(actor: MemoryActor, contactId: string
     },
     orderBy: [{ status: 'asc' }, { updatedAt: 'desc' }],
   });
-  return rows.map(memoryDto);
+  const visibleRows = actor.allowedAccountIds ? await filterAgentMemories(rows, actor, contactId) : rows;
+  return visibleRows.map(memoryDto);
 }
 
 export async function upsertCustomerMemory(actor: MemoryActor, contactId: string, input: CustomerMemoryInput) {

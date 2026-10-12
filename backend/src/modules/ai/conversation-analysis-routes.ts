@@ -5,9 +5,10 @@ import { buildPrivacyContext } from '../privacy/redact.js';
 import { AIErrorHandler } from './core/ai-error-handler.js';
 import {
   ContextBuilderError,
-  getLatestConversationInsight,
+  getConversationAnalysisSnapshot,
 } from './conversation-analysis-service.js';
-import { enqueueConversationAnalysis } from './conversation-analysis-queue.js';
+import { enqueueConversationAnalysis, getConversationAnalysisQueueState } from './conversation-analysis-queue.js';
+import { aiProgressMetadata } from './conversation-analysis-progress.js';
 import { getAiReadiness } from './ai-readiness-service.js';
 import { checkZaloAccess } from '../zalo/zalo-access-middleware.js';
 import { getIo } from '../../shared/event-buffer.js';
@@ -75,7 +76,7 @@ export async function conversationAnalysisRoutes(app: FastifyInstance) {
         const conversationId = (request.params as { conversationId: string }).conversationId;
         const conversation = await assertConversationAccess(request, reply, conversationId);
         if (!conversation) return;
-        const insight = await getLatestConversationInsight(
+        const snapshot = await getConversationAnalysisSnapshot(
           {
             orgId: request.user!.orgId,
             userId: request.user!.id,
@@ -85,8 +86,15 @@ export async function conversationAnalysisRoutes(app: FastifyInstance) {
           conversationId,
         );
         const aiReadiness = await getAiReadiness(request.user!.orgId);
+        const queued = await getConversationAnalysisQueueState(request.user!.orgId, conversationId, snapshot.latestMessageId);
+        const analysisProgress = queued && snapshot.analysisProgress.aiStatus !== 'analyzing'
+          && !(queued === 'active' && snapshot.analysisProgress.aiStatus === 'failed')
+          ? aiProgressMetadata('queued', queued === 'active' ? 'Tác vụ đã được nhận, đang chuẩn bị phân tích.' : undefined)
+          : snapshot.analysisProgress;
         return {
-          insight,
+          ...snapshot,
+          analysisProgress,
+          insight: snapshot.insight ? { ...snapshot.insight, analysisProgress } : null,
           readiness: {
             aiStatus: aiReadiness.status,
             accountStatus: conversation?.zaloAccount.status ?? 'unknown',

@@ -5,6 +5,7 @@ import type { Socket } from 'socket.io-client';
 
 export type WorkItemScope = 'now' | 'today' | 'waiting' | 'upcoming' | 'verify' | 'done';
 export type WorkItemPriority = 'critical' | 'high' | 'normal' | 'low';
+export type AiProgressStatus = 'pending' | 'queued' | 'analyzing' | 'ready' | 'verification' | 'failed' | 'not_applicable';
 
 export interface ConversationWorkItemMetadata {
   contactName?: string;
@@ -15,6 +16,9 @@ export interface ConversationWorkItemMetadata {
   signalCount?: number;
   signals?: Array<{ kind?: string; title?: string; dueAt?: string | null }>;
   actionKey?: string;
+  aiStatus?: AiProgressStatus;
+  aiStatusLabel?: string;
+  aiStatusDetail?: string;
   isGroup?: boolean;
   groupName?: string;
   groupCategory?: string;
@@ -78,10 +82,19 @@ type WorkItemResponse = {
   generatedAt: string;
   hasMore?: boolean;
   nextOffset?: number | null;
+  aiActivity?: ConversationAnalysisActivity[];
 };
+
+export interface ConversationAnalysisActivity {
+  conversationId: string;
+  name: string;
+  nickName: string;
+  step: string;
+}
 
 export function useConversationWorkItems() {
   const items = ref<ConversationWorkItem[]>([]);
+  const aiActivity = ref<ConversationAnalysisActivity[]>([]);
   const counts = ref<WorkItemCounts>({ now: 0, today: 0, waiting: 0, upcoming: 0, verify: 0, done: 0 });
   const summary = ref<WorkItemSummary>({ totalActive: 0, critical: 0, overdue: 0, waitingReply: 0, verification: 0 });
   const loading = ref(false);
@@ -125,6 +138,7 @@ export function useConversationWorkItems() {
       });
       if (sequence !== requestSequence) return;
       items.value = data.items ?? [];
+      aiActivity.value = data.aiActivity ?? [];
       counts.value = { ...counts.value, ...(data.counts ?? {}) };
       summary.value = { ...summary.value, ...(data.summary ?? {}) };
       hasMore.value = data.hasMore === true;
@@ -165,7 +179,8 @@ export function useConversationWorkItems() {
   ) {
     mutatingId.value = itemId;
     try {
-      await api.patch(`/work-items/${itemId}`, { action, ...options });
+      const { data } = await api.patch<{ item: ConversationWorkItem }>(`/work-items/${itemId}`, { action, ...options });
+      return data.item;
     } finally {
       mutatingId.value = null;
     }
@@ -178,5 +193,5 @@ export function useConversationWorkItems() {
     socket = null;
   }
 
-  return { items, counts, summary, loading, loadingMore, hasMore, mutatingId, error, fetchItems, loadMore, updateItem, stopRealtime };
+  return { items, aiActivity, counts, summary, loading, loadingMore, hasMore, mutatingId, error, fetchItems, loadMore, updateItem, stopRealtime };
 }

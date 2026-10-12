@@ -570,14 +570,14 @@
         v-if="!privateBlocked && showComposerPreview"
         :conversation-id="conversation.id"
         :initial-blocks="previewBlocks"
-        :can-send="privacyVisibility.canSendInConv(conversation) && !isArchivedNick"
+        :can-send="privacyVisibility.canSendInConv(conversation) && !isArchivedNick && (!chatSession || chatSession.canSend.value)"
         class="composer-preview-wrap"
         @cancel="onPreviewCancel"
         @done="onPreviewDone"
       />
 
       <!-- ════════ Input area: toolbar trên textarea (Smax-style) ════════ -->
-      <div v-if="!privateBlocked" class="input-area">
+      <div v-if="!privateBlocked" class="input-area" :inert="chatSession && !chatSession.canSend.value ? true : undefined">
         <!-- Tag bar Friend-cấp (per-pair sale-nick × KH) — chỉ KH chat 1-1.
              Refactor 2026-06-01: 3 nhóm [Zalo Real] | [Auto] | [Manual per Nick + button].
              Đọc/ghi qua endpoint /api/v1/friends/:id/tags (Tag v2 junction). -->
@@ -843,6 +843,7 @@
       :is-self="contextMsg?.senderType === 'self'"
       :is-pinned="!!contextMsg && pinnedSet.has(contextMsg.id)"
       :position="contextPos"
+      :layer="chatSession ? 1500 : undefined"
       @reply="onReply"
       @edit="onEdit"
       @delete="onDelete"
@@ -858,8 +859,11 @@
 
     <!-- Menu chuột phải cho ảnh trong ALBUM (3 mức: 1 tấm / cả album / chọn nhiều) -->
     <Teleport to="body">
-      <div v-if="albumMenu.open" class="ctx-menu-overlay" @click.self="albumMenu.open = false" @contextmenu.prevent="albumMenu.open = false">
-        <div class="ctx-menu album-ctx" :style="{ top: albumMenu.y + 'px', left: albumMenu.x + 'px' }" @click.stop>
+      <div v-if="albumMenu.open" class="ctx-menu-overlay" :style="chatSession ? { zIndex: 1500 } : undefined" @click.self="albumMenu.open = false" @contextmenu.prevent="albumMenu.open = false">
+        <div class="ctx-menu album-ctx" :style="{ top: albumMenu.y + 'px', left: albumMenu.x + 'px', ...(chatSession ? { zIndex: 1501 } : {}) }" @click.stop>
+          <button class="ctx-item" @click="forwardAlbum()">
+            <span class="ctx-ic">↗️</span><span>Chuyển tiếp cả album ({{ albumMenu.item?.messages.length }} ảnh)</span>
+          </button>
           <button class="ctx-item" @click="saveAlbumOne()">
             <span class="ctx-ic">🖼️</span><span>Lưu ảnh này vào Media</span>
           </button>
@@ -1031,7 +1035,8 @@
 </template>
 
 <script setup lang="ts">
-import { ref, watch, nextTick, computed, onMounted, onBeforeUnmount } from 'vue';
+import { ref, watch, nextTick, computed, inject, toRef, onMounted, onBeforeUnmount } from 'vue';
+import { chatSessionKey } from '@/composables/chat-session-context';
 import { useChat, type Conversation, type Message } from '@/composables/use-chat';
 import { parseFriendAcceptedNotice } from '@/composables/zalo-system-notice';
 import { formatInOrgTz, weekdayInOrgTz, getOrgParts } from '@/composables/use-org-timezone';
@@ -1251,14 +1256,16 @@ const emit = defineEmits<{
   'pin-message': [msg: Message];
   'unpin-message': [msg: Message];
   'open-content-panel': [tab: string];
+  'prepare-forward': [];
 }>();
 
 const toast = useToast();
+const chatSession = inject(chatSessionKey, null);
 const {
   addOptimisticMessages,
   reconcileOptimisticMessages,
   removeOptimisticMessages,
-} = useChat();
+} = chatSession ?? useChat();
 const notificationsMuted = computed(() => isConversationNotificationMuted(props.conversation?.userState));
 async function toggleThreadNotifications() {
   const conversation = props.conversation;
@@ -1296,7 +1303,8 @@ function requestAiSuggestion() {
   if (!isAiReady.value) { toast.error(aiUnavailableMessage.value); return; }
   emit('ask-ai');
 }
-const inputText = ref('');
+const inputText = ref(props.editingMessage?.content ?? chatSession?.draft.value.text ?? '');
+let threadDisposed = false;
 const messagesContainer = ref<HTMLElement | null>(null);
 const previewImageUrl = ref('');
 const showImagePreview = computed({ get: () => !!previewImageUrl.value, set: (v) => { if (!v) { previewImageUrl.value = ''; lightboxList.value = []; lightboxIndex.value = 0; } } });
@@ -1527,6 +1535,7 @@ const showContextMenu = ref(false);
 const contextMsg = ref<Message | null>(null);
 const contextPos = ref({ x: 0, y: 0 });
 const showForwardDialog = ref(false);
+watch(showForwardDialog, (open) => { if (open) emit('prepare-forward'); });
 const showLinkParentDialog = ref(false);
 
 async function onLinkedParent() {
@@ -1580,7 +1589,7 @@ function jumpToReply(replyMsgId: string) {
     return;
   }
   // Query DOM — `data-msg-id` có trên `.msg-bubble-wrap` (single) + `.album-tile` (album).
-  const el = document.querySelector(`[data-msg-id="${target.id}"]`) as HTMLElement | null;
+  const el = messagesContainer.value?.querySelector(`[data-msg-id="${CSS.escape(target.id)}"]`) as HTMLElement | null;
   if (!el) {
     toast.push('Tin gốc không có trong khung chat hiện tại');
     return;
@@ -2601,9 +2610,10 @@ function onPickEmoji(emoji: string) {
 
 // Send sticker từ picker — POST /sticker với {id, catId, type}
 async function onSendSticker(sticker: { id: number; catId: number; type: number }) {
-  if (!props.conversation?.id) return;
+  if (!props.conversation?.id || (chatSession && !chatSession.canSend.value)) return;
+  const conversationId = props.conversation.id;
   try {
-    await api.post(`/conversations/${props.conversation.id}/sticker`, {
+    await api.post(`/conversations/${conversationId}/sticker`, {
       stickerId: sticker.id,
       cateId: sticker.catId,
       type: sticker.type,
@@ -2621,11 +2631,12 @@ async function onSendSticker(sticker: { id: number; catId: number; type: number 
 // ── File / image upload ─────────────────────────────────────────────────────
 const imageInputRef = ref<HTMLInputElement | null>(null);
 const fileInputRef = ref<HTMLInputElement | null>(null);
-const pendingAttachments = ref<File[]>([]);
-const uploadingAttachments = ref(false);
-const attachmentEchoIds = new WeakMap<File, string>();
-const uploadProgress = ref(0);
-const uploadStatus = ref('');
+const pendingAttachments = chatSession ? toRef(chatSession.attachments, 'files') : ref<File[]>([]);
+const uploadingAttachments = chatSession ? toRef(chatSession.attachments, 'uploading') : ref(false);
+const attachmentEchoIds = chatSession?.attachments.echoes ?? new WeakMap<File, string>();
+const attachmentCaptions = chatSession?.attachments.captions ?? new WeakMap<File, string>();
+const uploadProgress = chatSession ? toRef(chatSession.attachments, 'progress') : ref(0);
+const uploadStatus = chatSession ? toRef(chatSession.attachments, 'status') : ref('');
 const hasDraftContent = computed(() => !!inputText.value.trim() || pendingAttachments.value.length > 0);
 // 2026-06-12: showMediaPicker + MediaPickerPopover đã GỠ — nút "Chèn từ kho" giờ mở
 // tab Media ở cột 4 (emit 'open-media-tab'). Logic kho dời sang MediaTabPanel.
@@ -2654,6 +2665,7 @@ function revokeAttachmentPreview(file: File) {
   if (url) { URL.revokeObjectURL(url); attachmentPreviewUrls.delete(key); }
 }
 function queueAttachments(files: File[]) {
+  if (chatSession && !chatSession.canSend.value) return;
   if (!files.length) return;
   if (!props.conversation?.id) { toast.error('Chọn cuộc trò chuyện trước khi đính kèm tệp'); return; }
   const known = new Set(pendingAttachments.value.map(attachmentKey));
@@ -2663,6 +2675,7 @@ function queueAttachments(files: File[]) {
   toast.push(`Đã thêm ${additions.length} tệp vào bản nháp. Bấm Gửi để gửi.`);
 }
 function removePendingAttachment(file: File) {
+  if (uploadingAttachments.value) return;
   revokeAttachmentPreview(file);
   pendingAttachments.value = pendingAttachments.value.filter((item) => item !== file);
 }
@@ -2734,7 +2747,7 @@ async function onDropFiles(event: DragEvent) {
 }
 
 async function sendAttachments(files: File[], caption = '') {
-  if (!props.conversation?.id || !files.length) return files;
+  if (!props.conversation?.id || !files.length || (chatSession && !chatSession.canSend.value)) return files;
   const conversationId = props.conversation.id;
   uploadingAttachments.value = true;
   uploadProgress.value = 0;
@@ -2742,7 +2755,9 @@ async function sendAttachments(files: File[], caption = '') {
   toast.push(`Đang gửi ${files.length} tệp đính kèm…`);
   try {
     const fd = new FormData();
-    if (caption) fd.append('caption', caption);
+    const savedCaption = attachmentCaptions.get(files[0]) ?? caption;
+    files.forEach((file) => attachmentCaptions.set(file, savedCaption));
+    if (savedCaption) fd.append('caption', savedCaption);
     for (const file of files) fd.append('files', file, file.name);
     const newEchoId = () => crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     const fileEchoIds = files.map((file) => {
@@ -2809,6 +2824,15 @@ async function sendAttachments(files: File[], caption = '') {
     const failedIndices = new Set<number>(
       Array.isArray(response.data.failedIndices) ? response.data.failedIndices : [],
     );
+    if (chatSession) {
+      // HTTP 202 or a missing result is not proof of delivery. Keep the same file echo on retry.
+      for (let index = 0; index < files.length; index++) {
+        const message = (response.data.messages ?? []).find((item: Message) => (item.clientEchoId || item.echoId) === fileEchoIds[index]);
+        const delivered = message && !message.pendingConfirmation && message.deliveryState !== 'failed'
+          && (message.zaloMsgId || ['completed', 'accepted'].includes(message.deliveryState ?? ''));
+        if (!delivered) failedIndices.add(index);
+      }
+    }
     const successfulTemporaryIds = temporaryIds.filter((_, index) => !failedIndices.has(index));
     const failedTemporaryIds = temporaryIds.filter((_, index) => failedIndices.has(index));
     reconcileOptimisticMessages(conversationId, successfulTemporaryIds, response.data.messages ?? []);
@@ -2997,7 +3021,7 @@ function onUnpinMessage() { if (contextMsg.value) emit('unpin-message', contextM
  * cơ chế DOM với jumpToReply. Trả false nếu tin chưa render (cha lo tải context rồi gọi lại).
  */
 function scrollToMessage(messageId: string): boolean {
-  const el = document.querySelector(`[data-msg-id="${messageId}"]`) as HTMLElement | null;
+  const el = Array.from(messagesContainer.value?.querySelectorAll<HTMLElement>('[data-msg-id]') ?? []).find((node) => node.dataset.msgId === messageId);
   if (!el) return false;
   el.scrollIntoView({ behavior: 'smooth', block: 'center' });
   const wrap = el.closest('.msg-bubble-wrap, .msg-album-wrap') as HTMLElement | null;
@@ -3019,7 +3043,8 @@ function restoreScrollAnchor(anchor: { top: number; height: number } | null) {
   el.scrollTop = anchor.top + (el.scrollHeight - anchor.height);
 }
 
-defineExpose({ scrollToMessage, captureScrollAnchor, restoreScrollAnchor });
+function clearComposer() { inputText.value = ''; editorRef.value?.clear(); if (chatSession) chatSession.draft.value = { text: '' }; }
+defineExpose({ scrollToMessage, captureScrollAnchor, restoreScrollAnchor, applySuggestion, clearComposer });
 
 function onReply() { if (contextMsg.value) emit('set-reply-to', contextMsg.value); }
 function onEdit() {
@@ -3098,9 +3123,20 @@ function onAlbumTileContext(item: AlbumItem, m: Message, ev: MouseEvent) {
   albumMenu.value = {
     open: true,
     x: Math.min(ev.clientX, vw - 240),
-    y: Math.min(ev.clientY, vh - 150),
+    y: Math.min(ev.clientY, vh - 220),
     item, msgId: m.id,
   };
+}
+
+function forwardAlbum() {
+  const item = albumMenu.value.item;
+  const message = item?.messages.find((entry) => entry.id === albumMenu.value.msgId)
+    ?? item?.messages[0]
+    ?? null;
+  albumMenu.value.open = false;
+  if (!message) return;
+  contextMsg.value = message;
+  showForwardDialog.value = true;
 }
 
 async function saveAlbumOne() {
@@ -3167,8 +3203,12 @@ function onForward(targetIds: string[]) {
 }
 
 function onCancelReplyEdit() {
+  const wasEditing = !!props.editingMessage;
   emit('cancel-reply-edit');
-  if (props.editingMessage) inputText.value = '';
+  if (wasEditing) {
+    inputText.value = chatSession?.draft.value.text ?? '';
+    if (chatSession) editorRef.value?.applyRichPayload(chatSession.draft.value);
+  }
 }
 
 // ── Template quick-insert ───────────────────────────────────────────────────
@@ -3216,7 +3256,9 @@ function onPreviewDone() { showComposerPreview.value = false; previewBlocks.valu
 // Listener cho tab CRM (cột 4) — widget "AI Next Action" → emit insert-suggestion
 // qua window event để giảm prop drilling. Cùng pattern với 'zalo-labels-synced'.
 function onInsertSuggestionEvent(e: Event) {
-  const text = (e as CustomEvent<{ text: string }>).detail?.text;
+  const detail = (e as CustomEvent<{ text: string; conversationId?: string }>).detail;
+  if (chatSession || (detail?.conversationId && detail.conversationId !== props.conversation?.id)) return;
+  const text = detail?.text;
   if (text) void applySuggestion(text);
 }
 onMounted(() => window.addEventListener('chat:insert-suggestion', onInsertSuggestionEvent));
@@ -3228,6 +3270,7 @@ import { useRoute as _useRouteDraft, useRouter as _useRouterDraft } from 'vue-ro
 const _draftRoute = _useRouteDraft();
 const _draftRouter = _useRouterDraft();
 async function consumeDraftFromQuery() {
+  if (chatSession) return;
   const draft = _draftRoute.query.draft;
   if (typeof draft !== 'string' || !draft.trim()) return;
   await nextTick();
@@ -3375,6 +3418,7 @@ async function onConfirmSendBlock(blockId: string) {
 // (sendBlockToConversation): BE dispatch đủ thành phần đúng thứ tự, giữ rich-text,
 // render {gender}/{name}/{sale}, delay an toàn; tin hiện live ở cột 3 qua socket.
 async function dispatchBlockComponents(blockId: string) {
+  if (chatSession && !chatSession.canSend.value) return;
   const conversationId = props.conversation?.id;
   if (!conversationId) {
     toast.error('Chưa chọn hội thoại để gửi Khối');
@@ -3408,7 +3452,31 @@ async function dispatchBlockComponents(blockId: string) {
 // ── Send ────────────────────────────────────────────────────────────────────
 async function handleSend() {
   if (showTemplatePopup.value) { showTemplatePopup.value = false; return; }
-  if (isArchivedNick.value || uploadingAttachments.value) return;
+  if (isArchivedNick.value || props.sending || uploadingAttachments.value || (chatSession && !chatSession.canSend.value)) return;
+  if (chatSession && props.editingMessage) {
+    emit('edit-message', props.editingMessage.id, inputText.value);
+    return;
+  }
+  if (chatSession) {
+    const rich = editorRef.value?.getRichPayload() ?? { text: inputText.value };
+    chatSession.draft.value = rich;
+    const files = [...pendingAttachments.value];
+    if (!rich.text.trim() && !files.length) return;
+    const snapshot = JSON.stringify(rich);
+    let delivered = false;
+    if (files.length) {
+      const remaining = await sendAttachments(files, rich.text);
+      const failed = new Set(remaining);
+      files.filter((file) => !failed.has(file)).forEach(revokeAttachmentPreview);
+      pendingAttachments.value = pendingAttachments.value.filter((file) => !files.includes(file) || failed.has(file));
+      delivered = remaining.length === 0;
+    } else delivered = await chatSession.submit(rich, props.replyingTo?.id ?? null);
+    if (delivered && JSON.stringify(chatSession.draft.value) === snapshot) {
+      if (!threadDisposed) { inputText.value = ''; editorRef.value?.clear(); emit('cancel-reply-edit'); }
+      chatSession.draft.value = { text: '' };
+    }
+    return;
+  }
   const hasText = !!inputText.value.trim();
   const attachmentsToSend = [...pendingAttachments.value];
   if (!hasText && !attachmentsToSend.length) return;
@@ -3444,6 +3512,18 @@ async function applySuggestion(text?: string) {
   await nextTick();
   setTimeout(() => editorRef.value?.focus('end'), 30);
 }
+
+function saveSessionDraft() {
+  if (chatSession && !props.editingMessage) chatSession.draft.value = editorRef.value?.getRichPayload() ?? { text: inputText.value };
+}
+watch(inputText, () => { saveSessionDraft(); }, { flush: 'post' });
+onMounted(async () => {
+  if (!chatSession) return;
+  const draft = props.editingMessage ? { text: props.editingMessage.content || '' } : chatSession.draft.value;
+  await nextTick();
+  if (draft.text) editorRef.value?.applyRichPayload(draft);
+});
+onBeforeUnmount(() => { saveSessionDraft(); threadDisposed = true; });
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 function formatMessageTime(d: string) {

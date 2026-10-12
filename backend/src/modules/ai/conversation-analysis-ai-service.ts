@@ -1,6 +1,7 @@
 import sharp from 'sharp';
 import { getObjectBuffer, keyFromPublicUrl } from '../../shared/storage/minio-client.js';
 import {
+  AIErrorHandler,
   aiClient,
   type AIClientRequest,
   type AIClientResponse,
@@ -134,6 +135,11 @@ const UNACCENTED_VIETNAMESE = /\b(khach|nhan vien|hoi|gia|kiem tra|khong|con thi
 const ENGLISH_DISPLAY_WORDS = /\b(customer|purchase|history|direct|brief|messages|prefers|pricing|availability|previous|communication|product|interested|order)\b/gi;
 const MAX_ANALYSIS_IMAGES = 2;
 const MAX_SOURCE_IMAGE_BYTES = 12 * 1024 * 1024;
+const WHOLE_JOB_RETRY_ERRORS = new Set(['RATE_LIMITED', 'CIRCUIT_OPEN', 'PROVIDER_UNAVAILABLE', 'TIMEOUT']);
+
+export function shouldRetryConversationAnalysisAsWhole(error: unknown) {
+  return WHOLE_JOB_RETRY_ERRORS.has(AIErrorHandler.normalize(error).code);
+}
 
 const SPEAKER_BY_SENDER: Record<string, PreparedMessage['speaker']> = {
   contact: 'Người liên hệ',
@@ -471,7 +477,7 @@ export async function analyzePreparedConversation(input: {
   try {
     response = await aiClient.complete<CombinedAnalysisOutput>(request);
   } catch (error) {
-    if (!imageParts.length) throw error;
+    if (!imageParts.length || shouldRetryConversationAnalysisAsWhole(error)) throw error;
     response = await aiClient.complete<CombinedAnalysisOutput>({
       ...request,
       taskType: 'conversation_analysis_combined_text_fallback',

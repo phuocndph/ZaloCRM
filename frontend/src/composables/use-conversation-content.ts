@@ -9,6 +9,7 @@
  * Có AbortController per-request-kind: gõ tìm kiếm nhanh → hủy request cũ (yêu cầu 12).
  */
 import { api } from '@/api/index';
+import { getCurrentScope, onScopeDispose } from 'vue';
 import type { Message } from '@/composables/use-chat';
 
 export interface PinnedItem {
@@ -42,14 +43,6 @@ export interface SearchQuery {
 }
 
 // 1 controller / loại request để hủy cái cũ khi có request mới cùng loại (search debounce).
-const controllers: Record<string, AbortController | undefined> = {};
-function freshSignal(kind: string): AbortSignal {
-  controllers[kind]?.abort();
-  const c = new AbortController();
-  controllers[kind] = c;
-  return c.signal;
-}
-
 export function isCanceled(err: unknown): boolean {
   return (
     (err as { code?: string })?.code === 'ERR_CANCELED' ||
@@ -58,6 +51,15 @@ export function isCanceled(err: unknown): boolean {
 }
 
 export function useConversationContent() {
+  const controllers: Record<string, AbortController | undefined> = {};
+  if (getCurrentScope()) onScopeDispose(() => Object.values(controllers).forEach((controller) => controller?.abort()));
+  function freshSignal(kind: string): AbortSignal {
+    controllers[kind]?.abort();
+    const c = new AbortController();
+    controllers[kind] = c;
+    return c.signal;
+  }
+
   async function pin(conversationId: string, messageId: string): Promise<void> {
     await api.post(`/conversations/${conversationId}/messages/${messageId}/pin`);
   }

@@ -6,10 +6,14 @@ import {
   appointmentDueAt,
   collectAllPages,
   deriveConversationSignal,
+  verificationSignal,
   isConversationEligibleForSalesWork,
   isContactWorkItemEligibleForAssignee,
   isVerificationCandidate,
   matchesWorkItemScope,
+  sanitizeConversationWorkItemForViewer,
+  followupTasksForWorkItem,
+  workItemMatchesIntegrationScope,
 } from '../../src/modules/dashboard/conversation-work-item-service.js';
 
 function conversationInput(overrides: Record<string, unknown> = {}) {
@@ -27,6 +31,44 @@ function conversationInput(overrides: Record<string, unknown> = {}) {
 }
 
 describe('ConversationWorkItemService', () => {
+  it('filters mixed-account aggregates before integration pagination, counts or updates', () => {
+    const convs = new Set(['conv']); const accounts = new Set(['nick']);
+    const row = { conversationId: 'conv', zaloAccountId: 'nick', metadata: { conversationIds: ['conv'], signals: [{ conversationId: 'conv', zaloAccountId: 'nick' }] } };
+    expect(workItemMatchesIntegrationScope(row, convs, accounts)).toBe(true);
+    expect(workItemMatchesIntegrationScope({ ...row, metadata: { conversationIds: ['conv', 'private'] } }, convs, accounts)).toBe(false);
+    expect(workItemMatchesIntegrationScope({ ...row, metadata: { signals: [{ conversationId: 'conv', zaloAccountId: 'other' }] } }, convs, accounts)).toBe(false);
+    expect(workItemMatchesIntegrationScope({ ...row, metadata: { signals: [{ conversationId: 'conv' }] } }, convs, accounts)).toBe(false);
+    expect(workItemMatchesIntegrationScope({ conversationId: null, metadata: {} }, convs, accounts)).toBe(false);
+  });
+  it('keeps low-confidence image senders in verification work', () => {
+    const conversation = {
+      messages: [{ id: 'media', senderType: 'contact', contentType: 'image', content: '[image]' }],
+      aiInsights: [{ sourceThroughMessageId: 'media', signals: { counterpartyRole: 'unknown', counterpartyConfidence: 0.4 } }],
+    };
+    expect(isConversationEligibleForSalesWork(conversation)).toBe(false);
+    expect(isVerificationCandidate(conversation, true)).toBe(true);
+    expect(isVerificationCandidate(conversation, false)).toBe(false);
+    expect(isVerificationCandidate({ ...conversation, messages: [{ ...conversation.messages[0], isDeleted: true }] }, true)).toBe(false);
+    expect(isVerificationCandidate({ ...conversation, messages: [{ ...conversation.messages[0], senderType: 'self' }] }, true)).toBe(false);
+  });
+
+  it('does not turn a confirmed vendor attachment into verification work', () => {
+    expect(isVerificationCandidate({
+      messages: [{ id: 'media', senderType: 'contact', contentType: 'file' }],
+      aiInsights: [{ sourceThroughMessageId: 'media', signals: { counterpartyRole: 'vendor', counterpartyConfidence: 0.95 } }],
+    }, true)).toBe(false);
+  });
+
+  it('separates ordinary manual media review from real escalation', () => {
+    const input = conversationInput({
+      lastMessageAt: new Date('2026-08-27T03:59:00Z'),
+      insight: { requiresHuman: true, stage: 'needs_reply', intentLabel: 'unknown', nextAction: 'clarify_latest_message' },
+    });
+    expect(deriveConversationSignal(input).priority).toBe('normal');
+    expect(deriveConversationSignal({ ...input, lastMessageAt: new Date('2026-08-27T02:00:00Z') }).priority).toBe('high');
+    expect(deriveConversationSignal({ ...input, insight: { ...input.insight, intentLabel: 'complaint' } }).priority).toBe('critical');
+    expect(deriveConversationSignal({ ...input, insight: { ...input.insight, nextAction: 'verify_payment_obligation' } }).priority).toBe('high');
+  });
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date('2026-08-27T04:00:00.000Z'));
@@ -47,6 +89,59 @@ describe('ConversationWorkItemService', () => {
 
     expect(signal).toMatchObject({ priority: 'critical', priorityScore: 100, kind: 'human_required' });
     expect(signal.customerSituation).toContain('khiếu nại');
+  });
+
+  it('does not pretend AI is running when the latest inbound message has no insight yet', () => {
+    const signal = deriveConversationSignal(conversationInput({ insight: null }));
+
+    expect(signal.metadata).toMatchObject({
+      aiStatus: 'pending',
+      aiStatusLabel: 'Chờ kết quả phân tích AI',
+    });
+  });
+
+  it('exposes a ready state after the latest inbound message has an insight', () => {
+    const signal = deriveConversationSignal(conversationInput({
+      insight: { sourceThroughMessageId: 'message-1', stage: 'discovery', stageConfidence: 0.88 },
+    }));
+
+    expect(signal.metadata).toMatchObject({
+      aiStatus: 'ready',
+      aiStatusLabel: 'AI đã phân tích xong',
+    });
+  });
+
+  it('exposes a verification state for uncertain customer identity', () => {
+    const signal = verificationSignal({
+      id: 'conversation-1',
+      lastMessageAt: new Date('2026-08-27T03:00:00.000Z'),
+      zaloAccountId: 'account-1',
+      unreadCount: 1,
+      messages: [{ id: 'message-1', senderType: 'contact', contentType: 'text', content: 'Tôi cần trao đổi thêm.' }],
+      aiInsights: [{ sourceThroughMessageId: 'message-1' }],
+    }, false);
+
+    expect(signal.metadata).toMatchObject({
+      aiStatus: 'verification',
+      aiStatusLabel: 'Chờ nhân viên xác minh',
+    });
+  });
+
+  it('labels image-only verification as content review instead of customer rejection', () => {
+    const signal = verificationSignal({
+      id: 'conversation-1',
+      lastMessageAt: new Date('2026-08-27T03:00:00.000Z'),
+      zaloAccountId: 'account-1',
+      unreadCount: 1,
+      messages: [{ id: 'message-image', senderType: 'contact', contentType: 'image', content: '[Hình ảnh]' }],
+      aiInsights: [{ sourceThroughMessageId: 'message-image' }],
+    }, false);
+
+    expect(signal).toMatchObject({
+      title: 'Xem nội dung ảnh hoặc tệp khách gửi',
+      nextAction: 'Mở hội thoại, xem ảnh hoặc tệp và xác nhận khách đang cần hỗ trợ gì.',
+      metadata: { actionKey: 'clarify_latest_message', contentVerification: true, aiStatus: 'verification' },
+    });
   });
 
   it('ranks payment conversations as high priority', () => {
@@ -318,5 +413,65 @@ describe('ConversationWorkItemService', () => {
     expect(matchesWorkItemScope(overdueReply, 'today')).toBe(false);
     expect(matchesWorkItemScope(laterToday, 'now')).toBe(false);
     expect(matchesWorkItemScope(laterToday, 'today')).toBe(true);
+  });
+
+  it('surfaces overdue verification work in the urgent queue', () => {
+    const overdueVerification = {
+      status: 'open',
+      kind: 'verification',
+      priority: 'normal',
+      dueAt: new Date('2026-08-26T03:00:00.000Z'),
+      metadata: { actionKey: 'verify_customer_identity' },
+    };
+
+    expect(matchesWorkItemScope(overdueVerification, 'now')).toBe(true);
+    expect(matchesWorkItemScope(overdueVerification, 'verify')).toBe(true);
+  });
+
+  it('hides private conversations from non-owners and redacts main-nick work content', () => {
+    const privateRow = {
+      id: 'private-item',
+      title: 'Trả lời khách hàng',
+      customerSituation: 'Nội dung riêng tư',
+      nextAction: 'Gửi báo giá',
+      reason: 'Khách đang chờ',
+      metadata: { contactName: 'Khách riêng', signalCount: 1 },
+      conversation: {
+        isPrivate: true,
+        privateOwnerUserId: 'owner-user',
+        zaloAccount: { privacyMode: 'sub', ownerUserId: 'owner-user' },
+      },
+    };
+    const mainNickRow = {
+      ...privateRow,
+      id: 'main-nick-item',
+      conversation: {
+        isPrivate: false,
+        privateOwnerUserId: null,
+        zaloAccount: { privacyMode: 'main', ownerUserId: 'owner-user' },
+      },
+    };
+    const viewer = { viewerUserId: 'other-user', orgId: 'org', privacyUnlocked: false };
+
+    expect(sanitizeConversationWorkItemForViewer(privateRow, viewer)).toBeNull();
+    expect(sanitizeConversationWorkItemForViewer(mainNickRow, viewer)).toMatchObject({
+      title: 'Công việc trong hội thoại riêng tư',
+      customerSituation: 'Nội dung hội thoại đang được bảo vệ.',
+      metadata: { redacted: true, contactName: 'Khách riêng' },
+    });
+  });
+
+  it('finds every waiting-sale task inside a grouped customer work item', () => {
+    expect(followupTasksForWorkItem({ metadata: {
+      enrollmentId: 'enrollment-primary',
+      currentStepKey: 'sale_task_1',
+      signals: [{
+        kind: 'followup_sale',
+        metadata: { enrollmentId: 'enrollment-secondary', currentStepKey: 'sale_task_2' },
+      }],
+    }})).toEqual([
+      { enrollmentId: 'enrollment-primary', currentStepKey: 'sale_task_1' },
+      { enrollmentId: 'enrollment-secondary', currentStepKey: 'sale_task_2' },
+    ]);
   });
 });

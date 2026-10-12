@@ -10,10 +10,13 @@ import {
 import {
   assessCounterpartyHeuristically,
   normalizeCounterpartyAssessment,
+  isConfirmedNonCustomer,
   shouldCreateSalesWorkItem,
   type CounterpartyAssessment,
 } from '../ai/counterparty-role.js';
 import { isZaloFriendAcceptedNotification } from '../zalo/zalo-friend-accepted-notification.js';
+import { aiProgressMetadata, resolveAnalysisProgress, type AiProgressStatus } from '../ai/conversation-analysis-progress.js';
+import { isConversationEscalation } from '../ai/conversation-urgency.js';
 
 export type WorkItemScope = 'now' | 'today' | 'waiting' | 'upcoming' | 'verify' | 'done' | 'all';
 
@@ -23,6 +26,43 @@ export type WorkItemSummary = {
   overdue: number;
   waitingReply: number;
   verification: number;
+};
+
+export type ConversationLoadOverview = {
+  generatedAt: Date;
+  summary: {
+    activeConversations: number;
+    activeAssignees: number;
+    overdueConversations: number;
+    totalWorkItems: number;
+  };
+  assignees: Array<{
+    id: string;
+    fullName: string;
+    avatarUrl: string | null;
+    conversationCount: number;
+    workItemCount: number;
+    overdueCount: number;
+  }>;
+  items: Array<{
+    key: string;
+    conversationId: string | null;
+    contactId: string;
+    contactName: string;
+    contactAvatar: string | null;
+    conversationLabel: string;
+    threadType: string;
+    nickName: string | null;
+    nickStatus: string | null;
+    unreadCount: number;
+    lastMessageAt: Date | null;
+    workItemCount: number;
+    highestPriority: string;
+    status: string;
+    dueAt: Date | null;
+    taskTitles: string[];
+    assignee: { id: string; fullName: string; avatarUrl: string | null };
+  }>;
 };
 
 type Signal = {
@@ -59,6 +99,8 @@ export function emitConversationWorkItemsUpdated(args: {
   conversationId?: string | null;
   itemId?: string | null;
 }) {
+  const prefix = `${args.orgId}:`;
+  for (const key of reconciliationCache.keys()) if (key.startsWith(prefix)) reconciliationCache.delete(key);
   getIo()?.to(`org:${args.orgId}`).emit('work-items:updated', {
     conversationId: args.conversationId ?? undefined,
     itemId: args.itemId ?? undefined,
@@ -82,6 +124,9 @@ export function invalidateConversationWorkItemsForUsers(args: {
 }
 
 const ACTIVE_STAGES = new Set(['qualified', 'quoted', 'negotiating', 'payment_pending']);
+// Chỉ hai nguồn này còn được tạo bởi bộ đồng bộ hiện tại. Các nguồn khác là
+// dữ liệu legacy từ các phiên bản cũ; không được để chúng quay lại hàng đợi.
+const CURRENT_WORK_ITEM_SOURCE_TYPES = ['contact', 'group_conversation'] as const;
 const PRIORITY_ORDER = { critical: 4, high: 3, normal: 2, low: 1 } as const;
 const ACTION_LABELS: Record<string, string> = {
   reply_customer: 'Trả lời khách hàng',
@@ -94,6 +139,7 @@ const ACTION_LABELS: Record<string, string> = {
   review_quote_follow_up: 'Follow-up báo giá',
   review_post_sale_care: 'Chăm sóc sau bán',
   clarify_latest_message: 'Xác nhận nội dung tin nhắn mới',
+  verify_customer_identity: 'Xác minh người liên hệ',
 };
 const RECONCILIATION_TTL_MS = 3_000;
 const reconciliationCache = new Map<string, number>();
@@ -182,6 +228,15 @@ function activeInsight(conversation: any) {
   return Array.isArray(conversation.aiInsights) ? conversation.aiInsights[0] ?? null : null;
 }
 
+/** Chỉ dùng insight nếu nó được tạo từ đúng tin nhắn mới nhất. */
+export function latestInsight(conversation: any) {
+  const insight = activeInsight(conversation);
+  if (!insight) return null;
+  const latest = latestMessage(conversation);
+  if (insight.sourceThroughMessageId && (!latest?.id || insight.sourceThroughMessageId !== latest.id)) return null;
+  return insight;
+}
+
 function insightCounterparty(insight: any | null): CounterpartyAssessment | null {
   const signals = jsonObject(insight?.signals);
   return normalizeCounterpartyAssessment({
@@ -201,38 +256,50 @@ export function isVerificationCandidate(conversation: any, canReadContent: boole
   const insight = activeInsight(conversation);
   const insightMatchesLatest = !insight?.sourceThroughMessageId || !latest.id || insight.sourceThroughMessageId === latest.id;
   const assessment = insightMatchesLatest ? insightCounterparty(insight) : null;
+  if (isConfirmedNonCustomer(assessment)) return false;
+  if (latest.contentType && latest.contentType !== 'text') return true;
   if (assessment) return assessment.role === 'unknown' && assessment.confidence >= 0.6;
   const text = normalizeText(latest.content, 160);
   if (latest.contentType && latest.contentType !== 'text') return true;
   return text.length >= 20 && !/^(?:xin chao|chao|hello|alo|ok|da|vang|cam on)[.!\s]*$/iu.test(text);
 }
 
-function verificationSignal(conversation: any, redacted: boolean): Signal {
+export function verificationSignal(conversation: any, redacted: boolean): Signal {
   const latest = latestMessage(conversation);
+  const insight = latestInsight(conversation);
+  const contentVerification = !!latest?.contentType && latest.contentType !== 'text';
+  const escalated = isConversationEscalation(insight);
+  const waiting = Date.now() - new Date(latest?.sentAt ?? conversation.lastMessageAt ?? Date.now()).getTime() >= 60 * 60_000;
   const preview = redacted
     ? 'Nội dung thuộc phạm vi riêng tư.'
-    : latest?.contentType && latest.contentType !== 'text'
+    : contentVerification
       ? `Khách vừa gửi ${latest.contentType}.`
     : normalizeText(latest?.content, 260) || 'Người liên hệ chưa nêu rõ nhu cầu.';
   return {
     key: `verify:${latest?.id ?? conversation.id}`,
     kind: 'verification',
-    priority: 'normal',
-    priorityScore: 60,
-    title: 'Xác minh người liên hệ',
+    priority: escalated ? 'critical' : waiting ? 'high' : 'normal',
+    priorityScore: escalated ? 100 : waiting ? 82 : 60,
+    title: contentVerification ? 'Xem nội dung ảnh hoặc tệp khách gửi' : 'Xác minh người liên hệ',
     customerSituation: preview,
-    nextAction: 'Mở hội thoại và xác minh đây có phải khách hàng cần hỗ trợ không.',
-    reason: 'Chưa đủ dữ kiện để phân loại là khách mua hàng, nhà cung cấp hay đối tượng khác.',
+    nextAction: contentVerification
+      ? 'Mở hội thoại, xem ảnh hoặc tệp và xác nhận khách đang cần hỗ trợ gì.'
+      : 'Mở hội thoại và xác minh đây có phải khách hàng cần hỗ trợ không.',
+    reason: contentVerification
+      ? 'Ảnh hoặc tệp chưa có nội dung văn bản đủ để AI xác định nhu cầu. Không tự động gửi hoặc follow-up.'
+      : 'Chưa đủ dữ kiện để phân loại là khách mua hàng, nhà cung cấp hay đối tượng khác.',
     dueAt: conversation.lastMessageAt ?? new Date(),
     eventAt: conversation.lastMessageAt,
     conversationId: conversation.id,
     zaloAccountId: conversation.zaloAccountId,
-    contextVersion: activeInsight(conversation)?.version ?? null,
-    confidence: insightCounterparty(activeInsight(conversation))?.confidence ?? null,
+    contextVersion: insight?.version ?? null,
+    confidence: insightCounterparty(insight)?.confidence ?? null,
     metadata: {
+      ...resolveAnalysisProgress({ latestMessageId: latest?.id ?? null, insight, run: conversation.aiRuns?.[0], redacted, verification: true }),
       verification: true,
       counterpartyRole: 'unknown',
-      actionKey: 'verify_customer_identity',
+      actionKey: contentVerification ? 'clarify_latest_message' : 'verify_customer_identity',
+      contentVerification,
       unreadCount: conversation.unreadCount,
     },
   };
@@ -294,6 +361,7 @@ export function deriveConversationSignal(input: {
   conversationId: string;
   zaloAccountId: string;
   latestMessageId: string | null;
+  aiRun?: any;
 }): Signal {
   const insight = input.insight;
   const summary = parseSummary(insight?.summary?.summaryRedacted);
@@ -301,10 +369,12 @@ export function deriveConversationSignal(input: {
   const intent = String(insight?.intentLabel ?? '');
   const stage = String(insight?.stage ?? 'needs_reply');
   const requiresHuman = !!insight?.requiresHuman;
-  const urgentIntent = ['complaint', 'return_or_refund', 'human_request'].includes(intent);
-  const commercialIntent = ['order_intent', 'payment_inquiry'].includes(intent) || ['qualified', 'negotiating', 'payment_pending'].includes(stage);
+  const urgentIntent = isConversationEscalation(insight);
+  const commercialIntent = ['order_intent', 'payment_inquiry', 'quote_request', 'price_inquiry'].includes(intent)
+    || ['confirm_order_details', 'verify_payment_obligation', 'prepare_quote', 'review_quote_follow_up'].includes(insight?.nextAction)
+    || ['qualified', 'negotiating', 'payment_pending'].includes(stage);
   const ageMs = input.lastMessageAt ? Date.now() - input.lastMessageAt.getTime() : 0;
-  const priority = requiresHuman || urgentIntent ? 'critical' : commercialIntent || ageMs >= 60 * 60 * 1000 ? 'high' : 'normal';
+  const priority = urgentIntent ? 'critical' : commercialIntent || ageMs >= 60 * 60 * 1000 ? 'high' : 'normal';
   const priorityScore = priority === 'critical'
     ? 100
     : priority === 'high'
@@ -331,6 +401,7 @@ export function deriveConversationSignal(input: {
     contextVersion: insight?.version ?? null,
     confidence: insight?.stageConfidence ?? null,
     metadata: {
+      ...resolveAnalysisProgress({ latestMessageId: input.latestMessageId, insight, run: input.aiRun, redacted: input.redacted }),
       unreadCount: input.unreadCount,
       stage,
       intent: insight?.intentLabel ?? null,
@@ -386,6 +457,7 @@ function appointmentSignal(appointment: any, conversation: any | null, now: Date
     contextVersion: null,
     confidence: null,
     metadata: {
+      ...aiProgressMetadata('not_applicable'),
       appointmentId: appointment.id,
       appointmentTime: appointment.appointmentTime,
       appointmentType: appointment.type,
@@ -412,6 +484,7 @@ function followupSignal(enrollment: any, conversation: any | null): Signal {
     contextVersion: null,
     confidence: null,
     metadata: {
+      ...aiProgressMetadata('not_applicable'),
       enrollmentId: enrollment.id,
       workflowId: enrollment.workflowId,
       workflowName: enrollment.workflow?.name ?? null,
@@ -428,9 +501,10 @@ function aiNextSignal(conversation: any, insight: any, redacted: boolean): Signa
   // in the urgent queue. A future inbound message will create a fresh insight.
   if (latest?.senderType === 'self' && ['confirm_order_details', 'review_post_sale_care', 'review_quote_follow_up'].includes(actionKey)) return null;
   const summary = parseSummary(insight?.summary?.summaryRedacted);
-  const critical = !!insight?.requiresHuman || actionKey === 'assign_to_human';
+  const critical = isConversationEscalation(insight);
   const payment = actionKey === 'verify_payment_obligation';
-  const priorityScore = critical ? 98 : payment ? 92 : actionKey === 'confirm_order_details' ? 90 : ['prepare_quote', 'review_quote_follow_up'].includes(actionKey) ? 82 : 70;
+  const waiting = Date.now() - new Date(conversation.lastMessageAt ?? Date.now()).getTime() >= 60 * 60_000;
+  const priorityScore = critical ? 98 : payment ? 92 : actionKey === 'confirm_order_details' ? 90 : waiting || ['prepare_quote', 'review_quote_follow_up'].includes(actionKey) ? 82 : 70;
   return {
     key: `ai:${insight.version}:${actionKey}:${insight.stage}`,
     kind: critical ? 'human_required' : 'ai_next_action',
@@ -449,6 +523,7 @@ function aiNextSignal(conversation: any, insight: any, redacted: boolean): Signa
     contextVersion: insight.version ?? null,
     confidence: insight.stageConfidence ?? null,
     metadata: {
+      ...aiProgressMetadata('ready'),
       stage: insight.stage,
       intent: insight.intentLabel,
       emotion: insight.emotionLabel,
@@ -482,7 +557,12 @@ function dormantSignal(conversation: any, insight: any | null, redacted: boolean
     zaloAccountId: conversation.zaloAccountId,
     contextVersion: insight?.version ?? null,
     confidence: insight?.stageConfidence ?? null,
-    metadata: { stage: stage || null, redacted, dormantDays: Math.max(1, Math.floor((Date.now() - conversation.lastMessageAt.getTime()) / 86400000)) },
+    metadata: {
+      ...resolveAnalysisProgress({ latestMessageId: latestMessage(conversation)?.id ?? null, insight, run: conversation.aiRuns?.[0], redacted }),
+      stage: stage || null,
+      redacted,
+      dormantDays: Math.max(1, Math.floor((Date.now() - conversation.lastMessageAt.getTime()) / 86400000)),
+    },
   };
 }
 
@@ -496,8 +576,18 @@ function choosePrimary(signals: Signal[]) {
   })[0];
 }
 
+function aggregateAiProgress(signals: Signal[]) {
+  const order: AiProgressStatus[] = ['analyzing', 'failed', 'pending', 'verification', 'ready', 'not_applicable'];
+  for (const status of order) {
+    const signal = signals.find((signal) => signal.metadata.aiStatus === status);
+    if (signal) return aiProgressMetadata(status, signal.metadata.aiStatusDetail as string);
+  }
+  return aiProgressMetadata('not_applicable');
+}
+
 function buildCandidate(bucket: ContactBucket, orgId: string, assigneeUserId: string) {
   const primary = choosePrimary(bucket.signals);
+  const aiProgress = aggregateAiProgress(bucket.signals);
   const dueTimes = bucket.signals.map((signal) => signal.dueAt?.getTime()).filter((value): value is number => Number.isFinite(value));
   const eventTimes = bucket.signals.map((signal) => signal.eventAt?.getTime()).filter((value): value is number => Number.isFinite(value));
   const signalMetadata = bucket.signals
@@ -508,6 +598,8 @@ function buildCandidate(bucket: ContactBucket, orgId: string, assigneeUserId: st
       title: signal.title,
       priority: signal.priority,
       dueAt: signal.dueAt?.toISOString() ?? null,
+      conversationId: signal.conversationId,
+      zaloAccountId: signal.zaloAccountId,
       metadata: signal.metadata,
     }));
   return {
@@ -531,6 +623,7 @@ function buildCandidate(bucket: ContactBucket, orgId: string, assigneeUserId: st
     contextVersion: primary.contextVersion,
     confidence: primary.confidence,
     metadata: {
+      ...aiProgress,
       contactName: bucket.contactName,
       contactAvatar: bucket.contactAvatar,
       nickNames: [...bucket.nickNames],
@@ -544,7 +637,7 @@ function buildCandidate(bucket: ContactBucket, orgId: string, assigneeUserId: st
 }
 
 function buildGroupCandidate(conversation: any, orgId: string, assigneeUserId: string) {
-  const insight = activeInsight(conversation);
+  const insight = latestInsight(conversation);
   const signals = jsonObject(insight?.signals);
   if (signals.groupActionable !== true) return null;
   const senderName = normalizeText(signals.actionableSenderName || 'Thành viên trong nhóm', 180);
@@ -583,6 +676,7 @@ function buildGroupCandidate(conversation: any, orgId: string, assigneeUserId: s
     contextVersion: insight?.version ?? null,
     confidence: insight?.stageConfidence ?? null,
     metadata: {
+      ...aiProgressMetadata('ready'),
       isGroup: true,
       contactName: groupName,
       contactAvatar: conversation.groupAvatarUrl ?? null,
@@ -680,7 +774,7 @@ export async function reconcileConversationWorkItems(input: {
     messages: {
       where: { isDeleted: false },
       take: 12,
-      orderBy: [{ zaloMsgIdNum: { sort: 'desc' as const, nulls: 'last' as const } }, { sentAt: 'desc' as const }],
+      orderBy: [{ sentAt: 'desc' as const }, { createdAt: 'desc' as const }],
       select: { id: true, content: true, contentType: true, isDeleted: true, sentAt: true, senderType: true, senderUid: true, senderName: true },
     },
     aiInsights: {
@@ -688,11 +782,17 @@ export async function reconcileConversationWorkItems(input: {
       take: 1,
       orderBy: [{ version: 'desc' as const }, { createdAt: 'desc' as const }],
       select: {
-        version: true, sourceThroughMessageId: true, stage: true, stageConfidence: true, stageReasonRedacted: true,
+        version: true, sourceThroughMessageId: true, generatedWithModel: true, stage: true, stageConfidence: true, stageReasonRedacted: true,
         intentLabel: true, emotionLabel: true, requiresHuman: true, nextAction: true,
         nextActionReasonRedacted: true, signals: true, safeguards: true,
         summary: { select: { summaryRedacted: true } },
       },
+    },
+    aiRuns: {
+      where: { taskType: 'conversation_analysis' },
+      take: 1,
+      orderBy: { createdAt: 'desc' as const },
+      select: { status: true, triggerMessageId: true, contextManifest: true, updatedAt: true, createdAt: true },
     },
   };
 
@@ -771,12 +871,18 @@ export async function reconcileConversationWorkItems(input: {
       take: 200,
       ...(cursorId ? { cursor: { id: cursorId }, skip: 1 } : {}),
     })) : Promise.resolve([]),
-    ownerAccountIds.size ? collectAllPages(200, (cursorId) => prisma.conversation.findMany({
+    accountIds.length ? collectAllPages(200, (cursorId) => prisma.conversation.findMany({
       where: {
         orgId: input.orgId,
-        zaloAccountId: { in: [...ownerAccountIds] },
+        // Người có quyền đọc/chat/admin nick cũng phải nhận việc nhóm của nick đó.
+        // Việc 1-1 vẫn dùng ContactAccess để tránh nhân bản ngoài phạm vi phụ trách.
+        zaloAccountId: { in: accountIds },
         threadType: 'group',
         deletedAt: null,
+        OR: [
+          { zaloNotificationsMuted: false },
+          { zaloNotificationsMuted: true, zaloMutedUntil: { lte: now } },
+        ],
         isPrivate: false,
         contactId: { not: null },
         groupSdkType: { not: 2 },
@@ -825,10 +931,11 @@ export async function reconcileConversationWorkItems(input: {
       lastMessageAt: conversation.lastMessageAt,
       messagePreview: preview,
       redacted: !canSee,
-      insight: canSee ? activeInsight(conversation) : null,
+      insight: canSee ? latestInsight(conversation) : null,
       conversationId: conversation.id,
       zaloAccountId: conversation.zaloAccountId,
       latestMessageId: message?.id ?? null,
+      aiRun: conversation.aiRuns[0],
     }), conversation.zaloAccount.displayName);
     bucket.unreadCount += conversation.unreadCount;
   }
@@ -848,7 +955,7 @@ export async function reconcileConversationWorkItems(input: {
     if (isConversationPrivateFor(conversation, input.privacy.viewerUserId)) continue;
     const canSee = canSeeConversationContent(conversation, input.privacy);
     if (!isConversationEligibleForSalesWork(conversation, canSee)) continue;
-    const signal = aiNextSignal(conversation, canSee ? activeInsight(conversation) : null, !canSee);
+    const signal = aiNextSignal(conversation, canSee ? latestInsight(conversation) : null, !canSee);
     if (!signal) continue;
     aiTaskContactIds.add(conversation.contactId);
     const bucket = bucketFor(buckets, conversation.contact);
@@ -862,7 +969,7 @@ export async function reconcileConversationWorkItems(input: {
     const canSee = canSeeConversationContent(conversation, input.privacy);
     if (!isConversationEligibleForSalesWork(conversation, canSee)) continue;
     const bucket = bucketFor(buckets, conversation.contact);
-    addSignal(bucket, dormantSignal(conversation, canSee ? activeInsight(conversation) : null, !canSee), conversation.zaloAccount.displayName);
+    addSignal(bucket, dormantSignal(conversation, canSee ? latestInsight(conversation) : null, !canSee), conversation.zaloAccount.displayName);
   }
 
   for (const appointment of appointments) {
@@ -987,6 +1094,17 @@ export async function reconcileConversationWorkItems(input: {
       },
       data: { status: 'dismissed', completedAt: null, snoozedUntil: null },
     }),
+    // Dọn các work item từ engine cũ (ví dụ outreach_coverage). Chúng không còn
+    // được reconcile nhưng nếu giữ lại sẽ che khuất hàng đợi đa nick hiện tại.
+    prisma.conversationWorkItem.updateMany({
+      where: {
+        orgId: input.orgId,
+        assigneeUserId: input.assigneeUserId,
+        sourceType: { notIn: [...CURRENT_WORK_ITEM_SOURCE_TYPES] },
+        status: { in: ['open', 'snoozed'] },
+      },
+      data: { status: 'dismissed', completedAt: null, snoozedUntil: null },
+    }),
   ]);
   return [...candidates, ...groupCandidates];
 }
@@ -1000,8 +1118,10 @@ export function matchesWorkItemScope(item: any, scope: WorkItemScope, now = new 
   const actionKey = jsonObject(item.metadata).actionKey;
   const isVerification = item.kind === 'verification' || actionKey === 'clarify_latest_message' || actionKey === 'verify_customer_identity';
   if (scope === 'verify') return isVerification;
-  if (isVerification) return false;
   if (scope === 'now') {
+    // Việc xác minh quá hạn phải nổi lên ở hàng đợi khẩn cấp, nhưng vẫn giữ
+    // trong tab riêng để nhân viên có thể xem toàn bộ các việc cần xác minh.
+    if (isVerification) return !!item.dueAt && item.dueAt <= now;
     const dueNow = !item.dueAt || item.dueAt <= now;
     return item.priority === 'critical'
       || item.kind === 'reply'
@@ -1009,12 +1129,163 @@ export function matchesWorkItemScope(item: any, scope: WorkItemScope, now = new 
       || (dueNow && item.priority === 'high')
       || (!!item.dueAt && item.dueAt <= now);
   }
+  if (isVerification) return false;
   if (scope === 'today') {
     if (!item.dueAt || item.dueAt >= todayEnd) return false;
     return !matchesWorkItemScope(item, 'now', now);
   }
   if (scope === 'upcoming') return !!item.dueAt && item.dueAt >= todayEnd;
   return false;
+}
+
+/**
+ * Bảng tổng hợp chỉ đọc cho quản lý: mỗi dòng là một hội thoại đang có việc
+ * mở/đang hoãn, gom các tín hiệu trùng hội thoại theo đúng người phụ trách.
+ * Không dùng AI và không thay đổi việc phân công.
+ */
+export async function listConversationLoadOverview(input: {
+  orgId: string;
+  visibleUserIds: string[];
+  viewerUserId: string;
+  query?: string;
+  includeCompleted?: boolean;
+}): Promise<ConversationLoadOverview> {
+  const now = new Date();
+  const rows = await prisma.conversationWorkItem.findMany({
+    where: {
+      orgId: input.orgId,
+      assigneeUserId: { in: input.visibleUserIds },
+      sourceType: { in: [...CURRENT_WORK_ITEM_SOURCE_TYPES] },
+      status: input.includeCompleted ? { in: ['open', 'snoozed', 'completed'] } : { in: ['open', 'snoozed'] },
+    },
+    orderBy: [{ priorityScore: 'desc' }, { dueAt: { sort: 'asc', nulls: 'last' } }, { updatedAt: 'desc' }],
+    take: 5000,
+    include: {
+      assignee: { select: { id: true, fullName: true, avatarUrl: true } },
+      contact: { select: { id: true, fullName: true, crmName: true, avatarUrl: true } },
+      conversation: {
+        select: {
+          id: true,
+          threadType: true,
+          groupName: true,
+          unreadCount: true,
+          lastMessageAt: true,
+          isPrivate: true,
+          privateOwnerUserId: true,
+          zaloAccount: { select: { displayName: true, status: true } },
+        },
+      },
+    },
+  });
+
+  const grouped = new Map<string, {
+    conversationId: string | null;
+    contactId: string;
+    contactName: string;
+    contactAvatar: string | null;
+    conversationLabel: string;
+    threadType: string;
+    nickName: string | null;
+    nickStatus: string | null;
+    unreadCount: number;
+    lastMessageAt: Date | null;
+    workItemCount: number;
+    highestPriority: string;
+    priorityScore: number;
+    status: string;
+    dueAt: Date | null;
+    taskTitles: string[];
+    assignee: { id: string; fullName: string; avatarUrl: string | null };
+  }>();
+
+  const query = normalizeText(input.query, 120).toLocaleLowerCase('vi-VN');
+  for (const row of rows) {
+    // Hội thoại riêng tư chỉ được xuất hiện với đúng chủ hội thoại.
+    if (row.conversation?.isPrivate && row.conversation.privateOwnerUserId !== input.viewerUserId) continue;
+    const metadata = jsonObject(row.metadata);
+    const contactName = normalizeText(row.contact.crmName || row.contact.fullName || metadata.contactName || 'Khách hàng', 180);
+    const nickNames = Array.isArray(metadata.nickNames) ? metadata.nickNames.filter(Boolean).map((v) => normalizeText(v, 120)) : [];
+    const nickName = row.conversation?.zaloAccount.displayName || nickNames[0] || null;
+    const threadType = row.conversation?.threadType || (metadata.isGroup ? 'group' : 'user');
+    const conversationLabel = row.conversation?.groupName || (threadType === 'group' ? normalizeText(metadata.groupName, 180) : contactName);
+    const haystack = [contactName, conversationLabel, nickName, row.assignee.fullName, ...nickNames].filter(Boolean).join(' ').toLocaleLowerCase('vi-VN');
+    if (query && !haystack.includes(query)) continue;
+
+    const key = `${row.assigneeUserId}:${row.conversationId || `contact:${row.contactId}`}`;
+    const current = grouped.get(key);
+    if (!current) {
+      grouped.set(key, {
+        conversationId: row.conversationId,
+        contactId: row.contactId,
+        contactName,
+        contactAvatar: row.contact.avatarUrl,
+        conversationLabel: conversationLabel || contactName,
+        threadType,
+        nickName,
+        nickStatus: row.conversation?.zaloAccount.status || null,
+        unreadCount: row.conversation?.unreadCount || Number(metadata.unreadCount) || 0,
+        lastMessageAt: row.conversation?.lastMessageAt || null,
+        workItemCount: 1,
+        highestPriority: row.priority,
+        priorityScore: row.priorityScore,
+        status: row.status,
+        dueAt: row.dueAt,
+        taskTitles: [row.title],
+        assignee: row.assignee,
+      });
+      continue;
+    }
+    current.workItemCount += 1;
+    if (row.priorityScore > current.priorityScore) {
+      current.priorityScore = row.priorityScore;
+      current.highestPriority = row.priority;
+    }
+    if (current.status !== 'open' && row.status === 'open') current.status = 'open';
+    if (row.dueAt && (!current.dueAt || row.dueAt < current.dueAt)) current.dueAt = row.dueAt;
+    if (current.taskTitles.length < 3 && !current.taskTitles.includes(row.title)) current.taskTitles.push(row.title);
+  }
+
+  const items = [...grouped.entries()]
+    .sort(([, a], [, b]) => b.priorityScore - a.priorityScore || (b.lastMessageAt?.getTime() || 0) - (a.lastMessageAt?.getTime() || 0))
+    .map(([key, { priorityScore: _priorityScore, ...item }]) => ({ key, ...item }));
+  const assigneeMap = new Map<string, ConversationLoadOverview['assignees'][number]>();
+  for (const item of items) {
+    const current = assigneeMap.get(item.assignee.id) || {
+      id: item.assignee.id,
+      fullName: item.assignee.fullName,
+      avatarUrl: item.assignee.avatarUrl,
+      conversationCount: 0,
+      workItemCount: 0,
+      overdueCount: 0,
+    };
+    current.conversationCount += 1;
+    current.workItemCount += item.workItemCount;
+    if (item.status === 'open' && item.dueAt && item.dueAt <= now) current.overdueCount += 1;
+    assigneeMap.set(item.assignee.id, current);
+  }
+
+  return {
+    generatedAt: now,
+    summary: {
+      activeConversations: items.length,
+      activeAssignees: assigneeMap.size,
+      overdueConversations: items.filter((item) => item.status === 'open' && !!item.dueAt && item.dueAt <= now).length,
+      totalWorkItems: items.reduce((sum, item) => sum + item.workItemCount, 0),
+    },
+    assignees: [...assigneeMap.values()].sort((a, b) => b.conversationCount - a.conversationCount || a.fullName.localeCompare(b.fullName, 'vi')),
+    items,
+  };
+}
+
+export function workItemMatchesIntegrationScope(row: any, conversationIds: Set<string>, accountIds?: Set<string>) {
+  const metadata = jsonObject(row.metadata);
+  const signals = Array.isArray(metadata.signals) ? metadata.signals : [];
+  const ids = [row.conversationId, ...(Array.isArray(metadata.conversationIds) ? metadata.conversationIds : []), ...signals.map((signal: any) => signal.conversationId)].filter(Boolean);
+  if (!ids.length || !ids.every((id) => typeof id === 'string' && conversationIds.has(id))) return false;
+  if (!accountIds) return true;
+  if (!row.zaloAccountId || !accountIds.has(row.zaloAccountId)) return false;
+  // Older aggregate payloads without source-nick metadata are refreshed on reconciliation.
+  return signals.every((signal: any) => typeof signal.zaloAccountId === 'string' && accountIds.has(signal.zaloAccountId));
 }
 
 export async function listConversationWorkItems(input: {
@@ -1025,6 +1296,8 @@ export async function listConversationWorkItems(input: {
   limit?: number;
   offset?: number;
   query?: string;
+  allowedConversationIds?: string[];
+  allowedAccountIds?: string[];
 }) {
   const cacheKey = reconciliationCacheKey(input);
   const cachedAt = reconciliationCache.get(cacheKey) ?? 0;
@@ -1044,18 +1317,35 @@ export async function listConversationWorkItems(input: {
     }
   }
   const now = new Date();
-  const rows = await prisma.conversationWorkItem.findMany({
+  const rawRows = await prisma.conversationWorkItem.findMany({
     where: {
       orgId: input.orgId,
       assigneeUserId: input.assigneeUserId,
+      sourceType: { in: [...CURRENT_WORK_ITEM_SOURCE_TYPES] },
       status: { in: ['open', 'snoozed', 'completed'] },
     },
     include: {
       contact: { select: { id: true, fullName: true, crmName: true, avatarUrl: true, priorityScore: true } },
-      conversation: { select: { id: true, zaloAccount: { select: { displayName: true, status: true } } } },
+      conversation: {
+        select: {
+          id: true,
+          isPrivate: true,
+          privateOwnerUserId: true,
+          zaloAccount: { select: { displayName: true, status: true, privacyMode: true, ownerUserId: true } },
+        },
+      },
     },
     orderBy: [{ priorityScore: 'desc' }, { dueAt: { sort: 'asc', nulls: 'last' } }, { sourceEventAt: 'desc' }],
   });
+  const allowedIds = input.allowedConversationIds ? new Set(input.allowedConversationIds) : null;
+  const allowedAccounts = input.allowedAccountIds ? new Set(input.allowedAccountIds) : undefined;
+  const rows = rawRows
+    .filter((row) => {
+      if (!allowedIds) return true;
+      return workItemMatchesIntegrationScope(row, allowedIds, allowedAccounts);
+    })
+    .map((row) => sanitizeConversationWorkItemForViewer(row, input.privacy))
+    .filter((row): row is NonNullable<typeof row> => !!row);
   const scopes: WorkItemScope[] = ['now', 'today', 'waiting', 'upcoming', 'verify', 'done', 'all'];
   const counts = Object.fromEntries(scopes.map((scope) => [scope, rows.filter((row) => matchesWorkItemScope(row, scope, now)).length]));
   const activeRows = rows.filter((row) => ['open', 'snoozed'].includes(row.status));
@@ -1089,16 +1379,137 @@ export async function listConversationWorkItems(input: {
   return { items, counts, summary, hasMore: offset + items.length < scopedRows.length, nextOffset: offset + items.length < scopedRows.length ? offset + items.length : null, generatedAt: now };
 }
 
+export async function listConversationAnalysisActivity(input: { orgId: string; assigneeUserId: string }) {
+  const rows = await prisma.aiRun.findMany({
+    where: {
+      orgId: input.orgId,
+      taskType: 'conversation_analysis',
+      status: 'running',
+      updatedAt: { gte: new Date(Date.now() - 10 * 60_000) },
+      conversation: {
+        orgId: input.orgId,
+        deletedAt: null,
+        isPrivate: false,
+        zaloAccount: {
+          archivedAt: null,
+          privacyMode: { not: 'main' },
+          OR: [
+            { ownerUserId: input.assigneeUserId },
+            { access: { some: { userId: input.assigneeUserId, permission: { in: ['read', 'chat', 'admin'] } } } },
+          ],
+        },
+        OR: [
+          {
+            threadType: 'user',
+            contact: { assignedUserId: input.assigneeUserId },
+          },
+          {
+            threadType: 'user',
+            contact: { contactAccess: { some: { userId: input.assigneeUserId } } },
+          },
+          {
+            threadType: 'user',
+            contact: { assignedUserId: null, contactAccess: { none: {} } },
+            zaloAccount: { ownerUserId: input.assigneeUserId },
+          },
+          {
+            threadType: 'group', groupMonitoringEnabled: true,
+            groupSdkType: { not: 2 }, groupCategory: { in: ['sales', 'customer_care'] },
+            OR: [{ zaloNotificationsMuted: false }, { zaloNotificationsMuted: true, zaloMutedUntil: { lte: new Date() } }],
+          },
+        ],
+      },
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 20,
+    select: {
+      triggerMessageId: true, status: true, contextManifest: true, createdAt: true, updatedAt: true,
+      conversation: { select: {
+        id: true, threadType: true, groupName: true,
+        contact: { select: { crmName: true, fullName: true } },
+        zaloAccount: { select: { displayName: true } },
+        messages: {
+          where: { isDeleted: false }, take: 1,
+          orderBy: [{ sentAt: 'desc' }, { createdAt: 'desc' }], select: { id: true },
+        },
+      } },
+    },
+  });
+  const seen = new Set<string>();
+  return rows.flatMap((row) => {
+    const conversation = row.conversation;
+    if (!conversation || row.triggerMessageId !== conversation.messages[0]?.id || seen.has(conversation.id)) return [];
+    seen.add(conversation.id);
+    const progress = resolveAnalysisProgress({ latestMessageId: row.triggerMessageId, run: row });
+    if (progress.aiStatus !== 'analyzing') return [];
+    return [{
+      conversationId: conversation.id,
+      name: conversation.threadType === 'group' ? conversation.groupName || 'Nhóm Zalo' : conversation.contact?.crmName || conversation.contact?.fullName || 'Khách hàng',
+      nickName: conversation.zaloAccount.displayName,
+      step: progress.aiStatusDetail,
+    }];
+  });
+}
+
+/**
+ * Chặn hội thoại riêng tư hoàn toàn và làm mờ nội dung của nick main khi viewer
+ * chưa có quyền mở khóa. Work item cũ vẫn có thể tồn tại sau khi quyền thay đổi,
+ * nên không được tin rằng reconcile đã làm sạch mọi bản ghi lịch sử.
+ */
+export function sanitizeConversationWorkItemForViewer(row: any, privacy: PrivacyContext) {
+  const conversation = row.conversation;
+  if (conversation && isConversationPrivateFor(conversation, privacy.viewerUserId)) return null;
+  if (!conversation) return row;
+  const canSee = !!conversation.zaloAccount && canSeeConversationContent(conversation, privacy);
+  if (canSee) return row;
+  const metadata = jsonObject(row.metadata);
+  return {
+    ...row,
+    title: 'Công việc trong hội thoại riêng tư',
+    customerSituation: 'Nội dung hội thoại đang được bảo vệ.',
+    nextAction: 'Mở hội thoại để xử lý theo quyền được cấp.',
+    reason: 'Viewer chưa mở khóa nội dung của nick này.',
+    metadata: {
+      ...aiProgressMetadata('not_applicable'),
+      contactName: metadata.contactName,
+      contactAvatar: metadata.contactAvatar,
+      nickNames: metadata.nickNames,
+      conversationIds: metadata.conversationIds,
+      unreadCount: metadata.unreadCount,
+      signalCount: metadata.signalCount,
+      isGroup: metadata.isGroup,
+      groupName: metadata.groupName,
+      groupCategory: metadata.groupCategory,
+      redacted: true,
+    },
+  };
+}
+
 export async function updateConversationWorkItem(input: {
   orgId: string;
   itemId: string;
   action: 'complete' | 'snooze' | 'reopen';
   snoozedUntil?: Date | null;
+  actor?: { actorId?: string | null; actorName?: string | null };
+  allowedFollowupAccountIds?: string[];
 }) {
   const item = await prisma.conversationWorkItem.findFirst({ where: { id: input.itemId, orgId: input.orgId } });
   if (!item) return null;
   invalidateReconciliationCache(input.orgId, item.assigneeUserId);
   if (input.action === 'complete') {
+    const tasks = followupTasksForWorkItem(item);
+    if (tasks.length) {
+      const { completeSaleTask } = await import('../followup/followup-engine.js');
+      for (const task of tasks) {
+        const completed = await completeSaleTask(task.enrollmentId, input.actor, {
+          orgId: input.orgId,
+          contactId: item.contactId,
+          currentStepKey: task.currentStepKey,
+          allowedAccountIds: input.allowedFollowupAccountIds,
+        });
+        if (!completed) throw new Error('WORK_ITEM_STALE');
+      }
+    }
     const updated = await prisma.conversationWorkItem.update({ where: { id: item.id }, data: { status: 'completed', completedAt: new Date(), snoozedUntil: null } });
     emitConversationWorkItemsUpdated({ orgId: input.orgId, conversationId: item.conversationId, itemId: item.id });
     return updated;
@@ -1112,4 +1523,17 @@ export async function updateConversationWorkItem(input: {
   const updated = await prisma.conversationWorkItem.update({ where: { id: item.id }, data: { status: 'open', snoozedUntil: null, completedAt: null } });
   emitConversationWorkItemsUpdated({ orgId: input.orgId, conversationId: item.conversationId, itemId: item.id });
   return updated;
+}
+
+export function followupTasksForWorkItem(item: any): Array<{ enrollmentId: string; currentStepKey: string }> {
+  const metadata = jsonObject(item.metadata);
+  const signals = Array.isArray(metadata.signals) ? metadata.signals : [];
+  const sources = [metadata, ...signals.filter((signal: any) => signal.kind === 'followup_sale').map((signal: any) => jsonObject(signal.metadata))];
+  const tasks = new Map<string, { enrollmentId: string; currentStepKey: string }>();
+  for (const source of sources) {
+    if (typeof source.enrollmentId !== 'string' || !source.enrollmentId.trim()) continue;
+    if (typeof source.currentStepKey !== 'string' || !source.currentStepKey.trim()) continue;
+    tasks.set(source.enrollmentId, { enrollmentId: source.enrollmentId, currentStepKey: source.currentStepKey });
+  }
+  return [...tasks.values()];
 }

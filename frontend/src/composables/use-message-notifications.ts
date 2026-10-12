@@ -153,6 +153,7 @@ function showNative(card: NotifCard, force = false) {
 function onSocketMessage(payload: {
   conversationId?: string; accountId?: string; message?: any;
   systemNotification?: boolean;
+  notificationMuted?: boolean;
   threadType?: 'user' | 'group'; groupName?: string | null; groupAvatarUrl?: string | null;
   senderAvatarUrl?: string | null;
 }) {
@@ -163,6 +164,9 @@ function onSocketMessage(payload: {
   if (message.senderType === 'self') return;
   // Accepted-friend e-cards are system history, not customer messages.
   if (payload.systemNotification === true || parseFriendAcceptedNotice(message.content)) return;
+  // Đồng bộ với trạng thái ẩn thông báo trên Zalo chính thức. Tin vẫn được lưu và
+  // vẫn đi vào hội thoại, chỉ không tạo thẻ nổi, âm thanh, badge inbox hay native notification.
+  if (payload.notificationMuted === true) return;
 
   // Đang MỞ đúng hội thoại đó (ở route /chat) và cửa sổ focus → không làm phiền (giống Zalo).
   // Phải kiểm tra route: selectedConvId là state singleton, GIỮ lại hội thoại mở gần nhất — nếu

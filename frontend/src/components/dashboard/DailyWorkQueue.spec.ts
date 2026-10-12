@@ -4,11 +4,12 @@ import { flushPromises, mount } from '@vue/test-utils';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import DailyWorkQueue from './DailyWorkQueue.vue';
+import type { ConversationWorkItem } from '@/composables/use-conversation-work-items';
 
 const mocks = vi.hoisted(() => ({ get: vi.fn(), patch: vi.fn() }));
 vi.mock('@/api', () => ({ api: mocks }));
 
-const item = {
+const item: ConversationWorkItem = {
   id: 'work-1', contactId: 'contact-1', conversationId: 'conversation-1', kind: 'reply', status: 'open',
   priority: 'critical', priorityScore: 100, title: 'Trả lời khách hàng',
   customerSituation: 'Khách đang khiếu nại giao sai sản phẩm.',
@@ -51,13 +52,73 @@ describe('DailyWorkQueue', () => {
     mocks.patch.mockResolvedValue({ data: { item } });
   });
 
-  it('shows the customer situation, next action, account context and AI confidence', async () => {
+  it('shows the customer situation, next action, account context and AI progress', async () => {
     const wrapper = await render();
     expect(wrapper.text()).toContain('Nguyễn Văn An');
     expect(wrapper.text()).toContain('Khách đang khiếu nại giao sai sản phẩm.');
     expect(wrapper.text()).toContain('Ưu tiên nhân viên xử lý trực tiếp');
     expect(wrapper.text()).toContain('Nick bán hàng, Nick hỗ trợ');
-    expect(wrapper.text()).toContain('AI gợi ý');
+    expect(wrapper.text()).toContain('AI đã phân tích xong');
+    wrapper.unmount();
+  });
+
+  it('opens a preview instead of changing routes when enabled', async () => {
+    const wrapper = await render({ previewEnabled: true, selectedConversationId: item.conversationId });
+    await wrapper.get('[aria-label="Mở hội thoại"]').trigger('click');
+    expect(wrapper.emitted('preview-conversation')?.[0]).toEqual([item.conversationId, item]);
+    expect((wrapper.vm as any).$route.path).toBe('/');
+    expect(wrapper.find('.dwq-row--selected').exists()).toBe(true);
+    expect(mocks.patch).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it('opens running AI conversations in the preview including conversations without work items', async () => {
+    const data = response([]);
+    mocks.get.mockResolvedValue({ data: { ...data.data, aiActivity: [{ conversationId: 'running', name: 'Khách', nickName: 'Nick', step: 'Phân tích' }] } });
+    const wrapper = await render({ previewEnabled: true });
+    await wrapper.get('.dwq-ai-activity-row').trigger('click');
+    expect(wrapper.emitted('preview-conversation')?.[0]).toEqual(['running', null]);
+    expect((wrapper.vm as any).$route.path).toBe('/');
+    wrapper.unmount();
+  });
+
+  it('shows an active analysis state while AI is processing a new message', async () => {
+    mocks.get.mockResolvedValue(response([{
+      ...item,
+      confidence: null,
+      metadata: {
+        ...item.metadata,
+        aiStatus: 'analyzing',
+        aiStatusLabel: 'AI đang phân tích tin nhắn mới',
+        aiStatusDetail: 'Phân tích nhu cầu và cảm xúc',
+      },
+    }]));
+
+    const wrapper = await render();
+    expect(wrapper.text()).toContain('AI đang phân tích tin nhắn mới');
+    expect(wrapper.text()).toContain('1 hội thoại đang được AI phân tích');
+    expect(wrapper.get('[aria-label="Tiến trình AI"]').text()).toContain('Phân tích nhu cầu và cảm xúc');
+    expect(wrapper.get('.dwq-ai-step').text()).toBe('Phân tích nhu cầu và cảm xúc');
+    expect(wrapper.find('.dwq-ai-status--analyzing .dwq-spin').exists()).toBe(true);
+    wrapper.unmount();
+  });
+
+  it('shows queued analysis instead of making the AI look idle', async () => {
+    mocks.get.mockResolvedValue(response([{
+      ...item,
+      confidence: null,
+      metadata: {
+        ...item.metadata,
+        aiStatus: 'pending',
+        aiStatusLabel: 'Chờ kết quả phân tích AI',
+        aiStatusDetail: 'Đang chờ tác vụ AI bắt đầu.',
+      },
+    }]));
+
+    const wrapper = await render();
+    expect(wrapper.text()).toContain('1 hội thoại đang chờ AI phân tích');
+    expect(wrapper.text()).toContain('AI: Chờ kết quả phân tích AI');
+    expect(wrapper.text()).not.toContain('AI: Không có tác vụ đang chạy');
     wrapper.unmount();
   });
 
@@ -67,6 +128,67 @@ describe('DailyWorkQueue', () => {
 
     const wrapper = await render();
     expect(wrapper.text()).toContain('Trễ 47 ngày');
+    wrapper.unmount();
+  });
+
+  it('shows live AI work even before a customer work item is created', async () => {
+    const data = response([]);
+    mocks.get.mockResolvedValue({ data: { ...data.data, aiActivity: [{
+      conversationId: 'new-conversation', name: 'Nhóm khách hàng', nickName: 'Nick hỗ trợ', step: 'Đọc ngữ cảnh hội thoại',
+    }] } });
+    const wrapper = await render();
+    expect(wrapper.get('[aria-label="Tiến trình AI"]').text()).toContain('Nhóm khách hàng');
+    expect(wrapper.get('[aria-label="Tiến trình AI"]').text()).toContain('Đọc ngữ cảnh hội thoại');
+    expect(wrapper.text()).not.toContain('Không có tác vụ đang chạy');
+    wrapper.unmount();
+  });
+
+  it('lists concurrent conversations in the header and opens the selected conversation', async () => {
+    const data = response([]);
+    mocks.get.mockResolvedValue({ data: { ...data.data, aiActivity: [
+      { conversationId: 'conversation-a', name: 'Khách An', nickName: 'Nick bán hàng', step: 'Phân tích nhu cầu và cảm xúc' },
+      { conversationId: 'conversation-b', name: 'Nhóm hỗ trợ', nickName: 'Nick hỗ trợ', step: 'Lưu kết quả và đề xuất công việc' },
+    ] } });
+
+    const wrapper = await render();
+    const bar = wrapper.get('.dwq-head [aria-label="Tiến trình AI"]');
+    expect(bar.findAll('.dwq-ai-activity-row')).toHaveLength(2);
+    expect(wrapper.text()).toContain('2 hội thoại đang được AI phân tích');
+    expect(bar.text()).toContain('Nick bán hàng');
+    expect(bar.text()).toContain('Lưu kết quả và đề xuất công việc');
+    await bar.get('[aria-label="Mở hội thoại Nhóm hỗ trợ trên nick Nick hỗ trợ"]').trigger('click');
+    await flushPromises();
+    expect((wrapper.vm as any).$route.params.convId).toBe('conversation-b');
+    expect(mocks.patch).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it('deduplicates active conversation information and distinguishes pending conversations', async () => {
+    const data = response([
+      { ...item, metadata: { ...item.metadata, aiStatus: 'analyzing', aiStatusDetail: 'Bước cũ' } },
+      { ...item, id: 'work-2', conversationId: 'conversation-2', metadata: { contactName: 'Khách Bình', nickNames: ['Nick hỗ trợ'], aiStatus: 'queued' } },
+    ]);
+    mocks.get.mockResolvedValue({ data: { ...data.data, aiActivity: [{
+      conversationId: item.conversationId, name: 'Nguyễn Văn An', nickName: 'Nick bán hàng', step: 'Tổng hợp nội dung hội thoại',
+    }] } });
+
+    const wrapper = await render();
+    const bar = wrapper.get('[aria-label="Tiến trình AI"]');
+    expect(bar.findAll('.dwq-ai-activity-row')).toHaveLength(2);
+    expect(bar.text()).toContain('Tổng hợp nội dung hội thoại');
+    expect(bar.text()).not.toContain('Bước cũ');
+    expect(bar.get('.dwq-ai-activity-row--pending').text()).toContain('Khách Bình');
+    expect(bar.get('.dwq-ai-activity-row--pending').text()).toContain('Đã xếp hàng');
+    expect(bar.get('.dwq-ai-activity-row--pending').find('.dwq-spin').exists()).toBe(false);
+    wrapper.unmount();
+  });
+
+  it('does not spin for pending or failed analysis', async () => {
+    mocks.get.mockResolvedValue(response([{ ...item, confidence: null, metadata: { aiStatus: 'failed', aiStatusDetail: 'Lần phân tích bị gián đoạn.' } }]));
+    const wrapper = await render();
+    expect(wrapper.text()).toContain('AI chưa phân tích thành công');
+    expect(wrapper.text()).toContain('Lần phân tích bị gián đoạn.');
+    expect(wrapper.find('.dwq-ai-status .dwq-spin').exists()).toBe(false);
     wrapper.unmount();
   });
 

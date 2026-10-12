@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({
     user: { findFirst: vi.fn() },
     aiConfig: { findUnique: vi.fn() },
     aiAgent: { findFirst: vi.fn() },
-    aiRun: { create: vi.fn(), update: vi.fn() },
+    aiRun: { create: vi.fn(), update: vi.fn(), findFirst: vi.fn() },
     aiConversationSummary: { findFirst: vi.fn() },
     aiConversationInsight: { findUnique: vi.fn(), findFirst: vi.fn(), updateMany: vi.fn(), update: vi.fn(), create: vi.fn() },
     aiIntentAnalysis: { create: vi.fn() },
@@ -42,6 +42,7 @@ vi.mock('../../src/modules/ai/customer-automation-orchestrator.js', () => ({
 import {
   buildShadowRecommendation,
   getLatestConversationInsight,
+  getConversationAnalysisSnapshot,
   processConversationAnalysis,
 } from '../../src/modules/ai/conversation-analysis-service.js';
 
@@ -74,6 +75,33 @@ function trigger(overrides: Record<string, unknown> = {}) {
 }
 
 describe('ConversationAnalysisService', () => {
+  it('returns real progress before the first insight exists', async () => {
+    mocks.prisma.message.findFirst.mockReset().mockResolvedValue({ id: 'new', sentAt: new Date() });
+    mocks.prisma.aiRun.findFirst.mockResolvedValue({
+      triggerMessageId: 'new', status: 'running', updatedAt: new Date(), contextManifest: { analysisStep: 'model' },
+    });
+    const result = await getConversationAnalysisSnapshot({ orgId: 'org-1', userId: 'owner-1', role: 'owner', privacyUnlocked: false }, 'conversation-1');
+    expect(result).toMatchObject({ insight: null, latestMessageId: 'new', analysisProgress: { aiStatus: 'analyzing' } });
+    mocks.prisma.aiRun.findFirst.mockResolvedValue(null);
+  });
+
+  it('does not escalate an unknown image merely because the model requires staff', () => {
+    const result = buildShadowRecommendation({
+      intent: { ...intent, primary_intent: 'follow_up_response', requires_human: true }, emotion,
+      latestInboundText: '', hasOutboundQuote: false, crmStatus: null, needsReply: true, verifiedPaymentObligation: false,
+      counterparty: { role: 'unknown', confidence: 0.4, reason: 'Insufficient text' },
+    });
+    expect(result.stage).not.toBe('human_required');
+    expect(result).toMatchObject({ requiresHuman: true, nextAction: 'clarify_latest_message', signals: { hardEscalation: false } });
+  });
+
+  it('keeps ordinary quote processing out of escalation even if the model needs staff', () => {
+    expect(buildShadowRecommendation({
+      intent: { ...intent, primary_intent: 'quote_request', requires_human: true }, emotion,
+      latestInboundText: 'Cho tôi xin báo giá', hasOutboundQuote: true, crmStatus: null,
+      needsReply: true, verifiedPaymentObligation: false, counterparty,
+    })).toMatchObject({ stage: 'quoted', requiresHuman: true, nextAction: 'review_quote_follow_up', signals: { hardEscalation: false } });
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.prisma.$transaction.mockImplementation(async (callback: any) => callback(mocks.prisma));
@@ -106,6 +134,27 @@ describe('ConversationAnalysisService', () => {
     mocks.proposeMemories.mockResolvedValue({ contactId: 'contact-1', candidates: [{ id: 'memory-1' }] });
     mocks.analyzeIntent.mockResolvedValue({ output: { ...intent, primary_intent: 'quote_request' } });
     mocks.analyzeEmotion.mockResolvedValue({ output: emotion });
+  });
+
+  it('persists actual processing steps without losing the context manifest', async () => {
+    await processConversationAnalysis({ orgId: 'org-1', conversationId: 'conversation-1', messageId: 'message-1' });
+    const steps = mocks.prisma.aiRun.update.mock.calls
+      .map(([args]: any[]) => args.data.contextManifest?.analysisStep).filter(Boolean);
+    expect(steps).toEqual(['model', 'summary', 'classification', 'memory', 'saving']);
+    expect(mocks.prisma.aiRun.update).toHaveBeenCalledWith(expect.objectContaining({
+      data: { contextManifest: expect.objectContaining({ sourceThroughMessageId: 'message-1', rawContentStored: false, autoSendAllowed: false }) },
+    }));
+  });
+
+  it('skips conversations that have no readable customer activity', async () => {
+    mocks.prisma.message.findMany.mockResolvedValue([{
+      senderType: 'self', content: 'Tin nhắn từ nhân viên', contentType: 'text',
+    }]);
+
+    await expect(processConversationAnalysis({
+      orgId: 'org-1', conversationId: 'conversation-1', messageId: 'message-1',
+    })).resolves.toEqual({ skipped: true, reason: 'no_visible_customer_messages' });
+    expect(mocks.prisma.aiRun.create).not.toHaveBeenCalled();
   });
 
   it('suppresses automation after an explicit opt-out', () => {
@@ -197,7 +246,7 @@ describe('ConversationAnalysisService', () => {
     });
   });
 
-  it('keeps an explicitly unknown contact out of staff work and automation', () => {
+  it('routes an image-only inbound message to staff even when sender identity is unknown', () => {
     const result = buildShadowRecommendation({
       intent: { ...intent, primary_intent: 'follow_up_response' }, emotion,
       latestInboundText: '', recentConversationText: '[Hình ảnh]\n[Hình ảnh]',
@@ -207,7 +256,7 @@ describe('ConversationAnalysisService', () => {
     });
 
     expect(result).toMatchObject({
-      stage: 'needs_reply', nextAction: 'verify_customer_identity', recommendedWorkflowType: null,
+      stage: 'negotiating', requiresHuman: true, nextAction: 'clarify_latest_message', recommendedWorkflowType: null,
       signals: { workItemEligible: false, counterpartyRole: 'unknown', counterpartyClassifierVersion: 2 },
       safeguards: { autoTagMutationAllowed: false, workflowEnrollmentAllowed: false },
     });
@@ -281,7 +330,8 @@ describe('ConversationAnalysisService', () => {
       emotionLabel: 'interested', emotionConfidence: 0.78, emotionIntensity: 0.44, requiresHuman: false,
       nextAction: 'review_quote_follow_up', nextActionReasonRedacted: 'Review before follow-up.',
       recommendedWorkflowType: 'after_quote', memoryCandidateIds: ['memory-1'], signals: { needsReply: true },
-      safeguards: { autoSendAllowed: false }, createdAt: new Date('2026-08-26T08:00:00Z'),
+      safeguards: { autoSendAllowed: false }, sourceThroughMessageId: 'message-1', generatedWithModel: true,
+      createdAt: new Date('2026-08-26T08:00:00Z'),
       updatedAt: new Date('2026-08-26T08:01:00Z'),
       summary: {
         id: 'summary-1', version: 1, sourceThroughMessageId: 'message-1', createdAt: new Date('2026-08-26T08:00:00Z'),
@@ -299,6 +349,7 @@ describe('ConversationAnalysisService', () => {
 
     expect(result).toMatchObject({
       id: 'insight-1', mode: 'shadow', stage: 'quoted', stageReason: 'Customer has received a quote.',
+      sourceThroughMessageId: 'message-1', latestMessageId: 'message-1',
       intent: { label: 'quote_request', confidence: 0.9 },
       nextAction: { key: 'review_quote_follow_up', workflowType: 'after_quote' },
       summary: { content: { currentDiscussion: 'Customer is reviewing the quote.' } },

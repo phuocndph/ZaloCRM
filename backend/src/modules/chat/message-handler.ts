@@ -99,6 +99,8 @@ export interface HandleMessageResult {
   ownerUserId: string | null;
   conversationIsPrivate: boolean;
   conversationPrivateOwnerUserId: string | null;
+  zaloNotificationsMuted: boolean;
+  zaloMutedUntil: Date | null;
 }
 
 function inferInitialGroupProfile(msg: IncomingMessage) {
@@ -602,6 +604,8 @@ export async function handleIncomingMessage(
             ownerUserId: account.ownerUserId,
             conversationIsPrivate: conversation.isPrivate,
             conversationPrivateOwnerUserId: conversation.privateOwnerUserId,
+            zaloNotificationsMuted: conversation.zaloNotificationsMuted,
+            zaloMutedUntil: conversation.zaloMutedUntil,
           };
         }
         // Không claim được placeholder nào → đây là sibling album (hoặc tin thật) → để insert tiếp.
@@ -671,6 +675,8 @@ export async function handleIncomingMessage(
                 ownerUserId: account.ownerUserId,
                 conversationIsPrivate: conversation.isPrivate,
                 conversationPrivateOwnerUserId: conversation.privateOwnerUserId,
+                zaloNotificationsMuted: conversation.zaloNotificationsMuted,
+                zaloMutedUntil: conversation.zaloMutedUntil,
               };
             }
           }
@@ -947,6 +953,8 @@ export async function handleIncomingMessage(
         ownerUserId: account.ownerUserId,
         conversationIsPrivate: conversation.isPrivate,
         conversationPrivateOwnerUserId: conversation.privateOwnerUserId,
+        zaloNotificationsMuted: conversation.zaloNotificationsMuted,
+        zaloMutedUntil: conversation.zaloMutedUntil,
       };
     }
 
@@ -1158,6 +1166,8 @@ export async function handleIncomingMessage(
       ownerUserId: account.ownerUserId,
       conversationIsPrivate: conversation.isPrivate,
       conversationPrivateOwnerUserId: conversation.privateOwnerUserId,
+      zaloNotificationsMuted: conversation.zaloNotificationsMuted,
+      zaloMutedUntil: conversation.zaloMutedUntil,
     };
   } catch (err) {
     logger.error('[message-handler] handleIncomingMessage error:', err);
@@ -1359,6 +1369,8 @@ async function findOrCreateConversation(
       groupClassifiedAt: true,
       isPrivate: true,
       privateOwnerUserId: true,
+      zaloNotificationsMuted: true,
+      zaloMutedUntil: true,
     },
   });
 
@@ -1398,6 +1410,8 @@ async function findOrCreateConversation(
       id: existing.id,
       isPrivate: existing.isPrivate,
       privateOwnerUserId: existing.privateOwnerUserId,
+      zaloNotificationsMuted: existing.zaloNotificationsMuted,
+      zaloMutedUntil: existing.zaloMutedUntil,
     };
   }
 
@@ -1411,7 +1425,13 @@ async function findOrCreateConversation(
     if (existingId) {
       const existing = await prisma.conversation.findUnique({
         where: { id: existingId },
-        select: { id: true, isPrivate: true, privateOwnerUserId: true },
+        select: {
+          id: true,
+          isPrivate: true,
+          privateOwnerUserId: true,
+          zaloNotificationsMuted: true,
+          zaloMutedUntil: true,
+        },
       });
       if (existing) return existing;
     }
@@ -1445,7 +1465,13 @@ async function findOrCreateConversation(
       unreadCount: msg.isSelf || isZaloFriendAcceptedNotification(msg.content) ? 0 : 1,
       isReplied: msg.isSelf || isZaloFriendAcceptedNotification(msg.content),
     },
-    select: { id: true, isPrivate: true, privateOwnerUserId: true },
+    select: {
+      id: true,
+      isPrivate: true,
+      privateOwnerUserId: true,
+      zaloNotificationsMuted: true,
+      zaloMutedUntil: true,
+    },
   });
 }
 

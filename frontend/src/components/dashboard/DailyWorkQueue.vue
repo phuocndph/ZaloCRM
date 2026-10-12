@@ -3,6 +3,45 @@
     <header class="dwq-head">
       <div class="dwq-heading">
         <div class="dwq-title"><ListTodoIcon :size="17" aria-hidden="true" /> Công việc khách hàng</div>
+        <div v-if="aiAnalyzingCount > 0" class="dwq-ai-overview dwq-ai-overview--active">
+          <LoaderCircleIcon :size="13" class="dwq-spin" aria-hidden="true" /> {{ aiAnalyzingCount }} hội thoại đang được AI phân tích
+        </div>
+        <div v-else-if="aiPendingCount > 0" class="dwq-ai-overview dwq-ai-overview--pending">
+          <Clock3Icon :size="13" aria-hidden="true" /> {{ aiPendingCount }} hội thoại đang chờ AI phân tích
+        </div>
+        <div v-else-if="aiVerificationCount > 0" class="dwq-ai-overview dwq-ai-overview--verification">
+          <BrainCircuitIcon :size="13" aria-hidden="true" /> {{ aiVerificationCount }} việc đã có kết quả AI và đang chờ xác minh
+        </div>
+        <div v-else-if="!loading && !error" class="dwq-ai-idle">AI: Không có tác vụ đang chạy</div>
+      </div>
+      <div class="dwq-ai-bar" role="status" aria-label="Tiến trình AI">
+        <template v-if="analysisActivities.length">
+          <button
+            v-for="activity in analysisActivities"
+            :key="activity.conversationId"
+            class="dwq-ai-activity-row"
+            :class="{ 'dwq-ai-activity-row--pending': activity.status === 'pending' }"
+            type="button"
+            :title="`${activity.name} · ${activity.nickName} · ${activity.step}`"
+            :aria-label="`Mở hội thoại ${activity.name} trên nick ${activity.nickName}`"
+            @click="openAnalysisConversation(activity.conversationId)"
+          >
+            <span class="dwq-ai-activity-copy">
+              <LoaderCircleIcon v-if="activity.status === 'analyzing'" :size="14" class="dwq-spin" aria-hidden="true" />
+              <Clock3Icon v-else :size="14" aria-hidden="true" />
+              <strong class="dwq-ai-activity-name">{{ activity.name }}</strong>
+              <span class="dwq-ai-activity-nick">{{ activity.nickName }}</span>
+              <MessageCircleIcon :size="13" class="dwq-ai-activity-open" aria-hidden="true" />
+            </span>
+            <span class="dwq-ai-activity-step">{{ activity.step }}</span>
+            <span class="dwq-ai-track" aria-hidden="true"><span /></span>
+          </button>
+        </template>
+        <div v-else class="dwq-ai-bar-idle">
+          <LoaderCircleIcon v-if="loading" :size="14" class="dwq-spin" aria-hidden="true" />
+          <BrainCircuitIcon v-else :size="15" aria-hidden="true" />
+          <span>{{ loading ? 'Đang tải trạng thái AI' : error ? 'Chưa tải được trạng thái AI' : 'Chưa có hội thoại đang phân tích' }}</span>
+        </div>
       </div>
       <button class="dwq-icon-btn" type="button" title="Tải lại danh sách" aria-label="Tải lại danh sách" :disabled="loading" @click="refresh(false)">
         <RefreshCwIcon :size="16" :class="{ 'dwq-spin': loading }" aria-hidden="true" />
@@ -49,7 +88,7 @@
     </div>
 
     <div v-else class="dwq-list">
-      <article v-for="item in visibleItems" :key="item.id" class="dwq-row" :class="`dwq-row--${item.priority}`" @click="openItem(item)">
+      <article v-for="item in visibleItems" :key="item.id" class="dwq-row" :class="[`dwq-row--${item.priority}`, { 'dwq-row--selected': !!selectedConversationId && selectedConversationId === item.conversationId }]" tabindex="0" @click="openItem(item)" @keydown.enter.self="openItem(item)">
         <div class="dwq-avatar" aria-hidden="true">
           <img v-if="avatar(item) && !failedImages.has(item.id)" :src="avatar(item)!" alt="" loading="lazy" @error="failedImages.add(item.id)" />
           <span v-else>{{ initial(item) }}</span>
@@ -79,8 +118,20 @@
             <span v-if="item.metadata?.isGroup"><UsersRoundIcon :size="13" aria-hidden="true" /> Nhóm bán hàng</span>
             <span v-if="(item.metadata?.unreadCount ?? 0) > 0"><MailIcon :size="13" aria-hidden="true" /> {{ item.metadata?.unreadCount }} tin chưa đọc</span>
             <span v-if="(item.metadata?.signalCount ?? 0) > 1"><Layers3Icon :size="13" aria-hidden="true" /> {{ item.metadata?.signalCount }} việc đã gộp</span>
-            <span v-if="item.confidence != null"><BrainCircuitIcon :size="13" aria-hidden="true" /> AI gợi ý</span>
+            <span
+              v-if="aiProgress(item)"
+              class="dwq-ai-status"
+              :class="`dwq-ai-status--${aiProgress(item)!.status}`"
+              :title="aiProgress(item)!.detail"
+            >
+              <LoaderCircleIcon v-if="aiProgress(item)!.status === 'analyzing'" :size="13" class="dwq-spin" aria-hidden="true" />
+              <BrainCircuitIcon v-else :size="13" aria-hidden="true" />
+              AI: {{ aiProgress(item)!.label }}
+            </span>
           </div>
+          <p v-if="aiProgress(item)?.status === 'analyzing' || aiProgress(item)?.status === 'failed'" class="dwq-ai-step" role="status">
+            {{ aiProgress(item)!.detail }}
+          </p>
         </div>
 
         <div class="dwq-actions" @click.stop>
@@ -141,6 +192,7 @@ import {
   Clock3 as Clock3Icon,
   ContactRound as ContactRoundIcon,
   Layers3 as Layers3Icon,
+  LoaderCircle as LoaderCircleIcon,
   ListTodo as ListTodoIcon,
   Mail as MailIcon,
   MessageCircle as MessageCircleIcon,
@@ -155,22 +207,29 @@ import { useToast } from '@/composables/use-toast';
 import {
   useConversationWorkItems,
   type ConversationWorkItem,
+  type AiProgressStatus,
   type WorkItemPriority,
   type WorkItemScope,
 } from '@/composables/use-conversation-work-items';
 
-const props = withDefaults(defineProps<{ asUserId?: string | null; mobile?: boolean; compact?: boolean; hideTabs?: boolean; initialScope?: WorkItemScope }>(), {
+const props = withDefaults(defineProps<{ asUserId?: string | null; mobile?: boolean; compact?: boolean; hideTabs?: boolean; initialScope?: WorkItemScope; previewEnabled?: boolean; selectedConversationId?: string | null }>(), {
   asUserId: null,
   mobile: false,
   compact: false,
   hideTabs: false,
   initialScope: 'now',
+  previewEnabled: false,
+  selectedConversationId: null,
 });
-const emit = defineEmits<{ 'scope-change': [scope: WorkItemScope] }>();
+const emit = defineEmits<{
+  'scope-change': [scope: WorkItemScope];
+  'preview-conversation': [conversationId: string, item: ConversationWorkItem | null];
+  'item-updated': [item: ConversationWorkItem];
+}>();
 
 const router = useRouter();
 const toast = useToast();
-const { items, counts, summary, loading, loadingMore, hasMore, mutatingId, error, fetchItems, loadMore, updateItem, stopRealtime } = useConversationWorkItems();
+const { items, aiActivity, counts, summary, loading, loadingMore, hasMore, mutatingId, error, fetchItems, loadMore, updateItem, stopRealtime } = useConversationWorkItems();
 const scope = ref<WorkItemScope>(props.initialScope);
 const searchQuery = ref('');
 const snoozeOpenId = ref<string | null>(null);
@@ -201,6 +260,29 @@ const emptyDescription = computed(() => scope.value === 'done'
     ? 'Không có việc đã đến hạn. Các lịch follow-up sau hôm nay nằm trong mục Sắp tới.'
     : 'Hiện chưa có công việc trong mục này.');
 const visibleItems = computed(() => props.compact ? items.value.slice(0, 4) : items.value);
+const analysisActivities = computed(() => {
+  const activities = new Map<string, { conversationId: string; name: string; nickName: string; step: string; status: 'analyzing' | 'pending' }>();
+  for (const activity of aiActivity.value) {
+    activities.set(activity.conversationId, { ...activity, status: 'analyzing' });
+  }
+  for (const item of items.value) {
+    const progress = aiProgress(item);
+    if (!item.conversationId || activities.has(item.conversationId) || !progress
+      || !['analyzing', 'pending', 'queued'].includes(progress.status)) continue;
+    const analyzing = progress.status === 'analyzing';
+    activities.set(item.conversationId, {
+      conversationId: item.conversationId,
+      name: item.metadata?.isGroup ? item.metadata.groupName || contactName(item) : contactName(item),
+      nickName: item.conversation?.zaloAccount?.displayName || nickLabel(item),
+      step: analyzing ? progress.detail : progress.status === 'queued' ? 'Đã xếp hàng · Chờ AI xử lý' : 'Chờ kết quả phân tích AI',
+      status: analyzing ? 'analyzing' : 'pending',
+    });
+  }
+  return [...activities.values()].sort((a, b) => Number(b.status === 'analyzing') - Number(a.status === 'analyzing'));
+});
+const aiAnalyzingCount = computed(() => analysisActivities.value.filter((activity) => activity.status === 'analyzing').length);
+const aiPendingCount = computed(() => analysisActivities.value.filter((activity) => activity.status === 'pending').length);
+const aiVerificationCount = computed(() => items.value.filter((item) => aiProgress(item)?.status === 'verification').length);
 
 function refresh(quiet = true) {
   return fetchItems(scope.value, props.asUserId, quiet, searchQuery.value);
@@ -240,6 +322,45 @@ function nickLabel(item: ConversationWorkItem) {
   return `${nicks.slice(0, 2).join(', ')} +${nicks.length - 2} nick`;
 }
 
+function aiProgress(item: ConversationWorkItem): { status: AiProgressStatus; label: string; detail: string } | null {
+  const status = item.metadata?.aiStatus;
+  if (status) {
+    return {
+      status,
+      label: item.metadata?.aiStatusLabel || aiStatusLabel(status),
+      detail: item.metadata?.aiStatusDetail || aiStatusDetail(status),
+    };
+  }
+  if (item.confidence != null) {
+    return { status: 'ready', label: 'AI đã phân tích xong', detail: 'AI đã phân tích hội thoại và tạo đề xuất xử lý cho nhân viên.' };
+  }
+  return null;
+}
+
+function aiStatusLabel(status: AiProgressStatus) {
+  return {
+    pending: 'Chờ kết quả phân tích AI',
+    queued: 'Đang chờ AI xử lý',
+    analyzing: 'AI đang phân tích tin nhắn mới',
+    ready: 'AI đã phân tích xong',
+    verification: 'Chờ nhân viên xác minh',
+    failed: 'AI chưa phân tích thành công',
+    not_applicable: 'Không cần AI phân tích',
+  }[status];
+}
+
+function aiStatusDetail(status: AiProgressStatus) {
+  return {
+    pending: 'Chưa có kết quả cho tin nhắn mới nhất.',
+    queued: 'Tin nhắn mới nhất đã được đưa vào hàng đợi phân tích.',
+    analyzing: 'Hệ thống đang đọc tin nhắn mới để xác định tình huống và việc cần làm.',
+    ready: 'AI đã phân tích hội thoại và tạo đề xuất xử lý cho nhân viên.',
+    verification: 'Tin nhắn chưa đủ chắc chắn, cần nhân viên kiểm tra trước khi xử lý.',
+    failed: 'Nhân viên vẫn có thể xử lý công việc trong khi hệ thống thử lại.',
+    not_applicable: 'Việc này đến từ lịch hẹn, follow-up hoặc nội dung bị giới hạn quyền riêng tư.',
+  }[status];
+}
+
 function deadline(item: ConversationWorkItem): { label: string; overdue: boolean } | null {
   const raw = item.status === 'snoozed' ? item.snoozedUntil : item.dueAt;
   if (!raw) return null;
@@ -260,12 +381,23 @@ function deadline(item: ConversationWorkItem): { label: string; overdue: boolean
 function openItem(item: ConversationWorkItem) {
   snoozeOpenId.value = null;
   if (item.conversationId) {
+    if (props.previewEnabled) { emit('preview-conversation', item.conversationId, item); return; }
     void router.push(props.mobile
       ? `/m/c/${item.conversationId}`
       : { name: 'Chat', params: { convId: item.conversationId } });
     return;
   }
   void router.push(props.mobile ? `/m/customers/${item.contactId}` : { path: '/contacts', query: { focus: item.contactId } });
+}
+
+function openAnalysisConversation(conversationId: string) {
+  if (props.previewEnabled) {
+    emit('preview-conversation', conversationId, items.value.find((item) => item.conversationId === conversationId) ?? null);
+    return;
+  }
+  void router.push(props.mobile
+    ? `/m/c/${conversationId}`
+    : { name: 'Chat', params: { convId: conversationId } });
 }
 
 function openAi(item: ConversationWorkItem) {
@@ -285,24 +417,12 @@ function openAll() {
 }
 
 async function mutate(item: ConversationWorkItem, action: 'complete' | 'reopen') {
-  try {
-    await updateItem(item.id, action);
-    toast.success(action === 'complete' ? 'Đã hoàn thành công việc' : 'Đã mở lại công việc');
-    await refresh(true);
-  } catch {
-    toast.error('Không cập nhật được công việc');
-  }
+  await performAction(item, action);
 }
 
 async function snooze(item: ConversationWorkItem, snoozeMinutes: number) {
   snoozeOpenId.value = null;
-  try {
-    await updateItem(item.id, 'snooze', { snoozeMinutes });
-    toast.success('Đã hoãn công việc');
-    await refresh(true);
-  } catch {
-    toast.error('Không hoãn được công việc');
-  }
+  await performAction(item, 'snooze', { snoozeMinutes });
 }
 
 async function snoozeTomorrow(item: ConversationWorkItem) {
@@ -310,12 +430,21 @@ async function snoozeTomorrow(item: ConversationWorkItem) {
   tomorrow.setDate(tomorrow.getDate() + 1);
   tomorrow.setHours(9, 0, 0, 0);
   snoozeOpenId.value = null;
+  await performAction(item, 'snooze', { snoozedUntil: tomorrow.toISOString() });
+}
+
+async function performAction(item: ConversationWorkItem, action: 'complete' | 'reopen' | 'snooze', options?: { snoozeMinutes?: number; snoozedUntil?: string }) {
+  if (mutatingId.value) return null;
   try {
-    await updateItem(item.id, 'snooze', { snoozedUntil: tomorrow.toISOString() });
-    toast.success('Đã hoãn đến 9:00 ngày mai');
+    const updated = await updateItem(item.id, action, options);
+    const result = { ...item, ...updated };
+    emit('item-updated', result);
+    toast.success(action === 'complete' ? 'Đã hoàn thành công việc' : action === 'reopen' ? 'Đã mở lại công việc' : 'Đã hoãn công việc');
     await refresh(true);
+    return result;
   } catch {
-    toast.error('Không hoãn được công việc');
+    toast.error('Không cập nhật được công việc. Hãy tải lại danh sách và thử lại.');
+    return null;
   }
 }
 
@@ -337,7 +466,15 @@ watch(searchQuery, () => {
 });
 onMounted(() => {
   void refresh(false);
-  timer = setInterval(() => void refresh(true), 60_000);
+  let lastPollAt = Date.now();
+  let polling = false;
+  timer = setInterval(() => {
+    const interval = aiAnalyzingCount.value > 0 ? 5_000 : aiPendingCount.value > 0 ? 15_000 : 60_000;
+    if (document.visibilityState === 'hidden' || loading.value || polling || Date.now() - lastPollAt < interval) return;
+    lastPollAt = Date.now();
+    polling = true;
+    void refresh(true).finally(() => { polling = false; });
+  }, 5_000);
   document.addEventListener('click', closeMenus);
 });
 onUnmounted(() => {
@@ -347,14 +484,42 @@ onUnmounted(() => {
   document.removeEventListener('click', closeMenus);
 });
 
-defineExpose({ refresh, counts, summary });
+defineExpose({ refresh, counts, summary, items, mutatingId, performAction });
 </script>
 
 <style scoped>
-.dwq { --dwq-border: var(--at-hairline, #e4e8ee); --dwq-text: var(--at-ink, #172033); --dwq-muted: var(--at-body, #5d6878); background: #fff; border: 1px solid var(--dwq-border); border-radius: 8px; color: var(--dwq-text); }
-.dwq-head { min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--dwq-border); }
+.dwq { --dwq-border: var(--at-hairline, #e4e8ee); --dwq-text: var(--at-ink, #172033); --dwq-muted: var(--at-body, #5d6878); container-type: inline-size; background: #fff; border: 1px solid var(--dwq-border); border-radius: 8px; color: var(--dwq-text); }
+.dwq-head { min-height: 68px; display: grid; grid-template-columns: minmax(200px, 1fr) minmax(260px, 1.7fr) 32px; align-items: center; gap: 16px; padding: 10px 14px; border-bottom: 1px solid var(--dwq-border); }
 .dwq-heading { min-width: 0; }
 .dwq-title { display: flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 750; }
+.dwq-ai-overview { display: inline-flex; align-items: center; gap: 5px; margin-top: 4px; font-size: 10px; font-weight: 650; }
+.dwq-ai-overview--active { color: #087daf; }
+.dwq-ai-overview--pending { color: #8a4b08; }
+.dwq-ai-overview--verification { color: #667085; }
+.dwq-ai-idle { margin-top: 4px; color: #667085; font-size: 10px; }
+.dwq-ai-bar { min-width: 0; max-height: 172px; overflow-y: auto; scrollbar-width: thin; }
+.dwq-ai-activity-row { display: block; width: 100%; min-width: 0; padding: 6px 2px; border: 0; border-bottom: 1px solid var(--dwq-border); background: transparent; color: #475467; font: inherit; text-align: left; cursor: pointer; }
+.dwq-ai-activity-row:last-child { border-bottom: 0; }
+.dwq-ai-activity-row:hover { background: #f4fbfd; }
+.dwq-ai-activity-row:focus-visible { outline: 2px solid #087daf; outline-offset: -2px; }
+.dwq-ai-activity-copy { display: flex; align-items: center; gap: 7px; font-size: 11px; min-width: 0; }
+.dwq-ai-activity-copy svg { flex-shrink: 0; color: #087daf; }
+.dwq-ai-activity-name { color: #172033; min-width: 0; overflow-wrap: anywhere; }
+.dwq-ai-activity-nick { min-width: 0; margin-left: auto; color: #667085; font-size: 10px; overflow-wrap: anywhere; }
+.dwq-ai-activity-step { display: block; margin: 3px 0 5px 21px; color: #087daf; font-size: 10px; line-height: 1.4; overflow-wrap: anywhere; }
+.dwq-ai-track { display: block; position: relative; height: 3px; overflow: hidden; background: #dceff5; border-radius: 2px; }
+.dwq-ai-track > span { display: block; width: 35%; height: 100%; background: #087daf; animation: dwq-ai-load 1.5s ease-in-out infinite; }
+.dwq-ai-activity-row--pending .dwq-ai-activity-copy svg, .dwq-ai-activity-row--pending .dwq-ai-activity-step { color: #8a4b08; }
+.dwq-ai-activity-row--pending .dwq-ai-track { background: #f2e9dc; }
+.dwq-ai-activity-row--pending .dwq-ai-track > span { width: 0; animation: none; }
+.dwq-ai-bar-idle { display: flex; align-items: center; gap: 7px; min-height: 38px; color: #667085; font-size: 11px; }
+@keyframes dwq-ai-load { 0% { transform: translateX(-100%); } 100% { transform: translateX(290%); } }
+@media (prefers-reduced-motion: reduce) { .dwq-ai-track > span, .dwq-spin { animation: none !important; } }
+@container (max-width: 620px) {
+  .dwq-head { grid-template-columns: minmax(0, 1fr) 32px; gap: 8px; }
+  .dwq-head > .dwq-icon-btn { grid-column: 2; grid-row: 1; }
+  .dwq-ai-bar { grid-column: 1 / -1; grid-row: 2; }
+}
 .dwq-icon-btn, .dwq-actions > button, .dwq-snooze-wrap > button { width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 32px; border: 1px solid var(--dwq-border); border-radius: 6px; background: #fff; color: #4e5c6d; cursor: pointer; }
 .dwq-icon-btn:hover, .dwq-actions button:hover:not(:disabled) { background: #f3f6f8; color: #087daf; }
 .dwq-icon-btn:disabled, .dwq-actions button:disabled { opacity: .5; cursor: default; }
@@ -379,6 +544,8 @@ defineExpose({ refresh, counts, summary });
 .dwq-row { position: relative; display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 11px; padding: 12px 13px; border-bottom: 1px solid var(--dwq-border); cursor: pointer; }
 .dwq-row:last-child { border-bottom: 0; }
 .dwq-row:hover { background: #fbfcfd; }
+.dwq-row--selected { background: #eef8fc; box-shadow: inset 0 0 0 1px #8bcde3; }
+.dwq-row:focus-visible { outline: 2px solid #087daf; outline-offset: -2px; }
 .dwq-row::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 3px; background: #98a2b3; }
 .dwq-row--critical::before { background: #d92d20; }
 .dwq-row--high::before { background: #e47b14; }
@@ -407,6 +574,14 @@ defineExpose({ refresh, counts, summary });
 .dwq-reason svg { flex-shrink: 0; margin-top: 1px; }
 .dwq-meta { display: flex; flex-wrap: wrap; gap: 5px 10px; margin-top: 7px; color: #697586; font-size: 10px; }
 .dwq-meta span { display: inline-flex; align-items: center; min-width: 0; gap: 4px; }
+.dwq-ai-status { font-weight: 700; }
+.dwq-ai-status--analyzing { color: #087daf; }
+.dwq-ai-status--ready { color: #087443; }
+.dwq-ai-status--verification { color: #a15c07; }
+.dwq-ai-status--failed { color: #b42318; }
+.dwq-ai-status--pending { color: #667085; }
+.dwq-ai-status--not_applicable { color: #667085; }
+.dwq-ai-step { margin: 5px 0 0; color: #475467; font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
 .dwq-actions { display: flex; align-items: flex-start; gap: 5px; }
 .dwq-snooze-wrap { position: relative; }
 .dwq-snooze-menu { position: absolute; z-index: 20; top: 36px; right: 0; width: 142px; padding: 4px; border: 1px solid var(--dwq-border); border-radius: 7px; background: #fff; box-shadow: 0 10px 30px rgba(16, 24, 40, .16); }
@@ -421,6 +596,12 @@ defineExpose({ refresh, counts, summary });
 .dwq-loading span { height: 70px; border-radius: 6px; background: #f0f2f5; animation: dwq-pulse .9s ease-in-out infinite alternate; }
 @keyframes dwq-pulse { to { opacity: .5; } }
 .dwq--mobile { margin: 0 var(--m-sp-4, 16px) var(--m-sp-3, 12px); border: 0; border-radius: var(--m-r-lg, 8px); box-shadow: var(--m-e1, 0 1px 3px rgba(16, 24, 40, .12)); }
+@container (max-width: 780px) {
+  .dwq-row { grid-template-columns: 36px minmax(0, 1fr); }
+  .dwq-actions { grid-column: 2; justify-content: flex-end; }
+  .dwq-topline { flex-wrap: wrap; }
+  .dwq-name { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+}
 .dwq--mobile .dwq-head { padding: 10px 12px; }
 .dwq--mobile .dwq-tools { padding: 6px 8px; }
 .dwq--mobile .dwq-total { display: none; }
@@ -440,6 +621,9 @@ defineExpose({ refresh, counts, summary });
 .dwq--mobile .dwq-meta { margin-top: 6px; }
 .dwq--mobile .dwq-actions { grid-column: 2; justify-content: flex-end; margin-top: -1px; }
 @media (max-width: 720px) {
+  .dwq-head { grid-template-columns: minmax(0, 1fr) 32px; gap: 8px; }
+  .dwq-head > .dwq-icon-btn { grid-column: 2; grid-row: 1; }
+  .dwq-ai-bar { grid-column: 1 / -1; grid-row: 2; }
   .dwq:not(.dwq--mobile) .dwq-row { grid-template-columns: 36px minmax(0, 1fr); }
   .dwq:not(.dwq--mobile) .dwq-actions { grid-column: 2; justify-content: flex-end; }
 }

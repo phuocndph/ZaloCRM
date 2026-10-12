@@ -3,9 +3,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => {
   const prisma = {
     $transaction: vi.fn(async (callback: any) => callback(prisma)),
-    message: { count: vi.fn(), findFirst: vi.fn() },
+    message: { count: vi.fn(), findFirst: vi.fn(), findMany: vi.fn() },
+    conversation: { findMany: vi.fn() },
+    aiIntentAnalysis: { findMany: vi.fn() },
+    aiEmotionAnalysis: { findMany: vi.fn() },
     contact: { findFirst: vi.fn() },
-    aiConversationSummary: { findFirst: vi.fn(), updateMany: vi.fn(), create: vi.fn() },
+    aiConversationSummary: { findFirst: vi.fn(), findMany: vi.fn(), updateMany: vi.fn(), create: vi.fn() },
     aiCustomerMemory: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn() },
     aiAuditLog: { create: vi.fn() },
   };
@@ -90,6 +93,11 @@ describe('ConversationMemoryService', () => {
     mocks.prisma.aiCustomerMemory.update.mockImplementation(async ({ where, data }: any) => ({ id: where.id, orgId: 'org-1', contactId: 'contact-1', key: 'interested_product', evidence: [], createdAt: new Date(), updatedAt: new Date(), deletedAt: null, ...data }));
     mocks.prisma.aiCustomerMemory.findMany.mockResolvedValue([]);
     mocks.prisma.aiAuditLog.create.mockResolvedValue({});
+    mocks.prisma.message.findMany.mockResolvedValue([]);
+    mocks.prisma.conversation.findMany.mockResolvedValue([]);
+    mocks.prisma.aiConversationSummary.findMany.mockResolvedValue([]);
+    mocks.prisma.aiIntentAnalysis.findMany.mockResolvedValue([]);
+    mocks.prisma.aiEmotionAnalysis.findMany.mockResolvedValue([]);
   });
 
   it('refreshes short-term conversation summary with source-through message and audit log', async () => {
@@ -225,5 +233,51 @@ describe('ConversationMemoryService', () => {
 
     expect(memories[0].value).toBe('Thich noi ngan gon');
     expect(memories[0].valueEncrypted).toBeUndefined();
+  });
+  it('only decrypts memories whose entire evidence belongs to visible selected nicks', async () => {
+    const memory = (id: string, evidence: unknown) => ({ id, evidence, status: 'approved', valueEncrypted: new TextEncoder().encode(`enc:${id}`) });
+    mocks.prisma.aiCustomerMemory.findMany.mockResolvedValue([
+      memory('allowed', [{ type: 'message', messageId: 'allowed-message' }]),
+      memory('other-nick', [{ type: 'message', messageId: 'hidden-message' }]),
+      memory('mixed', [{ type: 'message', messageId: 'allowed-message' }, { type: 'message', messageId: 'hidden-message' }]),
+      memory('manual', [{ type: 'manual', excerpt: 'no provenance' }]),
+      memory('legacy', []),
+      memory('unknown', [{ type: 'context', sourceId: 'contacts:contact-1:metadata' }]),
+      memory('conflict', [{ type: 'context', sourceId: 'allowed:potential_conflict' }]),
+    ]);
+    mocks.prisma.message.findMany.mockResolvedValue([{ id: 'allowed-message' }]);
+    const scopedActor = { ...actor, allowedAccountIds: ['nick-1'] };
+    const memories = await listCustomerMemories(scopedActor, 'contact-1');
+    expect(memories.map(row => row.id)).toEqual(['allowed']);
+    expect(memories[0].value).toBe('allowed');
+    expect(mocks.prisma.message.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ isDeleted: false, conversation: {
+      orgId: 'org-1', contactId: 'contact-1', isPrivate: false, deletedAt: null, zaloAccountId: { in: ['nick-1'] }, zaloAccount: { privacyMode: 'sub', archivedAt: null },
+    } }) }));
+  });
+  it('checks conversation, summary, intent and emotion evidence without trusting excerpts or run IDs', async () => {
+    mocks.prisma.aiCustomerMemory.findMany.mockResolvedValue([
+      { id: 'safe', status: 'approved', valueRedacted: 'visible', evidence: [
+        { type: 'context', sourceId: 'conversations:conv-1:row' },
+        { type: 'context', sourceId: 'ai_conversation_summaries:sum-1:summary_redacted' },
+        { type: 'context', sourceId: 'ai_intent_analyses:intent-1:row' },
+        { type: 'context', sourceId: 'ai_emotion_analyses:emotion-1:row' },
+        { type: 'context', sourceId: 'messages:m-1:content' },
+      ] },
+      { id: 'hidden', runId: 'safe-run', evidence: [{ type: 'context', sourceId: 'ai_conversation_summaries:hidden:row', excerpt: 'looks safe' }] },
+      { id: 'deleted', evidence: [{ type: 'message', messageId: 'deleted' }] },
+      { id: 'manual-mixed', evidence: [{ type: 'message', messageId: 'm-1' }, { type: 'manual' }] },
+    ]);
+    mocks.prisma.conversation.findMany.mockResolvedValue([{ id: 'conv-1' }]);
+    mocks.prisma.aiConversationSummary.findMany.mockResolvedValue([{ id: 'sum-1' }]);
+    mocks.prisma.aiIntentAnalysis.findMany.mockResolvedValue([{ id: 'intent-1' }]);
+    mocks.prisma.aiEmotionAnalysis.findMany.mockResolvedValue([{ id: 'emotion-1' }]);
+    mocks.prisma.message.findMany.mockResolvedValue([{ id: 'm-1' }]);
+    expect((await listCustomerMemories({ ...actor, allowedAccountIds: ['nick-1'] }, 'contact-1')).map(row => row.id)).toEqual(['safe']);
+    expect(mocks.prisma.aiConversationSummary.findMany.mock.calls[0][0].where.conversation.zaloAccountId).toEqual({ in: ['nick-1'] });
+  });
+  it('fails closed when the current agent scope has no remaining allowed accounts', async () => {
+    mocks.prisma.aiCustomerMemory.findMany.mockResolvedValue([{ id: 'old', evidence: [{ type: 'message', messageId: 'm-1' }] }]);
+    expect(await listCustomerMemories({ ...actor, allowedAccountIds: [] }, 'contact-1')).toEqual([]);
+    expect(mocks.prisma.message.findMany.mock.calls[0][0].where.conversation.zaloAccountId).toEqual({ in: [] });
   });
 });

@@ -13,11 +13,11 @@
           class="ci-refresh"
           type="button"
           :disabled="loading || privateBlocked || !conversationId"
-          title="Phân tích lại hội thoại"
-          aria-label="Phân tích lại hội thoại"
+          :title="analysisBusy ? 'Cập nhật trạng thái AI' : 'Phân tích lại hội thoại'"
+          :aria-label="analysisBusy ? 'Cập nhật trạng thái AI' : 'Phân tích lại hội thoại'"
           @click="refresh"
         >
-          <RefreshCwIcon :size="16" :class="{ spinning: loading }" aria-hidden="true" />
+          <RefreshCwIcon :size="16" :class="{ spinning: loading || analysisBusy }" aria-hidden="true" />
         </button>
       </div>
     </header>
@@ -37,15 +37,28 @@
         </div>
       </div>
 
-      <div v-if="loading && !insight" class="ci-loading" aria-label="Đang tải phân tích">
-        <strong>AI đang đọc và tóm tắt hội thoại...</strong>
-        <small>AI đang phân tích nội dung hiện tại, việc khách đang chờ và ghi nhớ liên quan.</small>
+      <div v-if="analysisProgress" class="ci-analysis-progress" :class="`ci-analysis-progress--${analysisProgress.aiStatus}`" role="status">
+        <LoaderCircleIcon v-if="analysisBusy" :size="15" class="spinning" aria-hidden="true" />
+        <BrainCircuitIcon v-else :size="15" aria-hidden="true" />
+        <div>
+          <strong>{{ analysisProgress.aiStatusLabel }}</strong>
+          <small>{{ analysisProgress.aiStatusDetail }}</small>
+        </div>
+      </div>
+      <div v-if="loading && !analysisProgress && ( !insight || insightIsStale )" class="ci-loading" aria-label="Đang tải phân tích">
+        <strong>Đang tải trạng thái phân tích</strong>
+        <small>Đang lấy thông tin mới nhất từ máy chủ.</small>
         <span /><span /><span />
       </div>
       <div v-else-if="error" class="ci-state ci-state--error">
         <AlertCircleIcon :size="17" aria-hidden="true" />
         <span>{{ error }}</span>
         <button class="ci-retry" type="button" @click="refresh">Thử lại</button>
+      </div>
+      <div v-else-if="insightIsStale" class="ci-state ci-state--stale">
+        <strong>Chưa có kết quả AI cho tin nhắn mới nhất</strong>
+        <span>{{ analysisProgress?.aiStatusDetail || 'Kết quả đang được cập nhật lại theo tin nhắn mới.' }}</span>
+        <button class="ci-analyze" type="button" :disabled="loading || analysisBusy" @click="analyzeNow">Phân tích lại</button>
       </div>
       <div v-else-if="!insight" class="ci-state ci-state--empty">
         <strong>Chưa có ghi chú phân tích</strong>
@@ -54,7 +67,7 @@
           v-if="['ready', 'needs_test'].includes(readiness?.aiStatus || '')"
           class="ci-analyze"
           type="button"
-          :disabled="loading"
+          :disabled="loading || analysisBusy"
           @click="analyzeNow"
         >Phân tích ngay</button>
       </div>
@@ -62,7 +75,7 @@
       <template v-else>
       <div class="ci-stage-line">
         <span class="ci-stage-pill" :class="`ci-stage-pill--${stageTone}`">{{ stageLabel }}</span>
-        <span v-if="insight.requiresHuman" class="ci-urgent-pill">Cần nhân viên xử lý</span>
+        <span v-if="insight.requiresHuman" class="ci-urgent-pill" :class="{ 'ci-urgent-pill--verification': !urgent }">Cần nhân viên xử lý</span>
       </div>
 
       <section class="ci-brief ci-brief--need">
@@ -73,7 +86,7 @@
         </div>
       </section>
 
-      <section class="ci-brief ci-brief--action" :class="{ 'ci-brief--urgent': insight.requiresHuman }">
+      <section class="ci-brief ci-brief--action" :class="{ 'ci-brief--urgent': urgent, 'ci-brief--verification': contentVerification && !urgent }">
         <div class="ci-brief-icon"><ArrowRightCircleIcon :size="19" aria-hidden="true" /></div>
         <div>
           <span class="ci-label">{{ actionLabel }}</span>
@@ -113,6 +126,7 @@ import {
   AlertCircle as AlertCircleIcon,
   ArrowRightCircle as ArrowRightCircleIcon,
   BrainCircuit as BrainCircuitIcon,
+  LoaderCircle as LoaderCircleIcon,
   MessageSquareText as MessageSquareTextIcon,
   NotebookTabs as NotebookTabsIcon,
   RefreshCw as RefreshCwIcon,
@@ -130,7 +144,7 @@ const props = withDefaults(defineProps<{
   privateBlocked: false,
 });
 
-const { insight, readiness, loading, error, fetchInsight, analyzeInsight, clear } = useConversationInsight();
+const { insight, readiness, analysisProgress, latestMessageId, invalidated, loading, error, fetchInsight, analyzeInsight, refreshStatus, clear } = useConversationInsight();
 
 const STAGE_LABELS: Record<string, string> = {
   needs_reply: 'Cần trả lời',
@@ -156,7 +170,8 @@ const ACTION_LABELS: Record<string, string> = {
   prepare_quote: 'Chuẩn bị báo giá',
   review_quote_follow_up: 'Xem lại nội dung báo giá để follow-up',
   review_post_sale_care: 'Kiểm tra trước khi chăm sóc sau bán',
-  verify_customer_identity: 'Chưa cần tạo việc chăm sóc',
+  clarify_latest_message: 'Xem nội dung ảnh hoặc tệp khách gửi',
+  verify_customer_identity: 'Xác minh người liên hệ',
   ignore_non_customer: 'Không tạo việc chăm sóc',
 };
 
@@ -204,15 +219,26 @@ const ATTENTION_MEMORY_KEYS = new Set([
 ]);
 
 const classifierApplied = computed(() => Number(insight.value?.signals?.counterpartyClassifierVersion ?? 0) > 0);
+const insightIsStale = computed(() => invalidated.value || !!insight.value
+  && !!latestMessageId.value
+  && insight.value.sourceThroughMessageId !== latestMessageId.value);
+const analysisBusy = computed(() => ['queued', 'analyzing'].includes(analysisProgress.value?.aiStatus || ''));
+const urgent = computed(() => ['complaint', 'return_or_refund', 'human_request'].includes(insight.value?.intent.label || '')
+  || insight.value?.signals?.hardEscalation === true
+  || insight.value?.signals?.hardEscalation !== false
+    && insight.value?.stage === 'human_required' && insight.value?.nextAction.key === 'assign_to_human');
 const workItemEligible = computed(() => insight.value?.signals?.workItemEligible);
 const counterpartyRole = computed(() => String(insight.value?.signals?.counterpartyRole ?? ''));
-const salesWorkSuppressed = computed(() => classifierApplied.value && workItemEligible.value === false);
+const contentVerification = computed(() => insight.value?.nextAction.key === 'clarify_latest_message'
+  || insight.value?.signals?.contentVerificationRequired === true);
+const salesWorkSuppressed = computed(() => !contentVerification.value
+  && classifierApplied.value && workItemEligible.value === false);
 const nonCustomerRoleLabel = computed(() => NON_CUSTOMER_ROLE_LABELS[counterpartyRole.value] || 'Chưa xác định vai trò');
 const panelTitle = computed(() => salesWorkSuppressed.value ? 'Chưa tạo việc chăm sóc' : 'Việc cần xử lý');
 const panelSubtitle = computed(() => salesWorkSuppressed.value
   ? `${nonCustomerRoleLabel.value} · AI không đưa vào danh sách công việc`
-  : 'AI đã đọc và chắt lọc hội thoại');
-const needLabel = computed(() => salesWorkSuppressed.value ? 'AI đang nhận định' : 'Khách đang cần gì');
+  : !insight.value || insightIsStale.value ? 'Trạng thái phân tích hội thoại' : 'AI đã đọc và chắt lọc hội thoại');
+const needLabel = computed(() => salesWorkSuppressed.value ? 'Nhận định của AI' : 'Khách đang cần gì');
 const actionLabel = computed(() => salesWorkSuppressed.value ? 'Hướng xử lý' : 'Nhân viên cần làm ngay');
 const stageLabel = computed(() => salesWorkSuppressed.value
   ? nonCustomerRoleLabel.value
@@ -232,6 +258,7 @@ const attentionItems = computed(() => [
 ].slice(0, 5));
 const automationLabel = computed(() => {
   const automation = insight.value?.automation;
+  if (contentVerification.value) return 'Đang chờ nhân viên xem nội dung ảnh hoặc tệp';
   if (!automation) return '';
   if (salesWorkSuppressed.value) return 'Không tự động chăm sóc khi chưa rõ vai trò';
   const reason = automation.reason || '';
@@ -251,6 +278,7 @@ const automationLabel = computed(() => {
 });
 const automationTone = computed(() => {
   const reason = insight.value?.automation?.reason || '';
+  if (contentVerification.value) return 'warning';
   if (insight.value?.automation?.outcome === 'failed') return 'danger';
   if (['workflow_enrolled', 'workflow_switched', 'same_workflow_kept'].includes(reason)) return 'success';
   if (['human_required', 'payment_requires_verification', 'order_requires_staff_processing', 'customer_replied'].includes(reason)) return 'warning';
@@ -271,7 +299,8 @@ const emptyDescription = computed(() => {
 });
 const stageTone = computed(() => {
   if (salesWorkSuppressed.value) return 'neutral';
-  if (insight.value?.requiresHuman || ['human_required', 'do_not_contact'].includes(insight.value?.stage || '')) return 'danger';
+  if (urgent.value || insight.value?.stage === 'do_not_contact') return 'danger';
+  if (contentVerification.value) return 'warm';
   if (['qualified', 'quoted', 'negotiating'].includes(insight.value?.stage || '')) return 'warm';
   if (['won', 'post_sale'].includes(insight.value?.stage || '')) return 'success';
   return 'info';
@@ -286,7 +315,9 @@ function memoryKeyLabel(key: string) {
 }
 
 function refresh() {
-  if (props.conversationId && !props.privateBlocked) void analyzeInsight(props.conversationId);
+  if (!props.conversationId || props.privateBlocked) return;
+  if (analysisBusy.value) void refreshStatus();
+  else void analyzeInsight(props.conversationId);
 }
 
 function analyzeNow() {
@@ -359,6 +390,7 @@ watch(
   text-align: center;
 }
 .ci-state--error { color: #b42318; }
+.ci-state--stale { min-height: 140px; flex-direction: column; gap: 5px; color: #854a0e; background: #fffaeb; }
 .ci-state--empty { flex-direction: column; gap: 4px; }
 .ci-state--empty strong { color: #344054; font-size: 13px; }
 .ci-state--empty span { max-width: 280px; }
@@ -418,6 +450,25 @@ watch(
   border-bottom: 1px solid var(--smax-grey-200, #e5e7eb);
   background: #fafbfc;
 }
+.ci-analysis-progress {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 7px;
+  align-items: start;
+  padding: 9px 13px;
+  border-bottom: 1px solid var(--smax-grey-200, #e5e7eb);
+  background: #f4fbfd;
+  color: #087daf;
+}
+.ci-analysis-progress > div { display: grid; gap: 2px; min-width: 0; }
+.ci-analysis-progress strong { font-size: 11.5px; line-height: 1.35; }
+.ci-analysis-progress small { color: #475467; font-size: 10.5px; line-height: 1.4; }
+.ci-analysis-progress--verification { background: #fffaeb; color: #a15c07; }
+.ci-analysis-progress--verification small { color: #854a0e; }
+.ci-analysis-progress--ready { background: #f1faf5; color: #067647; }
+.ci-analysis-progress--ready small { color: #475467; }
+.ci-analysis-progress--failed { background: #fff6f5; color: #b42318; }
+.ci-analysis-progress--failed small { color: #912018; }
 .ci-stage-pill, .ci-urgent-pill {
   display: inline-flex;
   align-items: center;
@@ -428,6 +479,7 @@ watch(
   font-weight: 750;
 }
 .ci-stage-pill--danger, .ci-urgent-pill { background: #fee4e2; color: #b42318; }
+.ci-urgent-pill--verification { background: #fef0c7; color: #854a0e; }
 .ci-stage-pill--warm { background: #fff0da; color: #9a5705; }
 .ci-stage-pill--success { background: #dcfae6; color: #067647; }
 .ci-stage-pill--info { background: #eaf2ff; color: #175cd3; }
@@ -443,6 +495,7 @@ watch(
 .ci-brief--need { background: #fff; }
 .ci-brief--action { background: #f1faf5; box-shadow: inset 3px 0 #079455; }
 .ci-brief--urgent { background: #fff6f5; box-shadow: inset 3px 0 #d92d20; }
+.ci-brief--verification { background: #fffaeb; box-shadow: inset 3px 0 #d6a326; }
 .ci-brief-icon {
   width: 28px;
   height: 28px;

@@ -118,6 +118,9 @@ async function getConversation(id: string, orgId: string, reply: FastifyReply, v
 }
 
 const FORWARD_MEDIA_TYPES = new Set(['image', 'video', 'voice', 'audio', 'gif', 'file']);
+// Zalo giới hạn số file trong một lần gửi album. Chia lô để album lớn vẫn chuyển tiếp
+// được đầy đủ thay vì bị SDK từ chối toàn bộ với lỗi "Exceed maximum file".
+const FORWARD_ALBUM_BATCH_SIZE = 9;
 const MEDIA_URL_FIELDS: Record<string, string[]> = {
   image: ['hdUrl', 'href', 'normalUrl', 'url', 'thumbUrl', 'thumb', 'thumbnail'],
   video: ['href', 'fileUrl', 'url', 'normalUrl', 'hdUrl'],
@@ -604,97 +607,113 @@ export async function chatOperationsRoutes(app: FastifyInstance) {
           ));
           const paths = downloads.map((d) => d.path);
           const isAlbum = paths.length > 1;
+          const batches = isAlbum
+            ? Array.from({ length: Math.ceil(paths.length / FORWARD_ALBUM_BATCH_SIZE) }, (_, batchIndex) => {
+                const start = batchIndex * FORWARD_ALBUM_BATCH_SIZE;
+                return {
+                  paths: paths.slice(start, start + FORWARD_ALBUM_BATCH_SIZE),
+                  items: resolved.slice(start, start + FORWARD_ALBUM_BATCH_SIZE),
+                };
+              })
+            : [{ paths, items: resolved }];
 
           for (const target of validTargets) {
             const threadType = target.threadType === 'group' ? 1 : 0;
             const threadId = target.externalThreadId!;
             const targetAccountId = target.zaloAccountId;
             const instance = refs.contentType === 'video' ? zaloPool.getInstance(targetAccountId) : null;
-            let sendResult: unknown;
             try {
-              if (isAlbum) {
-                sendResult = await zaloOps.sendFile(targetAccountId, threadId, threadType, paths, io, '', { maxAttempts: 1 });
-              } else if (refs.contentType === 'video' && instance?.api) {
-                try {
-                  sendResult = await sendNativeVideo({
-                    api: instance.api as any,
-                    accountId: targetAccountId,
-                    threadId,
-                    threadType,
-                    videoPath: paths[0],
-                    maxAttempts: 1,
-                  });
-                } catch (err) {
-                  if (isZaloDeliveryUncertain(err)) throw err;
-                  logger.warn('[chat-ops] native forward video failed, falling back to attachment:', err);
-                  sendResult = await zaloOps.sendFile(targetAccountId, threadId, threadType, paths, io, '', { maxAttempts: 1 });
-                }
-              } else if (refs.contentType === 'voice' || refs.contentType === 'audio') {
-                try {
-                  sendResult = await zaloOps.sendVoice(targetAccountId, threadId, threadType, paths[0], undefined, { maxAttempts: 1 });
-                } catch (err) {
-                  if (isZaloDeliveryUncertain(err)) throw err;
-                  logger.warn('[chat-ops] forward voice failed, falling back to attachment:', err);
-                  sendResult = await zaloOps.sendFile(targetAccountId, threadId, threadType, paths, io, '', { maxAttempts: 1 });
-                }
-              } else {
-                // image / gif / file — sendFile lo cả 3.
-                sendResult = await zaloOps.sendFile(targetAccountId, threadId, threadType, paths, io, '', { maxAttempts: 1 });
-              }
-
-              // Album trả về mảng attachment (1 msgId / tấm); tin đơn trả về 1 msgId.
-              const attachments = (sendResult as { attachment?: Array<{ msgId?: string | number }> } | null)?.attachment;
-              const msgIdAt = (index: number): string => {
-                const raw = Array.isArray(attachments) ? attachments[index]?.msgId : undefined;
-                if (raw) return String(raw);
-                return index === 0 ? extractZaloMsgId(sendResult) : '';
-              };
-
               const senderName = await getUserFullName(user.id);
-              for (let index = 0; index < resolved.length; index += 1) {
-                const item = resolved[index].item;
-                const zaloMsgId = msgIdAt(index);
-                const created = await prisma.message.create({
-                  data: {
-                    id: randomUUID(),
-                    conversationId: target.id,
-                    zaloMsgId: zaloMsgId || null,
-                    zaloMsgIdNum: zaloMsgId && /^\d+$/.test(zaloMsgId) ? BigInt(zaloMsgId) : null,
-                    senderType: 'self',
-                    senderUid: target.zaloAccount.zaloUid || '',
-                    senderName: 'Staff',
-                    sentVia: 'user',
-                    metadata: { sender: { kind: 'user_crm', name: senderName } },
-                    content: item.content,
-                    contentType: item.contentType,
-                    sentAt: new Date(),
-                    repliedByUserId: user.id,
-                  },
-                });
+              for (const batch of batches) {
+                let sendResult: unknown;
+                if (isAlbum) {
+                  sendResult = await zaloOps.sendFile(targetAccountId, threadId, threadType, batch.paths, io, '', { maxAttempts: 1 });
+                } else if (refs.contentType === 'video' && instance?.api) {
+                  try {
+                    sendResult = await sendNativeVideo({
+                      api: instance.api as any,
+                      accountId: targetAccountId,
+                      threadId,
+                      threadType,
+                      videoPath: batch.paths[0],
+                      maxAttempts: 1,
+                    });
+                  } catch (err) {
+                    if (isZaloDeliveryUncertain(err)) throw err;
+                    logger.warn('[chat-ops] native forward video failed, falling back to attachment:', err);
+                    sendResult = await zaloOps.sendFile(targetAccountId, threadId, threadType, batch.paths, io, '', { maxAttempts: 1 });
+                  }
+                } else if (refs.contentType === 'voice' || refs.contentType === 'audio') {
+                  try {
+                    sendResult = await zaloOps.sendVoice(targetAccountId, threadId, threadType, batch.paths[0], undefined, { maxAttempts: 1 });
+                  } catch (err) {
+                    if (isZaloDeliveryUncertain(err)) throw err;
+                    logger.warn('[chat-ops] forward voice failed, falling back to attachment:', err);
+                    sendResult = await zaloOps.sendFile(targetAccountId, threadId, threadType, batch.paths, io, '', { maxAttempts: 1 });
+                  }
+                } else {
+                  // image / gif / file — sendFile lo cả 3.
+                  sendResult = await zaloOps.sendFile(targetAccountId, threadId, threadType, batch.paths, io, '', { maxAttempts: 1 });
+                }
 
-                io?.emit('chat:message', {
-                  accountId: target.zaloAccountId,
-                  message: { ...created, zaloMsgIdNum: created.zaloMsgIdNum?.toString() ?? null },
-                  conversationId: target.id,
-                  _privacyMeta: {
-                    privacyMode: target.zaloAccount.privacyMode,
-                    ownerUserId: target.zaloAccount.ownerUserId,
-                  },
-                });
-
-                const aggInput = {
-                  conversationId: target.id,
-                  message: {
-                    id: created.id,
-                    content: created.content,
-                    contentType: created.contentType,
-                    sentAt: created.sentAt,
-                    senderType: 'self' as const,
-                  },
-                  outboundUserId: user.id,
+                // Album trả về mảng attachment (1 msgId / tấm); tin đơn trả về 1 msgId.
+                const attachments = (sendResult as { attachment?: Array<{ msgId?: string | number }> } | null)?.attachment;
+                const msgIdAt = (index: number): string => {
+                  const raw = Array.isArray(attachments) ? attachments[index]?.msgId : undefined;
+                  if (raw) return String(raw);
+                  return index === 0 ? extractZaloMsgId(sendResult) : '';
                 };
-                void applyContactAggregateFromMessage(aggInput);
-                void applyFriendAggregate(aggInput);
+
+                for (let index = 0; index < batch.items.length; index += 1) {
+                  const item = batch.items[index].item;
+                  const zaloMsgId = msgIdAt(index);
+                  const created = await prisma.message.create({
+                    data: {
+                      id: randomUUID(),
+                      conversationId: target.id,
+                      zaloMsgId: zaloMsgId || null,
+                      zaloMsgIdNum: zaloMsgId && /^\d+$/.test(zaloMsgId) ? BigInt(zaloMsgId) : null,
+                      senderType: 'self',
+                      senderUid: target.zaloAccount.zaloUid || '',
+                      senderName: 'Staff',
+                      sentVia: 'user',
+                      metadata: { sender: { kind: 'user_crm', name: senderName } },
+                      content: item.content,
+                      contentType: item.contentType,
+                      sentAt: new Date(),
+                      repliedByUserId: user.id,
+                      ...(isAlbum ? {
+                        albumKey: `forward:${refs.messageId}:${target.id}:${Math.floor(index / FORWARD_ALBUM_BATCH_SIZE)}`,
+                        albumIndex: index,
+                        albumTotal: resolved.length,
+                      } : {}),
+                    },
+                  });
+
+                  io?.emit('chat:message', {
+                    accountId: target.zaloAccountId,
+                    message: { ...created, zaloMsgIdNum: created.zaloMsgIdNum?.toString() ?? null },
+                    conversationId: target.id,
+                    _privacyMeta: {
+                      privacyMode: target.zaloAccount.privacyMode,
+                      ownerUserId: target.zaloAccount.ownerUserId,
+                    },
+                  });
+
+                  const aggInput = {
+                    conversationId: target.id,
+                    message: {
+                      id: created.id,
+                      content: created.content,
+                      contentType: created.contentType,
+                      sentAt: created.sentAt,
+                      senderType: 'self' as const,
+                    },
+                    outboundUserId: user.id,
+                  };
+                  void applyContactAggregateFromMessage(aggInput);
+                  void applyFriendAggregate(aggInput);
+                }
               }
 
               await prisma.conversation.update({
