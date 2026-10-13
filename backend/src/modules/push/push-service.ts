@@ -239,7 +239,7 @@ export async function notifyNewInboundMessage(args: NotifyNewInboundArgs): Promi
     // Zalo emits accepted-friend e-cards as inbound messages. Keep them in history,
     // but do not create persistent, native, or web notifications.
     if (isZaloFriendAcceptedNotification(message?.content)) return;
-    if (args.threadType === 'group' && await isZaloNotificationMuted(conversationId)) return;
+    if (await isZaloNotificationMuted(conversationId)) return;
 
     const titleCandidate = args.senderName ?? message?.senderName;
     const title = typeof titleCandidate === 'string' && titleCandidate.trim()

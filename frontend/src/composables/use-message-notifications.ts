@@ -30,6 +30,12 @@ import {
 } from '@/composables/message-notification-utils';
 import { useMessageNotificationInbox } from '@/composables/use-message-notification-inbox';
 import { parseFriendAcceptedNotice } from '@/composables/zalo-system-notice';
+import {
+  fetchConversationState,
+  isConversationNotificationMuted,
+  onConversationStateChange,
+  type ConversationState,
+} from '@/composables/use-conversation-state';
 
 export interface NotifCard {
   id: string;
@@ -64,6 +70,10 @@ const cards = ref<NotifCard[]>([]);
 
 let socket: Socket | null = null;
 let started = false;
+let sessionVersion = 0;
+let unsubscribeState: (() => void) | null = null;
+const latestStates = new Map<string, ConversationState>();
+const stateRequests = new Map<string, Promise<ConversationState>>();
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 const groupNotificationLimiter = createConversationNotificationRateLimiter(
   GROUP_NOTIFICATION_LIMIT,
@@ -150,7 +160,35 @@ function showNative(card: NotifCard, force = false) {
   } catch { /* noop */ }
 }
 
-function onSocketMessage(payload: {
+function onStateChange(state: ConversationState) {
+  latestStates.set(state.conversationId, state);
+  if (isConversationNotificationMuted(state)) {
+    for (const card of cards.value) {
+      if (card.convId === state.conversationId) dismiss(card.id);
+    }
+  }
+}
+
+async function readNotificationState(convId: string): Promise<ConversationState> {
+  let request = stateRequests.get(convId);
+  if (!request) {
+    const previous = latestStates.get(convId);
+    // Coalesce album bursts, but do not cache across messages: settings may have
+    // changed on another device while this socket was disconnected.
+    request = fetchConversationState(convId).then((state) => {
+      const latest = latestStates.get(convId);
+      return latest !== previous && latest ? latest : state;
+    });
+    stateRequests.set(convId, request);
+  }
+  try {
+    return await request;
+  } finally {
+    if (stateRequests.get(convId) === request) stateRequests.delete(convId);
+  }
+}
+
+async function onSocketMessage(payload: {
   conversationId?: string; accountId?: string; message?: any;
   systemNotification?: boolean;
   notificationMuted?: boolean;
@@ -167,6 +205,16 @@ function onSocketMessage(payload: {
   // Đồng bộ với trạng thái ẩn thông báo trên Zalo chính thức. Tin vẫn được lưu và
   // vẫn đi vào hội thoại, chỉ không tạo thẻ nổi, âm thanh, badge inbox hay native notification.
   if (payload.notificationMuted === true) return;
+
+  const version = sessionVersion;
+  let state: ConversationState;
+  try {
+    state = await readNotificationState(convId);
+  } catch {
+    // Notification lookup failures must not disturb chat or bypass mute settings.
+    return;
+  }
+  if (!started || version !== sessionVersion || isConversationNotificationMuted(state)) return;
 
   // Đang MỞ đúng hội thoại đó (ở route /chat) và cửa sổ focus → không làm phiền (giống Zalo).
   // Phải kiểm tra route: selectedConvId là state singleton, GIỮ lại hội thoại mở gần nhất — nếu
@@ -219,15 +267,24 @@ export function useMessageNotifications() {
   function start() {
     if (started) return;
     started = true;
+    sessionVersion++;
+    unsubscribeState = onConversationStateChange(onStateChange);
     socket = createAppSocket();
     socket.on('chat:message', onSocketMessage);
+    socket.on('conversation:state', onStateChange);
   }
 
   function stop() {
     socket?.off('chat:message', onSocketMessage);
+    socket?.off('conversation:state', onStateChange);
     socket?.disconnect();
     socket = null;
     started = false;
+    sessionVersion++;
+    unsubscribeState?.();
+    unsubscribeState = null;
+    latestStates.clear();
+    stateRequests.clear();
     for (const t of timers.values()) clearTimeout(t);
     timers.clear();
     cards.value = [];

@@ -42,6 +42,13 @@ export interface ConversationStatePatch {
   flags?: Record<string, unknown>;
 }
 
+const stateListeners = new Set<(state: ConversationState) => void>();
+
+export function onConversationStateChange(listener: (state: ConversationState) => void): () => void {
+  stateListeners.add(listener);
+  return () => { stateListeners.delete(listener); };
+}
+
 export async function fetchConversationState(conversationId: string): Promise<ConversationState> {
   const res = await api.get<ConversationState>(`/conversations/${conversationId}/state`);
   return res.data;
@@ -53,6 +60,7 @@ export async function patchConversationState(
   patch: ConversationStatePatch,
 ): Promise<ConversationState> {
   const res = await api.patch<ConversationState>(`/conversations/${conversationId}/state`, patch);
+  for (const listener of stateListeners) listener(res.data);
   return res.data;
 }
 
@@ -69,29 +77,23 @@ export interface NotificationMuteState {
   mutedAt: string;
 }
 
-export function notificationMuteOf(state: Pick<ConversationState, 'flags'> | null | undefined): NotificationMuteState | null {
+export function notificationMuteOf(state: Pick<ConversationState, 'flags'> | null | undefined, nowMs = Date.now()): NotificationMuteState | null {
   const value = state?.flags?.notificationMute;
   if (!value || typeof value !== 'object') return null;
   const mute = value as Partial<NotificationMuteState>;
   if (mute.mode === 'forever') return { mode: 'forever', until: null, mutedAt: String(mute.mutedAt || '') };
-  if (mute.mode !== 'until' || typeof mute.until !== 'string' || Number.isNaN(Date.parse(mute.until)) || Date.parse(mute.until) <= Date.now()) return null;
+  if (mute.mode !== 'until' || typeof mute.until !== 'string' || Number.isNaN(Date.parse(mute.until)) || Date.parse(mute.until) <= nowMs) return null;
   return { mode: 'until', until: mute.until, mutedAt: String(mute.mutedAt || '') };
 }
 
-export function isConversationNotificationMuted(state: Pick<ConversationState, 'flags'> | null | undefined): boolean {
-  return notificationMuteOf(state) !== null;
+export function isConversationNotificationMuted(state: Pick<ConversationState, 'flags'> | null | undefined, nowMs = Date.now()): boolean {
+  return notificationMuteOf(state, nowMs) !== null;
 }
 
-// Theo dõi mute timeout timers để có thể clear nếu user unmute sớm hơn.
-const activeMuteTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
 export function setConversationNotificationMute(id: string, until: Date | null): Promise<ConversationState> {
-  // Clear timer cũ nếu có (user thay đổi mute setting).
-  const existing = activeMuteTimers.get(id);
-  if (existing) clearTimeout(existing);
-  activeMuteTimers.delete(id);
-
-  const result = patchConversationState(id, {
+  // Expiry is evaluated when reading the state, never by a delayed write that
+  // could overwrite a newer setting from another tab or device.
+  return patchConversationState(id, {
     flags: {
       notificationMute: {
         mode: until ? 'until' : 'forever',
@@ -100,20 +102,6 @@ export function setConversationNotificationMute(id: string, until: Date | null):
       },
     },
   });
-
-  // Nếu mute có timeout (không mãi mãi), set timer để tự unmute khi hết hạn.
-  // Đảm bảo notification được bật lại ngay cả khi socket disconnect hoặc app tắt.
-  if (until && until.getTime() > Date.now()) {
-    const delayMs = Math.max(0, until.getTime() - Date.now());
-    const timer = setTimeout(() => {
-      activeMuteTimers.delete(id);
-      void clearConversationNotificationMute(id)
-        .catch((err) => console.warn(`[mute-auto-unmute] failed for ${id}:`, err));
-    }, delayMs);
-    activeMuteTimers.set(id, timer);
-  }
-
-  return result;
 }
 
 export const clearConversationNotificationMute = (id: string) =>

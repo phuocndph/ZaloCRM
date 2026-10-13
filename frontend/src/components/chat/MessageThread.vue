@@ -1181,6 +1181,7 @@ const currentUserId = computed<string | null>(() => _authStore.user?.id ?? null)
 import FriendInviteDialog from '@/components/chat/FriendInviteDialog.vue';
 import { useToast } from '@/composables/use-toast';
 import { isConversationNotificationMuted, setConversationNotificationMute, clearConversationNotificationMute } from '@/composables/use-conversation-state';
+import { useSharedNow } from '@/composables/use-relative-time';
 import { useZaloPresence } from '@/composables/use-zalo-presence';
 import { useZaloFriendStatus } from '@/composables/use-zalo-friend-status';
 import { useFriendSocket } from '@/composables/use-friend-socket';
@@ -1266,16 +1267,18 @@ const {
   reconcileOptimisticMessages,
   removeOptimisticMessages,
 } = chatSession ?? useChat();
-const notificationsMuted = computed(() => isConversationNotificationMuted(props.conversation?.userState));
+const notificationNow = useSharedNow();
+const notificationsMuted = computed(() => isConversationNotificationMuted(props.conversation?.userState, notificationNow.value));
 async function toggleThreadNotifications() {
   const conversation = props.conversation;
   if (!conversation) return;
+  const wasMuted = isConversationNotificationMuted(conversation.userState);
   try {
-    const state = notificationsMuted.value
+    const state = wasMuted
       ? await clearConversationNotificationMute(conversation.id)
       : await setConversationNotificationMute(conversation.id, new Date(Date.now() + 8 * 60 * 60 * 1000));
     conversation.userState = state;
-    toast.success(notificationsMuted.value ? 'Đã bật thông báo' : 'Đã tắt thông báo trong 8 giờ');
+    toast.success(wasMuted ? 'Đã bật thông báo' : 'Đã tắt thông báo trong 8 giờ');
   } catch (error: any) {
     toast.error(error?.response?.data?.error || 'Không thể đổi cài đặt thông báo');
   }
