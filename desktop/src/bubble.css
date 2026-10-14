@@ -1,0 +1,8 @@
+* { box-sizing: border-box; }
+html, body { margin: 0; width: 76px; height: 76px; overflow: hidden; background: transparent; }
+body { display: grid; place-items: center; font-family: 'Segoe UI', sans-serif; }
+button { position: relative; width: 60px; height: 60px; border: 2px solid #fff; border-radius: 50%; background: #007b60; color: #fff; box-shadow: 0 2px 6px #0003; cursor: pointer; padding: 0; touch-action: none; }
+button:focus-visible { outline: 3px solid #135fd5; outline-offset: 2px; }
+.brand { width: 56px; height: 56px; border-radius: 50%; pointer-events: none; display: block; }
+#badge { position: absolute; top: -4px; right: -4px; min-width: 24px; height: 24px; padding: 0 4px; border-radius: 50%; border: 2px solid white; background: #dc3545; font-size: 11px; font-weight: 700; display: grid; place-items: center; pointer-events: none; }
+#badge[hidden] { display: none; }

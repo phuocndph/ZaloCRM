@@ -48,7 +48,7 @@ beforeEach(() => {
   notifications.setEnabled(true); notifications.setSound(true); notifications.permission.value = 'granted';
   notifications.start();
 });
-afterEach(() => { notifications.stop(); vi.unstubAllGlobals(); });
+afterEach(() => { notifications.stop(); delete window.zaloDesktop; vi.unstubAllGlobals(); });
 
 describe('personal conversation notification mute', () => {
   it.each([null, new Date(Date.now() + 3600_000).toISOString()])('blocks cards, sound, native notifications and inbox refresh when muted (%s)', async (until) => {
@@ -107,5 +107,30 @@ describe('personal conversation notification mute', () => {
     mocks.get.mockRejectedValue(new Error('offline'));
     await mocks.handlers.get('chat:message')!(payload()); await flushPromises();
     expect(notifications.cards.value).toHaveLength(0); expect(mocks.refresh).not.toHaveBeenCalled();
+  });
+  it('forwards eligible desktop notifications without message bodies or duplicate native cards', async () => {
+    const notify = vi.fn();
+    window.zaloDesktop = { role: 'main', notify, clear: vi.fn(), dismiss: vi.fn() } as any;
+    await mocks.handlers.get('chat:message')!(payload());
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ id: 'message', convId: 'conv', name: 'Customer' }));
+    expect(notify.mock.calls[0][0].preview).toBeUndefined(); expect(notify.mock.calls[0][0].avatarUrl).toBeUndefined();
+    expect(notifications.cards.value).toHaveLength(0); expect(mocks.native).not.toHaveBeenCalled();
+  });
+  it('does not forward personally-muted messages to the desktop bubble', async () => {
+    const notify = vi.fn(), dismiss = vi.fn();
+    window.zaloDesktop = { role: 'main', notify, clear: vi.fn(), dismiss } as any;
+    mocks.get.mockResolvedValue({ data: muted() });
+    await mocks.handlers.get('chat:message')!(payload());
+    expect(notify).not.toHaveBeenCalled(); expect(dismiss).toHaveBeenCalledWith('conv');
+  });
+  it('clears bubble labels on privacy/access changes', () => {
+    const clear = vi.fn(); window.zaloDesktop = { role: 'main', clear } as any;
+    mocks.handlers.get('conversation:privacy-changed')!({}); expect(clear).toHaveBeenCalled();
+  });
+  it('does not start a second notification receiver inside compact chat', () => {
+    notifications.stop(); mocks.handlers.clear();
+    window.zaloDesktop = { role: 'chat' } as any;
+    notifications.start(); expect(mocks.handlers.size).toBe(0);
+    delete window.zaloDesktop;
   });
 });

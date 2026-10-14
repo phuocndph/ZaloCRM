@@ -58,6 +58,12 @@ const routes: RouteRecordRaw[] = [
     component: () => import('@/views/ChatView.vue'),
     meta: { requiresAuth: true, resource: 'conversation' },
   },
+  {
+    path: '/desktop/chat/:convId?',
+    name: 'Desktop.Chat',
+    component: () => import('@/views/DesktopChatView.vue'),
+    meta: { requiresAuth: true, resource: 'conversation', layout: 'blank' },
+  },
   // ── PWA Mobile (/m) — chunk riêng, lazy-load, KHÔNG dính vào bundle desktop ──
   {
     path: '/m',

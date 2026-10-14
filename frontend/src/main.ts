@@ -29,7 +29,7 @@ app.mount('#app');
 // (Comment "chờ vite-plugin-pwa hỗ trợ vite 8" đã hết hiệu lực: 1.3.0 peer ^8.0.0.)
 // SW chỉ đăng ký ở bản build (devOptions.enabled=false) và cần secure context
 // (https hoặc localhost) — nơi khác trình duyệt tự bỏ qua, không lỗi.
-if ('serviceWorker' in navigator && import.meta.env.PROD) {
+if ('serviceWorker' in navigator && import.meta.env.PROD && !window.zaloDesktop) {
   import('virtual:pwa-register')
     .then(({ registerSW }) => registerSW({ immediate: true }))
     .catch(() => { /* không có SW cũng không sao — app vẫn chạy */ });

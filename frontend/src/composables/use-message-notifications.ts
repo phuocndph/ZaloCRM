@@ -30,6 +30,7 @@ import {
 } from '@/composables/message-notification-utils';
 import { useMessageNotificationInbox } from '@/composables/use-message-notification-inbox';
 import { parseFriendAcceptedNotice } from '@/composables/zalo-system-notice';
+import { desktopBridge } from '@/composables/desktop-bridge';
 import {
   fetchConversationState,
   isConversationNotificationMuted,
@@ -163,6 +164,7 @@ function showNative(card: NotifCard, force = false) {
 function onStateChange(state: ConversationState) {
   latestStates.set(state.conversationId, state);
   if (isConversationNotificationMuted(state)) {
+    desktopBridge()?.dismiss(state.conversationId);
     for (const card of cards.value) {
       if (card.convId === state.conversationId) dismiss(card.id);
     }
@@ -204,7 +206,7 @@ async function onSocketMessage(payload: {
   if (payload.systemNotification === true || parseFriendAcceptedNotice(message.content)) return;
   // Đồng bộ với trạng thái ẩn thông báo trên Zalo chính thức. Tin vẫn được lưu và
   // vẫn đi vào hội thoại, chỉ không tạo thẻ nổi, âm thanh, badge inbox hay native notification.
-  if (payload.notificationMuted === true) return;
+  if (payload.notificationMuted === true) { desktopBridge()?.dismiss(convId); return; }
 
   const version = sessionVersion;
   let state: ConversationState;
@@ -214,7 +216,8 @@ async function onSocketMessage(payload: {
     // Notification lookup failures must not disturb chat or bypass mute settings.
     return;
   }
-  if (!started || version !== sessionVersion || isConversationNotificationMuted(state)) return;
+  if (!started || version !== sessionVersion) return;
+  if (isConversationNotificationMuted(state)) { desktopBridge()?.dismiss(convId); return; }
 
   // Đang MỞ đúng hội thoại đó (ở route /chat) và cửa sổ focus → không làm phiền (giống Zalo).
   // Phải kiểm tra route: selectedConvId là state singleton, GIỮ lại hội thoại mở gần nhất — nếu
@@ -235,7 +238,7 @@ async function onSocketMessage(payload: {
     }
   }
   if (!enabled.value) return;
-  if (!document.hidden && onChatRoute && openConvId === convId) return;
+  if (!document.hidden && onChatRoute && openConvId === convId) { desktopBridge()?.dismiss(convId); return; }
 
   // Group message bursts can include an album and several texts. Keep message delivery and
   // unread state untouched, while capping visible, audible, and native notifications.
@@ -257,6 +260,13 @@ async function onSocketMessage(payload: {
     ),
     at: Date.now(),
   };
+  if (desktopBridge()?.role === 'main') {
+    try {
+      const added = await desktopBridge()!.notify({ id: card.id, convId: card.convId, name: card.name, context: card.context, at: card.at });
+      if (added && started && version === sessionVersion) beep();
+    } catch { /* Desktop shutdown must not interfere with receiving messages. */ }
+    return;
+  }
   pushCard(card);
   beep();
   showNative(card);
@@ -265,6 +275,7 @@ async function onSocketMessage(payload: {
 export function useMessageNotifications() {
   /** Khởi động một lần ở App.vue. Socket sống trong toàn bộ phiên đăng nhập. */
   function start() {
+    if (desktopBridge()?.role === 'chat') return;
     if (started) return;
     started = true;
     sessionVersion++;
@@ -272,6 +283,9 @@ export function useMessageNotifications() {
     socket = createAppSocket();
     socket.on('chat:message', onSocketMessage);
     socket.on('conversation:state', onStateChange);
+    for (const event of ['zalo:access-changed', 'privacy:mode-changed', 'conversation:privacy-changed']) {
+      socket.on(event, () => desktopBridge()?.clear());
+    }
   }
 
   function stop() {
@@ -289,6 +303,7 @@ export function useMessageNotifications() {
     timers.clear();
     cards.value = [];
     groupNotificationLimiter.reset();
+    desktopBridge()?.clear();
   }
 
   /** Bật: xin quyền native (nếu hỗ trợ) + bật cờ. Thẻ nổi vẫn chạy dù không có quyền OS. */
@@ -307,6 +322,7 @@ export function useMessageNotifications() {
     enabled.value = value;
     localStorage.setItem(ENABLED_KEY, String(value));
     if (!value) {
+      desktopBridge()?.clear();
       cards.value = [];
       groupNotificationLimiter.reset();
     }

@@ -22,6 +22,8 @@ import { useMobile } from '@/composables/use-mobile';
 import { useMessageNotifications } from '@/composables/use-message-notifications';
 import { useAuthStore } from '@/stores/auth';
 import { usePrivacyStore } from '@/stores/privacy';
+import { desktopBridge } from '@/composables/desktop-bridge';
+import { onBeforeUnmount } from 'vue';
 
 const route = useRoute();
 const { isMobile } = useMobile();
@@ -32,6 +34,7 @@ const messageNotifications = useMessageNotifications();
 const layout = computed(() => {
   const name = (route.meta?.layout as string) || 'default';
   if (name === 'auth') return AuthLayout;
+  if (name === 'blank') return BlankLayout;
   // Route /m tự quản chrome (MobileShell: header + bottom-nav + safe-area) → không bọc
   // MobileLayout/DefaultLayout để tránh 2 lớp header/nav (2026-07-11, hướng "dùng bộ /m").
   if (route.path === '/m' || route.path.startsWith('/m/')) return BlankLayout;
@@ -56,4 +59,20 @@ watch(
   (uid) => { if (uid) privacy.fetchStatus(true).catch(() => {}); },
   { immediate: true },
 );
+
+const desktop = desktopBridge();
+if (desktop) {
+  watch(() => auth.isAuthenticated ? `${auth.user!.orgId}:${auth.user!.id}` : '', () => {
+    if (desktop.role === 'main') desktop.setIdentity(auth.isAuthenticated ? { userId: auth.user!.id, orgId: auth.user!.orgId } : null);
+  }, { immediate: true });
+  // Electron windows share the CRM session but have independent Vue stores.
+  const onTokenChange = (event: StorageEvent) => {
+    if (event.key !== 'token') return;
+    auth.token = event.newValue ?? '';
+    if (!event.newValue) { auth.user = null; void window.location.reload(); }
+    else void auth.fetchProfile();
+  };
+  window.addEventListener('storage', onTokenChange);
+  onBeforeUnmount(() => window.removeEventListener('storage', onTokenChange));
+}
 </script>
