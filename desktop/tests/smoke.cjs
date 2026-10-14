@@ -17,7 +17,10 @@ async function run() {
     const origin = `http://127.0.0.1:${server.address().port}`;
     desktop = await _electron.launch({ args: [path.resolve(__dirname, '..')], env: { ...process.env,
       ZALOCRM_DESKTOP_URL: origin, ZALOCRM_DESKTOP_PROFILE: profile }, timeout: 60000 });
-    const main = await desktop.firstWindow();
+    // Bubble and main windows load concurrently; firstWindow() is not a role.
+    await desktop.firstWindow();
+    const isMain = (win) => /^https?:/.test(win.url());
+    const main = desktop.windows().find(isMain) ?? await desktop.waitForEvent('window', { predicate: isMain, timeout: 30000 });
     await main.waitForURL(`${origin}/`);
     assert.equal(await main.evaluate(() => typeof window.require), 'undefined');
     assert.equal(await main.evaluate(() => window.zaloDesktop.role), 'main');

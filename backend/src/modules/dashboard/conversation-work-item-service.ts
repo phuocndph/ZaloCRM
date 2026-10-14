@@ -17,6 +17,7 @@ import {
 import { isZaloFriendAcceptedNotification } from '../zalo/zalo-friend-accepted-notification.js';
 import { aiProgressMetadata, resolveAnalysisProgress, type AiProgressStatus } from '../ai/conversation-analysis-progress.js';
 import { isConversationEscalation } from '../ai/conversation-urgency.js';
+import { presentFollowupSituation } from '../followup/followup-situation.js';
 
 export type WorkItemScope = 'now' | 'today' | 'waiting' | 'upcoming' | 'verify' | 'done' | 'all';
 
@@ -467,18 +468,25 @@ function appointmentSignal(appointment: any, conversation: any | null, now: Date
   };
 }
 
-function followupSignal(enrollment: any, conversation: any | null): Signal {
+export function followupSignal(enrollment: any, conversation: any | null): Signal {
+  const presentation = presentFollowupSituation({ saleTaskTitle: enrollment.saleTaskTitle, conversation, now: new Date() });
+  const nickDisconnected = conversation?.zaloAccount?.status === 'disconnected';
+  const createdAt = (Array.isArray(enrollment.logs) ? enrollment.logs : [])
+    .filter((log: any) => log.eventType === 'sale_task_created' && log.stepKey === enrollment.currentStepKey)
+    .map((log: any) => new Date(log.createdAt))
+    .filter((date: Date) => Number.isFinite(date.getTime()))
+    .sort((a: Date, b: Date) => a.getTime() - b.getTime())[0] ?? enrollment.updatedAt;
   return {
-    key: `followup:${enrollment.id}:${enrollment.currentStepKey ?? ''}:${enrollment.messagesSent}:${enrollment.saleTaskTitle ?? ''}`,
+    key: `followup:${enrollment.id}:${enrollment.currentStepKey ?? ''}:${enrollment.messagesSent}:${conversation?.redacted ? '' : enrollment.saleTaskTitle ?? ''}`,
     kind: 'followup_sale',
     priority: 'high',
     priorityScore: 84,
-    title: enrollment.saleTaskTitle || 'Xử lý công việc follow-up',
-    customerSituation: `Workflow “${enrollment.workflow?.name || 'Follow-up'}” đang chờ nhân viên xử lý.`,
-    nextAction: enrollment.saleTaskTitle || 'Mở hội thoại, xử lý khách và hoàn thành bước dành cho Sale.',
-    reason: 'Workflow đang tạm dừng tại bước cần nhân viên thực hiện.',
-    dueAt: new Date(),
-    eventAt: enrollment.updatedAt,
+    title: presentation.title,
+    customerSituation: presentation.customerSituation,
+    nextAction: presentation.nextAction + (nickDisconnected ? ' Kiểm tra kết nối và đồng bộ nick trước khi liên hệ.' : ''),
+    reason: presentation.reason,
+    dueAt: createdAt,
+    eventAt: createdAt,
     conversationId: conversation?.id ?? null,
     zaloAccountId: enrollment.zaloAccountId,
     contextVersion: null,
@@ -486,6 +494,10 @@ function followupSignal(enrollment: any, conversation: any | null): Signal {
     metadata: {
       ...aiProgressMetadata('not_applicable'),
       enrollmentId: enrollment.id,
+      followupSituation: presentation.situation,
+      nickDisconnected,
+      redacted: !!conversation?.redacted,
+      manualOnly: true,
       workflowId: enrollment.workflowId,
       workflowName: enrollment.workflow?.name ?? null,
       currentStepKey: enrollment.currentStepKey,
@@ -746,7 +758,7 @@ export async function reconcileConversationWorkItems(input: {
           { access: { some: { userId: input.assigneeUserId, permission: { in: ['read', 'chat', 'admin'] } } } },
         ],
       },
-      select: { id: true, ownerUserId: true },
+      select: { id: true, ownerUserId: true, displayName: true, status: true, privacyMode: true },
     }),
     prisma.organization.findUnique({ where: { id: input.orgId }, select: { timezone: true } }),
   ]);
@@ -770,7 +782,7 @@ export async function reconcileConversationWorkItems(input: {
         statusRef: { select: { isTerminal: true } },
       },
     },
-    zaloAccount: { select: { id: true, displayName: true, privacyMode: true, ownerUserId: true } },
+    zaloAccount: { select: { id: true, displayName: true, status: true, privacyMode: true, ownerUserId: true } },
     messages: {
       where: { isDeleted: false },
       take: 12,
@@ -865,6 +877,7 @@ export async function reconcileConversationWorkItems(input: {
       select: {
         id: true, workflowId: true, contactId: true, zaloAccountId: true, currentStepKey: true,
         messagesSent: true, saleTaskTitle: true, updatedAt: true,
+        logs: { where: { eventType: 'sale_task_created' }, orderBy: { createdAt: 'asc' }, select: { eventType: true, stepKey: true, createdAt: true } },
         workflow: { select: { name: true } },
       },
       orderBy: [{ updatedAt: 'asc' }, { id: 'asc' }],
@@ -992,9 +1005,20 @@ export async function reconcileConversationWorkItems(input: {
   for (const enrollment of followups) {
     const contact = followupContactMap.get(enrollment.contactId);
     if (!contact) continue;
-    const conversation = latestConversationByContact.get(enrollment.contactId) ?? null;
+    const conversation = await prisma.conversation.findFirst({
+      where: { orgId: input.orgId, contactId: enrollment.contactId, zaloAccountId: enrollment.zaloAccountId, threadType: 'user', deletedAt: null },
+      select: conversationSelect,
+      orderBy: [{ lastMessageAt: { sort: 'desc', nulls: 'last' } }, { id: 'asc' }],
+    });
+    if (conversation && isConversationPrivateFor(conversation, input.privacy.viewerUserId)) continue;
+    const account = conversation?.zaloAccount ?? accountRows.find((row) => row.id === enrollment.zaloAccountId);
+    const visible = conversation ? canSeeConversationContent(conversation, input.privacy) : false;
+    const safeConversation = conversation && visible ? conversation : {
+      id: conversation?.id ?? null, redacted: true, messages: [],
+      zaloAccount: account, lastMessageAt: null,
+    };
     const bucket = bucketFor(buckets, contact);
-    addSignal(bucket, followupSignal(enrollment, conversation), conversation?.zaloAccount?.displayName);
+    addSignal(bucket, followupSignal(enrollment, safeConversation), account?.displayName);
   }
 
   const candidates = [...buckets.values()]

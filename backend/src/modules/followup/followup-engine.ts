@@ -18,6 +18,7 @@ import { logger } from '../../shared/utils/logger.js';
 import { sendCampaignMessage, renderTemplate, STUB_MODE } from '../outreach/outreach-service.js';
 import { scheduleAdvance, cancelScheduledJob } from './followup-queue.js';
 import { lintWorkflow, type LintWarning } from './followup-lint.js';
+import { automaticQuoteFollowupBlock } from './followup-send-policy.js';
 
 // ── Config types (đọc từ FollowupStep.config Json) ──────────────────────────
 export type WaitUnit = 'hour' | 'day' | 'week';
@@ -420,6 +421,29 @@ export async function advanceEnrollment(enrollmentId: string): Promise<void> {
       }
       case 'send': {
         const s = cfg as unknown as SendConfig;
+        // Managed quote reminders must match an evidenced, current quote, not
+        // merely an AI stage. Ambiguous cases become INTERNAL sale tasks.
+        if (wf.type === 'after_quote' && wf.description?.includes('customer-automation:v1')) {
+          const [account, conversation] = await Promise.all([
+            prisma.zaloAccount.findFirst({ where: { id: enr.zaloAccountId, orgId: enr.orgId }, select: { status: true } }),
+            prisma.conversation.findFirst({
+              where: { orgId: enr.orgId, contactId: enr.contactId, zaloAccountId: enr.zaloAccountId, deletedAt: null, threadType: 'user' },
+              select: { isPrivate: true, threadType: true, messages: { where: { isDeleted: false }, orderBy: [{ sentAt: 'desc' }, { createdAt: 'desc' }], take: 100, select: { id: true, senderType: true, contentType: true, content: true, sentAt: true } } },
+            }),
+          ]);
+          const block = automaticQuoteFollowupBlock({ now: new Date(), accountStatus: account?.status ?? null, conversation });
+          if (block) {
+            const saleStep = loaded.steps.find((candidate) => candidate.type === 'sale_task');
+            if (!saleStep) {
+              await finalize(enr, 'stopped', block.reason, `Dừng nhắc tự động: ${block.title}`);
+              return;
+            }
+            await prisma.followupEnrollment.update({ where: { id: enr.id }, data: { status: 'waiting_sale', currentStepKey: saleStep.key, saleTaskTitle: block.title, nextRunAt: null, jobId: null } });
+            await log(enr, 'sale_task_created', `Giao việc nội bộ: ${block.title}`, { stepKey: saleStep.key, stepType: 'sale_task', detail: { reason: block.reason, noMessageSent: true } });
+            await recountWorkflow(enr.workflowId);
+            return;
+          }
+        }
         // Trần số tin
         if (enr.messagesSent >= wf.maxMessages) {
           await finalize(enr, 'stopped', 'max_messages', `Dừng - đã đạt trần ${wf.maxMessages} tin`);
