@@ -34,7 +34,36 @@ describe('automatic managed quote follow-up policy', () => {
     expect(automaticQuoteFollowupBlock({ ...input, conversation: { ...input.conversation, messages: [{ ...quote, content: 'Mai em gửi anh báo giá nhé' }] } }))
       .toMatchObject({ reason: 'quote_unverified' });
   });
-  it('allows a recent evidenced quote with no subsequent reply', () => {
-    expect(automaticQuoteFollowupBlock(input)).toBeNull();
+  it('ignores local-only text even when it resembles an old quote', () => {
+    expect(automaticQuoteFollowupBlock({ ...input, conversation: { ...input.conversation, messages: [{ ...quote, isLocal: true, sentAt: new Date('2026-08-01T00:00:00Z') }] } }))
+      .toMatchObject({ reason: 'quote_unverified' });
+  });
+  it('treats an inbound refusal sharing a quote timestamp as requiring staff', () => {
+    expect(automaticQuoteFollowupBlock({ ...input, conversation: { ...input.conversation, messages: [quote, { ...quote, id: 'refusal', senderType: 'contact', content: 'Tôi không còn nhu cầu' }] } }))
+      .toMatchObject({ reason: 'customer_replied_after_quote' });
+  });
+  it('uses server ordering to detect a reply even when its display timestamp is older', () => {
+    expect(automaticQuoteFollowupBlock({ ...input, conversation: { ...input.conversation, messages: [
+      { ...quote, zaloMsgIdNum: 10n },
+      { ...quote, senderType: 'contact', content: 'Không còn nhu cầu', sentAt: new Date('2026-10-11T07:59:50Z'), zaloMsgIdNum: 11n },
+    ] } })).toMatchObject({ reason: 'customer_replied_after_quote' });
+  });
+  it('fails closed on invalid inbound chronology', () => {
+    expect(automaticQuoteFollowupBlock({ ...input, conversation: { ...input.conversation, messages: [quote,
+      { ...quote, senderType: 'contact', content: 'Kiểm tra lại', sentAt: new Date('invalid') },
+    ] } })).toMatchObject({ reason: 'customer_replied_after_quote' });
+  });
+  it('does not authorize real outreach from a natural-language quote mention alone', () => {
+    expect(automaticQuoteFollowupBlock(input)).toMatchObject({ reason: 'quote_unverified' });
+  });
+  it.each([
+    'Nếu em gửi anh báo giá thì anh xem giúp nhé',
+    'Em định gửi anh báo giá hôm nay',
+    'Em hứa gửi anh báo giá',
+    'Khi em gửi anh báo giá anh nhớ kiểm tra',
+    'Anh nói: "em gửi anh báo giá"',
+  ])('fails closed on ambiguous sent-quote evidence: %s', (content) => {
+    expect(automaticQuoteFollowupBlock({ ...input, conversation: { ...input.conversation, messages: [{ ...quote, content }] } }))
+      .toMatchObject({ reason: 'quote_unverified' });
   });
 });

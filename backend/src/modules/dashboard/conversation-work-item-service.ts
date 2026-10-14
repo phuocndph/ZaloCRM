@@ -1196,12 +1196,13 @@ export async function listConversationLoadOverview(input: {
           lastMessageAt: true,
           isPrivate: true,
           privateOwnerUserId: true,
-          zaloAccount: { select: { displayName: true, status: true } },
+          zaloAccount: { select: { displayName: true, status: true, privacyMode: true, ownerUserId: true } },
         },
       },
     },
   });
 
+  const sourceConversations = await loadWorkItemSourceConversations(rows, input.orgId);
   const grouped = new Map<string, {
     conversationId: string | null;
     contactId: string;
@@ -1223,13 +1224,17 @@ export async function listConversationLoadOverview(input: {
   }>();
 
   const query = normalizeText(input.query, 120).toLocaleLowerCase('vi-VN');
-  for (const row of rows) {
-    // Hội thoại riêng tư chỉ được xuất hiện với đúng chủ hội thoại.
-    if (row.conversation?.isPrivate && row.conversation.privateOwnerUserId !== input.viewerUserId) continue;
+  for (const rawRow of rows) {
+    // Overview không nhận phiên mở khóa: mặc định khóa, không tin nội dung
+    // đã được chủ nick ghi vào hàng đợi dùng chung khi reconcile.
+    const row = sanitizeConversationWorkItemForViewer(rawRow, {
+      orgId: input.orgId, viewerUserId: input.viewerUserId, privacyUnlocked: false,
+    }, sourceConversations);
+    if (!row) continue;
     const metadata = jsonObject(row.metadata);
     const contactName = normalizeText(row.contact.crmName || row.contact.fullName || metadata.contactName || 'Khách hàng', 180);
     const nickNames = Array.isArray(metadata.nickNames) ? metadata.nickNames.filter(Boolean).map((v) => normalizeText(v, 120)) : [];
-    const nickName = row.conversation?.zaloAccount.displayName || nickNames[0] || null;
+    const nickName = row.conversation?.zaloAccount?.displayName || nickNames[0] || null;
     const threadType = row.conversation?.threadType || (metadata.isGroup ? 'group' : 'user');
     const conversationLabel = row.conversation?.groupName || (threadType === 'group' ? normalizeText(metadata.groupName, 180) : contactName);
     const haystack = [contactName, conversationLabel, nickName, row.assignee.fullName, ...nickNames].filter(Boolean).join(' ').toLocaleLowerCase('vi-VN');
@@ -1246,7 +1251,7 @@ export async function listConversationLoadOverview(input: {
         conversationLabel: conversationLabel || contactName,
         threadType,
         nickName,
-        nickStatus: row.conversation?.zaloAccount.status || null,
+        nickStatus: row.conversation?.zaloAccount?.status || null,
         unreadCount: row.conversation?.unreadCount || Number(metadata.unreadCount) || 0,
         lastMessageAt: row.conversation?.lastMessageAt || null,
         workItemCount: 1,
@@ -1363,12 +1368,13 @@ export async function listConversationWorkItems(input: {
   });
   const allowedIds = input.allowedConversationIds ? new Set(input.allowedConversationIds) : null;
   const allowedAccounts = input.allowedAccountIds ? new Set(input.allowedAccountIds) : undefined;
+  const sourceConversations = await loadWorkItemSourceConversations(rawRows, input.orgId);
   const rows = rawRows
     .filter((row) => {
       if (!allowedIds) return true;
       return workItemMatchesIntegrationScope(row, allowedIds, allowedAccounts);
     })
-    .map((row) => sanitizeConversationWorkItemForViewer(row, input.privacy))
+    .map((row) => sanitizeConversationWorkItemForViewer(row, input.privacy, sourceConversations))
     .filter((row): row is NonNullable<typeof row> => !!row);
   const scopes: WorkItemScope[] = ['now', 'today', 'waiting', 'upcoming', 'verify', 'done', 'all'];
   const counts = Object.fromEntries(scopes.map((scope) => [scope, rows.filter((row) => matchesWorkItemScope(row, scope, now)).length]));
@@ -1475,20 +1481,95 @@ export async function listConversationAnalysisActivity(input: { orgId: string; a
   });
 }
 
+function workItemSourceConversationIds(row: any): string[] {
+  const metadata = jsonObject(row.metadata);
+  const signals = Array.isArray(metadata.signals) ? metadata.signals : [];
+  return [...new Set([
+    row.conversationId,
+    ...(Array.isArray(metadata.conversationIds) ? metadata.conversationIds : []),
+    ...signals.map((signal: any) => signal?.conversationId),
+  ].filter((id): id is string => typeof id === 'string' && !!id))];
+}
+
+async function loadWorkItemSourceConversations(rows: any[], orgId: string) {
+  // Materialized contact rows can aggregate signals from several nicks. The
+  // primary conversation alone does not authorize the whole stored payload.
+  const ids = [...new Set(rows.flatMap((row) => workItemSourceConversationIds(row)
+    .filter((id) => id !== row.conversation?.id)))];
+  const conversations = ids.length ? await prisma.conversation.findMany({
+    where: { orgId, id: { in: ids }, deletedAt: null },
+    select: {
+      id: true, isPrivate: true, privateOwnerUserId: true,
+      zaloAccount: { select: { privacyMode: true, ownerUserId: true } },
+    },
+  }) : [];
+  return new Map<string, any>(conversations.map((conversation) => [conversation.id, conversation]));
+}
+
 /**
  * Chặn hội thoại riêng tư hoàn toàn và làm mờ nội dung của nick main khi viewer
- * chưa có quyền mở khóa. Work item cũ vẫn có thể tồn tại sau khi quyền thay đổi,
- * nên không được tin rằng reconcile đã làm sạch mọi bản ghi lịch sử.
+ * chưa có quyền mở khóa. Kiểm tra mọi nguồn của aggregate tại thời điểm đọc,
+ * không tin rằng reconcile đã làm sạch mọi bản ghi lịch sử.
  */
-export function sanitizeConversationWorkItemForViewer(row: any, privacy: PrivacyContext) {
+export function sanitizeConversationWorkItemForViewer(row: any, privacy: PrivacyContext, sourceConversations = new Map<string, any>()) {
   const conversation = row.conversation;
   if (conversation && isConversationPrivateFor(conversation, privacy.viewerUserId)) return null;
-  if (!conversation) return row;
-  const canSee = !!conversation.zaloAccount && canSeeConversationContent(conversation, privacy);
-  if (canSee) return row;
+  const sourceIds = workItemSourceConversationIds(row);
+  // Standalone appointments have no nick content. Missing account-backed
+  // relations, however, are not evidence of permission to read persisted text.
+  if (!conversation && !row.zaloAccountId && !sourceIds.length && row.kind === 'appointment') return row;
+  const sources = sourceIds.map((id) => id === conversation?.id ? conversation : sourceConversations.get(id));
+  if (sources.some((source) => source && isConversationPrivateFor(source, privacy.viewerUserId))) return null;
   const metadata = jsonObject(row.metadata);
+  const signals = Array.isArray(metadata.signals) ? metadata.signals : [];
+  const incompleteSource = signals.some((signal: any) =>
+    (typeof signal?.conversationId !== 'string' || !signal.conversationId)
+    && !(signal?.kind === 'appointment' && !signal.zaloAccountId));
+  const canRead = (source: any) => !!source && typeof source.isPrivate === 'boolean'
+    && (source.isPrivate || source.zaloAccount?.privacyMode === 'sub'
+      || (source.zaloAccount?.privacyMode === 'main' && !!privacy.viewerUserId))
+    && canSeeConversationContent(source, privacy);
+  const canSee = !incompleteSource && canRead(conversation) && sources.every(canRead);
+  if (canSee) return row;
   return {
-    ...row,
+    // Allowlist: không spread row/relations vì chúng có thể chứa nội dung mới
+    // ngoài contract (hoặc getter content), kể cả khi ghi đè title sau đó.
+    id: row.id,
+    orgId: row.orgId,
+    contactId: row.contactId,
+    conversationId: row.conversationId,
+    zaloAccountId: row.zaloAccountId,
+    assigneeUserId: row.assigneeUserId,
+    sourceType: row.sourceType,
+    sourceId: row.sourceId,
+    kind: row.kind,
+    status: row.status,
+    priority: row.priority,
+    priorityScore: row.priorityScore,
+    dueAt: row.dueAt,
+    snoozedUntil: row.snoozedUntil,
+    sourceEventAt: row.sourceEventAt,
+    contextVersion: row.contextVersion,
+    confidence: row.confidence,
+    completedAt: row.completedAt,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    contact: row.contact ? {
+      id: row.contact.id, fullName: row.contact.fullName, crmName: row.contact.crmName,
+      avatarUrl: row.contact.avatarUrl, priorityScore: row.contact.priorityScore,
+    } : undefined,
+    assignee: row.assignee ? {
+      id: row.assignee.id, fullName: row.assignee.fullName, avatarUrl: row.assignee.avatarUrl,
+    } : undefined,
+    conversation: conversation ? {
+      id: conversation.id, isPrivate: conversation.isPrivate, privateOwnerUserId: conversation.privateOwnerUserId,
+      threadType: conversation.threadType, groupName: conversation.groupName,
+      unreadCount: conversation.unreadCount, lastMessageAt: conversation.lastMessageAt,
+      zaloAccount: conversation.zaloAccount ? {
+        displayName: conversation.zaloAccount.displayName, status: conversation.zaloAccount.status,
+        privacyMode: conversation.zaloAccount.privacyMode, ownerUserId: conversation.zaloAccount.ownerUserId,
+      } : null,
+    } : null,
     title: 'Công việc trong hội thoại riêng tư',
     customerSituation: 'Nội dung hội thoại đang được bảo vệ.',
     nextAction: 'Mở hội thoại để xử lý theo quyền được cấp.',

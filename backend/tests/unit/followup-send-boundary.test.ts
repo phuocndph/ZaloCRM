@@ -28,4 +28,32 @@ describe('managed quote follow-up send boundary', () => {
   expect(m.update).toHaveBeenCalledWith(expect.objectContaining({data:expect.objectContaining({status:'waiting_sale',currentStepKey:'sale_task'})}));
   expect(m.createLog).toHaveBeenCalledWith(expect.objectContaining({data:expect.objectContaining({eventType:'sale_task_created'})}));
  });
+ it('loads only real outbound provenance and reliable ordering fields', async () => {
+  m.account.mockResolvedValue({status:'connected'});
+  await advanceEnrollment('e');
+  const query=m.conversation.mock.calls[0][0];
+  expect(query.select.messages.where).toMatchObject({isDeleted:false,isLocal:false});
+  expect(query.select.messages.select).toMatchObject({isLocal:true,zaloMsgId:true,zaloMsgIdNum:true});
+  expect(query.select.messages.orderBy[0]).toEqual({zaloMsgIdNum:{sort:'desc',nulls:'last'}});
+ });
+ it.each([
+  'Em gửi anh báo giá chi tiết', 'Nếu em gửi anh báo giá thì anh xem giúp nhé',
+  'Em định gửi anh báo giá hôm nay', 'Em hứa gửi anh báo giá',
+  'Khi em gửi anh báo giá anh nhớ kiểm tra',
+ ])('connected account never sends from unverified text: %s', async (content) => {
+  m.account.mockResolvedValue({status:'connected'});
+  m.conversation.mockResolvedValue({isPrivate:false,threadType:'user',messages:[{senderType:'self',contentType:'text',content,sentAt:new Date('2026-10-11T08:00:00Z'),isLocal:false,zaloMsgId:'remote',zaloMsgIdNum:10n}]});
+  await advanceEnrollment('e');
+  expect(m.send).not.toHaveBeenCalled();
+  expect(m.update).toHaveBeenCalledWith(expect.objectContaining({data:expect.objectContaining({status:'waiting_sale'})}));
+ });
+ it('never sends from local-only quote or equal timestamp inbound refusal', async () => {
+  m.account.mockResolvedValue({status:'connected'});
+  const sentAt=new Date('2026-10-11T08:00:00Z');
+  m.conversation.mockResolvedValue({isPrivate:false,threadType:'user',messages:[
+   {senderType:'self',contentType:'text',content:'Em gửi anh báo giá chi tiết',sentAt,isLocal:true},
+   {senderType:'contact',contentType:'text',content:'Tôi không còn nhu cầu',sentAt,isLocal:false},
+  ]});
+  await advanceEnrollment('e');expect(m.send).not.toHaveBeenCalled();
+ });
 });

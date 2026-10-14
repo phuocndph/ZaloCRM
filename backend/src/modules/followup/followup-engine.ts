@@ -428,7 +428,7 @@ export async function advanceEnrollment(enrollmentId: string): Promise<void> {
             prisma.zaloAccount.findFirst({ where: { id: enr.zaloAccountId, orgId: enr.orgId }, select: { status: true } }),
             prisma.conversation.findFirst({
               where: { orgId: enr.orgId, contactId: enr.contactId, zaloAccountId: enr.zaloAccountId, deletedAt: null, threadType: 'user' },
-              select: { isPrivate: true, threadType: true, messages: { where: { isDeleted: false }, orderBy: [{ sentAt: 'desc' }, { createdAt: 'desc' }], take: 100, select: { id: true, senderType: true, contentType: true, content: true, sentAt: true } } },
+              select: { isPrivate: true, threadType: true, messages: { where: { isDeleted: false, isLocal: false }, orderBy: [{ zaloMsgIdNum: { sort: 'desc', nulls: 'last' } }, { sentAt: 'desc' }, { createdAt: 'desc' }], take: 100, select: { id: true, senderType: true, contentType: true, content: true, sentAt: true, isLocal: true, zaloMsgId: true, zaloMsgIdNum: true } } },
             }),
           ]);
           const block = automaticQuoteFollowupBlock({ now: new Date(), accountStatus: account?.status ?? null, conversation });
