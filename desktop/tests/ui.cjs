@@ -64,13 +64,14 @@ async function run() {
     const bubble = desktop.windows().find((page) => page.url().endsWith('/bubble.html'));
     await bubble.waitForSelector('#bubble');
     const popupEvent = desktop.waitForEvent('window'); await bubble.locator('#bubble').click(); const popup = await popupEvent;
+    const popupWindow = await desktop.browserWindow(popup);
     const errors = []; popup.on('pageerror', (error) => errors.push(error.message));
     await popup.waitForSelector('.inbox-row');
     assert.equal(await popup.locator('.inbox-row').count(), 50);
     await popup.locator('.inbox-rows').evaluate((node) => { node.scrollTop = node.scrollHeight; });
     await popup.waitForFunction(() => document.querySelectorAll('.inbox-row').length === 65);
     await popup.locator('.inbox-rows').evaluate((node) => { node.scrollTop = 0; });
-    await fs.mkdir(resultDir, { recursive: true }); await popup.screenshot({ path: path.join(resultDir, 'inbox-laptop.png') });
+    await fs.mkdir(resultDir, { recursive: true }); await popup.screenshot({ path: path.join(resultDir, 'inbox-laptop.png'), animations: 'disabled' });
     await popup.locator('.inbox-row').first().click(); await popup.waitForSelector('.message-thread');
     const composer = popup.locator('.tiptap[contenteditable="true"]').first();
     await composer.fill('Bản nháp gửi khách An');
@@ -81,11 +82,33 @@ async function run() {
     await popup.waitForURL('**/desktop/chat/conv-0');
     await popup.waitForSelector('.message-thread');
     assert.equal(await composer.textContent(), 'Bản nháp gửi khách An', 'Draft is restored when returning to a previous customer');
+    assert.match(await popup.locator('.recent-conversation').first().textContent(), /Nguyễn An/, 'Revisited customer becomes most recent');
+    assert.equal(await popup.locator('.recent-conversation').count(), 2);
+    assert.equal(await popup.locator('.desktop-chat-header').textContent().then((text) => text.includes('Nguyễn An')), false, 'No duplicate customer heading');
+    assert.equal(await popup.locator('.chat-header .ch-name').textContent(), 'Nguyễn An', 'CRM name matches the customer list');
+    await popup.getByRole('button', { name: 'Công cụ hội thoại', exact: true }).click();
+    await popup.getByText('Phân loại, kết bạn và trạng thái', { exact: true }).click();
+    await popup.waitForSelector('.chat-header--details');
+    assert.ok(await popup.locator('.ch-gender-chip').isVisible(), 'Classification remains accessible');
+    await popup.getByRole('button', { name: 'Công cụ hội thoại', exact: true }).click();
+    await popup.getByText('Thu gọn thông tin', { exact: true }).click();
+    assert.equal(await popup.locator('.ch-gender-chip').isVisible(), false);
+    await popup.getByRole('button', { name: 'Thêm công cụ soạn tin', exact: true }).click();
+    await popup.getByText('Định dạng văn bản', { exact: true }).click();
+    assert.ok(await popup.locator('.editor-toolbar').isVisible(), 'Formatting works from More');
+    await popup.getByRole('button', { name: 'Thêm công cụ soạn tin', exact: true }).click();
+    await popup.getByText('Ẩn định dạng văn bản', { exact: true }).click();
+    await popup.getByRole('button', { name: 'Thêm công cụ soạn tin', exact: true }).click();
+    await popup.getByText('Chèn từ kho Media', { exact: true }).click();
+    await popup.waitForSelector('.ccw-tools');
+    await popup.getByRole('button', { name: 'Đóng bảng hỗ trợ', exact: true }).click();
+    await popupWindow.evaluate((win) => { win.unmaximize(); win.setSize(540, 740); });
+    await popup.waitForFunction(() => innerWidth < 600);
     await popup.evaluate(() => window.zaloDesktop.hide());
     await bubble.locator('#bubble').click();
     await popup.waitForSelector('.message-thread');
     assert.ok(popup.url().endsWith('/desktop/chat/conv-0'), 'Reopening the bubble preserves the current customer');
-    await popup.screenshot({ path: path.join(resultDir, 'chat-laptop.png') });
+    await popup.screenshot({ path: path.join(resultDir, 'chat-laptop.png'), animations: 'disabled' });
     await popup.getByRole('button', { name: 'Danh sách hội thoại', exact: true }).click();
     assert.equal(await popup.locator('.inbox-row').count(), 65);
     await popup.getByRole('searchbox', { name: 'Tìm hội thoại' }).fill('Nguyễn An');
@@ -100,13 +123,25 @@ async function run() {
     await popup.getByRole('button', { name: 'Danh sách hội thoại', exact: true }).click();
     await popup.getByRole('tab', { name: 'Tất cả', exact: true }).click();
     await popup.waitForFunction(() => document.querySelectorAll('.inbox-row').length >= 50);
-    await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('/desktop/chat') && w.getBounds().width < 900).setSize(1060, 740));
+    await popupWindow.evaluate((win) => win.setSize(1060, 740));
+    await popup.waitForFunction(() => innerWidth > 900);
     await popup.locator('.inbox-row').first().click(); await popup.waitForSelector('.message-thread');
-    await popup.screenshot({ path: path.join(resultDir, 'chat-wide.png') });
+    assert.equal(await popup.locator('.recent-conversations').isVisible(), false, 'Wide layout does not duplicate the conversation navigation');
+    await assertControlsFit(popup);
+    await popup.screenshot({ path: path.join(resultDir, 'chat-wide.png'), animations: 'disabled' });
     const viewport = await popup.evaluate(() => ({ width: innerWidth, height: innerHeight, scroll: document.documentElement.scrollWidth }));
     assert.ok(viewport.scroll <= viewport.width + 1, 'No horizontal overflow');
-    await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('/desktop/chat') && w.getBounds().width > 900 && w.getBounds().width < 1200).setSize(420, 620));
-    await popup.screenshot({ path: path.join(resultDir, 'chat-small-laptop.png') });
+    await popupWindow.evaluate((win) => win.setSize(820, 640));
+    await popup.waitForFunction(() => innerWidth > 768 && innerWidth < 900);
+    await assertControlsFit(popup);
+    await popup.screenshot({ path: path.join(resultDir, 'chat-medium-laptop.png'), animations: 'disabled' });
+    await popupWindow.evaluate((win) => win.setSize(420, 620));
+    await popup.waitForFunction(() => innerWidth < 500);
+    assert.ok(await popup.locator('.recent-conversations').isVisible());
+    assert.ok((await popup.locator('.chat-header').boundingBox()).height < 80, 'Compact customer header fits into two lines');
+    assert.ok((await popup.locator('.input-toolbar-top').boundingBox()).height < 45, 'Composer tools stay on one row');
+    await assertControlsFit(popup);
+    await popup.screenshot({ path: path.join(resultDir, 'chat-small-laptop.png'), animations: 'disabled' });
     assert.ok(await popup.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
     assert.ok(!writes.some((url) => /\/messages$/.test(url)), 'No outbound messages');
     assert.deepEqual(errors, []);
@@ -114,5 +149,13 @@ async function run() {
   } finally {
     if (desktop) await desktop.close(); await new Promise((resolve) => server.close(resolve));
   }
+}
+async function assertControlsFit(page) {
+  const clipped = await page.evaluate(() => ['.desktop-chat-header', '.chat-header', '.input-row', '.send-btn', '[aria-label="Công cụ hội thoại"]', '[aria-label="Thu về bong bóng"]'].filter((selector) => {
+    const node = document.querySelector(selector); if (!node) return true;
+    const rect = node.getBoundingClientRect();
+    return rect.width <= 0 || rect.left < -1 || rect.right > innerWidth + 1 || rect.bottom > innerHeight + 1;
+  }));
+  assert.deepEqual(clipped, [], 'Every critical chat control fits inside the actual viewport');
 }
 run().catch((error) => { console.error(error); process.exitCode = 1; });

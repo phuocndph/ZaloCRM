@@ -1,6 +1,6 @@
 {
   "name": "zalocrm-desktop",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "private": true,
   "description": "ZaloCRM Windows desktop with floating customer chat",
   "author": "ZaloCRM",

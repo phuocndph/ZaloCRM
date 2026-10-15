@@ -1,4 +1,4 @@
-# Windows Chat Bubble 0.2.4
+# Windows Chat Bubble 0.2.5
 
 The client connects to https://zcrm.joliefam.vn. Employees sign in with their
 normal CRM account; no Hermes keys or additional Zalo sessions are involved.
@@ -19,7 +19,7 @@ npm run test:ui
 npm run dist
 ```
 
-Installer: desktop/release/ZaloCRM-Setup-0.2.4.exe. Build scripts prepare Electron
+Installer: desktop/release/ZaloCRM-Setup-0.2.5.exe. Build scripts prepare Electron
 and reuse its unpacked distribution, avoiding the ZIP temporary-directory rename
 failure seen in the first release. The NSIS icon uses a separate 512px brand image.
 The installer remains unsigned; Windows can show an unknown-publisher warning.
@@ -30,7 +30,7 @@ It reads the official public phuocndph/ZaloCRM GitHub release, validates its ass
 size and SHA-256 digest, then downloads and verifies the installer. Redirects are allowed
 only to GitHub's release-assets.githubusercontent.com host. Users confirm before the app
 opens the installer and exits. The existing CRM-hosted update API remains available for
-browsers and version 0.2.2 clients. Older clients can install 0.2.4 manually from Releases.
+browsers and version 0.2.2 clients. Older clients can install 0.2.5 manually from Releases.
 Closing the updater during a transfer hides its window while the same verified transfer
 continues. Reopening restores progress; completion brings back the confirmation window.
 
@@ -41,15 +41,15 @@ GitHub release for the same version. Native 0.2.3+ clients discover it without n
 VPS release manifest. To also enable web/legacy downloads, publish it on the VPS:
 
 ```bash
-curl -fL --retry 3 -o /tmp/ZaloCRM-Setup-0.2.4.exe \
-  https://github.com/phuocndph/ZaloCRM/releases/download/v0.2.4/ZaloCRM-Setup-0.2.4.exe
-docker cp /tmp/ZaloCRM-Setup-0.2.4.exe zalo-crm-app:/app/ZaloCRM-Setup-0.2.4.exe
-docker cp desktop/release-notes-0.2.4.txt zalo-crm-app:/app/desktop-release-notes.txt
+curl -fL --retry 3 -o /tmp/ZaloCRM-Setup-0.2.5.exe \
+  https://github.com/phuocndph/ZaloCRM/releases/download/v0.2.5/ZaloCRM-Setup-0.2.5.exe
+docker cp /tmp/ZaloCRM-Setup-0.2.5.exe zalo-crm-app:/app/ZaloCRM-Setup-0.2.5.exe
+docker cp desktop/release-notes-0.2.5.txt zalo-crm-app:/app/desktop-release-notes.txt
 docker exec zalo-crm-app node scripts/publish-desktop-release.mjs \
-  --file /app/ZaloCRM-Setup-0.2.4.exe \
-  --version 0.2.4 \
+  --file /app/ZaloCRM-Setup-0.2.5.exe \
+  --version 0.2.5 \
   --notes-file /app/desktop-release-notes.txt
-docker exec zalo-crm-app rm -f /app/ZaloCRM-Setup-0.2.4.exe /app/desktop-release-notes.txt
+docker exec zalo-crm-app rm -f /app/ZaloCRM-Setup-0.2.5.exe /app/desktop-release-notes.txt
 ```
 
 The publisher calculates SHA-256, copies the installer to
@@ -79,15 +79,25 @@ requests. Reconnect refreshes the inbox without discarding recent customers; act
 privacy/access changes continue to clear cached customer identities immediately.
 
 Compact windows have list/chat views with a back button; wide windows show both.
-The most recent 12 opened customers remain in a separate horizontal strip, independent
-of search, nick and unread filters. A read customer stays reachable after leaving Unread.
-The strip always shows the receiving nick, with a separate draft icon. Access/privacy invalidation clears it;
+The most recent 12 opened customers remain in a horizontal strip in compact windows, independent
+of search, nick and unread filters. Revisiting a customer moves it to the front and into view;
+background message refreshes do not change this order. Wide windows hide the redundant strip.
+A read customer stays reachable after leaving Unread. The strip shows the receiving nick,
+unread count and a separate draft icon. The back button shows the native alert count (excluding
+muted/private alerts, like the bubble), not the count of currently filtered results.
+Access/privacy invalidation clears it;
 it is kept only during the window session and stores no extra content on disk.
 Reopening the bubble restores the selected conversation instead of resetting to the list.
 Chat reuses ConversationChatWorkspace for text, images/files, rich drafts, forwarding
 and AI with existing permissions. Drafts and files survive hide/reopen and customer
 switches during the desktop session, not complete app exit. Read marking requires
 authorized content to be loaded and the window focused.
+
+Desktop chat uses an opt-in compact header and composer; the full CRM and work-item
+preview keep their existing layout. Customer/receiving nick stay visible. Classification,
+friendship and status expand from the conversation menu. Stickers, image/file picking and
+quick templates stay on the toolbar; More contains Media, formatting, appointments,
+template management, blocks and AI. These controls call the same shared chat handlers.
 
 The badge restores from all paginated unread CRM conversations at login, reconnect
 and every 30 seconds. Personal/Zalo-muted conversations remain in the inbox but do

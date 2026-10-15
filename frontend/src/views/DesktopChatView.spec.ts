@@ -88,4 +88,31 @@ describe('desktop floating chat', () => {
     mocks.access.value++; await flushPromises();
     expect(wrapper.findAll('.recent-conversation')).toHaveLength(0); wrapper.unmount();
   });
+  it('moves a revisited customer to the front without duplicating or reordering on live refresh', async () => {
+    const { wrapper, router } = await render('/desktop/chat/conv');
+    mocks.conversation.value = { id: 'conv', contact: { fullName: 'Khách An' } }; await flushPromises();
+    await router.replace('/desktop/chat/second');
+    mocks.conversation.value = { id: 'second', contact: { fullName: 'Khách Bình' } }; await flushPromises();
+    expect(wrapper.findAll('.recent-copy').map((node) => node.text())).toEqual(['Khách BìnhNick Zalo', 'Khách AnNick Zalo']);
+    await router.replace('/desktop/chat/conv');
+    mocks.conversation.value = { id: 'conv', contact: { fullName: 'Khách An' } }; await flushPromises();
+    mocks.conversation.value = { ...mocks.conversation.value }; await flushPromises();
+    expect(wrapper.findAll('.recent-copy').map((node) => node.text())).toEqual(['Khách AnNick Zalo', 'Khách BìnhNick Zalo']);
+    expect(wrapper.find('.desktop-chat-header').text()).not.toContain('Khách An'); wrapper.unmount();
+  });
+  it('keeps the native unread notification badge visible while chatting', async () => {
+    const { wrapper } = await render();
+    mocks.state({ count: 105, pinned: true }); await flushPromises();
+    expect(wrapper.get('[aria-label="Danh sách hội thoại"] .notification-count').text()).toBe('99+');
+    mocks.state({ count: 0 }); await flushPromises();
+    expect(wrapper.find('.notification-count').exists()).toBe(false); wrapper.unmount();
+  });
+  it('shows unread on recent customers and clears it only after a successful visible read', async () => {
+    vi.mocked(document.hasFocus).mockReturnValue(false);
+    const { wrapper } = await render();
+    mocks.conversation.value = { id: 'conv', unreadCount: 4 }; await flushPromises();
+    expect(wrapper.get('.recent-unread').text()).toBe('4');
+    vi.mocked(document.hasFocus).mockReturnValue(true); window.dispatchEvent(new Event('focus')); await flushPromises();
+    expect(wrapper.find('.recent-unread').exists()).toBe(false); wrapper.unmount();
+  });
 });

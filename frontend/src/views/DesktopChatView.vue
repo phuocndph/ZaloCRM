@@ -1,21 +1,22 @@
 <template>
   <main class="desktop-chat" :class="{ 'has-conversation': !!id }">
     <header class="desktop-chat-header">
-      <button v-if="id" type="button" title="Danh sách hội thoại" aria-label="Danh sách hội thoại" @click="back"><ArrowLeft :size="18" /></button>
-      <strong :title="conversation ? title(conversation) : 'Hội thoại'">{{ conversation ? title(conversation) : 'Hội thoại' }}</strong>
-      <span>{{ conversation?.zaloAccount?.displayName || 'ZaloCRM' }}</span>
+      <button v-if="id" type="button" class="inbox-toggle" :title="notificationCount ? `${notificationCount} thông báo chưa đọc · Danh sách hội thoại` : 'Danh sách hội thoại'" aria-label="Danh sách hội thoại" @click="back"><ArrowLeft :size="18" /><small v-if="notificationCount" class="notification-count" aria-label="Thông báo chưa đọc">{{ badge(notificationCount) }}</small></button>
+      <strong>Hội thoại</strong>
+      <span class="header-spacer" />
       <button type="button" :class="{ active: pinned }" :aria-pressed="pinned" :title="pinned ? 'Bỏ ghim khung' : 'Ghim khung'" aria-label="Ghim khung" @click="togglePin"><Pin :size="17" /></button>
       <AppUpdateButton surface="desktop" />
       <button type="button" title="Mở CRM đầy đủ" aria-label="Mở CRM đầy đủ" @click="openMain"><ExternalLink :size="17" /></button>
       <button type="button" title="Mở rộng" aria-label="Mở rộng" @click="desktop?.expand()"><Maximize2 :size="17" /></button>
       <button type="button" title="Thu về bong bóng" aria-label="Thu về bong bóng" @click="desktop?.hide()"><Minus :size="17" /></button>
     </header>
-    <nav v-if="recent.length" class="recent-conversations" aria-label="Hội thoại gần đây">
+    <nav v-if="recent.length" ref="recentNav" class="recent-conversations" aria-label="Hội thoại gần đây">
       <button v-for="row in recent" :key="row.id" type="button" class="recent-conversation" :class="{ selected: row.id === id }" :aria-current="row.id === id ? 'true' : undefined" :title="`${title(row)} · ${row.zaloAccount?.displayName || 'Nick Zalo'}`" @click="select(row.id)">
         <img v-if="avatar(row)" :src="avatar(row)!" alt="" referrerpolicy="no-referrer" @error="hideImage" />
         <span v-else class="recent-initial">{{ title(row).slice(0, 1) }}</span>
         <span class="recent-copy"><strong>{{ title(row) }}</strong><small>{{ row.zaloAccount?.displayName || 'Nick Zalo' }}</small></span>
         <FilePenLine v-if="hasDraft(row.id)" class="recent-draft" :size="13" aria-label="Có bản nháp" />
+        <small v-if="row.unreadCount > 0" class="recent-unread" :aria-label="`${row.unreadCount} tin chưa đọc`">{{ badge(row.unreadCount) }}</small>
       </button>
     </nav>
     <div v-if="offline || preview.realtimeOffline.value" class="desktop-status" role="status">Mất kết nối trực tiếp. Đang thử kết nối lại…</div>
@@ -43,14 +44,14 @@
         <div v-if="!id" class="desktop-chat-empty"><MessageCircle :size="36" /><h1>Chưa chọn hội thoại</h1></div>
         <div v-else-if="loading" class="desktop-chat-empty" role="status"><v-progress-circular indeterminate color="primary" /></div>
         <div v-else-if="!conversation || preview.blocked.value" class="desktop-chat-empty" role="alert"><p>{{ error || 'Không tìm thấy hội thoại.' }}</p><button type="button" @click="preview.refresh">Tải lại</button></div>
-        <template v-else><div v-if="error" class="desktop-status" role="status">{{ error }}</div><ConversationChatWorkspace :key="`${auth.user?.id}:${id}`" class="desktop-chat-workspace" :conversation="conversation" :messages="messages" :preview="preview" @switch-conversation="select" @message-sent="list.refresh()" @expand="desktop?.expand()" /></template>
+        <template v-else><div v-if="error" class="desktop-status" role="status">{{ error }}</div><ConversationChatWorkspace :key="`${auth.user?.id}:${id}`" compact class="desktop-chat-workspace" :conversation="conversation" :messages="messages" :preview="preview" @switch-conversation="select" @message-sent="list.refresh()" @expand="desktop?.expand()" /></template>
       </section>
     </div>
   </main>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { ArrowLeft, BellOff, ExternalLink, FilePenLine, Maximize2, MessageCircle, Minus, Pin, Search } from 'lucide-vue-next';
 import ConversationChatWorkspace from '@/components/chat/ConversationChatWorkspace.vue';
@@ -71,6 +72,8 @@ const auth = useAuthStore(), route = useRoute(), router = useRouter(), desktop =
 const id = computed(() => String(route.params.convId ?? ''));
 const search = ref(''), onlyUnread = ref(false), accountId = ref(''), pinned = ref(false);
 const recent = ref<Conversation[]>([]);
+const recentNav = ref<HTMLElement | null>(null);
+const notificationCount = ref(0);
 const list = useDesktopConversations(search, onlyUnread, accountId);
 const { rows, accounts, loading: listLoading, loadingMore, error: listError, hasMore, offline } = list;
 const preview = useConversationPreview(id, computed(() => auth.user?.id));
@@ -78,6 +81,7 @@ const { conversation, messages, loading, error } = preview;
 const privacy = usePrivacyVisibility();
 const inbox = useMessageNotificationInbox();
 let disposed = false, reading = false, lastRead = '';
+let lastRecentId = '';
 const unsubscribers: Array<() => void> = [];
 function title(row: Conversation) { return privacy.shouldBlurConv(row) || row.conversationPrivate ? 'Hội thoại riêng tư' : row.threadType === 'group' ? row.groupName || 'Nhóm Zalo' : row.contact?.crmName || row.friendship?.aliasInNick || row.contact?.fullName || row.friendship?.zaloDisplayName || 'Khách hàng'; }
 function avatar(row: Conversation) { return privacy.shouldBlurConv(row) || row.conversationPrivate ? null : notificationAvatarUrl(row.threadType === 'group' ? row.groupAvatarUrl : row.contact?.avatarUrl || row.friendship?.zaloAvatarUrl); }
@@ -90,16 +94,21 @@ function select(value: string) { if (/^[a-zA-Z0-9_-]{1,100}$/.test(value)) void 
 function back() { void router.replace({ name: 'Desktop.Chat' }); }
 function openMain() { if (desktop) desktop.openMain(id.value); else void router.push(id.value ? `/chat/${id.value}` : '/chat'); }
 function togglePin() { desktop?.setPinned?.(!pinned.value); }
+function badge(count: number) { return count > 99 ? '99+' : String(count); }
 function hasDraft(convId: string) {
   const draft = useChatSessionDraft(auth.user?.id || '', convId);
   return !!draft.rich.value.text.trim() || draft.attachments.files.length > 0;
 }
-watch(conversation, (value) => {
+watch(conversation, async (value) => {
   if (!value || value.id !== id.value || preview.blocked.value) return;
   // Recent customers are independent of unread/search filters and notification dismissal.
   const previous = recent.value.findIndex((row) => row.id === value.id);
-  if (previous >= 0) recent.value.splice(previous, 1, value);
-  else recent.value = [value, ...recent.value].slice(0, 12);
+  const selected = lastRecentId !== value.id || previous < 0;
+  if (selected) recent.value = [value, ...recent.value.filter((row) => row.id !== value.id)].slice(0, 12);
+  else recent.value.splice(previous, 1, value);
+  lastRecentId = value.id;
+  await nextTick();
+  if (selected && !disposed && id.value === value.id) recentNav.value?.querySelector('.selected')?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
 });
 watch(rows, (value) => {
   const fresh = new Map(value.map((row) => [row.id, row]));
@@ -122,6 +131,7 @@ async function markVisibleRead() {
     lastRead = fingerprint; desktop?.active(current);
     void inbox.markConversationRead(current);
     const row = rows.value.find((row) => row.id === current); if (row) row.unreadCount = 0;
+    const recentRow = recent.value.find((row) => row.id === current); if (recentRow) recentRow.unreadCount = 0;
   } catch { /* A denied read must not clear the unread badge. */ }
   finally {
     reading = false;
@@ -139,8 +149,9 @@ function onKey(event: KeyboardEvent) {
 onMounted(async () => {
   window.addEventListener('focus', markVisibleRead); window.addEventListener('blur', onBlur); window.addEventListener('keydown', onKey);
   if (!desktop) return;
-  unsubscribers.push(desktop.onState((state) => { pinned.value = state.pinned === true; }), desktop.onOpen((value) => { if (value) select(value); else back(); }), desktop.onReset(() => { preview.invalidate(); window.location.reload(); }));
-  const state = await desktop.state(); if (!disposed) pinned.value = state?.pinned === true;
+  let receivedState = false;
+  unsubscribers.push(desktop.onState((state) => { receivedState = true; pinned.value = state.pinned === true; notificationCount.value = Math.max(0, state.count || 0); }), desktop.onOpen((value) => { if (value) select(value); else back(); }), desktop.onReset(() => { preview.invalidate(); window.location.reload(); }));
+  const state = await desktop.state(); if (!disposed && !receivedState) { pinned.value = state?.pinned === true; notificationCount.value = Math.max(0, state?.count || 0); }
 });
 onBeforeUnmount(() => {
   disposed = true; desktop?.active('');
@@ -150,19 +161,24 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.desktop-chat { height: 100dvh; display: flex; flex-direction: column; overflow: hidden; background: var(--color-surface, #fff); color: var(--color-text, #202124); }
+/* The full CRM shell's 1100px minimum must not clip a floating window. */
+:global(#app:has(.desktop-chat)) { min-width: 0; }
+.desktop-chat { width: 100%; min-width: 0; height: 100dvh; display: flex; flex-direction: column; overflow: hidden; background: var(--color-surface, #fff); color: var(--color-text, #202124); }
 .desktop-chat-header { height: 46px; flex: 0 0 46px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border-bottom: 1px solid #e1e5e9; }
 .desktop-chat-header strong { font-size: 14px; min-width: 0; max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .desktop-chat-header > span { flex: 1; min-width: 0; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #59636e; }
 .desktop-chat-header button { width: 30px; height: 32px; flex-shrink: 0; display: grid; place-items: center; border: 0; background: transparent; cursor: pointer; color: inherit; }
 .desktop-chat-header button:hover, .desktop-chat-header button.active { background: #e8f4ef; color: #007b60; }
 .desktop-chat-header :deep(.update-button--desktop) { width: 86px; display: flex; flex: 0 0 86px; }
+.desktop-chat-header .inbox-toggle { position: relative; margin-right: 6px; }
+.notification-count { position: absolute; top: 0; right: -7px; min-width: 16px; height: 16px; padding: 0 3px; display: grid; place-items: center; background: #cb3047; color: #fff; border: 1px solid #fff; border-radius: 9px; font-size: 9px; }
 .recent-conversations { display: flex; flex: 0 0 62px; gap: 3px; padding: 5px 8px; overflow-x: auto; overflow-y: hidden; border-bottom: 1px solid #e1e5e9; background: #f8faf9; scrollbar-width: thin; }
 .recent-conversation { display: flex; align-items: center; gap: 7px; flex: 0 0 148px; min-width: 0; padding: 5px 7px; background: transparent; border: 0; border-bottom: 2px solid transparent; border-radius: 4px; cursor: pointer; color: inherit; text-align: left; }
 .recent-conversation:hover { background: #edf1f4; }.recent-conversation.selected { background: #e5f3ed; border-bottom-color: #087058; }
 .recent-conversation img, .recent-initial { width: 30px; height: 30px; flex: 0 0 30px; border-radius: 50%; object-fit: cover; background: #e1e9ed; }.recent-initial { display: grid; place-items: center; font-size: 13px; }
 .recent-copy { display: grid; gap: 2px; min-width: 0; }.recent-copy strong, .recent-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.recent-copy strong { font-size: 12px; font-weight: 600; }.recent-copy small { font-size: 10px; color: #596d66; }
 .recent-draft { flex-shrink: 0; color: #b07213; }
+.recent-copy { flex: 1; }.recent-unread { flex-shrink: 0; min-width: 18px; height: 18px; padding: 0 4px; display: grid; place-items: center; border-radius: 9px; background: #cb3047; color: #fff; font-size: 10px; }
 .desktop-chat-body { display: flex; flex: 1; min-height: 0; }
 .desktop-inbox { width: 100%; display: flex; flex-direction: column; min-height: 0; }
 .inbox-search { margin: 12px; padding: 0 10px; display: flex; align-items: center; gap: 8px; background: #f0f3f5; border-radius: 6px; min-height: 38px; color: #65707d; }
@@ -187,5 +203,5 @@ onBeforeUnmount(() => {
 .desktop-chat-workspace { flex: 1; min-height: 0; }.desktop-status { font-size: 12px; padding: 6px 12px; background: #fff3cd; color: #765d10; }
 .desktop-chat-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px; text-align: center; }.desktop-chat-empty h1 { font-size: 20px; }.desktop-chat-empty p { font-size: 14px; }
 .desktop-chat-empty button { padding: 8px 16px; border: 1px solid #d9dfe5; background: #fff; border-radius: 4px; cursor: pointer; }
-@media (min-width: 900px) { .desktop-inbox, .has-conversation .desktop-inbox { display: flex; width: 310px; flex: 0 0 310px; border-right: 1px solid #e1e5e9; }.desktop-thread { display: flex; }.inbox-filters { flex-wrap: wrap; }.inbox-filters select { max-width: 100%; width: 100%; margin-left: 0; } }
+@media (min-width: 900px) { .recent-conversations { display: none; }.desktop-inbox, .has-conversation .desktop-inbox { display: flex; width: 310px; flex: 0 0 310px; border-right: 1px solid #e1e5e9; }.desktop-thread { display: flex; }.inbox-filters { flex-wrap: wrap; }.inbox-filters select { max-width: 100%; width: 100%; margin-left: 0; } }
 </style>
