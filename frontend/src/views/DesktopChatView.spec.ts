@@ -64,6 +64,12 @@ describe('desktop floating chat', () => {
     const { wrapper } = await render('/desktop/chat'); expect(wrapper.text()).toContain('Nội dung riêng tư'); expect(wrapper.text()).not.toContain('Hello');
     expect(wrapper.find('.inbox-avatar[src]').exists()).toBe(false); wrapper.unmount();
   });
+  it('falls back to the customer image then initials instead of leaving the inbox avatar invisible', async () => {
+    mocks.rows.value[0].friendship = { zaloAvatarUrl: '/broken-friend.jpg' }; mocks.rows.value[0].contact.avatarUrl = '/contact.jpg';
+    const { wrapper } = await render('/desktop/chat');
+    await wrapper.get('.inbox-avatar img').trigger('error'); expect(wrapper.get('.inbox-avatar img').attributes('src')).toBe('/contact.jpg');
+    await wrapper.get('.inbox-avatar img').trigger('error'); expect(wrapper.get('.inbox-avatar .av-initials').text()).toBe('C'); wrapper.unmount();
+  });
   it('does not clear the wrong customer after switching during a read request', async () => {
     let resolve!: (value: any) => void;
     mocks.post.mockReturnValueOnce(new Promise((done) => { resolve = done; }));

@@ -10,7 +10,7 @@ import { logger } from '../../shared/utils/logger.js';
 // Well-known msgType keyword patterns — used to suppress noise logging
 const KNOWN_MSG_TYPE_PATTERNS = [
   'photo', 'image', 'sticker', 'video', 'voice',
-  'gif', 'link', 'location', 'file', 'doc',
+  'audio', 'gif', 'link', 'location', 'file', 'doc',
   'recommended', 'card', 'bank', 'transfer',
   'call', 'voip', 'qr', 'remind', 'todo',
   'poll', 'vote', 'note', 'forward',
@@ -57,6 +57,7 @@ export function detectContentType(msgType: string | undefined, content: any): st
   if (msgType.includes('sticker')) return 'sticker';
   if (msgType.includes('video')) return 'video';
   if (msgType.includes('voice')) return 'voice';
+  if (msgType.includes('audio')) return 'audio';
   if (msgType.includes('gif')) return 'gif';
   if (msgType.includes('link')) return 'link';
   if (msgType.includes('location')) return 'location';

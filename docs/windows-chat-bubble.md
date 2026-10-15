@@ -1,4 +1,4 @@
-# Windows Chat Bubble 0.2.6
+# Windows Chat Bubble 0.2.7
 
 The client connects to https://zcrm.joliefam.vn. Employees sign in with their
 normal CRM account; no Hermes keys or additional Zalo sessions are involved.
@@ -14,13 +14,14 @@ npm ci
 npm test
 npm run test:smoke
 npm run test:preview
+npm run test:media
 npm run test:updater
 npm --prefix ../frontend run build
 npm run test:ui
 npm run dist
 ```
 
-Installer: desktop/release/ZaloCRM-Setup-0.2.6.exe. Build scripts prepare Electron
+Installer: desktop/release/ZaloCRM-Setup-0.2.7.exe. Build scripts prepare Electron
 and reuse its unpacked distribution, avoiding the ZIP temporary-directory rename
 failure seen in the first release. The NSIS icon uses a separate 512px brand image.
 The installer remains unsigned; Windows can show an unknown-publisher warning.
@@ -31,7 +32,7 @@ It reads the official public phuocndph/ZaloCRM GitHub release, validates its ass
 size and SHA-256 digest, then downloads and verifies the installer. Redirects are allowed
 only to GitHub's release-assets.githubusercontent.com host. Users confirm before the app
 opens the installer and exits. The existing CRM-hosted update API remains available for
-browsers and version 0.2.2 clients. Older clients can install 0.2.6 manually from Releases.
+browsers and version 0.2.2 clients. Older clients can install 0.2.7 manually from Releases.
 Closing the updater during a transfer hides its window while the same verified transfer
 continues. Reopening restores progress; completion brings back the confirmation window.
 
@@ -42,15 +43,15 @@ GitHub release for the same version. Native 0.2.3+ clients discover it without n
 VPS release manifest. To also enable web/legacy downloads, publish it on the VPS:
 
 ```bash
-curl -fL --retry 3 -o /tmp/ZaloCRM-Setup-0.2.6.exe \
-  https://github.com/phuocndph/ZaloCRM/releases/download/v0.2.6/ZaloCRM-Setup-0.2.6.exe
-docker cp /tmp/ZaloCRM-Setup-0.2.6.exe zalo-crm-app:/app/ZaloCRM-Setup-0.2.6.exe
-docker cp desktop/release-notes-0.2.6.txt zalo-crm-app:/app/desktop-release-notes.txt
+curl -fL --retry 3 -o /tmp/ZaloCRM-Setup-0.2.7.exe \
+  https://github.com/phuocndph/ZaloCRM/releases/download/v0.2.7/ZaloCRM-Setup-0.2.7.exe
+docker cp /tmp/ZaloCRM-Setup-0.2.7.exe zalo-crm-app:/app/ZaloCRM-Setup-0.2.7.exe
+docker cp desktop/release-notes-0.2.7.txt zalo-crm-app:/app/desktop-release-notes.txt
 docker exec zalo-crm-app node scripts/publish-desktop-release.mjs \
-  --file /app/ZaloCRM-Setup-0.2.6.exe \
-  --version 0.2.6 \
+  --file /app/ZaloCRM-Setup-0.2.7.exe \
+  --version 0.2.7 \
   --notes-file /app/desktop-release-notes.txt
-docker exec zalo-crm-app rm -f /app/ZaloCRM-Setup-0.2.6.exe /app/desktop-release-notes.txt
+docker exec zalo-crm-app rm -f /app/ZaloCRM-Setup-0.2.7.exe /app/desktop-release-notes.txt
 ```
 
 The publisher calculates SHA-256, copies the installer to
@@ -99,6 +100,18 @@ preview keep their existing layout. Customer/receiving nick stay visible. Classi
 friendship and status expand from the conversation menu. Stickers, image/file picking and
 quick templates stay on the toolbar; More contains Media, formatting, appointments,
 template management, blocks and AI. These controls call the same shared chat handlers.
+
+Inbox, recent strip and shared CRM avatars try per-nick and contact images before
+showing initials. Failed images are not hidden with inline visibility styles. Both
+paginated list and conversation detail expose the per-nick avatar, so refreshes cannot
+erase that fallback. The shared Avatar component also keeps group-member collages.
+
+Voice/audio messages bypass generic image/file heuristics. Windows and web use one
+player with duration, play/pause, seek, authenticated download and visible retry/errors.
+Audio metadata supports href/fileUrl/url plus params.m4a and millisecond duration.
+Inbound mirroring also retains the m4a fallback. For local storage, AAC is remuxed and
+AMR transcoded into a separate cached M4A; original files remain unchanged. The static
+handler serves the playable copy with Range/206/416 and HEAD support.
 
 The badge restores from all paginated unread CRM conversations at login, reconnect
 and every 30 seconds. Personal/Zalo-muted conversations remain in the inbox but do
@@ -158,6 +171,8 @@ Electron smoke covers the native menu/updater without CRM login, multi-customer 
 inbox-default, auto-hide/pin, simulated picker holds, attachment children and logout.
 Preview tests verify actual image decoding, failed/slow fallback, loaded-image reuse,
 private-image suppression, compact single/three-card bounds, close/read isolation and click targets.
+Media UI tests require ffmpeg and Microsoft Edge; they decode actual AAC/MP4 and exercise
+play/pause/seek/download on Windows Electron and web, in compact and full chat layouts.
 Built-frontend UI tests use 65 conversations for pagination/search/unread, A/B/A switching
 with draft restoration, bubble reopen, and 420px/laptop/wide screenshots. Actual Windows picker timing,
 real reconnects, physical multiple monitors and publisher signing need pilot checks

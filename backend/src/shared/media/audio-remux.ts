@@ -3,13 +3,14 @@
 /**
  * audio-remux.ts — voice Zalo lưu dạng ADTS AAC thô (.aac) / AMR (.amr): HTML5 <audio>
  * phát rất kém (không có tổng thời lượng → hiện 0:00, nhiều trình duyệt từ chối phát).
- * Remux (KHÔNG mã hoá lại, `-c copy`) sang container MP4 (.m4a) để mọi trình duyệt phát
- * được kèm duration. Kết quả cache ra đĩa cạnh file gốc nên chỉ tốn ffmpeg lần đầu.
+ * Remux AAC without re-encoding; AMR must be transcoded to AAC in MP4 (.m4a).
+ * Cache the browser copy beside the original without changing the source bytes.
  */
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { existsSync } from 'node:fs';
-import { rename } from 'node:fs/promises';
+import { rename, rm } from 'node:fs/promises';
+import path from 'node:path';
 
 const execFileAsync = promisify(execFile);
 
@@ -24,7 +25,8 @@ const inflight = new Map<string, Promise<string | null>>();
  * Trả về đường dẫn .m4a đã cache, hoặc null nếu nguồn không tồn tại / remux lỗi.
  */
 export async function ensureBrowserAudio(srcAbs: string): Promise<string | null> {
-  const cacheAbs = srcAbs.replace(/\.(aac|amr)$/i, '.m4a');
+  if (!REMUX_AUDIO_EXTS.has(path.extname(srcAbs).slice(1).toLowerCase())) return null;
+  const cacheAbs = `${srcAbs}.browser.m4a`;
   if (existsSync(cacheAbs)) return cacheAbs;
   if (!existsSync(srcAbs)) return null;
 
@@ -38,7 +40,8 @@ export async function ensureBrowserAudio(srcAbs: string): Promise<string | null>
       await execFileAsync('ffmpeg', [
         '-v', 'error', '-y',
         '-i', srcAbs,
-        '-c', 'copy',
+        '-map', '0:a:0', '-vn',
+        ...(path.extname(srcAbs).toLowerCase() === '.amr' ? ['-c:a', 'aac', '-b:a', '64k'] : ['-c:a', 'copy']),
         '-movflags', '+faststart',
         '-f', 'mp4',
         tmpAbs,
@@ -48,6 +51,7 @@ export async function ensureBrowserAudio(srcAbs: string): Promise<string | null>
     } catch {
       return null;
     } finally {
+      await rm(tmpAbs, { force: true }).catch(() => {});
       inflight.delete(cacheAbs);
     }
   })();

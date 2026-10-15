@@ -6,8 +6,9 @@ const prisma = mockPrisma();
 const scope = vi.fn();
 vi.mock('../src/shared/database/prisma-client.js', () => ({ prisma }));
 vi.mock('../src/modules/auth/auth-middleware.js', () => ({ authMiddleware: async (request: any) => { request.user = mockUser(); } }));
+vi.mock('../src/modules/rbac/rbac-middleware.js', () => ({ requireGrant: () => async () => {} }));
 vi.mock('../src/modules/zalo/zalo-scope.js', () => ({ DISPLAYABLE_NICK_WHERE: {}, getZaloScope: scope }));
-vi.mock('../src/modules/chat/conversation-state-service.js', () => ({ getState: async () => ({ flags: {} }) }));
+vi.mock('../src/modules/chat/conversation-state-service.js', () => ({ getState: async () => ({ flags: {} }), loadStates: async () => new Map(), emptyState: () => ({ flags: {} }) }));
 vi.mock('../src/modules/privacy/redact.js', async (original) => ({
   ...await original<typeof import('../src/modules/privacy/redact.js')>(),
   buildPrivacyContext: async () => ({ viewerUserId: 'user-1', orgId: 'org-1', privacyUnlocked: false }),
@@ -23,6 +24,19 @@ beforeEach(() => {
     Object.fromEntries(Object.keys(select).map((key) => [key, friend[key] ?? null])));
 });
 describe('conversation profile for desktop notifications', () => {
+  it('also returns per-nick avatars in the paginated inbox, not only the detail endpoint', async () => {
+    const conversation = await prisma.conversation.findFirst();
+    prisma.conversation.findMany.mockResolvedValue([conversation]); prisma.conversation.count.mockResolvedValue(1);
+    prisma.friend.findMany.mockImplementation(async ({ select }: { select: Record<string, unknown> }) => [{ zaloAccountId: 'nick', zaloUidInNick: 'customer-uid',
+      ...Object.fromEntries(Object.keys(select).filter((key) => !['zaloAccountId', 'zaloUidInNick'].includes(key)).map((key) => [key, key === 'zaloAvatarUrl' ? 'https://cdn.example.com/lan.jpg' : key === 'zaloDisplayName' ? 'Lan' : null])),
+    }]);
+    const app = Fastify(); app.register(chatRoutes);
+    try {
+      const response = await app.inject({ method: 'GET', url: '/api/v1/conversations' });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().conversations[0].friendship).toMatchObject({ zaloAvatarUrl: 'https://cdn.example.com/lan.jpg', zaloDisplayName: 'Lan' });
+    } finally { await app.close(); }
+  });
   it('returns per-nick avatar/name even when the contact avatar is missing', async () => {
     const app = Fastify(); app.register(chatRoutes);
     try {

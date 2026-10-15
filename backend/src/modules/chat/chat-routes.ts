@@ -1025,6 +1025,8 @@ export async function chatRoutes(app: FastifyInstance) {
       crmTagsPerNick: unknown;
       zaloLabels: unknown;               // 2026-06-06: [{id,name,color}] tag Zalo Real native
       aliasInNick: string | null;        // ui-phase5: "Tên gợi nhớ" Zalo sync 2-way
+      zaloAvatarUrl: string | null;
+      zaloDisplayName: string | null;
       // Per-pair counter (FE header cột 3 đọc — fix bug 235/198 revert 0/0)
       totalInbound: number;
       totalOutbound: number;
@@ -1051,6 +1053,8 @@ export async function chatRoutes(app: FastifyInstance) {
           zaloLabels: true,                    // 2026-06-06: tag Zalo Real native {id,name,color} —
                                                // cột 2 render tag Zalo từ đây (màu CHUẨN = zalo_labels.color)
           aliasInNick: true,                   // "Tên gợi nhớ" Zalo, sync 2-way (ui-phase5)
+          zaloAvatarUrl: true,
+          zaloDisplayName: true,
           // ── Per-pair counter ─────────────────────────────────────────────
           // KHÔNG include trước đây gây bug: header MessageThread cột 3 đọc
           // friendship.totalInbound/Outbound → list refresh override conv →
@@ -1081,6 +1085,8 @@ export async function chatRoutes(app: FastifyInstance) {
         crmTagsPerNick: f.crmTagsPerNick,
         zaloLabels: f.zaloLabels,            // 2026-06-06: tag Zalo Real {id,name,color} màu chuẩn cho cột 2
         aliasInNick: f.aliasInNick,          // ui-phase5
+        zaloAvatarUrl: f.zaloAvatarUrl,
+        zaloDisplayName: f.zaloDisplayName,
         // Per-pair counter — header chat cột 3 dùng (fix bug 235/198 → 0/0)
         totalInbound: f.totalInbound,
         totalOutbound: f.totalOutbound,

@@ -1,6 +1,6 @@
 {
   "name": "zalocrm-desktop",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "private": true,
   "description": "ZaloCRM Windows desktop with floating customer chat",
   "author": "ZaloCRM",
@@ -15,6 +15,7 @@
     "test:smoke": "node tests/smoke.cjs",
     "test:ui": "node tests/ui.cjs",
     "test:preview": "node tests/preview.cjs",
+    "test:media": "node tests/chat-media.cjs",
     "test:updater": "node tests/updater-lifecycle.cjs",
     "prepack": "node -e \"require('electron')\"",
     "predist": "node -e \"require('electron')\"",

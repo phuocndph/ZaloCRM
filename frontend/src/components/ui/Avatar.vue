@@ -30,13 +30,15 @@
     </div>
     <!-- Ảnh đơn (user, hoặc nhóm có avatar riêng) — fallback initials khi lỗi/thiếu -->
     <img
-      v-else-if="src && !imgError"
-      :src="src"
+      v-else-if="activeSrc"
+      :key="activeSrc"
+      :src="activeSrc"
       :alt="name || 'avatar'"
       class="av-img"
       loading="lazy"
       decoding="async"
-      @error="imgError = true"
+      referrerpolicy="no-referrer"
+      @error="onImageError($event)"
     />
     <span v-else class="av-initials" :style="initialsStyle">{{ initials }}</span>
 
@@ -79,6 +81,7 @@ import { ref, computed, watch } from 'vue';
 
 const props = withDefaults(defineProps<{
   src?: string | null;
+  fallbackSrcs?: string[];
   name?: string;
   size?: number;
   isGroup?: boolean;
@@ -96,6 +99,7 @@ const props = withDefaults(defineProps<{
   title?: string;
 }>(), {
   size: 36,
+  fallbackSrcs: () => [],
   isGroup: false,
   groupMembersCount: null,
   groupMemberAvatars: () => [],
@@ -105,12 +109,14 @@ const props = withDefaults(defineProps<{
   title: '',
 });
 
-const imgError = ref(false);
+const failedSources = ref<Set<string>>(new Set());
+const sources = computed(() => [...new Set([props.src, ...props.fallbackSrcs].filter((url): url is string => !!url))]);
+const activeSrc = computed(() => sources.value.find((url) => !failedSources.value.has(url)) || null);
 // URL avatar thành viên tải lỗi → loại khỏi lưới (tránh ô vỡ ảnh).
 const failedMemberAvatars = ref<Set<string>>(new Set());
 
-// Reset imgError khi src đổi
-watch(() => props.src, () => { imgError.value = false; });
+// Retry only when candidate URLs change, not on every parent refresh.
+watch(() => JSON.stringify(sources.value), () => { failedSources.value = new Set(); });
 watch(() => props.groupMemberAvatars, () => { failedMemberAvatars.value = new Set(); });
 
 const groupMemberAvatarUrls = computed(() => {
@@ -125,8 +131,12 @@ const groupMemberAvatarUrls = computed(() => {
  * viên. Nhóm đã có avatar riêng → tôn trọng ảnh đó (không ghép). 1 thành viên → ảnh đơn.
  */
 const showCollage = computed(() =>
-  props.isGroup && (!props.src || imgError.value) && groupMemberAvatarUrls.value.length >= 2,
+  props.isGroup && !activeSrc.value && groupMemberAvatarUrls.value.length >= 2,
 );
+function onImageError(event: Event) {
+  const url = (event.currentTarget as HTMLImageElement).getAttribute('src');
+  if (url) failedSources.value = new Set([...failedSources.value, url]);
+}
 const extraGroupMembers = computed(() => {
   const count = props.groupMembersCount || 0;
   const visible = groupMemberAvatarUrls.value.length;
@@ -232,7 +242,7 @@ const platformBadgeStyle = computed(() => {
   border-radius: 50%;
   display: flex; align-items: center; justify-content: center;
   color: white; font-weight: 600;
-  letter-spacing: 0.3px;
+  letter-spacing: 0;
   background: linear-gradient(135deg, #90caf9, #1976d2);
 }
 
