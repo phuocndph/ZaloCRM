@@ -13,7 +13,7 @@ vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ user: mocks.user }) }))
 vi.mock('@/stores/privacy', () => ({ usePrivacyStore: () => ({ isUnlocked: false }) }));
 vi.mock('@/composables/use-toast', () => ({ useToast: () => mocks.toast }));
 
-const ThreadStub = defineComponent({ name: 'MessageThread', props: ['conversation', 'messages', 'replyingTo', 'editingMessage', 'pinnedIds', 'allConversations', 'typingUsers', 'aiSuggestion'],
+const ThreadStub = defineComponent({ name: 'MessageThread', props: ['compact', 'conversation', 'messages', 'replyingTo', 'editingMessage', 'pinnedIds', 'allConversations', 'typingUsers', 'aiSuggestion'],
   setup(_, { expose }) {
     const session = inject(chatSessionKey)!;
     const text = computed({ get: () => session.draft.value.text, set: (value: string) => { session.draft.value = { text: value }; } });
@@ -46,6 +46,11 @@ describe('embedded full-chat workspace', () => {
     const { wrapper, thread, preview } = await render(); expect(thread.exists()).toBe(true);
     expect(thread.vm.session.addOptimisticMessages).toBe(preview.addOptimisticMessages);
     expect(mocks.post).not.toHaveBeenCalled(); wrapper.unmount();
+  });
+  it('opts into the compact desktop toolbar without changing other embedded chats', async () => {
+    const { wrapper, thread } = await render(); expect(thread.props('compact')).toBe(false);
+    await wrapper.setProps({ compact: true });
+    expect(thread.props('compact')).toBe(true); expect(wrapper.classes()).toContain('ccw--compact'); wrapper.unmount();
   });
   it('sends rich text/triggers queue refresh without marking read or completing a task', async () => {
     const current = conversation(); const { wrapper, thread } = await render(current);

@@ -1,0 +1,6 @@
+Khung chat gọn hơn trên laptop: bỏ tên khách bị lặp, luôn thấy tên khách và nick Zalo đang gửi.
+Sửa lỗi CSS chung ép chiều ngang 1100px, che nút Gửi và nút cửa sổ ở kích thước laptop trung bình.
+Thanh khách gần đây đưa khách vừa mở lên đầu, giữ bản nháp và hiển thị số tin chưa đọc; cửa sổ rộng ưu tiên danh sách hội thoại bên trái.
+Nút quay về danh sách có dấu thông báo chưa đọc để không bỏ sót khách khác khi đang chat.
+Gom công cụ phụ vào menu: kho Media, định dạng, nhắc hẹn, quản lý mẫu, khối tin nhắn và AI vẫn dùng được; giữ nút ảnh, tệp, sticker và mẫu nhanh.
+Thông tin phân loại, kết bạn và trạng thái mở qua menu hội thoại. Cần cập nhật frontend trên VPS để thấy giao diện mới.

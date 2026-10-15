@@ -1,0 +1,3 @@
+Cập nhật trực tiếp trong ứng dụng Windows: tải, kiểm tra SHA-256 và mở bộ cài đặt sau khi xác nhận.
+Hiển thị tiến trình tải và trạng thái kiểm tra bộ cài.
+Chỉ chấp nhận bản phát hành mới hơn từ đúng máy chủ ZaloCRM.

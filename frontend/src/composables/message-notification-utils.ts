@@ -14,7 +14,7 @@ export function notificationContext(threadType: NotificationThreadType | undefin
   return `Nhóm ${compactNotificationLabel(groupName, 80) || 'chưa đặt tên'}`;
 }
 
-export function notificationPreview(message: any): string {
+export function notificationPreview(message: any, maxLength = 90): string {
   if (message?.redacted) return 'Bạn có tin nhắn mới';
   const type = message?.contentType;
   const raw = typeof message?.content === 'string' ? message.content : '';
@@ -26,7 +26,7 @@ export function notificationPreview(message: any): string {
     };
     return label[type] || 'Tin nhắn mới';
   }
-  return compactNotificationLabel(raw, 90) || 'Tin nhắn mới';
+  return compactNotificationLabel(raw, maxLength) || 'Tin nhắn mới';
 }
 
 export function notificationAvatarUrl(value: unknown): string | null {

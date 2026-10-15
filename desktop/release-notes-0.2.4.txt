@@ -1,0 +1,4 @@
+Sửa danh sách hội thoại bị đứng khi tin đến liên tục trên mạng chậm: gộp yêu cầu làm mới và cho lượt tải đang chạy hoàn tất.
+Giữ thanh hội thoại gần đây và khách đang làm việc sau khi mạng kết nối lại.
+Giữ đúng nội dung thông báo mới nhất khi tra thông tin khách phản hồi chậm hoặc sai thứ tự; vẫn đếm đủ tin chưa đọc.
+Đóng cửa sổ cập nhật trong lúc tải sẽ thu xuống nền; mở lại tiếp tục xem tiến trình của lượt tải hiện tại.

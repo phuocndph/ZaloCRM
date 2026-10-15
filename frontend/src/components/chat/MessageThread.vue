@@ -26,7 +26,7 @@
 
 
       <!-- ════════ Chat header (Smax-style — 2 rows) ════════ -->
-      <header class="chat-header">
+      <header class="chat-header" :class="{ 'chat-header--details': compact && headerDetailsExpanded }">
         <div
           class="ch-avatar-wrap"
           :class="{ clickable: canClickHeader }"
@@ -306,7 +306,7 @@
                để bật lại sau bằng cách un-comment block button trên. -->
 
           <!-- Nội dung hội thoại: Tìm / Tin đã ghim / Ảnh · File · Link (Content Library 2026-07-11) -->
-          <button class="icon-btn" title="Tìm trong hội thoại" @click="$emit('open-content-panel', 'search')">
+          <button class="icon-btn compact-header-action" title="Tìm trong hội thoại" aria-label="Tìm trong hội thoại" @click="$emit('open-content-panel', 'search')">
             <SearchIcon :size="16" :stroke-width="2" />
           </button>
           <button class="icon-btn" title="Tin đã ghim / Ảnh · File · Link" @click="$emit('open-content-panel', 'pinned')">
@@ -316,9 +316,15 @@
           <!-- More dropdown: gộp Lịch sử / Tìm / Note -->
           <v-menu>
             <template #activator="{ props: act }">
-              <button class="icon-btn" v-bind="act" title="Thêm"><MoreVerticalIcon :size="16" :stroke-width="2" /></button>
+              <button class="icon-btn compact-header-action" v-bind="act" title="Công cụ hội thoại" aria-label="Công cụ hội thoại"><MoreVerticalIcon :size="16" :stroke-width="2" /></button>
             </template>
             <v-list density="compact" min-width="220">
+              <v-list-item v-if="compact" :title="headerDetailsExpanded ? 'Thu gọn thông tin' : 'Phân loại, kết bạn và trạng thái'" @click="headerDetailsExpanded = !headerDetailsExpanded">
+                <template #prepend><InfoIcon :size="18" class="mr-3" /></template>
+              </v-list-item>
+              <v-list-item v-if="compact" title="Tin đã ghim / Ảnh · File · Link" @click="$emit('open-content-panel', 'pinned')">
+                <template #prepend><ArchiveIcon :size="18" class="mr-3" /></template>
+              </v-list-item>
               <!-- 2026-06-06 (Anh chốt): toggle cột 4 (thông tin KH) đưa vào menu ... -->
               <v-list-item
                 :prepend-icon="showContactPanel ? 'mdi-information' : 'mdi-information-outline'"
@@ -326,8 +332,8 @@
                 @click="$emit('toggle-contact-panel')"
               />
               <v-divider />
-              <v-list-item prepend-icon="mdi-history" title="Lịch sử hội thoại" @click="toast.push('Lịch sử: chưa implement')" />
-              <v-list-item prepend-icon="mdi-magnify" title="Tìm trong hội thoại" @click="toast.push('Tìm: chưa implement')" />
+              <v-list-item prepend-icon="mdi-history" title="Lịch sử hội thoại" @click="$emit('open-content-panel', 'search')" />
+              <v-list-item prepend-icon="mdi-magnify" title="Tìm trong hội thoại" @click="$emit('open-content-panel', 'search')" />
               <v-list-item prepend-icon="mdi-note-edit-outline" title="Ghi chú nhanh" @click="onOpenNote" />
               <v-divider />
               <!-- Merge KH này vào KH khác (transfer Friends + delete source Contact) -->
@@ -603,16 +609,17 @@
           <button class="icon-tool" title="Gửi file" @click="onPickFile">
             <PaperclipIcon :size="18" :stroke-width="1.5" />
           </button>
-          <button class="icon-tool" title="Chèn từ kho Media (ảnh/video/tệp/khối) — mở cột Media" @click="$emit('open-media-tab')">
+          <button v-if="!compact" class="icon-tool" title="Chèn từ kho Media (ảnh/video/tệp/khối) — mở cột Media" @click="$emit('open-media-tab')">
             <ImagesIcon :size="18" :stroke-width="1.5" />
           </button>
-          <span class="toolbar-divider"></span>
+          <span v-if="!compact" class="toolbar-divider"></span>
 
           <!-- Group 2: Contact / format -->
-          <button class="icon-tool" title="Gửi danh thiếp" @click="todoToast('Danh thiếp')">
+          <button v-if="!compact" class="icon-tool" title="Gửi danh thiếp" @click="todoToast('Danh thiếp')">
             <ContactIcon :size="18" :stroke-width="1.5" />
           </button>
           <button
+            v-if="!compact"
             class="icon-tool"
             :class="{ active: formatBarVisible }"
             :title="formatBarVisible ? 'Ẩn định dạng văn bản' : 'Hiện định dạng văn bản (B I U S ...)'"
@@ -620,10 +627,11 @@
           >
             <TypeIcon :size="18" :stroke-width="1.5" />
           </button>
-          <span class="toolbar-divider"></span>
+          <span v-if="!compact" class="toolbar-divider"></span>
 
           <!-- Group 3: Productivity -->
           <button
+            v-if="!compact"
             class="icon-tool"
             :class="{ active: showAppointmentDialog }"
             title="Tạo nhắc hẹn cho KH này"
@@ -635,14 +643,14 @@
           <button class="icon-tool" title="Template tin nhắn (gõ /)" @click="openTemplatePopup">
             <ZapIcon :size="18" :stroke-width="1.5" />
           </button>
-          <button class="icon-tool" :title="inputText.trim() ? 'Lưu nội dung đang gõ thành mẫu / Quản lý mẫu' : 'Quản lý mẫu tin nhắn'" @click="openTemplateManager">
+          <button v-if="!compact" class="icon-tool" :title="inputText.trim() ? 'Lưu nội dung đang gõ thành mẫu / Quản lý mẫu' : 'Quản lý mẫu tin nhắn'" @click="openTemplateManager">
             <BookmarkPlusIcon :size="18" :stroke-width="1.5" />
           </button>
           <!-- M14 (2026-06-02) — Chèn Khối "Gửi tin nhắn" từ Automation Blocks vào composer.
                Ẩn ở group thread (memory feedback_crm_filter_1to1_not_group: Block 1-1 only).
                Disable khi composer bị Privacy lock hoặc đang edit message để tránh ghi đè text edit. -->
           <button
-            v-if="conversation.threadType === 'user'"
+            v-if="!compact && conversation.threadType === 'user'"
             class="icon-tool"
             title="Chèn Khối tin nhắn (Automation Blocks)"
             :disabled="!privacyVisibility.canSendInConv(conversation) || !!editingMessage"
@@ -650,10 +658,24 @@
           >
             <PackageIcon :size="18" :stroke-width="1.5" />
           </button>
-          <button class="icon-tool ai-btn" :class="{ 'ai-btn-unavailable': !isAiReady }" :title="aiUnavailableMessage || 'Trợ lý AI'" :disabled="aiSuggestionLoading" @click="requestAiSuggestion">
+          <button v-if="!compact" class="icon-tool ai-btn" :class="{ 'ai-btn-unavailable': !isAiReady }" :title="aiUnavailableMessage || 'Trợ lý AI'" :disabled="aiSuggestionLoading" @click="requestAiSuggestion">
             <SparklesIcon :size="18" :stroke-width="1.5" />
             <span v-if="!isAiReady" class="ai-config-dot" aria-label="AI chưa được cấu hình"></span>
           </button>
+          <v-menu v-if="compact" location="top end">
+            <template #activator="{ props: toolsProps }">
+              <button type="button" class="icon-tool" v-bind="toolsProps" title="Thêm công cụ soạn tin" aria-label="Thêm công cụ soạn tin"><MoreVerticalIcon :size="18" /></button>
+            </template>
+            <v-list density="compact" min-width="240" max-height="320" class="composer-tools-menu">
+              <v-list-item title="Chèn từ kho Media" @click="$emit('open-media-tab')"><template #prepend><ImagesIcon :size="18" class="mr-3" /></template></v-list-item>
+              <v-list-item :title="formatBarVisible ? 'Ẩn định dạng văn bản' : 'Định dạng văn bản'" @click="toggleFormat"><template #prepend><TypeIcon :size="18" class="mr-3" /></template></v-list-item>
+              <v-list-item title="Tạo nhắc hẹn" :disabled="!conversation.contact" @click="showAppointmentDialog = true"><template #prepend><CalendarClockIcon :size="18" class="mr-3" /></template></v-list-item>
+              <v-list-item :title="inputText.trim() ? 'Lưu bản nháp / Quản lý mẫu' : 'Quản lý mẫu tin nhắn'" @click="openTemplateManager"><template #prepend><BookmarkPlusIcon :size="18" class="mr-3" /></template></v-list-item>
+              <v-list-item v-if="conversation.threadType === 'user'" title="Chèn khối tin nhắn" :disabled="!privacyVisibility.canSendInConv(conversation) || !!editingMessage" @click="openBlockPicker"><template #prepend><PackageIcon :size="18" class="mr-3" /></template></v-list-item>
+              <v-list-item :title="aiUnavailableMessage || 'Trợ lý AI'" :disabled="aiSuggestionLoading" @click="requestAiSuggestion"><template #prepend><SparklesIcon :size="18" class="mr-3" /></template></v-list-item>
+              <v-list-item title="Gửi danh thiếp" @click="todoToast('Danh thiếp')"><template #prepend><ContactIcon :size="18" class="mr-3" /></template></v-list-item>
+            </v-list>
+          </v-menu>
         </div>
 
         <div class="input-row">
@@ -1200,6 +1222,7 @@ interface TemplateItem {
 interface TemplateFolderItem { id: string; name: string }
 
 const props = defineProps<{
+  compact?: boolean;
   conversation: Conversation | null;
   messages: Message[];
   loading: boolean;
@@ -1226,6 +1249,8 @@ const props = defineProps<{
 }>();
 
 const pinnedSet = computed(() => new Set(props.pinnedIds ?? []));
+const headerDetailsExpanded = ref(false);
+watch(() => props.conversation?.id, () => { headerDetailsExpanded.value = false; });
 
 const emit = defineEmits<{
   send: [content: string, replyMessageId?: string | null, styles?: Array<{ st: string; start: number; len: number }>, mentions?: Array<{ uid: string; pos: number; len: number }>];
@@ -1622,6 +1647,7 @@ const headerName = computed(() => {
     if (_isUsableName(props.conversation?.contact?.fullName)) return props.conversation!.contact!.fullName!;
     return 'Nhóm Zalo';
   }
+  if (props.compact && _isUsableName(props.conversation?.contact?.crmName)) return props.conversation!.contact!.crmName!;
   // Ưu tiên Tên gợi nhớ Zalo (Friend.aliasInNick) — sync 2-way với Zalo Real.
   // UI khớp với Zalo Real để sale nhận diện KH bằng cùng 1 tên.
   if (_isUsableName(props.conversation?.friendship?.aliasInNick)) {

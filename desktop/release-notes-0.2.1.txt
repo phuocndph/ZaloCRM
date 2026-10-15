@@ -1,0 +1,5 @@
+Bong bóng chat mở đầy đủ danh sách hội thoại được phân quyền, tìm kiếm, lọc chưa đọc và lọc theo nick Zalo.
+Khung chat nhanh dùng đầy đủ chức năng của trang chat chính, tự ẩn khi bấm ra ngoài và có chế độ ghim.
+Tin nhắn mới hiển thị tên, nick nhận và nội dung xem trước an toàn ngay cạnh bong bóng.
+Đồng bộ lại tổng số chưa đọc sau đăng nhập, mất kết nối hoặc mở khóa Windows.
+Thêm nút kiểm tra và tải bộ cài Windows mới cho mọi tài khoản CRM.

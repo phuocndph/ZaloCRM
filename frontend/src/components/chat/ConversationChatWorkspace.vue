@@ -1,12 +1,12 @@
 <template>
-  <div class="ccw" :class="{ 'ccw--tools': tool }">
+  <div class="ccw" :class="{ 'ccw--tools': tool, 'ccw--compact': compact }">
     <div class="ccw-thread">
       <div v-if="sendNotice || composerState.error" class="ccw-notice" role="status">
         <span>{{ composerState.error || sendNotice }}</span>
         <button v-if="composerState.uncertain" type="button" :disabled="composerState.sending || !sendPermission" @click="reconcileSend"><RefreshCw :size="15" /> Kiểm tra kết quả</button>
       </div>
       <MessageThread
-        ref="thread" :conversation="conversation" :messages="messages" :loading="false"
+        ref="thread" :compact="compact" :conversation="conversation" :messages="messages" :loading="false"
         :loading-older="preview.loadingOlder.value" :has-older-messages="preview.hasMore.value"
         :sending="composerState.sending" :replying-to="draftSession.reply.value" :editing-message="draftSession.editing.value"
         :typing-users="typers" :pinned-ids="pinnedIds" :all-conversations="forwardTargets"
@@ -63,7 +63,7 @@ import ChatContactPanel from './ChatContactPanel.vue';
 import GroupMonitoringPanel from './GroupMonitoringPanel.vue';
 import AiCopilotPanel from './AiCopilotPanel.vue';
 
-const props = defineProps<{ conversation: Conversation; messages: Message[]; preview: ReturnType<typeof useConversationPreview> }>();
+const props = defineProps<{ conversation: Conversation; messages: Message[]; preview: ReturnType<typeof useConversationPreview>; compact?: boolean }>();
 const emit = defineEmits<{ 'message-sent': [id: string]; 'switch-conversation': [id: string]; 'expand': [] }>();
 // This component is keyed by viewer/conversation. Async actions never read a new customer's id.
 const id = props.conversation.id;
@@ -280,4 +280,17 @@ defineExpose({ openCopilot, jump });
   .ccw :deep(.chat-header > .ch-actions) { grid-column: 1 / 3; grid-row: 3; }
 }
 @media (max-width: 1000px) { .ccw-tools { position: absolute; inset: 0 0 0 auto; z-index: 50; width: min(390px, 100%); box-shadow: -6px 0 18px #17203322; } }
+.ccw--compact :deep(.chat-header:not(.chat-header--details)) { grid-template-columns: 40px minmax(0, 1fr) auto; gap: 2px 7px; }
+.ccw--compact :deep(.chat-header:not(.chat-header--details) .ch-avatar-wrap) { grid-column: 1; grid-row: 1 / 3; }
+.ccw--compact :deep(.chat-header:not(.chat-header--details) .ch-row-1) { grid-column: 2; grid-row: 1; flex-wrap: nowrap; }
+.ccw--compact :deep(.chat-header:not(.chat-header--details) .ch-row-chips) { grid-column: 2; grid-row: 2; min-width: 0; flex-wrap: nowrap; }
+.ccw--compact :deep(.chat-header:not(.chat-header--details) > .ch-actions) { grid-column: 3; grid-row: 1 / 3; flex-wrap: nowrap; gap: 2px; }
+.ccw--compact :deep(.chat-header:not(.chat-header--details) .ch-row-1 > :not(.ch-name)),
+.ccw--compact :deep(.chat-header:not(.chat-header--details) .ch-row-chips > :not(.nick-switcher):not(.nick-name):not(.nick-archived-chip)),
+.ccw--compact :deep(.chat-header:not(.chat-header--details) > .ch-actions > :not(.compact-header-action)) { display: none; }
+.ccw--compact :deep(.ch-name) { font-size: 14px; min-width: 0; flex-basis: 0; }
+.ccw--compact :deep(.nick-switcher) { min-width: 0; max-width: 100%; }
+.ccw--compact :deep(.nick-name) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ccw--compact :deep(.input-toolbar-top) { flex-wrap: nowrap; gap: 4px; }
+.ccw--compact :deep(.chat-header--details) { max-height: 35dvh; overflow: auto; }
 </style>
