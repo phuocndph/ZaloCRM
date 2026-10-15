@@ -1,5 +1,8 @@
 const DEFAULT_ORIGIN = 'https://zcrm.joliefam.vn';
 const ID = /^[a-zA-Z0-9_-]{1,100}$/;
+const VERSION = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+const SHA256 = /^[a-f0-9]{64}$/;
+const MAX_INSTALLER_BYTES = 3 * 1024 * 1024 * 1024;
 
 function crmOrigin(value = DEFAULT_ORIGIN) {
   const url = new URL(value);
@@ -13,16 +16,53 @@ function sameOrigin(value, origin) {
   try { const url = new URL(value); return ['https:', 'http:'].includes(url.protocol) && url.origin === origin && !url.username && !url.password; } catch { return false; }
 }
 
+function compareVersions(left, right) {
+  if (!VERSION.test(left) || !VERSION.test(right)) return 0;
+  const a = left.split('-', 1)[0].split('.').map(Number);
+  const b = right.split('-', 1)[0].split('.').map(Number);
+  for (let index = 0; index < 3; index += 1) if (a[index] !== b[index]) return a[index] > b[index] ? 1 : -1;
+  const aPre = left.includes('-'), bPre = right.includes('-');
+  if (aPre !== bPre) return aPre ? -1 : 1;
+  return left.localeCompare(right);
+}
+
+function desktopRelease(value, origin, currentVersion) {
+  if (!value || typeof value !== 'object' || typeof origin !== 'string' || typeof currentVersion !== 'string') return null;
+  const raw = value;
+  const version = typeof raw.version === 'string' ? raw.version : '';
+  const filename = typeof raw.filename === 'string' ? raw.filename : '';
+  const sha256 = typeof raw.sha256 === 'string' ? raw.sha256.toLowerCase() : '';
+  if (!VERSION.test(version) || compareVersions(version, currentVersion) <= 0) return null;
+  if (raw.platform !== 'win32' || raw.arch !== 'x64' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,180}\.exe$/i.test(filename)) return null;
+  if (!Number.isSafeInteger(raw.bytes) || raw.bytes <= 0 || raw.bytes > MAX_INSTALLER_BYTES || !SHA256.test(sha256)) return null;
+  try {
+    const url = new URL(typeof raw.downloadUrl === 'string' ? raw.downloadUrl : '', origin);
+    const expected = `/api/v1/desktop/releases/${encodeURIComponent(version)}/download`;
+    if (url.origin !== origin || url.pathname !== expected || url.search || url.hash || url.username || url.password) return null;
+    return { version, filename, bytes: raw.bytes, sha256, url: url.href };
+  } catch { return null; }
+}
+
 function identity(value) {
   if (!value || typeof value.userId !== 'string' || typeof value.orgId !== 'string' || !ID.test(value.userId) || !ID.test(value.orgId)) return null;
   return `${value.orgId}:${value.userId}`;
 }
 
-function notification(value) {
+function notification(value, origin = DEFAULT_ORIGIN) {
   if (!value || typeof value.convId !== 'string' || typeof value.id !== 'string' || !ID.test(value.convId) || !ID.test(value.id)) return null;
-  return { convId: value.convId, id: value.id,
-    name: typeof value.name === 'string' ? value.name.slice(0, 120) : 'Tin nhan moi',
-    context: typeof value.context === 'string' ? value.context.slice(0, 160) : '', at: Date.now() };
+  const text = (input, length) => typeof input === 'string' ? input.replace(/[\u0000-\u001f]/g, ' ').slice(0, length) : '';
+  let avatarUrl = null;
+  try {
+    if (typeof value.avatarUrl !== 'string' || !value.avatarUrl || value.avatarUrl.length > 4096) throw new Error('no avatar');
+    const url = new URL(value.avatarUrl, origin);
+    if (url.protocol === 'https:' && !url.username && !url.password) avatarUrl = url.href;
+    else if (sameOrigin(url.href, origin)) avatarUrl = url.href;
+  } catch {}
+  return { convId: value.convId, id: value.id, redacted: value.redacted === true,
+    name: value.redacted ? 'Tin nhắn mới' : text(value.name, 120) || 'Tin nhắn mới',
+    context: value.redacted ? 'Nội dung riêng tư' : text(value.context, 160),
+    preview: value.redacted ? 'Bạn có tin nhắn mới' : text(value.preview, 240),
+    avatarUrl: value.redacted ? null : avatarUrl, announce: value.announce !== false, at: Date.now() };
 }
 
 function clampBounds(bounds, workArea, width, height) {
@@ -30,23 +70,45 @@ function clampBounds(bounds, workArea, width, height) {
     y: Math.round(Math.max(workArea.y, Math.min(bounds.y, workArea.y + workArea.height - height))), width, height };
 }
 
+function adjacentBounds(anchor, work, width, height) {
+  const w = Math.min(width, work.width), h = Math.min(height, work.height);
+  const x = anchor.x + anchor.width + 10 + w <= work.x + work.width
+    ? anchor.x + anchor.width + 10 : anchor.x - w - 10;
+  return clampBounds({ x, y: anchor.y + anchor.height - h }, work, w, h);
+}
+function shouldAutoHide({ pinned, focused, childFocused, dialogOpen, holding }) {
+  return !pinned && !focused && !childFocused && !dialogOpen && !holding;
+}
 class ConversationQueue {
-  constructor() { this.rows = new Map(); this.owner = null; this.seen = new Set(); }
+  constructor() { this.rows = new Map(); this.unread = new Map(); this.owner = null; this.seen = new Set(); this.revision = 0; }
   setOwner(value) { const next = identity(value); if (next !== this.owner) this.clear(); this.owner = next; }
-  clear() { this.rows.clear(); this.seen.clear(); }
-  add(value) {
-    const row = notification(value);
+  clear() { this.rows.clear(); this.unread.clear(); this.seen.clear(); this.revision++; }
+  add(value, origin) {
+    const row = notification(value, origin);
     if (!this.owner || !row || this.seen.has(row.id)) return false;
     this.seen.add(row.id);
     if (this.seen.size > 2000) this.seen.delete(this.seen.values().next().value);
     const old = this.rows.get(row.convId);
     this.rows.delete(row.convId);
     this.rows.set(row.convId, { ...row, count: Math.min((old?.count ?? 0) + 1, 999) });
+    this.unread.set(row.convId, Math.min((this.unread.get(row.convId) ?? 0) + 1, 9999));
+    this.revision++;
     if (this.rows.size > 100) this.rows.delete(this.rows.keys().next().value);
     return true;
   }
-  remove(id) { this.rows.delete(id); }
-  snapshot() { const items = [...this.rows.values()].reverse(); return { items, count: items.reduce((sum, item) => sum + item.count, 0) }; }
+  remove(id) { this.rows.delete(id); this.unread.delete(id); this.revision++; }
+  syncUnread(counts, revision) {
+    if (!this.owner || revision !== this.revision || !Array.isArray(counts) || counts.length > 50000) return false;
+    const unread = new Map();
+    for (const row of counts) {
+      if (typeof row?.convId !== 'string' || !ID.test(row.convId) || !Number.isSafeInteger(row.count) || row.count < 0 || row.count > 1000000) return false;
+      if (row.count) unread.set(row.convId, row.count);
+    }
+    this.unread = unread;
+    for (const id of this.rows.keys()) if (!unread.has(id)) this.rows.delete(id);
+    this.revision++; return true;
+  }
+  snapshot() { return { items: [...this.rows.values()].reverse(), count: [...this.unread.values()].reduce((a, b) => a + b, 0), revision: this.revision }; }
 }
 
-module.exports = { DEFAULT_ORIGIN, crmOrigin, sameOrigin, identity, notification, clampBounds, ConversationQueue, ID };
+module.exports = { DEFAULT_ORIGIN, crmOrigin, sameOrigin, compareVersions, desktopRelease, identity, notification, clampBounds, adjacentBounds, shouldAutoHide, ConversationQueue, ID };

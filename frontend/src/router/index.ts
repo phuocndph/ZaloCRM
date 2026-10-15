@@ -153,6 +153,7 @@ const routes: RouteRecordRaw[] = [
       // Đổi mật khẩu giờ là modal trong trang Tài khoản → giữ link cũ không gãy bằng redirect.
       { path: 'personal/password',      name: 'Settings.Password',      redirect: '/settings/personal/profile' },
       { path: 'personal/notifications', name: 'Settings.Notifications', component: () => import('@/views/settings/NotificationSettingsPage.vue') },
+      { path: 'personal/updates',       name: 'Settings.Updates',       component: () => import('@/views/settings/DesktopUpdatePage.vue') },
       { path: 'personal/theme',         name: 'Settings.Theme',         component: () => import('@/views/settings/SettingsComingSoon.vue'), props: { feature: 'theme' } },
       { path: 'personal/sessions',      name: 'Settings.Sessions',      component: () => import('@/views/settings/SettingsComingSoon.vue'), props: { feature: 'sessions' } },
 

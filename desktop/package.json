@@ -1,15 +1,21 @@
 {
   "name": "zalocrm-desktop",
-  "version": "0.1.0",
+  "version": "0.2.2",
   "private": true,
   "description": "ZaloCRM Windows desktop with floating customer chat",
   "author": "ZaloCRM",
   "license": "AGPL-3.0-or-later",
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "main": "src/main.cjs",
   "scripts": {
     "start": "electron .",
     "test": "node --test tests/*.test.cjs",
     "test:smoke": "node tests/smoke.cjs",
+    "test:ui": "node tests/ui.cjs",
+    "prepack": "node -e \"require('electron')\"",
+    "predist": "node -e \"require('electron')\"",
     "pack": "electron-builder --win --dir",
     "dist": "electron-builder --win nsis"
   },
@@ -21,9 +27,25 @@
   "build": {
     "appId": "vn.joliefam.zalocrm",
     "productName": "ZaloCRM",
-    "directories": { "output": "release" },
-    "files": ["src/**/*", "package.json"],
-    "win": { "target": "nsis", "icon": "src/icon.png", "signAndEditExecutable": false },
-    "nsis": { "oneClick": false, "perMachine": false, "allowToChangeInstallationDirectory": true, "createDesktopShortcut": true, "artifactName": "ZaloCRM-Setup-${version}.${ext}" }
+    "directories": {
+      "output": "release"
+    },
+    "electronDist": "node_modules/electron/dist",
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "src/installer-icon.png",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "artifactName": "ZaloCRM-Setup-${version}.${ext}"
+    }
   }
 }

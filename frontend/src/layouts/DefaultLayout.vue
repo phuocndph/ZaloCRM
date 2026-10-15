@@ -127,6 +127,7 @@
       </v-menu>
 
       <NotificationBell class="icon-btn-wrap" />
+      <AppUpdateButton surface="nav" />
 
       <v-menu v-model="userMenu" :close-on-content-click="true">
         <template #activator="{ props: act }">
@@ -140,6 +141,7 @@
           <!-- 2026-06-13 (anh chốt): Hồ sơ trỏ về trang gom "Tài khoản của tôi". Bỏ nút Theme tối. -->
           <v-list-item to="/settings/personal/profile" title="Hồ sơ" prepend-icon="mdi-account-circle-outline" />
           <v-list-item to="/settings/personal/notifications" title="Thông báo tin nhắn" prepend-icon="mdi-bell-ring-outline" />
+          <v-list-item to="/settings/personal/updates" title="Cập nhật ứng dụng Windows" prepend-icon="mdi-download-outline" />
           <v-divider />
           <v-list-item @click="logout" title="Đăng xuất" prepend-icon="mdi-logout" />
         </v-list>
@@ -184,6 +186,7 @@ import { useAuthStore } from '@/stores/auth';
 import { isExtension } from '@ee/edition';
 import { useRouter } from 'vue-router';
 import NotificationBell from '@/components/NotificationBell.vue';
+import AppUpdateButton from '@/components/AppUpdateButton.vue';
 import GlobalSearch from '@/components/GlobalSearch.vue';
 import ToastContainer from '@/components/ui/ToastContainer.vue';
 import Avatar from '@/components/ui/Avatar.vue';

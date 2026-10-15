@@ -24,6 +24,7 @@
         </div>
         <div class="mlx-actions">
           <NotificationBell />
+          <AppUpdateButton surface="mobile" />
           <v-btn icon size="small" variant="text" @click="toggleTheme">
             <v-icon size="20">{{ isDark ? 'mdi-weather-sunny' : 'mdi-weather-night' }}</v-icon>
           </v-btn>
@@ -51,6 +52,7 @@ import { useTheme } from 'vuetify';
 import { useAuthStore } from '@/stores/auth';
 import { useRouter } from 'vue-router';
 import NotificationBell from '@/components/NotificationBell.vue';
+import AppUpdateButton from '@/components/AppUpdateButton.vue';
 import BottomNav from '@/components/BottomNav.vue';
 import OfflineIndicator from '@/components/OfflineIndicator.vue';
 import ToastContainer from '@/components/ui/ToastContainer.vue';

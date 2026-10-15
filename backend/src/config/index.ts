@@ -46,6 +46,7 @@ export const config = {
   encryptionKey: requireSecret('ENCRYPTION_KEY', DEV_ENC_FALLBACK, envValue('ENCRYPTION_KEY')),
   databaseUrl: envValue('DATABASE_URL') || 'postgresql://crmuser:password@localhost:5432/zalocrm',
   uploadDir: envValue('UPLOAD_DIR') || '/var/lib/zalo-crm/files',
+  desktopReleaseDir: envValue('DESKTOP_RELEASE_DIR') || '',
   appUrl: envValue('APP_URL') || 'http://localhost:3000',
 
   /* --- CORS / realtime origins (2026-07-12) ---

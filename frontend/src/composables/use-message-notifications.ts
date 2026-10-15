@@ -31,6 +31,7 @@ import {
 import { useMessageNotificationInbox } from '@/composables/use-message-notification-inbox';
 import { parseFriendAcceptedNotice } from '@/composables/zalo-system-notice';
 import { desktopBridge } from '@/composables/desktop-bridge';
+import { api } from '@/api/index';
 import {
   fetchConversationState,
   isConversationNotificationMuted,
@@ -226,23 +227,25 @@ async function onSocketMessage(payload: {
   const onChatRoute = currentRoute.name === 'Chat' || currentRoute.name === 'M.Chat';
   const chat = useChat();
   const openConvId = String(currentRoute.params.convId ?? chat.selectedConvId?.value ?? '');
+  const chatFocused = !document.hidden && (!desktopBridge() || document.hasFocus());
   const mobileExperience = currentRoute.path.startsWith('/m')
     || window.matchMedia('(max-width: 700px)').matches;
   if (mobileExperience) {
     // Backend ghi hộp thư ngay sau socket emit, nên chờ ngắn trước khi đồng bộ. Nếu nhân
     // viên đang mở đúng chat thì đánh dấu đọc thay vì làm badge tăng rồi giảm gây nháy.
-    if (!document.hidden && onChatRoute && openConvId === convId) {
+    if (chatFocused && onChatRoute && openConvId === convId) {
       setTimeout(() => { void notificationInbox.markConversationRead(convId); }, 650);
     } else {
       notificationInbox.scheduleRefresh(650);
     }
   }
   if (!enabled.value) return;
-  if (!document.hidden && onChatRoute && openConvId === convId) { desktopBridge()?.dismiss(convId); return; }
+  if (chatFocused && onChatRoute && openConvId === convId) { desktopBridge()?.dismiss(convId); return; }
 
   // Group message bursts can include an album and several texts. Keep message delivery and
   // unread state untouched, while capping visible, audible, and native notifications.
-  if (!groupNotificationLimiter.allow(convId)) return;
+  const announce = groupNotificationLimiter.allow(convId);
+  if (!announce && !desktopBridge()) return;
 
   const card: NotifCard = {
     id: String(message.id ?? `${convId}-${Date.now()}`),
@@ -262,8 +265,20 @@ async function onSocketMessage(payload: {
   };
   if (desktopBridge()?.role === 'main') {
     try {
-      const added = await desktopBridge()!.notify({ id: card.id, convId: card.convId, name: card.name, context: card.context, at: card.at });
-      if (added && started && version === sessionVersion) beep();
+      // Fetch through the authorized endpoint before sending a preview outside CRM.
+      const { data: detail } = await api.get(`/conversations/${convId}`);
+      if (!started || version !== sessionVersion || !enabled.value) return;
+      const currentState = latestStates.get(convId);
+      if (currentState && isConversationNotificationMuted(currentState)) return;
+      const zaloMuted = detail.zaloNotificationsMuted && (!detail.zaloMutedUntil || Date.parse(detail.zaloMutedUntil) > Date.now());
+      if (zaloMuted) { desktopBridge()?.dismiss(convId); return; }
+      const redacted = message.redacted === true || detail.redacted === true || detail.conversationPrivate === true || detail.zaloAccount?.privacyMode === 'main';
+      const name = payload.threadType === 'group' ? compactNotificationLabel(payload.groupName, 120) || card.name : card.name;
+      const nick = compactNotificationLabel(detail.zaloAccount?.displayName, 80);
+      const added = await desktopBridge()!.notify({ id: card.id, convId: card.convId,
+        name: redacted ? 'Tin nhắn mới' : name, context: redacted ? 'Nội dung riêng tư' : [nick, card.context].filter(Boolean).join(' · '),
+        preview: redacted ? 'Bạn có tin nhắn mới' : card.preview, avatarUrl: redacted ? null : card.avatarUrl, redacted, announce, at: card.at });
+      if (added && announce && started && version === sessionVersion) beep();
     } catch { /* Desktop shutdown must not interfere with receiving messages. */ }
     return;
   }
@@ -284,7 +299,7 @@ export function useMessageNotifications() {
     socket.on('chat:message', onSocketMessage);
     socket.on('conversation:state', onStateChange);
     for (const event of ['zalo:access-changed', 'privacy:mode-changed', 'conversation:privacy-changed']) {
-      socket.on(event, () => desktopBridge()?.clear());
+      socket.on(event, () => { sessionVersion++; desktopBridge()?.clear(); });
     }
   }
 

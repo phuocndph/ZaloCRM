@@ -48,7 +48,7 @@ beforeEach(() => {
   notifications.setEnabled(true); notifications.setSound(true); notifications.permission.value = 'granted';
   notifications.start();
 });
-afterEach(() => { notifications.stop(); delete window.zaloDesktop; vi.unstubAllGlobals(); });
+afterEach(() => { notifications.stop(); delete window.zaloDesktop; vi.unstubAllGlobals(); vi.restoreAllMocks(); Object.assign(mocks.route, { name: 'WorkItems', path: '/work-items', params: {} }); });
 
 describe('personal conversation notification mute', () => {
   it.each([null, new Date(Date.now() + 3600_000).toISOString()])('blocks cards, sound, native notifications and inbox refresh when muted (%s)', async (until) => {
@@ -108,12 +108,13 @@ describe('personal conversation notification mute', () => {
     await mocks.handlers.get('chat:message')!(payload()); await flushPromises();
     expect(notifications.cards.value).toHaveLength(0); expect(mocks.refresh).not.toHaveBeenCalled();
   });
-  it('forwards eligible desktop notifications without message bodies or duplicate native cards', async () => {
+  it('forwards authorized previews without duplicate native cards', async () => {
     const notify = vi.fn();
     window.zaloDesktop = { role: 'main', notify, clear: vi.fn(), dismiss: vi.fn() } as any;
     await mocks.handlers.get('chat:message')!(payload());
     expect(notify).toHaveBeenCalledWith(expect.objectContaining({ id: 'message', convId: 'conv', name: 'Customer' }));
-    expect(notify.mock.calls[0][0].preview).toBeUndefined(); expect(notify.mock.calls[0][0].avatarUrl).toBeUndefined();
+    expect(notify.mock.calls[0][0].preview).toBe('Hello'); expect(notify.mock.calls[0][0].avatarUrl).toBeNull();
+    expect(mocks.get).toHaveBeenCalledWith('/conversations/conv');
     expect(notifications.cards.value).toHaveLength(0); expect(mocks.native).not.toHaveBeenCalled();
   });
   it('does not forward personally-muted messages to the desktop bubble', async () => {
@@ -132,5 +133,29 @@ describe('personal conversation notification mute', () => {
     window.zaloDesktop = { role: 'chat' } as any;
     notifications.start(); expect(mocks.handlers.size).toBe(0);
     delete window.zaloDesktop;
+  });
+  it('redacts private nick notifications even with an unlocked raw payload', async () => {
+    const notify = vi.fn(); window.zaloDesktop = { role: 'main', notify, clear: vi.fn(), dismiss: vi.fn() } as any;
+    mocks.get.mockImplementation((path: string) => Promise.resolve({ data: path.endsWith('/state') ? emptyConversationState('conv') : { zaloAccount: { privacyMode: 'main' } } }));
+    await mocks.handlers.get('chat:message')!(payload());
+    expect(notify.mock.calls[0][0]).toMatchObject({ name: 'Tin nhắn mới', preview: 'Bạn có tin nhắn mới', avatarUrl: null, redacted: true });
+  });
+  it('never forwards preview when the authorized conversation endpoint denies access', async () => {
+    const notify = vi.fn(); window.zaloDesktop = { role: 'main', notify, clear: vi.fn(), dismiss: vi.fn() } as any;
+    mocks.get.mockImplementation((path: string) => path.endsWith('/state') ? Promise.resolve({ data: emptyConversationState('conv') }) : Promise.reject(new Error('forbidden')));
+    await mocks.handlers.get('chat:message')!(payload()); expect(notify).not.toHaveBeenCalled();
+  });
+  it('updates unread for every message while limiting preview bursts', async () => {
+    const notify = vi.fn().mockResolvedValue(true); window.zaloDesktop = { role: 'main', notify, clear: vi.fn(), dismiss: vi.fn() } as any;
+    const handler = mocks.handlers.get('chat:message')!;
+    for (let i = 0; i < 5; i++) await handler(payload(`burst-${i}`));
+    expect(notify).toHaveBeenCalledTimes(5); expect(notify.mock.calls[4][0].announce).toBe(false); expect(mocks.sound).toHaveBeenCalledTimes(3);
+  });
+  it('still previews when the main CRM chat is behind another Windows app', async () => {
+    Object.defineProperty(document, 'hidden', { configurable: true, value: false });
+    vi.spyOn(document, 'hasFocus').mockReturnValue(false);
+    Object.assign(mocks.route, { name: 'Chat', path: '/chat/conv', params: { convId: 'conv' } });
+    const notify = vi.fn(); window.zaloDesktop = { role: 'main', notify, clear: vi.fn(), dismiss: vi.fn() } as any;
+    await mocks.handlers.get('chat:message')!(payload()); expect(notify).toHaveBeenCalled();
   });
 });

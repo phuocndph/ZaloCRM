@@ -111,6 +111,7 @@ import { followupRoutes } from './modules/followup/followup-routes.js';
 import { startFollowupWorker, stopFollowupWorker, setFollowupIO } from './modules/followup/followup-queue.js';
 import { pushRoutes } from './modules/push/push-routes.js';
 import { messageNotificationRoutes } from './modules/push/message-notification-routes.js';
+import { desktopReleaseRoutes } from './modules/desktop/desktop-release-routes.js';
 import { startFollowupBirthdayCron } from './modules/followup/followup-birthday-cron.js';
 import { groupModerationRoutes } from './modules/zalo/group-moderation-routes.js';
 import { friendRoutes } from './modules/zalo/friend-routes.js';
@@ -421,6 +422,7 @@ async function bootstrap() {
   await app.register(followupRoutes); // Follow-up Workflow (🟢 Community)
   await app.register(pushRoutes); // Web Push cho PWA Mobile (VAPID)
   await app.register(messageNotificationRoutes); // Hộp thư thông báo tin nhắn bền vững
+  await app.register(desktopReleaseRoutes); // Bản cập nhật ứng dụng Windows cho mọi tài khoản
 
   // Open-core: extension route registrations (no-op in Community edition).
   await ee?.registerExtensionRoutes?.(app);

@@ -24,6 +24,8 @@ import { useAuthStore } from '@/stores/auth';
 import { usePrivacyStore } from '@/stores/privacy';
 import { desktopBridge } from '@/composables/desktop-bridge';
 import { onBeforeUnmount } from 'vue';
+import { useDesktopUnread } from '@/composables/use-desktop-unread';
+import { useDesktopRelease } from '@/composables/use-desktop-release';
 
 const route = useRoute();
 const { isMobile } = useMobile();
@@ -61,9 +63,19 @@ watch(
 );
 
 const desktop = desktopBridge();
+const desktopOwner = computed(() => auth.isAuthenticated ? `${auth.user!.orgId}:${auth.user!.id}` : '');
+const desktopRelease = useDesktopRelease();
+watch(desktopOwner, (value) => {
+  if (value) desktopRelease.start(value);
+  else desktopRelease.stop();
+}, { immediate: true });
 if (desktop) {
-  watch(() => auth.isAuthenticated ? `${auth.user!.orgId}:${auth.user!.id}` : '', () => {
-    if (desktop.role === 'main') desktop.setIdentity(auth.isAuthenticated ? { userId: auth.user!.id, orgId: auth.user!.orgId } : null);
+  watch(desktopOwner, () => {
+    if (desktop.role === 'main') {
+      messageNotifications.stop();
+      desktop.setIdentity(auth.isAuthenticated ? { userId: auth.user!.id, orgId: auth.user!.orgId } : null);
+      if (auth.isAuthenticated) messageNotifications.start();
+    }
   }, { immediate: true });
   // Electron windows share the CRM session but have independent Vue stores.
   const onTokenChange = (event: StorageEvent) => {
@@ -75,4 +87,5 @@ if (desktop) {
   window.addEventListener('storage', onTokenChange);
   onBeforeUnmount(() => window.removeEventListener('storage', onTokenChange));
 }
+useDesktopUnread(desktopOwner, messageNotifications.enabled);
 </script>
