@@ -8,6 +8,7 @@ export function useDesktopConversations(search: Ref<string>, unread: Ref<boolean
   const accounts = ref<Array<{ id: string; displayName: string | null }>>([]);
   const loading = ref(false), loadingMore = ref(false), hasMore = ref(false), offline = ref(false);
   const error = ref('');
+  const accessRevision = ref(0);
   let cursor: string | null = null, page = 1, generation = 0, disposed = false;
   let request: AbortController | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
@@ -60,6 +61,7 @@ export function useDesktopConversations(search: Ref<string>, unread: Ref<boolean
   }
   function invalidate() {
     ++generation; request?.abort(); rows.value = []; accounts.value = []; cursor = null; page = 1;
+    accessRevision.value++;
     void loadAccounts(); schedule();
   }
   watch([search, unread, accountId], () => {
@@ -79,5 +81,5 @@ export function useDesktopConversations(search: Ref<string>, unread: Ref<boolean
     if (timer) clearTimeout(timer); if (debounce) clearTimeout(debounce); clearInterval(poll);
     window.removeEventListener('focus', resume); window.removeEventListener('online', resume);
   });
-  return { rows, accounts, loading, loadingMore, error, hasMore, offline, refresh, loadMore: () => refresh(true) };
+  return { rows, accounts, loading, loadingMore, error, hasMore, offline, accessRevision, refresh, loadMore: () => refresh(true) };
 }

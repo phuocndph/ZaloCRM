@@ -2,22 +2,27 @@ const { app, BrowserWindow, Menu, Tray, screen, session, ipcMain, shell, dialog,
 const path = require('node:path');
 const fs = require('node:fs');
 const { pathToFileURL } = require('node:url');
-const { crmOrigin, sameOrigin, desktopRelease, clampBounds, adjacentBounds, shouldAutoHide, notification, ConversationQueue, ID } = require('./policy.cjs');
-const { downloadVerifiedInstaller } = require('./update.cjs');
+const { crmOrigin, sameOrigin, desktopRelease, compareVersions, clampBounds, adjacentBounds, shouldAutoHide, notification, ConversationQueue, ID } = require('./policy.cjs');
+const { downloadVerifiedInstaller, latestGithubRelease } = require('./update.cjs');
 
 const origin = crmOrigin(process.env.ZALOCRM_DESKTOP_URL);
 if (process.env.ZALOCRM_DESKTOP_PROFILE) app.setPath('userData', path.resolve(process.env.ZALOCRM_DESKTOP_PROFILE));
 app.setAppUserModelId('vn.joliefam.zalocrm');
 const locked = app.requestSingleInstanceLock();
 if (!locked) app.quit();
-let mainWindow, chatWindow, bubbleWindow, previewWindow, tray;
+let mainWindow, chatWindow, bubbleWindow, previewWindow, updateWindow, tray;
 let quitting = false, screenLocked = false, activeConversation = '', pinned = false;
 let blurTimer, previewTimer, holdTimer;
-let fileChooserHolding = false, nativeDialogs = 0, latestPreview = null;
+let fileChooserHolding = false, nativeDialogs = 0;
+let previewHovered = false;
+const previewItems = new Map();
 let updateInProgress = false;
+let nativeRelease = null;
+let nativeUpdateState = { currentVersion: app.getVersion(), latest: null, phase: 'idle', error: '', hasUpdate: false };
 const children = new Set();
 const queue = new ConversationQueue();
 const bubbleFile = path.join(__dirname, 'bubble.html'), previewFile = path.join(__dirname, 'preview.html');
+const updateFile = path.join(__dirname, 'updater.html');
 const prefsFile = path.join(app.getPath('userData'), 'desktop-preferences.json');
 let preferences = { bubbleEnabled: true, launchAtLogin: false, previewMode: 'content' };
 try {
@@ -34,11 +39,11 @@ function live(win) { return win && !win.isDestroyed(); }
 function iconPath() { return path.join(__dirname, 'icon.png'); }
 function options(role) { return { preload: path.join(__dirname, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false,
   webSecurity: true, allowRunningInsecureContent: false, backgroundThrottling: role !== 'main',
-  partition: ['bubble', 'preview'].includes(role) ? 'bubble' : 'persist:zalocrm', additionalArguments: [`--zalocrm-role=${role}`, `--zalocrm-origin=${origin}`] }; }
+  partition: ['bubble', 'preview', 'updater'].includes(role) ? 'bubble' : 'persist:zalocrm', additionalArguments: [`--zalocrm-role=${role}`, `--zalocrm-origin=${origin}`] }; }
 function authorized(event, roles) {
-  const entries = { main: mainWindow, chat: chatWindow, bubble: bubbleWindow, preview: previewWindow };
+  const entries = { main: mainWindow, chat: chatWindow, bubble: bubbleWindow, preview: previewWindow, updater: updateWindow };
   return roles.some((role) => live(entries[role]) && event.sender === entries[role].webContents && event.senderFrame === event.sender.mainFrame
-    && (role === 'bubble' ? event.senderFrame.url === pathToFileURL(bubbleFile).href : role === 'preview' ? event.senderFrame.url === pathToFileURL(previewFile).href : sameOrigin(event.senderFrame.url, origin)));
+    && (role === 'bubble' ? event.senderFrame.url === pathToFileURL(bubbleFile).href : role === 'preview' ? event.senderFrame.url === pathToFileURL(previewFile).href : role === 'updater' ? event.senderFrame.url === pathToFileURL(updateFile).href : sameOrigin(event.senderFrame.url, origin)));
 }
 function state() { return { ...queue.snapshot(), signedIn: !!queue.owner, pinned, bubbleEnabled: preferences.bubbleEnabled, previewMode: preferences.previewMode }; }
 function broadcast() {
@@ -52,8 +57,8 @@ function broadcast() {
   if (tray) { tray.setToolTip(`ZaloCRM${current.count ? ` (${current.count})` : ''}`); tray.setContextMenu(trayMenu()); }
 }
 function hidePreview() {
-  clearTimeout(previewTimer); previewTimer = null; latestPreview = null;
-  if (live(previewWindow)) { previewWindow.hide(); previewWindow.webContents.send('desktop:preview', null); }
+  clearTimeout(previewTimer); previewTimer = null; previewHovered = false; previewItems.clear();
+  if (live(previewWindow)) { previewWindow.hide(); previewWindow.webContents.send('desktop:preview', []); }
 }
 function clearQueue() { queue.clear(); hidePreview(); broadcast(); }
 function hideChat() { clearTimeout(blurTimer); if (live(chatWindow)) chatWindow.hide(); activeConversation = ''; }
@@ -73,7 +78,7 @@ function showMain(id) {
 }
 function dismiss(id) {
   queue.remove(id);
-  if (latestPreview?.convId === id) hidePreview();
+  if (previewItems.delete(id)) paintPreview();
   broadcast();
 }
 function positionChat() {
@@ -97,15 +102,20 @@ function openChat(id = '', { toggle = false } = {}) {
     void chatWindow.loadURL(`${origin}/desktop/chat/${id ? encodeURIComponent(id) : ''}`).catch(() => {});
   } else {
     positionChat(); chatWindow.show(); chatWindow.focus();
-    chatWindow.webContents.send('desktop:open-conversation', id);
+    if (id) chatWindow.webContents.send('desktop:open-conversation', id);
   }
 }
 function showPreview(value) {
-  if (!preferences.bubbleEnabled || preferences.previewMode === 'off' || screenLocked || !queue.owner || !value.announce) return;
-  latestPreview = { ...value, preview: preferences.previewMode === 'name' ? 'Bạn có tin nhắn mới' : value.preview };
+  if (!value || !preferences.bubbleEnabled || preferences.previewMode === 'off' || screenLocked || !queue.owner) return;
+  if (!value.announce && !previewItems.has(value.convId)) return;
+  previewItems.delete(value.convId);
+  previewItems.set(value.convId, { ...value, count: queue.rows.get(value.convId)?.count || 1,
+    senderName: preferences.previewMode === 'name' ? '' : value.senderName,
+    preview: preferences.previewMode === 'name' ? 'Bạn có tin nhắn mới' : value.preview });
+  if (previewItems.size > 3) previewItems.delete(previewItems.keys().next().value);
   if (!live(previewWindow)) {
-    previewWindow = new BrowserWindow({ width: 340, height: 118, frame: false, resizable: false, alwaysOnTop: true,
-      skipTaskbar: true, show: false, focusable: false, backgroundColor: '#ffffff', webPreferences: options('preview') });
+    previewWindow = new BrowserWindow({ width: 392, height: 204, frame: false, resizable: false, alwaysOnTop: true,
+      skipTaskbar: true, show: false, focusable: false, transparent: true, backgroundColor: '#00000000', webPreferences: options('preview') });
     previewWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     previewWindow.webContents.on('will-navigate', (event) => event.preventDefault());
     previewWindow.webContents.on('did-finish-load', paintPreview);
@@ -113,17 +123,22 @@ function showPreview(value) {
   } else paintPreview();
 }
 function paintPreview() {
-  if (!latestPreview || !live(previewWindow)) return;
+  if (!live(previewWindow)) return;
+  if (!previewItems.size) { previewWindow.hide(); clearTimeout(previewTimer); return; }
   const anchor = bubbleWindow.getBounds();
-  previewWindow.setBounds(adjacentBounds(anchor, screen.getDisplayMatching(anchor).workArea, 340, 118));
-  previewWindow.webContents.send('desktop:preview', latestPreview);
+  const work = screen.getDisplayMatching(anchor).workArea;
+  const limit = Math.max(1, Math.min(3, Math.floor((work.height - 32) / 172)));
+  const items = [...previewItems.values()].reverse().slice(0, limit);
+  previewWindow.setBounds(adjacentBounds(anchor, work, 392, 32 + items.length * 172));
+  previewWindow.webContents.send('desktop:preview', items);
   previewWindow.showInactive();
-  clearTimeout(previewTimer); previewTimer = setTimeout(hidePreview, 6000);
+  clearTimeout(previewTimer); if (!previewHovered) previewTimer = setTimeout(hidePreview, 9000);
 }
 function trayMenu() {
   return Menu.buildFromTemplate([
     { label: 'Mở ZaloCRM', click: () => showMain() },
     { label: 'Hội thoại', enabled: !!queue.owner, click: () => openChat() },
+    { label: 'Cập nhật ZaloCRM…', click: openUpdater },
     { type: 'separator' },
     { label: 'Bong bóng chat', type: 'checkbox', checked: preferences.bubbleEnabled, click: (item) => { preferences.bubbleEnabled = item.checked; hidePreview(); savePreferences(); broadcast(); } },
     { label: 'Xem trước tin mới', submenu: [
@@ -139,15 +154,45 @@ function trayMenu() {
   ]);
 }
 function setPreviewMode(value) { preferences.previewMode = value; hidePreview(); savePreferences(); broadcast(); }
+function publishUpdateState(value) {
+  nativeUpdateState = { ...nativeUpdateState, ...value };
+  if (live(updateWindow)) updateWindow.webContents.send('desktop:updater-state', nativeUpdateState);
+}
+async function checkForUpdate() {
+  if (updateInProgress || nativeUpdateState.phase === 'checking') return nativeUpdateState;
+  publishUpdateState({ phase: 'checking', error: '' });
+  try {
+    nativeRelease = await latestGithubRelease();
+    publishUpdateState({ phase: 'idle', latest: nativeRelease,
+      hasUpdate: !!nativeRelease && compareVersions(nativeRelease.version, app.getVersion()) > 0 });
+  } catch {
+    publishUpdateState({ phase: 'failed', error: 'Không kiểm tra được bản mới. Kiểm tra kết nối mạng rồi thử lại.' });
+  }
+  return nativeUpdateState;
+}
+function openUpdater() {
+  if (live(updateWindow)) { updateWindow.show(); updateWindow.focus(); return; }
+  hidePreview();
+  updateWindow = new BrowserWindow({ width: 500, height: 500, minWidth: 420, minHeight: 420, resizable: true,
+    title: 'Cập nhật ZaloCRM', show: false, autoHideMenuBar: true, icon: iconPath(), backgroundColor: '#ffffff', webPreferences: options('updater') });
+  updateWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  updateWindow.webContents.on('will-navigate', (event) => event.preventDefault());
+  updateWindow.webContents.once('did-finish-load', () => { updateWindow.show(); updateWindow.focus(); void checkForUpdate(); });
+  updateWindow.on('closed', () => { updateWindow = null; });
+  void updateWindow.loadFile(updateFile);
+}
 function emitUpdateStatus(contents, value) {
   if (!contents.isDestroyed()) contents.send('desktop:update-status', value);
+  publishUpdateState(value);
 }
-async function installUpdate(event, value) {
+async function installUpdate(event, value, trusted = false) {
   if (process.platform !== 'win32' || process.arch !== 'x64') return { ok: false, error: 'Máy này không hỗ trợ bộ cài Windows 64-bit.' };
   if (updateInProgress) return { ok: false, error: 'Đang tải một bản cập nhật khác.' };
-  const release = desktopRelease(value, origin, app.getVersion());
+  const release = trusted ? nativeRelease : desktopRelease(value, origin, app.getVersion());
+  if (release && compareVersions(release.version, app.getVersion()) <= 0) return { ok: false, error: 'Máy đang dùng bản mới nhất.' };
   if (!release) return { ok: false, error: 'Thông tin bản cập nhật không hợp lệ.' };
   updateInProgress = true;
+  publishUpdateState({ error: '' });
   let installer = '';
   try {
     const contents = event.sender;
@@ -168,14 +213,14 @@ async function installUpdate(event, value) {
     const launchError = await shell.openPath(installer);
     if (launchError) {
       await fs.promises.rm(installer, { force: true }).catch(() => {});
-      emitUpdateStatus(contents, { phase: 'failed' });
+      emitUpdateStatus(contents, { phase: 'failed', error: 'Không thể mở bộ cài đặt.' });
       return { ok: false, error: 'Không thể mở bộ cài đặt.' };
     }
     setTimeout(() => app.quit(), 500);
     return { ok: true };
   } catch {
     if (installer) await fs.promises.rm(installer, { force: true }).catch(() => {});
-    emitUpdateStatus(event.sender, { phase: 'failed' });
+    emitUpdateStatus(event.sender, { phase: 'failed', error: 'Tải hoặc kiểm tra bộ cài không thành công. Vui lòng thử lại.' });
     return { ok: false, error: 'Tải hoặc kiểm tra bộ cài đặt không thành công.' };
   } finally {
     updateInProgress = false;
@@ -207,6 +252,10 @@ function protect(win) {
   win.webContents.on('render-process-gone', () => { clearQueue(); if (win === mainWindow) { queue.setOwner(null); hideChat(); broadcast(); } });
 }
 function registerIpc() {
+  ipcMain.on('desktop:open-updater', (event) => { if (authorized(event, ['main', 'chat', 'bubble'])) openUpdater(); });
+  ipcMain.handle('desktop:updater-state', (event) => authorized(event, ['updater']) ? nativeUpdateState : null);
+  ipcMain.handle('desktop:check-update', (event) => authorized(event, ['updater']) ? checkForUpdate() : null);
+  ipcMain.handle('desktop:apply-update', (event) => authorized(event, ['updater']) ? installUpdate(event, null, true) : { ok: false });
   ipcMain.handle('desktop:state', (event) => authorized(event, ['main', 'chat', 'bubble']) ? state() : null);
   ipcMain.handle('desktop:app-info', (event) => authorized(event, ['main', 'chat'])
     ? { version: app.getVersion(), platform: process.platform, arch: process.arch }
@@ -235,7 +284,8 @@ function registerIpc() {
     if (!authorized(event, ['main'])) return false;
     const accepted = queue.syncUnread(value?.counts, value?.revision);
     if (accepted) {
-      if (latestPreview && !queue.unread.has(latestPreview.convId)) hidePreview();
+      for (const id of previewItems.keys()) if (!queue.unread.has(id)) previewItems.delete(id);
+      paintPreview();
       broadcast();
     }
     return accepted;
@@ -260,10 +310,11 @@ function registerIpc() {
   });
   ipcMain.on('desktop:preview-hover', (event, value) => {
     if (!authorized(event, ['preview']) || typeof value !== 'boolean') return;
+    previewHovered = value;
     clearTimeout(previewTimer); if (!value) previewTimer = setTimeout(hidePreview, 1500);
   });
-  ipcMain.on('desktop:preview-open', (event) => { if (authorized(event, ['preview']) && latestPreview) openChat(latestPreview.convId); });
-  ipcMain.on('desktop:preview-close', (event) => { if (authorized(event, ['preview'])) hidePreview(); });
+  ipcMain.on('desktop:preview-open', (event, id) => { if (authorized(event, ['preview']) && typeof id === 'string' && previewItems.has(id)) openChat(id); });
+  ipcMain.on('desktop:preview-close', (event, id) => { if (authorized(event, ['preview']) && typeof id === 'string' && previewItems.delete(id)) paintPreview(); });
   ipcMain.on('desktop:menu', (event) => { if (authorized(event, ['bubble'])) trayMenu().popup({ window: bubbleWindow }); });
   ipcMain.on('desktop:move', (event, value) => {
     if (!authorized(event, ['bubble']) || !Number.isFinite(value?.dx) || !Number.isFinite(value?.dy)) return;
@@ -283,8 +334,13 @@ if (locked) {
     crmSession.setPermissionCheckHandler((_contents, permission, requestingOrigin) => sameOrigin(requestingOrigin, origin) && permission === 'clipboard-sanitized-write');
     crmSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     registerIpc();
+    Menu.setApplicationMenu(Menu.buildFromTemplate([
+      { label: 'ZaloCRM', submenu: [{ label: 'Mở ZaloCRM', click: () => showMain() }, { type: 'separator' }, { label: 'Thoát', click: () => app.quit() }] },
+      { role: 'editMenu', label: 'Chỉnh sửa' },
+      { label: 'Cập nhật', submenu: [{ label: `Phiên bản ${app.getVersion()}`, enabled: false }, { label: 'Kiểm tra bản cập nhật…', accelerator: 'CommandOrControl+Shift+U', click: openUpdater }] },
+    ]));
     mainWindow = new BrowserWindow({ width: 1280, height: 820, minWidth: 840, minHeight: 540, title: 'ZaloCRM',
-      show: !process.argv.includes('--background'), autoHideMenuBar: true, icon: iconPath(), backgroundColor: '#ffffff', webPreferences: options('main') });
+      show: !process.argv.includes('--background'), autoHideMenuBar: false, icon: iconPath(), backgroundColor: '#ffffff', webPreferences: options('main') });
     protect(mainWindow);
     mainWindow.on('close', (event) => { if (!quitting) { event.preventDefault(); mainWindow.hide(); } });
     mainWindow.webContents.on('did-fail-load', (_event, code, _description, url, isMainFrame) => {

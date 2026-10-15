@@ -4,19 +4,19 @@ import { ref } from 'vue';
 import { createMemoryHistory, createRouter } from 'vue-router';
 import { beforeEach, afterEach, describe, expect, it, vi } from 'vitest';
 import DesktopChatView from './DesktopChatView.vue';
-const mocks = vi.hoisted(() => ({ post: vi.fn(), active: vi.fn(), openMain: vi.fn(), pin: vi.fn(), conversation: null as any, state: null as any, rows: null as any }));
+const mocks = vi.hoisted(() => ({ post: vi.fn(), active: vi.fn(), openMain: vi.fn(), pin: vi.fn(), conversation: null as any, state: null as any, rows: null as any, access: null as any }));
 vi.mock('@/api', () => ({ api: { post: mocks.post } }));
 vi.mock('@/stores/auth', () => ({ useAuthStore: () => ({ user: { id: 'user' } }) }));
 vi.mock('@/composables/use-privacy-visibility', () => ({ usePrivacyVisibility: () => ({ shouldBlurConv: (row: any) => row.redacted === true }) }));
 vi.mock('@/composables/use-desktop-conversations', () => ({ useDesktopConversations: () => ({
-  rows: mocks.rows, accounts: ref([{ id: 'nick', displayName: 'Nick A' }]), loading: ref(false), loadingMore: ref(false), hasMore: ref(false), error: ref(''), offline: ref(false), refresh: vi.fn(), loadMore: vi.fn(),
+  rows: mocks.rows, accounts: ref([{ id: 'nick', displayName: 'Nick A' }]), accessRevision: mocks.access, loading: ref(false), loadingMore: ref(false), hasMore: ref(false), error: ref(''), offline: ref(false), refresh: vi.fn(), loadMore: vi.fn(),
 }) }));
 vi.mock('@/composables/use-message-notification-inbox', () => ({ useMessageNotificationInbox: () => ({ markConversationRead: vi.fn() }) }));
 vi.mock('@/composables/use-conversation-preview', () => ({ useConversationPreview: () => ({ conversation: mocks.conversation,
   messages: ref([]), loading: ref(false), error: ref(''), blocked: ref(false), realtimeOffline: ref(false), refresh: vi.fn(), invalidate: vi.fn() }) }));
 vi.mock('@/components/chat/ConversationChatWorkspace.vue', () => ({ default: { props: ['conversation', 'messages', 'preview'], template: '<div class="shared-chat">Shared workspace</div>' } }));
 beforeEach(() => {
-  vi.clearAllMocks(); mocks.conversation = ref(null); mocks.post.mockResolvedValue({ data: {} });
+  vi.clearAllMocks(); mocks.conversation = ref(null); mocks.access = ref(0); mocks.post.mockResolvedValue({ data: {} });
   mocks.rows = ref([{ id: 'second', contact: { fullName: 'Customer' }, zaloAccount: { displayName: 'Nick A' }, unreadCount: 2, lastMessageAt: null, messages: [{ content: 'Hello', contentType: 'text' }] }]);
   Object.defineProperty(document, 'hidden', { configurable: true, value: false }); vi.spyOn(document, 'hasFocus').mockReturnValue(true);
   window.zaloDesktop = { role: 'chat', active: mocks.active, openMain: mocks.openMain, hide: vi.fn(), expand: vi.fn(), setPinned: mocks.pin,
@@ -73,5 +73,19 @@ describe('desktop floating chat', () => {
     resolve({ data: {} }); await flushPromises();
     expect(mocks.active).not.toHaveBeenCalledWith('conv'); expect(mocks.active).toHaveBeenCalledWith('second');
     expect(mocks.post).toHaveBeenLastCalledWith('/conversations/second/mark-read'); wrapper.unmount();
+  });
+  it('lets sales return to a read customer even after filters remove it from the inbox', async () => {
+    const { wrapper, router } = await render('/desktop/chat/conv');
+    mocks.conversation.value = { id: 'conv', contact: { fullName: 'Khách trước' }, zaloAccount: { displayName: 'Nick A' } };
+    await flushPromises();
+    await router.replace('/desktop/chat/second');
+    mocks.conversation.value = { id: 'second', contact: { fullName: 'Khách tiếp theo' }, zaloAccount: { displayName: 'Nick B' } };
+    mocks.rows.value = []; await flushPromises();
+    expect(wrapper.findAll('.recent-conversation')).toHaveLength(2);
+    const previous = wrapper.findAll('.recent-conversation').find((button) => button.text().includes('Khách trước'))!;
+    await previous.trigger('click'); await flushPromises();
+    expect(router.currentRoute.value.params.convId).toBe('conv');
+    mocks.access.value++; await flushPromises();
+    expect(wrapper.findAll('.recent-conversation')).toHaveLength(0); wrapper.unmount();
   });
 });

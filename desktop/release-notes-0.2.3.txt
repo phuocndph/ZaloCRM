@@ -1,0 +1,6 @@
+Thêm mục Cập nhật cố định trong menu ứng dụng Windows và biểu tượng cạnh đồng hồ, hoạt động độc lập với giao diện VPS.
+Màn hình cập nhật riêng hiển thị phiên bản, tiến trình tải và tự mở bộ cài sau khi kiểm tra và xác nhận.
+Làm lại thông báo nổi: tên khách hoặc nhóm, nick Zalo nhận, người gửi trong nhóm, thời gian và nội dung tối đa ba dòng.
+Hiển thị đồng thời tối đa ba hội thoại trên thẻ thông báo; ẩn thẻ không làm mất số tin chưa đọc.
+Thêm thanh 12 hội thoại gần đây để chuyển qua lại giữa các khách kể cả sau khi đã đọc hoặc thay đổi bộ lọc.
+Giữ bản nháp khi chuyển khách và giữ khách đang mở khi thu về rồi mở lại bong bóng.

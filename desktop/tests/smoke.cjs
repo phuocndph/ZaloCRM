@@ -4,9 +4,11 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
 const assert = require('node:assert/strict');
+const version = require('../package.json').version;
 
 async function run() {
   const profile = await fs.mkdtemp(path.join(os.tmpdir(), 'zalocrm-desktop-smoke-'));
+  await fs.mkdir(path.resolve(__dirname, '../test-results'), { recursive: true });
   const server = http.createServer((_request, response) => {
     response.setHeader('Content-Type', 'text/html; charset=utf-8');
     response.end('<!doctype html><title>CRM Test</title><h1>CRM test fixture</h1><input type="file" id="file" onclick="event.preventDefault()"><button id="child" onclick="window.open(location.origin + \'/attachment\')">Attachment</button>');
@@ -34,9 +36,24 @@ async function run() {
     const focusMain = () => desktop.evaluate(({ BrowserWindow }, currentOrigin) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL() === `${currentOrigin}/`).focus(), origin);
     assert.equal(await main.evaluate(() => typeof window.require), 'undefined');
     assert.equal(await main.evaluate(() => window.zaloDesktop.role), 'main');
-    assert.deepEqual(await main.evaluate(() => window.zaloDesktop.appInfo()), { version: '0.2.2', platform: process.platform, arch: process.arch });
+    assert.deepEqual(await main.evaluate(() => window.zaloDesktop.appInfo()), { version, platform: process.platform, arch: process.arch });
     assert.equal(await main.evaluate(() => typeof window.zaloDesktop.installUpdate), 'function');
     assert.equal((await main.evaluate(() => window.zaloDesktop.installUpdate({}))).ok, false);
+    await desktop.evaluate(() => {
+      global.fetch = async () => new Response(JSON.stringify({ tag_name: 'v9.0.0', body: 'Bản cập nhật thử nghiệm', assets: [{
+        name: 'ZaloCRM-Setup-9.0.0.exe', state: 'uploaded', size: 100, digest: `sha256:${'a'.repeat(64)}`,
+        browser_download_url: 'https://github.com/phuocndph/ZaloCRM/releases/download/v9.0.0/ZaloCRM-Setup-9.0.0.exe',
+      }] }), { headers: { 'Content-Type': 'application/json' } });
+    });
+    assert.ok(await desktop.evaluate(({ Menu }) => Menu.getApplicationMenu().items.some((item) => item.label === 'Cập nhật')));
+    const updaterEvent = desktop.waitForEvent('window');
+    await main.evaluate(() => window.zaloDesktop.openUpdater());
+    const updater = await updaterEvent; await updater.waitForURL('**/updater.html');
+    await updater.waitForFunction(() => document.getElementById('latest').textContent === '9.0.0');
+    assert.equal(await updater.locator('#install').isEnabled(), true);
+    assert.equal(await updater.evaluate(() => typeof window.zaloDesktop), 'undefined');
+    await updater.screenshot({ path: path.resolve(__dirname, '../test-results/updater.png') });
+    await updater.close();
     await main.evaluate(() => window.zaloDesktop.notify({ id: 'before-login', convId: 'customer' }));
     assert.equal((await main.evaluate(() => window.zaloDesktop.state())).count, 0);
     await main.evaluate(() => window.zaloDesktop.setIdentity({ userId: 'tester', orgId: 'test-org' }));
@@ -47,7 +64,14 @@ async function run() {
     const bubble = desktop.windows().find((win) => win.url().endsWith('/bubble.html'));
     const toast = await toastEvent; await toast.waitForURL('**/preview.html');
     await bubble.waitForSelector('#badge:not([hidden])'); assert.equal(await bubble.locator('#badge').textContent(), '1');
-    await toast.waitForFunction(() => document.getElementById('text').textContent.includes('Xin báo giá'));
+    await toast.waitForFunction(() => document.querySelector('.preview-text').textContent.includes('Xin báo giá'));
+    await main.evaluate(() => window.zaloDesktop.notify({ id: 'message-2', convId: 'group', name: 'Đại lý Miền Nam', context: 'Nick chăm sóc', senderName: 'Chị Lan', preview: 'Gửi giúp chị bảng giá và danh sách các mẫu đang có sẵn nhé.' }));
+    await toast.waitForFunction(() => document.querySelectorAll('.notification').length === 2);
+    assert.ok((await toast.locator('.notification').first().textContent()).includes('Chị Lan'));
+    await toast.screenshot({ path: path.resolve(__dirname, '../test-results/preview-multiple.png') });
+    await toast.getByRole('button', { name: 'Ẩn thông báo Đại lý Miền Nam' }).click();
+    assert.equal((await main.evaluate(() => window.zaloDesktop.state())).count, 2, 'Dismissing preview does not mark customer read');
+    await main.evaluate(() => window.zaloDesktop.dismiss('group'));
     assert.equal(await toast.evaluate(() => typeof window.require), 'undefined');
     assert.equal(await bubble.evaluate(() => typeof window.require), 'undefined');
     const resultDir = path.resolve(__dirname, '../test-results'); await fs.mkdir(resultDir, { recursive: true });

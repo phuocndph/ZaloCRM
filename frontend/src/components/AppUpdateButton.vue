@@ -1,6 +1,7 @@
 <template>
   <button type="button" class="update-button" :class="`update-button--${surface}`" :title="title" aria-label="Bản cập nhật ứng dụng Windows" @click="open">
     <Download :size="surface === 'desktop' ? 17 : 18" />
+    <span v-if="surface === 'desktop'" class="update-label">Cập nhật</span>
     <span v-if="release.hasUpdate.value" class="update-dot" aria-label="Có bản mới" />
   </button>
 
@@ -47,6 +48,7 @@
 import { computed, ref } from 'vue';
 import { Download } from 'lucide-vue-next';
 import { useDesktopRelease } from '@/composables/use-desktop-release';
+import { desktopBridge } from '@/composables/desktop-bridge';
 
 withDefaults(defineProps<{ surface?: 'nav' | 'mobile' | 'desktop' }>(), { surface: 'nav' });
 const release = useDesktopRelease();
@@ -67,7 +69,10 @@ const installStatus = computed(() => {
   if (phase === 'failed') return 'Tải hoặc kiểm tra bộ cài không thành công';
   return 'Đang tải bộ cài đặt';
 });
-function open() { dialog.value = true; release.markSeen(); if (!release.latest.value) void release.refresh(); }
+function open() {
+  if (desktopBridge()?.openUpdater) { desktopBridge()!.openUpdater!(); return; }
+  dialog.value = true; release.markSeen(); if (!release.latest.value) void release.refresh();
+}
 async function install() { if (await release.install()) dialog.value = false; }
 </script>
 
@@ -75,6 +80,7 @@ async function install() { if (await release.install()) dialog.value = false; }
 .update-button { width: 32px; height: 32px; flex: 0 0 32px; display: grid; place-items: center; position: relative; border: 0; border-radius: 7px; background: transparent; cursor: pointer; color: inherit; }
 .update-button:hover { background: rgba(255,255,255,.08); }
 .update-button--mobile:hover, .update-button--desktop:hover { background: rgba(12,105,80,.1); color: #087058; }
+.update-button--desktop { display: flex; gap: 5px; justify-content: center; width: 86px; flex-basis: 86px; }.update-label { font-size: 11px; white-space: nowrap; }
 .update-dot { position: absolute; top: 3px; right: 3px; width: 8px; height: 8px; border-radius: 50%; background: #ffca28; box-shadow: 0 0 0 2px #123442; }
 .update-button--mobile .update-dot, .update-button--desktop .update-dot { box-shadow: 0 0 0 2px #fff; background: #d9344b; }
 .update-dialog { border-radius: 8px; }.update-title { display: flex; align-items: center; gap: 9px; font-size: 17px; }

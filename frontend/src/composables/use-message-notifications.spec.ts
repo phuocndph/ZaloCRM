@@ -151,6 +151,23 @@ describe('personal conversation notification mute', () => {
     for (let i = 0; i < 5; i++) await handler(payload(`burst-${i}`));
     expect(notify).toHaveBeenCalledTimes(5); expect(notify.mock.calls[4][0].announce).toBe(false); expect(mocks.sound).toHaveBeenCalledTimes(3);
   });
+  it('uses CRM customer names when the incoming message has no sender name', async () => {
+    const notify = vi.fn(); window.zaloDesktop = { role: 'main', notify, clear: vi.fn(), dismiss: vi.fn() } as any;
+    mocks.get.mockImplementation((path: string) => Promise.resolve({ data: path.endsWith('/state') ? emptyConversationState('conv') : {
+      threadType: 'user', contact: { crmName: 'Chị Lan - Đại lý', avatarUrl: 'https://example.com/lan.png' }, zaloAccount: { displayName: 'Minh Tư vấn' },
+    } }));
+    const value = payload(); value.message.senderName = ''; value.message.content = 'a'.repeat(200);
+    await mocks.handlers.get('chat:message')!(value);
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ name: 'Chị Lan - Đại lý', context: 'Minh Tư vấn', preview: 'a'.repeat(200), avatarUrl: 'https://example.com/lan.png' }));
+  });
+  it('separates the group title, receiving nick and member who sent the message', async () => {
+    const notify = vi.fn(); window.zaloDesktop = { role: 'main', notify, clear: vi.fn(), dismiss: vi.fn() } as any;
+    mocks.get.mockImplementation((path: string) => Promise.resolve({ data: path.endsWith('/state') ? emptyConversationState('conv') : {
+      threadType: 'group', groupName: 'Đại lý Miền Nam', zaloAccount: { displayName: 'Nick CSKH' },
+    } }));
+    await mocks.handlers.get('chat:message')!(payload());
+    expect(notify).toHaveBeenCalledWith(expect.objectContaining({ name: 'Đại lý Miền Nam', senderName: 'Customer', context: 'Nick CSKH', preview: 'Hello' }));
+  });
   it('still previews when the main CRM chat is behind another Windows app', async () => {
     Object.defineProperty(document, 'hidden', { configurable: true, value: false });
     vi.spyOn(document, 'hasFocus').mockReturnValue(false);

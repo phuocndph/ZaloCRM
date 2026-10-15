@@ -1,4 +1,4 @@
-# Windows Chat Bubble 0.2.2
+# Windows Chat Bubble 0.2.3
 
 The client connects to https://zcrm.joliefam.vn. Employees sign in with their
 normal CRM account; no Hermes keys or additional Zalo sessions are involved.
@@ -18,28 +18,35 @@ npm run test:ui
 npm run dist
 ```
 
-Installer: desktop/release/ZaloCRM-Setup-0.2.2.exe. Build scripts prepare Electron
+Installer: desktop/release/ZaloCRM-Setup-0.2.3.exe. Build scripts prepare Electron
 and reuse its unpacked distribution, avoiding the ZIP temporary-directory rename
 failure seen in the first release. The NSIS icon uses a separate 512px brand image.
 The installer remains unsigned; Windows can show an unknown-publisher warning.
-Production distribution needs a signing certificate. Version 0.2.2 and later can download,
-verify SHA-256 and open a newer installer from the CRM update control. Users still confirm
-the installation, and the app closes only after Windows accepts the installer launch. Version
-0.2.1 and older need one final manual installation of 0.2.2.
+Production distribution needs a signing certificate. The Windows application menu and
+tray menu always include Update in version 0.2.3, even before deploying the VPS frontend.
+This opens a bundled, sandboxed updater with installed/latest version, notes and progress.
+It reads the official public phuocndph/ZaloCRM GitHub release, validates its asset URL,
+size and SHA-256 digest, then downloads and verifies the installer. Redirects are allowed
+only to GitHub's release-assets.githubusercontent.com host. Users confirm before the app
+opens the installer and exits. The existing CRM-hosted update API remains available for
+browsers and version 0.2.2 clients. Older clients can install 0.2.3 manually from Releases.
 
 ## Publish An Update
 
-Installers are not committed to Git. After building and testing, copy the `.exe` to the
-VPS and publish it into persistent storage:
+Installers are not committed to Git. Publish the installer as an asset in the public
+GitHub release for the same version. Native 0.2.3+ clients discover it without needing a
+VPS release manifest. To also enable web/legacy downloads, publish it on the VPS:
 
 ```bash
-docker cp /tmp/ZaloCRM-Setup-0.2.2.exe zalo-crm-app:/app/ZaloCRM-Setup-0.2.2.exe
-docker cp /tmp/desktop-release-notes.txt zalo-crm-app:/app/desktop-release-notes.txt
+curl -fL --retry 3 -o /tmp/ZaloCRM-Setup-0.2.3.exe \
+  https://github.com/phuocndph/ZaloCRM/releases/download/v0.2.3/ZaloCRM-Setup-0.2.3.exe
+docker cp /tmp/ZaloCRM-Setup-0.2.3.exe zalo-crm-app:/app/ZaloCRM-Setup-0.2.3.exe
+docker cp desktop/release-notes-0.2.3.txt zalo-crm-app:/app/desktop-release-notes.txt
 docker exec zalo-crm-app node scripts/publish-desktop-release.mjs \
-  --file /app/ZaloCRM-Setup-0.2.2.exe \
-  --version 0.2.2 \
+  --file /app/ZaloCRM-Setup-0.2.3.exe \
+  --version 0.2.3 \
   --notes-file /app/desktop-release-notes.txt
-docker exec zalo-crm-app rm -f /app/ZaloCRM-Setup-0.2.2.exe /app/desktop-release-notes.txt
+docker exec zalo-crm-app rm -f /app/ZaloCRM-Setup-0.2.3.exe /app/desktop-release-notes.txt
 ```
 
 The publisher calculates SHA-256, copies the installer to
@@ -65,6 +72,11 @@ timestamps and unread labels are supported. Reading clears unread, not the list
 entry. New messages never force a switch away from the selected customer.
 
 Compact windows have list/chat views with a back button; wide windows show both.
+The most recent 12 opened customers remain in a separate horizontal strip, independent
+of search, nick and unread filters. A read customer stays reachable after leaving Unread.
+The strip always shows the receiving nick, with a separate draft icon. Access/privacy invalidation clears it;
+it is kept only during the window session and stores no extra content on disk.
+Reopening the bubble restores the selected conversation instead of resetting to the list.
 Chat reuses ConversationChatWorkspace for text, images/files, rich drafts, forwarding
 and AI with existing permissions. Drafts and files survive hide/reopen and customer
 switches during the desktop session, not complete app exit. Read marking requires
@@ -90,10 +102,12 @@ closes it. Escape returns to the inbox, then hides it, unless a dialog/menu hand
 Escape. Native file pickers, confirmation dialogs and focused attachment children
 hold chat open. Picker holds time out if cancel events are lost.
 
-New eligible messages show one non-activating toast with customer/group name,
-receiving nick and a bounded two-line snippet. Images/files/voice use type labels;
-original attachments are not downloaded. Same-customer messages replace the toast.
-It expires after six seconds; hover pauses it. Clicking opens the exact conversation;
+New eligible messages show up to three non-activating cards with CRM customer/group name,
+receiving nick, timestamp, message count and a bounded three-line snippet. Group cards
+also name the member sending the message. Contact/friend metadata fills missing sender
+names and avatars. Images/files/voice use type labels; original attachments are not downloaded.
+Same-customer messages update that card instead of replacing another customer's card.
+Cards expire after nine seconds; hover pauses expiry. Clicking opens the exact conversation;
 close dismisses the toast, not unread state. Tray menu provides content/name/off
 preview modes, bubble visibility, pin, Windows startup, full CRM and quit.
 
@@ -113,8 +127,9 @@ lock hides chat/bubble. Changing preview mode removes the old toast.
 
 Tests use synthetic local fixtures, no production login or messages. Unit tests
 cover pagination/races, mute/privacy filtering, stale unread scans and notifications.
-Electron smoke covers preview, inbox-default, auto-hide/pin, simulated picker holds,
-attachment children and logout. Built-frontend UI tests use 65 conversations for
-pagination/search/unread and laptop/wide screenshots. Actual Windows picker timing,
+Electron smoke covers the native menu/updater without CRM login, multi-customer previews,
+inbox-default, auto-hide/pin, simulated picker holds, attachment children and logout.
+Built-frontend UI tests use 65 conversations for pagination/search/unread, A/B/A switching
+with draft restoration, bubble reopen, and 420px/laptop/wide screenshots. Actual Windows picker timing,
 real reconnects, physical multiple monitors and publisher signing need pilot checks
 on employee machines before broad rollout.

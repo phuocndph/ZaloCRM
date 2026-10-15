@@ -43,6 +43,20 @@ function desktopRelease(value, origin, currentVersion) {
   } catch { return null; }
 }
 
+function githubRelease(value) {
+  if (!value || value.draft || value.prerelease || typeof value.tag_name !== 'string') return null;
+  const version = value.tag_name.replace(/^v/, '');
+  if (!VERSION.test(version)) return null;
+  const filename = `ZaloCRM-Setup-${version}.exe`;
+  const asset = Array.isArray(value.assets) ? value.assets.find((item) => item.name === filename && item.state === 'uploaded') : null;
+  const expectedUrl = `https://github.com/phuocndph/ZaloCRM/releases/download/${encodeURIComponent(value.tag_name)}/${filename}`;
+  if (!asset || asset.browser_download_url !== expectedUrl || !Number.isSafeInteger(asset.size) || asset.size <= 0 || asset.size > MAX_INSTALLER_BYTES) return null;
+  const sha256 = typeof asset.digest === 'string' ? asset.digest.replace(/^sha256:/, '') : '';
+  if (!SHA256.test(sha256)) return null;
+  return { version, filename, bytes: asset.size, sha256, url: expectedUrl, source: 'github',
+    notes: typeof value.body === 'string' ? value.body.slice(0, 4000) : '', publishedAt: value.published_at };
+}
+
 function identity(value) {
   if (!value || typeof value.userId !== 'string' || typeof value.orgId !== 'string' || !ID.test(value.userId) || !ID.test(value.orgId)) return null;
   return `${value.orgId}:${value.userId}`;
@@ -60,6 +74,7 @@ function notification(value, origin = DEFAULT_ORIGIN) {
   } catch {}
   return { convId: value.convId, id: value.id, redacted: value.redacted === true,
     name: value.redacted ? 'Tin nhắn mới' : text(value.name, 120) || 'Tin nhắn mới',
+    senderName: value.redacted ? '' : text(value.senderName, 120),
     context: value.redacted ? 'Nội dung riêng tư' : text(value.context, 160),
     preview: value.redacted ? 'Bạn có tin nhắn mới' : text(value.preview, 240),
     avatarUrl: value.redacted ? null : avatarUrl, announce: value.announce !== false, at: Date.now() };
@@ -111,4 +126,4 @@ class ConversationQueue {
   snapshot() { return { items: [...this.rows.values()].reverse(), count: [...this.unread.values()].reduce((a, b) => a + b, 0), revision: this.revision }; }
 }
 
-module.exports = { DEFAULT_ORIGIN, crmOrigin, sameOrigin, compareVersions, desktopRelease, identity, notification, clampBounds, adjacentBounds, shouldAutoHide, ConversationQueue, ID };
+module.exports = { DEFAULT_ORIGIN, crmOrigin, sameOrigin, compareVersions, desktopRelease, githubRelease, identity, notification, clampBounds, adjacentBounds, shouldAutoHide, ConversationQueue, ID };

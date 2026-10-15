@@ -9,6 +9,7 @@ export interface DesktopNotification {
   avatarUrl?: string | null;
   redacted?: boolean;
   announce?: boolean;
+  senderName?: string;
 }
 export interface DesktopState { items: DesktopNotification[]; count: number; signedIn: boolean; pinned?: boolean; revision?: number }
 export interface DesktopAppInfo { version: string; platform: string; arch: string }
@@ -34,6 +35,7 @@ export interface DesktopBridge {
   appInfo?(): Promise<DesktopAppInfo | null>;
   installUpdate?(release: unknown): Promise<DesktopUpdateResult>;
   onUpdateStatus?(callback: (status: DesktopUpdateStatus) => void): () => void;
+  openUpdater?(): void;
 }
 declare global { interface Window { zaloDesktop?: DesktopBridge } }
 export function desktopBridge(): DesktopBridge | undefined {

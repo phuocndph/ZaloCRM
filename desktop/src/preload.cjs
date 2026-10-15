@@ -8,11 +8,18 @@ const subscribe = (channel, callback) => {
   return () => ipcRenderer.removeListener(channel, listener);
 };
 
-if (process.isMainFrame && role === 'preview' && location.protocol === 'file:') {
+if (process.isMainFrame && role === 'updater' && location.protocol === 'file:') {
+  contextBridge.exposeInMainWorld('desktopUpdater', {
+    state: () => ipcRenderer.invoke('desktop:updater-state'),
+    check: () => ipcRenderer.invoke('desktop:check-update'),
+    install: () => ipcRenderer.invoke('desktop:apply-update'),
+    onState: (callback) => subscribe('desktop:updater-state', callback),
+  });
+} else if (process.isMainFrame && role === 'preview' && location.protocol === 'file:') {
   contextBridge.exposeInMainWorld('preview', {
     onMessage: (callback) => subscribe('desktop:preview', callback),
-    open: () => ipcRenderer.send('desktop:preview-open'),
-    close: () => ipcRenderer.send('desktop:preview-close'),
+    open: (id) => ipcRenderer.send('desktop:preview-open', id),
+    close: (id) => ipcRenderer.send('desktop:preview-close', id),
     hover: (value) => ipcRenderer.send('desktop:preview-hover', value),
   });
 } else if (process.isMainFrame && role === 'bubble' && location.protocol === 'file:') {
@@ -44,6 +51,7 @@ if (process.isMainFrame && role === 'preview' && location.protocol === 'file:') 
     appInfo: () => ipcRenderer.invoke('desktop:app-info'),
     installUpdate: (release) => ipcRenderer.invoke('desktop:install-update', release),
     onUpdateStatus: (callback) => subscribe('desktop:update-status', callback),
+    openUpdater: () => ipcRenderer.send('desktop:open-updater'),
   });
   if (role === 'chat') {
     // File inputs open native dialogs that otherwise look like an outside click.

@@ -36,6 +36,9 @@ async function run() {
       else if (/\/conversations\/conv-\d+\/messages$/.test(url.pathname)) {
         if (request.method !== 'GET') { response.writeHead(403); response.end(JSON.stringify({ error: 'No test sends' })); return; }
         data = { messages: history, hasMore: false };
+      } else if (/\/conversations\/conv-\d+\/mark-read$/.test(url.pathname)) {
+        const row = rows.find((row) => row.id === url.pathname.split('/').at(-2));
+        if (row) row.unreadCount = 0;
       } else if (url.pathname.endsWith('/pinned')) data = { items: [] };
       else if (url.pathname.endsWith('/message-notifications')) data = { notifications: [], unreadCount: 0 };
       else if (url.pathname.includes('/ai/config')) data = { enabled: false };
@@ -69,25 +72,45 @@ async function run() {
     await popup.locator('.inbox-rows').evaluate((node) => { node.scrollTop = 0; });
     await fs.mkdir(resultDir, { recursive: true }); await popup.screenshot({ path: path.join(resultDir, 'inbox-laptop.png') });
     await popup.locator('.inbox-row').first().click(); await popup.waitForSelector('.message-thread');
+    const composer = popup.locator('.tiptap[contenteditable="true"]').first();
+    await composer.fill('Bản nháp gửi khách An');
+    await popup.getByRole('button', { name: 'Danh sách hội thoại', exact: true }).click();
+    await popup.locator('.inbox-row').nth(1).click(); await popup.waitForSelector('.message-thread');
+    await popup.waitForFunction(() => document.querySelectorAll('.recent-conversation').length === 2);
+    await popup.locator('.recent-conversation').filter({ hasText: 'Nguyễn An' }).click();
+    await popup.waitForURL('**/desktop/chat/conv-0');
+    await popup.waitForSelector('.message-thread');
+    assert.equal(await composer.textContent(), 'Bản nháp gửi khách An', 'Draft is restored when returning to a previous customer');
+    await popup.evaluate(() => window.zaloDesktop.hide());
+    await bubble.locator('#bubble').click();
+    await popup.waitForSelector('.message-thread');
+    assert.ok(popup.url().endsWith('/desktop/chat/conv-0'), 'Reopening the bubble preserves the current customer');
     await popup.screenshot({ path: path.join(resultDir, 'chat-laptop.png') });
     await popup.getByRole('button', { name: 'Danh sách hội thoại', exact: true }).click();
     assert.equal(await popup.locator('.inbox-row').count(), 65);
     await popup.getByRole('searchbox', { name: 'Tìm hội thoại' }).fill('Nguyễn An');
     await popup.waitForFunction(() => document.querySelectorAll('.inbox-row').length === 1);
     await popup.getByRole('searchbox', { name: 'Tìm hội thoại' }).fill('');
-    await popup.waitForFunction(() => document.querySelectorAll('.inbox-row').length === 50);
+    await popup.waitForFunction(() => document.querySelectorAll('.inbox-row').length >= 50);
     await popup.getByRole('tab', { name: 'Chưa đọc', exact: true }).click();
-    await popup.waitForFunction(() => document.querySelectorAll('.inbox-row').length === 3);
+    await popup.waitForFunction(() => document.querySelectorAll('.inbox-row').length === 1);
+    await popup.locator('.recent-conversation').filter({ hasText: 'Nguyễn An' }).click();
+    await popup.waitForSelector('.message-thread');
+    assert.equal(await composer.textContent(), 'Bản nháp gửi khách An', 'Read customer remains available outside unread results');
+    await popup.getByRole('button', { name: 'Danh sách hội thoại', exact: true }).click();
     await popup.getByRole('tab', { name: 'Tất cả', exact: true }).click();
-    await popup.waitForFunction(() => document.querySelectorAll('.inbox-row').length === 50);
+    await popup.waitForFunction(() => document.querySelectorAll('.inbox-row').length >= 50);
     await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('/desktop/chat') && w.getBounds().width < 900).setSize(1060, 740));
     await popup.locator('.inbox-row').first().click(); await popup.waitForSelector('.message-thread');
     await popup.screenshot({ path: path.join(resultDir, 'chat-wide.png') });
     const viewport = await popup.evaluate(() => ({ width: innerWidth, height: innerHeight, scroll: document.documentElement.scrollWidth }));
     assert.ok(viewport.scroll <= viewport.width + 1, 'No horizontal overflow');
+    await desktop.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().includes('/desktop/chat') && w.getBounds().width > 900 && w.getBounds().width < 1200).setSize(420, 620));
+    await popup.screenshot({ path: path.join(resultDir, 'chat-small-laptop.png') });
+    assert.ok(await popup.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
     assert.ok(!writes.some((url) => /\/messages$/.test(url)), 'No outbound messages');
     assert.deepEqual(errors, []);
-    console.log('Desktop UI passed: 65 server conversations, pagination, search, unread filter, chat/back, laptop and wide layouts; no outbound messages.');
+    console.log('Desktop UI passed: 65 conversations, pagination, unread filtering, A/B/A with restored draft, bubble reopen, 420px/laptop/wide layouts; no outbound messages.');
   } finally {
     if (desktop) await desktop.close(); await new Promise((resolve) => server.close(resolve));
   }

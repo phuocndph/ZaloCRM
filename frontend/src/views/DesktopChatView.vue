@@ -2,7 +2,7 @@
   <main class="desktop-chat" :class="{ 'has-conversation': !!id }">
     <header class="desktop-chat-header">
       <button v-if="id" type="button" title="Danh sách hội thoại" aria-label="Danh sách hội thoại" @click="back"><ArrowLeft :size="18" /></button>
-      <strong>{{ id ? 'Chat nhanh' : 'Hội thoại' }}</strong>
+      <strong :title="conversation ? title(conversation) : 'Hội thoại'">{{ conversation ? title(conversation) : 'Hội thoại' }}</strong>
       <span>{{ conversation?.zaloAccount?.displayName || 'ZaloCRM' }}</span>
       <button type="button" :class="{ active: pinned }" :aria-pressed="pinned" :title="pinned ? 'Bỏ ghim khung' : 'Ghim khung'" aria-label="Ghim khung" @click="togglePin"><Pin :size="17" /></button>
       <AppUpdateButton surface="desktop" />
@@ -10,6 +10,14 @@
       <button type="button" title="Mở rộng" aria-label="Mở rộng" @click="desktop?.expand()"><Maximize2 :size="17" /></button>
       <button type="button" title="Thu về bong bóng" aria-label="Thu về bong bóng" @click="desktop?.hide()"><Minus :size="17" /></button>
     </header>
+    <nav v-if="recent.length" class="recent-conversations" aria-label="Hội thoại gần đây">
+      <button v-for="row in recent" :key="row.id" type="button" class="recent-conversation" :class="{ selected: row.id === id }" :aria-current="row.id === id ? 'true' : undefined" :title="`${title(row)} · ${row.zaloAccount?.displayName || 'Nick Zalo'}`" @click="select(row.id)">
+        <img v-if="avatar(row)" :src="avatar(row)!" alt="" referrerpolicy="no-referrer" @error="hideImage" />
+        <span v-else class="recent-initial">{{ title(row).slice(0, 1) }}</span>
+        <span class="recent-copy"><strong>{{ title(row) }}</strong><small>{{ row.zaloAccount?.displayName || 'Nick Zalo' }}</small></span>
+        <FilePenLine v-if="hasDraft(row.id)" class="recent-draft" :size="13" aria-label="Có bản nháp" />
+      </button>
+    </nav>
     <div v-if="offline || preview.realtimeOffline.value" class="desktop-status" role="status">Mất kết nối trực tiếp. Đang thử kết nối lại…</div>
     <div class="desktop-chat-body">
       <aside class="desktop-inbox" aria-label="Danh sách hội thoại">
@@ -44,11 +52,12 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import { ArrowLeft, BellOff, ExternalLink, Maximize2, MessageCircle, Minus, Pin, Search } from 'lucide-vue-next';
+import { ArrowLeft, BellOff, ExternalLink, FilePenLine, Maximize2, MessageCircle, Minus, Pin, Search } from 'lucide-vue-next';
 import ConversationChatWorkspace from '@/components/chat/ConversationChatWorkspace.vue';
 import AppUpdateButton from '@/components/AppUpdateButton.vue';
 import { desktopBridge } from '@/composables/desktop-bridge';
 import { useDesktopConversations } from '@/composables/use-desktop-conversations';
+import { useChatSessionDraft } from '@/composables/use-chat-session-draft';
 import { useConversationPreview } from '@/composables/use-conversation-preview';
 import { useMessageNotificationInbox } from '@/composables/use-message-notification-inbox';
 import { usePrivacyVisibility } from '@/composables/use-privacy-visibility';
@@ -61,6 +70,7 @@ import { api } from '@/api';
 const auth = useAuthStore(), route = useRoute(), router = useRouter(), desktop = desktopBridge();
 const id = computed(() => String(route.params.convId ?? ''));
 const search = ref(''), onlyUnread = ref(false), accountId = ref(''), pinned = ref(false);
+const recent = ref<Conversation[]>([]);
 const list = useDesktopConversations(search, onlyUnread, accountId);
 const { rows, accounts, loading: listLoading, loadingMore, error: listError, hasMore, offline } = list;
 const preview = useConversationPreview(id, computed(() => auth.user?.id));
@@ -69,7 +79,7 @@ const privacy = usePrivacyVisibility();
 const inbox = useMessageNotificationInbox();
 let disposed = false, reading = false, lastRead = '';
 const unsubscribers: Array<() => void> = [];
-function title(row: Conversation) { return row.conversationPrivate ? 'Hội thoại riêng tư' : row.threadType === 'group' ? row.groupName || 'Nhóm Zalo' : row.contact?.crmName || row.contact?.fullName || row.friendship?.zaloDisplayName || 'Khách hàng'; }
+function title(row: Conversation) { return privacy.shouldBlurConv(row) || row.conversationPrivate ? 'Hội thoại riêng tư' : row.threadType === 'group' ? row.groupName || 'Nhóm Zalo' : row.contact?.crmName || row.friendship?.aliasInNick || row.contact?.fullName || row.friendship?.zaloDisplayName || 'Khách hàng'; }
 function avatar(row: Conversation) { return privacy.shouldBlurConv(row) || row.conversationPrivate ? null : notificationAvatarUrl(row.threadType === 'group' ? row.groupAvatarUrl : row.contact?.avatarUrl || row.friendship?.zaloAvatarUrl); }
 function snippet(row: Conversation) { return privacy.shouldBlurConv(row) || row.conversationPrivate ? 'Nội dung riêng tư' : row.messages?.[0] ? notificationPreview(row.messages[0]) : 'Chưa có tin nhắn'; }
 function muted(row: Conversation) { const mute = row as Conversation & { zaloNotificationsMuted?: boolean; zaloMutedUntil?: string | null }; return isConversationNotificationMuted(row.userState) || (mute.zaloNotificationsMuted && (!mute.zaloMutedUntil || Date.parse(mute.zaloMutedUntil) > Date.now())); }
@@ -80,6 +90,26 @@ function select(value: string) { if (/^[a-zA-Z0-9_-]{1,100}$/.test(value)) void 
 function back() { void router.replace({ name: 'Desktop.Chat' }); }
 function openMain() { if (desktop) desktop.openMain(id.value); else void router.push(id.value ? `/chat/${id.value}` : '/chat'); }
 function togglePin() { desktop?.setPinned?.(!pinned.value); }
+function hasDraft(convId: string) {
+  const draft = useChatSessionDraft(auth.user?.id || '', convId);
+  return !!draft.rich.value.text.trim() || draft.attachments.files.length > 0;
+}
+watch(conversation, (value) => {
+  if (!value || value.id !== id.value || preview.blocked.value) return;
+  // Recent customers are independent of unread/search filters and notification dismissal.
+  const previous = recent.value.findIndex((row) => row.id === value.id);
+  if (previous >= 0) recent.value.splice(previous, 1, value);
+  else recent.value = [value, ...recent.value].slice(0, 12);
+});
+watch(rows, (value) => {
+  const fresh = new Map(value.map((row) => [row.id, row]));
+  recent.value = recent.value.map((row) => fresh.get(row.id) || row);
+});
+watch(() => preview.blocked.value, (blocked) => {
+  if (blocked) recent.value = recent.value.filter((row) => row.id !== id.value);
+});
+watch(() => auth.user?.id, () => { recent.value = []; });
+watch(() => list.accessRevision?.value, () => { recent.value = []; });
 async function markVisibleRead() {
   if (!id.value || conversation.value?.id !== id.value || preview.blocked.value || !document.hasFocus() || document.hidden || reading) return;
   const current = id.value, lastMessageId = messages.value.at(-1)?.id || '';
@@ -122,10 +152,17 @@ onBeforeUnmount(() => {
 <style scoped>
 .desktop-chat { height: 100dvh; display: flex; flex-direction: column; overflow: hidden; background: var(--color-surface, #fff); color: var(--color-text, #202124); }
 .desktop-chat-header { height: 46px; flex: 0 0 46px; display: flex; align-items: center; gap: 8px; padding: 0 10px; border-bottom: 1px solid #e1e5e9; }
-.desktop-chat-header strong { font-size: 15px; white-space: nowrap; }
+.desktop-chat-header strong { font-size: 14px; min-width: 0; max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .desktop-chat-header > span { flex: 1; min-width: 0; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #59636e; }
 .desktop-chat-header button { width: 30px; height: 32px; flex-shrink: 0; display: grid; place-items: center; border: 0; background: transparent; cursor: pointer; color: inherit; }
 .desktop-chat-header button:hover, .desktop-chat-header button.active { background: #e8f4ef; color: #007b60; }
+.desktop-chat-header :deep(.update-button--desktop) { width: 86px; display: flex; flex: 0 0 86px; }
+.recent-conversations { display: flex; flex: 0 0 62px; gap: 3px; padding: 5px 8px; overflow-x: auto; overflow-y: hidden; border-bottom: 1px solid #e1e5e9; background: #f8faf9; scrollbar-width: thin; }
+.recent-conversation { display: flex; align-items: center; gap: 7px; flex: 0 0 148px; min-width: 0; padding: 5px 7px; background: transparent; border: 0; border-bottom: 2px solid transparent; border-radius: 4px; cursor: pointer; color: inherit; text-align: left; }
+.recent-conversation:hover { background: #edf1f4; }.recent-conversation.selected { background: #e5f3ed; border-bottom-color: #087058; }
+.recent-conversation img, .recent-initial { width: 30px; height: 30px; flex: 0 0 30px; border-radius: 50%; object-fit: cover; background: #e1e9ed; }.recent-initial { display: grid; place-items: center; font-size: 13px; }
+.recent-copy { display: grid; gap: 2px; min-width: 0; }.recent-copy strong, .recent-copy small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.recent-copy strong { font-size: 12px; font-weight: 600; }.recent-copy small { font-size: 10px; color: #596d66; }
+.recent-draft { flex-shrink: 0; color: #b07213; }
 .desktop-chat-body { display: flex; flex: 1; min-height: 0; }
 .desktop-inbox { width: 100%; display: flex; flex-direction: column; min-height: 0; }
 .inbox-search { margin: 12px; padding: 0 10px; display: flex; align-items: center; gap: 8px; background: #f0f3f5; border-radius: 6px; min-height: 38px; color: #65707d; }

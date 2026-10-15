@@ -273,11 +273,18 @@ async function onSocketMessage(payload: {
       const zaloMuted = detail.zaloNotificationsMuted && (!detail.zaloMutedUntil || Date.parse(detail.zaloMutedUntil) > Date.now());
       if (zaloMuted) { desktopBridge()?.dismiss(convId); return; }
       const redacted = message.redacted === true || detail.redacted === true || detail.conversationPrivate === true || detail.zaloAccount?.privacyMode === 'main';
-      const name = payload.threadType === 'group' ? compactNotificationLabel(payload.groupName, 120) || card.name : card.name;
+      const group = detail.threadType === 'group' || payload.threadType === 'group';
+      const name = group
+        ? compactNotificationLabel(detail.groupName || payload.groupName, 120) || 'Nhóm Zalo'
+        : compactNotificationLabel(detail.contact?.crmName || detail.friendship?.aliasInNick || detail.contact?.fullName || detail.friendship?.zaloDisplayName, 120) || card.name;
       const nick = compactNotificationLabel(detail.zaloAccount?.displayName, 80);
       const added = await desktopBridge()!.notify({ id: card.id, convId: card.convId,
-        name: redacted ? 'Tin nhắn mới' : name, context: redacted ? 'Nội dung riêng tư' : [nick, card.context].filter(Boolean).join(' · '),
-        preview: redacted ? 'Bạn có tin nhắn mới' : card.preview, avatarUrl: redacted ? null : card.avatarUrl, redacted, announce, at: card.at });
+        name: redacted ? 'Tin nhắn mới' : name,
+        senderName: redacted || !group ? '' : compactNotificationLabel(message.senderName, 120),
+        context: redacted ? 'Nội dung riêng tư' : nick || (group ? 'Nhóm Zalo' : 'Tin nhắn riêng'),
+        preview: redacted ? 'Bạn có tin nhắn mới' : notificationPreview(message, 240),
+        avatarUrl: redacted ? null : notificationAvatarUrl(group ? detail.groupAvatarUrl || payload.groupAvatarUrl : detail.contact?.avatarUrl || detail.friendship?.zaloAvatarUrl || payload.senderAvatarUrl),
+        redacted, announce, at: card.at });
       if (added && announce && started && version === sessionVersion) beep();
     } catch { /* Desktop shutdown must not interfere with receiving messages. */ }
     return;

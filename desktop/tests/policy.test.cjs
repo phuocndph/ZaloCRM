@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { crmOrigin, sameOrigin, desktopRelease, notification, clampBounds, adjacentBounds, shouldAutoHide, ConversationQueue } = require('../src/policy.cjs');
+const { crmOrigin, sameOrigin, desktopRelease, githubRelease, notification, clampBounds, adjacentBounds, shouldAutoHide, ConversationQueue } = require('../src/policy.cjs');
 test('defaults to Joliefam and rejects unsafe or credential-bearing origins', () => {
   assert.equal(crmOrigin(), 'https://zcrm.joliefam.vn');
   assert.equal(crmOrigin('http://127.0.0.1:3080'), 'http://127.0.0.1:3080');
@@ -31,8 +31,18 @@ test('previews bounded, avatar protocols validated and credential fields discard
   assert.equal(notification({}), null);
 });
 test('redacted previews cannot carry names, text or avatar URLs', () => {
-  const value = notification({ id: 'msg', convId: 'conv', name: 'Secret name', preview: 'Secret body', redacted: true, avatarUrl: 'https://example.com/a.png' });
+  const value = notification({ id: 'msg', convId: 'conv', name: 'Secret name', senderName: 'Secret sender', preview: 'Secret body', redacted: true, avatarUrl: 'https://example.com/a.png' });
   assert.equal(value.name, 'Tin nhắn mới'); assert.equal(value.preview, 'Bạn có tin nhắn mới'); assert.equal(value.avatarUrl, null);
+  assert.equal(value.senderName, '');
+});
+test('native update discovery accepts only the exact repository asset with a SHA-256 digest', () => {
+  const asset = { name: 'ZaloCRM-Setup-0.2.3.exe', state: 'uploaded', size: 100, digest: `sha256:${'a'.repeat(64)}`,
+    browser_download_url: 'https://github.com/phuocndph/ZaloCRM/releases/download/v0.2.3/ZaloCRM-Setup-0.2.3.exe' };
+  const value = { tag_name: 'v0.2.3', assets: [asset], body: 'Release notes' };
+  assert.equal(githubRelease(value).version, '0.2.3');
+  assert.equal(githubRelease({ ...value, assets: [{ ...asset, browser_download_url: 'https://evil.example/setup.exe' }] }), null);
+  assert.equal(githubRelease({ ...value, assets: [{ ...asset, digest: '' }] }), null);
+  assert.equal(githubRelease({ ...value, prerelease: true }), null);
 });
 test('no notifications before login, deduplication and account-switch cleanup', () => {
   const queue = new ConversationQueue(); const msg = { id: 'msg', convId: 'conv' };
