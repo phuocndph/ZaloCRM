@@ -59,6 +59,26 @@ test('bounded queue, dismiss and reset', () => {
   assert.equal(queue.snapshot().items.length, 100); assert.equal(queue.snapshot().count, 105); queue.remove('conv-104'); assert.equal(queue.snapshot().items.length, 99);
   queue.clear(); assert.equal(queue.snapshot().count, 0);
 });
+test('late notification lookup cannot replace the latest preview or reorder customers', () => {
+  const queue = new ConversationQueue(); queue.setOwner({ userId: 'user', orgId: 'org' });
+  queue.add({ id: 'newer', convId: 'customer', sequence: 2, preview: 'Latest message' });
+  queue.add({ id: 'other', convId: 'other', sequence: 3, preview: 'Other customer' });
+  assert.ok(queue.add({ id: 'older', convId: 'customer', sequence: 1, preview: 'Old message' }));
+  assert.deepEqual(queue.snapshot().items.map((row) => row.id), ['other', 'newer']);
+  assert.equal(queue.rows.get('customer').preview, 'Latest message');
+  assert.equal(queue.rows.get('customer').count, 2);
+  assert.equal(queue.snapshot().count, 3);
+  assert.equal(queue.add({ id: 'older', convId: 'customer', sequence: 1 }), false);
+});
+test('a late older notification cannot resurrect a customer already read', () => {
+  const queue = new ConversationQueue(); queue.setOwner({ userId: 'user', orgId: 'org' });
+  queue.add({ id: 'newer', convId: 'customer', sequence: 20 });
+  queue.remove('customer');
+  assert.equal(queue.add({ id: 'older', convId: 'customer', sequence: 10 }), false);
+  assert.equal(queue.snapshot().count, 0); assert.equal(queue.rows.size, 0);
+  assert.equal(queue.add({ id: 'next', convId: 'customer', sequence: 30 }), true);
+  assert.equal(queue.snapshot().count, 1);
+});
 test('restores authoritative unread counts without replaying notifications and rejects stale scans', () => {
   const queue = new ConversationQueue(); queue.setOwner({ userId: 'user', orgId: 'org' });
   const before = queue.revision;

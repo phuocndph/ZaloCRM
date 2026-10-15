@@ -73,6 +73,7 @@ const cards = ref<NotifCard[]>([]);
 let socket: Socket | null = null;
 let started = false;
 let sessionVersion = 0;
+let notificationSequence = Date.now() * 1000;
 let unsubscribeState: (() => void) | null = null;
 const latestStates = new Map<string, ConversationState>();
 const stateRequests = new Map<string, Promise<ConversationState>>();
@@ -209,6 +210,8 @@ async function onSocketMessage(payload: {
   // vẫn đi vào hội thoại, chỉ không tạo thẻ nổi, âm thanh, badge inbox hay native notification.
   if (payload.notificationMuted === true) { desktopBridge()?.dismiss(convId); return; }
 
+  const sequence = ++notificationSequence;
+  const receivedAt = Date.now();
   const version = sessionVersion;
   let state: ConversationState;
   try {
@@ -261,7 +264,7 @@ async function onSocketMessage(payload: {
     avatarUrl: message.redacted ? null : notificationAvatarUrl(
       payload.threadType === 'group' ? payload.groupAvatarUrl : payload.senderAvatarUrl,
     ),
-    at: Date.now(),
+    at: receivedAt,
   };
   if (desktopBridge()?.role === 'main') {
     try {
@@ -284,7 +287,7 @@ async function onSocketMessage(payload: {
         context: redacted ? 'Nội dung riêng tư' : nick || (group ? 'Nhóm Zalo' : 'Tin nhắn riêng'),
         preview: redacted ? 'Bạn có tin nhắn mới' : notificationPreview(message, 240),
         avatarUrl: redacted ? null : notificationAvatarUrl(group ? detail.groupAvatarUrl || payload.groupAvatarUrl : detail.contact?.avatarUrl || detail.friendship?.zaloAvatarUrl || payload.senderAvatarUrl),
-        redacted, announce, at: card.at });
+        redacted, announce, at: card.at, sequence });
       if (added && announce && started && version === sessionVersion) beep();
     } catch { /* Desktop shutdown must not interfere with receiving messages. */ }
     return;

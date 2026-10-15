@@ -10,6 +10,7 @@ export interface DesktopNotification {
   redacted?: boolean;
   announce?: boolean;
   senderName?: string;
+  sequence?: number;
 }
 export interface DesktopState { items: DesktopNotification[]; count: number; signedIn: boolean; pinned?: boolean; revision?: number }
 export interface DesktopAppInfo { version: string; platform: string; arch: string }

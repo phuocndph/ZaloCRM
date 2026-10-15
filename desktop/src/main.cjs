@@ -2,7 +2,7 @@ const { app, BrowserWindow, Menu, Tray, screen, session, ipcMain, shell, dialog,
 const path = require('node:path');
 const fs = require('node:fs');
 const { pathToFileURL } = require('node:url');
-const { crmOrigin, sameOrigin, desktopRelease, compareVersions, clampBounds, adjacentBounds, shouldAutoHide, notification, ConversationQueue, ID } = require('./policy.cjs');
+const { crmOrigin, sameOrigin, desktopRelease, compareVersions, clampBounds, adjacentBounds, shouldAutoHide, ConversationQueue, ID } = require('./policy.cjs');
 const { downloadVerifiedInstaller, latestGithubRelease } = require('./update.cjs');
 
 const origin = crmOrigin(process.env.ZALOCRM_DESKTOP_URL);
@@ -178,6 +178,9 @@ function openUpdater() {
   updateWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
   updateWindow.webContents.on('will-navigate', (event) => event.preventDefault());
   updateWindow.webContents.once('did-finish-load', () => { updateWindow.show(); updateWindow.focus(); void checkForUpdate(); });
+  updateWindow.on('close', (event) => {
+    if (updateInProgress && !quitting) { event.preventDefault(); updateWindow.hide(); }
+  });
   updateWindow.on('closed', () => { updateWindow = null; });
   void updateWindow.loadFile(updateFile);
 }
@@ -197,7 +200,8 @@ async function installUpdate(event, value, trusted = false) {
   try {
     const contents = event.sender;
     installer = await downloadVerifiedInstaller(release, app.getPath('temp'), (status) => emitUpdateStatus(contents, status));
-    const owner = BrowserWindow.fromWebContents(contents) ?? mainWindow;
+    const owner = (!contents.isDestroyed() && BrowserWindow.fromWebContents(contents)) || mainWindow;
+    if (live(owner)) { owner.show(); owner.focus(); }
     const decision = await dialog.showMessageBox(owner, {
       type: 'question', title: 'Cài đặt bản cập nhật',
       message: `Bản ${release.version} đã tải và kiểm tra xong.`,
@@ -277,7 +281,16 @@ function registerIpc() {
     if (!authorized(event, ['main']) || screenLocked) return false;
     if (live(chatWindow) && chatWindow.isFocused() && activeConversation === value?.convId) return false;
     const added = queue.add(value, origin);
-    if (added) { broadcast(); showPreview(notification(value, origin)); }
+    if (added) {
+      broadcast();
+      const latest = queue.rows.get(value.convId);
+      // Late profile lookups still count as unread, but cannot replace a newer preview.
+      if (latest?.id === value.id) showPreview(latest);
+      else if (latest && previewItems.has(value.convId)) {
+        previewItems.set(value.convId, { ...previewItems.get(value.convId), count: latest.count });
+        paintPreview();
+      }
+    }
     return added;
   });
   ipcMain.handle('desktop:unread', (event, value) => {

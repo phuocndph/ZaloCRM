@@ -175,4 +175,21 @@ describe('personal conversation notification mute', () => {
     const notify = vi.fn(); window.zaloDesktop = { role: 'main', notify, clear: vi.fn(), dismiss: vi.fn() } as any;
     await mocks.handlers.get('chat:message')!(payload()); expect(notify).toHaveBeenCalled();
   });
+  it('preserves receipt order when customer profile lookups finish out of order', async () => {
+    const notify = vi.fn(); window.zaloDesktop = { role: 'main', notify, clear: vi.fn(), dismiss: vi.fn() } as any;
+    const lookups: Array<(value: any) => void> = [];
+    mocks.get.mockImplementation((path: string) => path.endsWith('/state')
+      ? Promise.resolve({ data: emptyConversationState('conv') })
+      : new Promise((resolve) => lookups.push(resolve)));
+    const handler = mocks.handlers.get('chat:message')!;
+    const older = handler(payload('older'));
+    const newer = handler(payload('newer'));
+    await flushPromises();
+    lookups[1]({ data: {} }); await newer;
+    lookups[0]({ data: {} }); await older;
+    const [newerNotification, olderNotification] = notify.mock.calls.map(([value]) => value);
+    expect(newerNotification.id).toBe('newer'); expect(olderNotification.id).toBe('older');
+    expect(newerNotification.sequence).toBeGreaterThan(olderNotification.sequence);
+    expect(notify).toHaveBeenCalledTimes(2);
+  });
 });

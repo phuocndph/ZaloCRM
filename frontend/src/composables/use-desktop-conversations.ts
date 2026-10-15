@@ -13,9 +13,10 @@ export function useDesktopConversations(search: Ref<string>, unread: Ref<boolean
   let request: AbortController | null = null;
   let timer: ReturnType<typeof setTimeout> | null = null;
   let debounce: ReturnType<typeof setTimeout> | null = null;
+  let refreshQueued = false;
   async function refresh(append = false) {
     if (disposed || (append && (loading.value || loadingMore.value || !hasMore.value))) return;
-    request?.abort();
+    if (request) { if (!append) refreshQueued = true; return; }
     const current = new AbortController(); request = current;
     const revision = ++generation;
     if (append) loadingMore.value = true; else loading.value = true;
@@ -46,7 +47,10 @@ export function useDesktopConversations(search: Ref<string>, unread: Ref<boolean
     } catch {
       if (!disposed && !current.signal.aborted && revision === generation) error.value = 'Không tải được danh sách hội thoại.';
     } finally {
-      if (revision === generation) { loading.value = false; loadingMore.value = false; request = null; }
+      if (request === current) {
+        loading.value = false; loadingMore.value = false; request = null;
+        if (refreshQueued) { refreshQueued = false; schedule(); }
+      }
     }
   }
   async function loadAccounts() {
@@ -56,20 +60,25 @@ export function useDesktopConversations(search: Ref<string>, unread: Ref<boolean
     } catch { if (!disposed) accounts.value = []; }
   }
   function schedule() {
-    if (timer) return;
+    if (disposed || timer) return;
     timer = setTimeout(() => { timer = null; void refresh(); }, 500);
   }
+  function cancelRefresh() {
+    ++generation; request?.abort(); request = null; refreshQueued = false;
+    loading.value = false; loadingMore.value = false;
+    if (timer) clearTimeout(timer); timer = null;
+    if (debounce) clearTimeout(debounce); debounce = null;
+  }
   function invalidate() {
-    ++generation; request?.abort(); rows.value = []; accounts.value = []; cursor = null; page = 1;
+    cancelRefresh(); rows.value = []; accounts.value = []; cursor = null; page = 1; hasMore.value = false;
     accessRevision.value++;
     void loadAccounts(); schedule();
   }
   watch([search, unread, accountId], () => {
-    ++generation; request?.abort(); rows.value = []; cursor = null; page = 1; hasMore.value = false;
-    if (debounce) clearTimeout(debounce);
+    cancelRefresh(); rows.value = []; cursor = null; page = 1; hasMore.value = false;
     debounce = setTimeout(() => { debounce = null; void refresh(); }, 220);
   });
-  const socket = createAppSocket({ onStatusChange: (status) => { offline.value = status !== 'connected'; }, onReconnect: () => { invalidate(); } });
+  const socket = createAppSocket({ onStatusChange: (status) => { offline.value = status !== 'connected'; }, onReconnect: () => { void loadAccounts(); schedule(); } });
   for (const event of ['chat:message', 'chat:read', 'chat:deleted', 'chat:message-edited', 'conversation:state', 'chat:group-info-updated']) socket.on(event, schedule);
   for (const event of ['zalo:access-changed', 'privacy:mode-changed', 'conversation:privacy-changed']) socket.on(event, invalidate);
   const resume = () => { if (!document.hidden) schedule(); };
@@ -77,8 +86,7 @@ export function useDesktopConversations(search: Ref<string>, unread: Ref<boolean
   const poll = setInterval(resume, 30_000);
   void refresh(); void loadAccounts();
   onScopeDispose(() => {
-    disposed = true; ++generation; request?.abort(); socket.disconnect();
-    if (timer) clearTimeout(timer); if (debounce) clearTimeout(debounce); clearInterval(poll);
+    disposed = true; cancelRefresh(); socket.disconnect(); clearInterval(poll);
     window.removeEventListener('focus', resume); window.removeEventListener('online', resume);
   });
   return { rows, accounts, loading, loadingMore, error, hasMore, offline, accessRevision, refresh, loadMore: () => refresh(true) };

@@ -1,4 +1,4 @@
-# Windows Chat Bubble 0.2.3
+# Windows Chat Bubble 0.2.4
 
 The client connects to https://zcrm.joliefam.vn. Employees sign in with their
 normal CRM account; no Hermes keys or additional Zalo sessions are involved.
@@ -13,12 +13,13 @@ Node.js 22.12 or newer is required for desktop tooling. From desktop/:
 npm ci
 npm test
 npm run test:smoke
+npm run test:updater
 npm --prefix ../frontend run build
 npm run test:ui
 npm run dist
 ```
 
-Installer: desktop/release/ZaloCRM-Setup-0.2.3.exe. Build scripts prepare Electron
+Installer: desktop/release/ZaloCRM-Setup-0.2.4.exe. Build scripts prepare Electron
 and reuse its unpacked distribution, avoiding the ZIP temporary-directory rename
 failure seen in the first release. The NSIS icon uses a separate 512px brand image.
 The installer remains unsigned; Windows can show an unknown-publisher warning.
@@ -29,7 +30,9 @@ It reads the official public phuocndph/ZaloCRM GitHub release, validates its ass
 size and SHA-256 digest, then downloads and verifies the installer. Redirects are allowed
 only to GitHub's release-assets.githubusercontent.com host. Users confirm before the app
 opens the installer and exits. The existing CRM-hosted update API remains available for
-browsers and version 0.2.2 clients. Older clients can install 0.2.3 manually from Releases.
+browsers and version 0.2.2 clients. Older clients can install 0.2.4 manually from Releases.
+Closing the updater during a transfer hides its window while the same verified transfer
+continues. Reopening restores progress; completion brings back the confirmation window.
 
 ## Publish An Update
 
@@ -38,15 +41,15 @@ GitHub release for the same version. Native 0.2.3+ clients discover it without n
 VPS release manifest. To also enable web/legacy downloads, publish it on the VPS:
 
 ```bash
-curl -fL --retry 3 -o /tmp/ZaloCRM-Setup-0.2.3.exe \
-  https://github.com/phuocndph/ZaloCRM/releases/download/v0.2.3/ZaloCRM-Setup-0.2.3.exe
-docker cp /tmp/ZaloCRM-Setup-0.2.3.exe zalo-crm-app:/app/ZaloCRM-Setup-0.2.3.exe
-docker cp desktop/release-notes-0.2.3.txt zalo-crm-app:/app/desktop-release-notes.txt
+curl -fL --retry 3 -o /tmp/ZaloCRM-Setup-0.2.4.exe \
+  https://github.com/phuocndph/ZaloCRM/releases/download/v0.2.4/ZaloCRM-Setup-0.2.4.exe
+docker cp /tmp/ZaloCRM-Setup-0.2.4.exe zalo-crm-app:/app/ZaloCRM-Setup-0.2.4.exe
+docker cp desktop/release-notes-0.2.4.txt zalo-crm-app:/app/desktop-release-notes.txt
 docker exec zalo-crm-app node scripts/publish-desktop-release.mjs \
-  --file /app/ZaloCRM-Setup-0.2.3.exe \
-  --version 0.2.3 \
+  --file /app/ZaloCRM-Setup-0.2.4.exe \
+  --version 0.2.4 \
   --notes-file /app/desktop-release-notes.txt
-docker exec zalo-crm-app rm -f /app/ZaloCRM-Setup-0.2.3.exe /app/desktop-release-notes.txt
+docker exec zalo-crm-app rm -f /app/ZaloCRM-Setup-0.2.4.exe /app/desktop-release-notes.txt
 ```
 
 The publisher calculates SHA-256, copies the installer to
@@ -70,6 +73,10 @@ All conversations allowed by CRM access rules are available through the authoriz
 paginated API. Search, All/Unread tabs, nick filters, avatars, last-message snippets,
 timestamps and unread labels are supported. Reading clears unread, not the list
 entry. New messages never force a switch away from the selected customer.
+Background list refreshes finish before coalesced follow-up work starts, avoiding request
+starvation during message bursts. Search/filter and privacy changes still cancel stale
+requests. Reconnect refreshes the inbox without discarding recent customers; actual
+privacy/access changes continue to clear cached customer identities immediately.
 
 Compact windows have list/chat views with a back button; wide windows show both.
 The most recent 12 opened customers remain in a separate horizontal strip, independent
@@ -110,6 +117,9 @@ Same-customer messages update that card instead of replacing another customer's 
 Cards expire after nine seconds; hover pauses expiry. Clicking opens the exact conversation;
 close dismisses the toast, not unread state. Tray menu provides content/name/off
 preview modes, bubble visibility, pin, Windows startup, full CRM and quit.
+Notifications carry receipt sequence numbers across asynchronous profile lookups. A delayed
+older message increments unread without overwriting newer text or reviving a customer
+already read. Sequence markers are bounded in process memory and cleared on owner changes.
 
 ## Security And Verification
 

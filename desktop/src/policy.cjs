@@ -77,7 +77,9 @@ function notification(value, origin = DEFAULT_ORIGIN) {
     senderName: value.redacted ? '' : text(value.senderName, 120),
     context: value.redacted ? 'Nội dung riêng tư' : text(value.context, 160),
     preview: value.redacted ? 'Bạn có tin nhắn mới' : text(value.preview, 240),
-    avatarUrl: value.redacted ? null : avatarUrl, announce: value.announce !== false, at: Date.now() };
+    avatarUrl: value.redacted ? null : avatarUrl, announce: value.announce !== false,
+    sequence: Number.isSafeInteger(value.sequence) && value.sequence > 0 ? value.sequence : 0,
+    at: Number.isSafeInteger(value.at) && value.at > 0 && value.at <= Date.now() ? value.at : Date.now() };
 }
 
 function clampBounds(bounds, workArea, width, height) {
@@ -95,17 +97,23 @@ function shouldAutoHide({ pinned, focused, childFocused, dialogOpen, holding }) 
   return !pinned && !focused && !childFocused && !dialogOpen && !holding;
 }
 class ConversationQueue {
-  constructor() { this.rows = new Map(); this.unread = new Map(); this.owner = null; this.seen = new Set(); this.revision = 0; }
+  constructor() { this.rows = new Map(); this.unread = new Map(); this.latestSequences = new Map(); this.owner = null; this.seen = new Set(); this.revision = 0; }
   setOwner(value) { const next = identity(value); if (next !== this.owner) this.clear(); this.owner = next; }
-  clear() { this.rows.clear(); this.unread.clear(); this.seen.clear(); this.revision++; }
+  clear() { this.rows.clear(); this.unread.clear(); this.latestSequences.clear(); this.seen.clear(); this.revision++; }
   add(value, origin) {
     const row = notification(value, origin);
     if (!this.owner || !row || this.seen.has(row.id)) return false;
     this.seen.add(row.id);
     if (this.seen.size > 2000) this.seen.delete(this.seen.values().next().value);
     const old = this.rows.get(row.convId);
-    this.rows.delete(row.convId);
-    this.rows.set(row.convId, { ...row, count: Math.min((old?.count ?? 0) + 1, 999) });
+    const stale = row.sequence > 0 && (this.latestSequences.get(row.convId) ?? 0) > row.sequence;
+    if (stale && !old) return false;
+    if (row.sequence > 0 && !stale) {
+      this.latestSequences.delete(row.convId); this.latestSequences.set(row.convId, row.sequence);
+      if (this.latestSequences.size > 2000) this.latestSequences.delete(this.latestSequences.keys().next().value);
+    }
+    if (!stale) this.rows.delete(row.convId);
+    this.rows.set(row.convId, { ...(stale ? old : row), count: Math.min((old?.count ?? 0) + 1, 999) });
     this.unread.set(row.convId, Math.min((this.unread.get(row.convId) ?? 0) + 1, 9999));
     this.revision++;
     if (this.rows.size > 100) this.rows.delete(this.rows.keys().next().value);

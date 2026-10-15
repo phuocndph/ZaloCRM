@@ -2,9 +2,12 @@
 import { effectScope, ref } from 'vue';
 import { flushPromises } from '@vue/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-const mocks = vi.hoisted(() => ({ get: vi.fn(), handlers: new Map<string, (...args: any[]) => any>() }));
+const mocks = vi.hoisted(() => ({ get: vi.fn(), handlers: new Map<string, (...args: any[]) => any>(), reconnect: undefined as undefined | (() => void) }));
 vi.mock('@/api', () => ({ api: { get: mocks.get } }));
-vi.mock('@/api/socket', () => ({ createAppSocket: () => ({ on: (event: string, fn: (...args: any[]) => any) => mocks.handlers.set(event, fn), disconnect: vi.fn() }) }));
+vi.mock('@/api/socket', () => ({ createAppSocket: (options: { onReconnect?: () => void }) => {
+  mocks.reconnect = options.onReconnect;
+  return { on: (event: string, fn: (...args: any[]) => any) => mocks.handlers.set(event, fn), disconnect: vi.fn() };
+} }));
 import { useDesktopConversations } from './use-desktop-conversations';
 const scopes: ReturnType<typeof effectScope>[] = [];
 function start() {
@@ -42,5 +45,39 @@ describe('desktop conversation inbox', () => {
   it('does not wipe current rows on a transient server error', async () => {
     const { inbox } = start(); await flushPromises(); mocks.get.mockRejectedValue(new Error('offline')); await inbox.refresh();
     expect(inbox.rows.value.map((row) => row.id)).toEqual(['first']); expect(inbox.error.value).toContain('Không tải');
+  });
+  it('completes slow refreshes during sustained incoming messages and coalesces follow-up work', async () => {
+    vi.useFakeTimers();
+    let completed = 0;
+    const signals: AbortSignal[] = [];
+    mocks.get.mockImplementation((path: string, options: any) => {
+      if (path === '/zalo-accounts') return Promise.resolve({ data: [] });
+      signals.push(options.signal);
+      return new Promise((resolve) => setTimeout(() => {
+        completed++;
+        resolve({ data: { conversations: [{ id: `snapshot-${completed}` }], hasMore: false } });
+      }, 750));
+    });
+    const { inbox } = start();
+    for (let index = 0; index < 8; index++) {
+      mocks.handlers.get('chat:message')!();
+      await vi.advanceTimersByTimeAsync(510);
+    }
+    expect(completed).toBeGreaterThanOrEqual(3);
+    expect(inbox.rows.value).toHaveLength(1);
+    expect(signals.every((signal) => !signal.aborted)).toBe(true);
+    expect(signals.length).toBeLessThanOrEqual(6);
+  });
+  it('preserves cached customers and the recent-strip revision on reconnect', async () => {
+    vi.useFakeTimers();
+    const { inbox } = start(); await flushPromises();
+    mocks.reconnect!();
+    expect(inbox.rows.value.map((row) => row.id)).toEqual(['first']);
+    expect(inbox.accessRevision.value).toBe(0);
+    await vi.advanceTimersByTimeAsync(510); await flushPromises();
+    expect(inbox.rows.value.map((row) => row.id)).toEqual(['first']);
+    mocks.handlers.get('zalo:access-changed')!();
+    expect(inbox.accessRevision.value).toBe(1);
+    expect(inbox.rows.value).toEqual([]);
   });
 });

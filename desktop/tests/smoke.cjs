@@ -72,6 +72,12 @@ async function run() {
     await toast.getByRole('button', { name: 'Ẩn thông báo Đại lý Miền Nam' }).click();
     assert.equal((await main.evaluate(() => window.zaloDesktop.state())).count, 2, 'Dismissing preview does not mark customer read');
     await main.evaluate(() => window.zaloDesktop.dismiss('group'));
+    await main.evaluate(() => window.zaloDesktop.notify({ id: 'newer-order', convId: 'order-test', name: 'Customer', preview: 'Latest message', sequence: 20 }));
+    await main.evaluate(() => window.zaloDesktop.notify({ id: 'older-order', convId: 'order-test', name: 'Customer', preview: 'Outdated message', sequence: 10 }));
+    await toast.waitForFunction(() => document.querySelector('.preview-text').textContent === 'Latest message');
+    assert.ok((await toast.locator('.notification').first().textContent()).includes('2 tin mới'));
+    assert.equal((await main.evaluate(() => window.zaloDesktop.state())).count, 3);
+    await main.evaluate(() => window.zaloDesktop.dismiss('order-test'));
     assert.equal(await toast.evaluate(() => typeof window.require), 'undefined');
     assert.equal(await bubble.evaluate(() => typeof window.require), 'undefined');
     const resultDir = path.resolve(__dirname, '../test-results'); await fs.mkdir(resultDir, { recursive: true });
