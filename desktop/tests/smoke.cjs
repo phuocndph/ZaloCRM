@@ -75,7 +75,7 @@ async function run() {
     await main.evaluate(() => window.zaloDesktop.notify({ id: 'newer-order', convId: 'order-test', name: 'Customer', preview: 'Latest message', sequence: 20 }));
     await main.evaluate(() => window.zaloDesktop.notify({ id: 'older-order', convId: 'order-test', name: 'Customer', preview: 'Outdated message', sequence: 10 }));
     await toast.waitForFunction(() => document.querySelector('.preview-text').textContent === 'Latest message');
-    assert.ok((await toast.locator('.notification').first().textContent()).includes('2 tin mới'));
+    assert.equal(await toast.locator('.notification').first().locator('.notification-count').getAttribute('aria-label'), '2 tin mới');
     assert.equal((await main.evaluate(() => window.zaloDesktop.state())).count, 3);
     await main.evaluate(() => window.zaloDesktop.dismiss('order-test'));
     assert.equal(await toast.evaluate(() => typeof window.require), 'undefined');

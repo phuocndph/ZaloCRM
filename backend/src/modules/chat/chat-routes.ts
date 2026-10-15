@@ -1200,6 +1200,8 @@ export async function chatRoutes(app: FastifyInstance) {
       crmTagsPerNick: unknown;
       autoTags: unknown;
       aliasInNick: string | null;
+      zaloDisplayName: string | null;
+      zaloAvatarUrl: string | null;
     } | null = null;
     if (conversation.threadType === 'user' && conversation.contactId && conversation.externalThreadId) {
       const f = await prisma.friend.findUnique({
@@ -1221,6 +1223,8 @@ export async function chatRoutes(app: FastifyInstance) {
           autoTags: true, // FIX 2026-06-18: detail thiếu autoTags → mở chat rebuild tag
                           // mất auto-tag (vd "Hoạt động"). List có autoTags; thêm để parity.
           aliasInNick: true,
+          zaloDisplayName: true,
+          zaloAvatarUrl: true,
         },
       });
       friendship = f;

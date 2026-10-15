@@ -1,8 +1,8 @@
-# Windows Chat Bubble 0.2.5
+# Windows Chat Bubble 0.2.6
 
 The client connects to https://zcrm.joliefam.vn. Employees sign in with their
 normal CRM account; no Hermes keys or additional Zalo sessions are involved.
-Update the VPS frontend and install this Windows version together. This release
+Update the VPS backend/frontend and install this Windows version together. This release
 does not publish changes or deploy the VPS automatically.
 
 ## Build And Test
@@ -13,13 +13,14 @@ Node.js 22.12 or newer is required for desktop tooling. From desktop/:
 npm ci
 npm test
 npm run test:smoke
+npm run test:preview
 npm run test:updater
 npm --prefix ../frontend run build
 npm run test:ui
 npm run dist
 ```
 
-Installer: desktop/release/ZaloCRM-Setup-0.2.5.exe. Build scripts prepare Electron
+Installer: desktop/release/ZaloCRM-Setup-0.2.6.exe. Build scripts prepare Electron
 and reuse its unpacked distribution, avoiding the ZIP temporary-directory rename
 failure seen in the first release. The NSIS icon uses a separate 512px brand image.
 The installer remains unsigned; Windows can show an unknown-publisher warning.
@@ -30,7 +31,7 @@ It reads the official public phuocndph/ZaloCRM GitHub release, validates its ass
 size and SHA-256 digest, then downloads and verifies the installer. Redirects are allowed
 only to GitHub's release-assets.githubusercontent.com host. Users confirm before the app
 opens the installer and exits. The existing CRM-hosted update API remains available for
-browsers and version 0.2.2 clients. Older clients can install 0.2.5 manually from Releases.
+browsers and version 0.2.2 clients. Older clients can install 0.2.6 manually from Releases.
 Closing the updater during a transfer hides its window while the same verified transfer
 continues. Reopening restores progress; completion brings back the confirmation window.
 
@@ -41,15 +42,15 @@ GitHub release for the same version. Native 0.2.3+ clients discover it without n
 VPS release manifest. To also enable web/legacy downloads, publish it on the VPS:
 
 ```bash
-curl -fL --retry 3 -o /tmp/ZaloCRM-Setup-0.2.5.exe \
-  https://github.com/phuocndph/ZaloCRM/releases/download/v0.2.5/ZaloCRM-Setup-0.2.5.exe
-docker cp /tmp/ZaloCRM-Setup-0.2.5.exe zalo-crm-app:/app/ZaloCRM-Setup-0.2.5.exe
-docker cp desktop/release-notes-0.2.5.txt zalo-crm-app:/app/desktop-release-notes.txt
+curl -fL --retry 3 -o /tmp/ZaloCRM-Setup-0.2.6.exe \
+  https://github.com/phuocndph/ZaloCRM/releases/download/v0.2.6/ZaloCRM-Setup-0.2.6.exe
+docker cp /tmp/ZaloCRM-Setup-0.2.6.exe zalo-crm-app:/app/ZaloCRM-Setup-0.2.6.exe
+docker cp desktop/release-notes-0.2.6.txt zalo-crm-app:/app/desktop-release-notes.txt
 docker exec zalo-crm-app node scripts/publish-desktop-release.mjs \
-  --file /app/ZaloCRM-Setup-0.2.5.exe \
-  --version 0.2.5 \
+  --file /app/ZaloCRM-Setup-0.2.6.exe \
+  --version 0.2.6 \
   --notes-file /app/desktop-release-notes.txt
-docker exec zalo-crm-app rm -f /app/ZaloCRM-Setup-0.2.5.exe /app/desktop-release-notes.txt
+docker exec zalo-crm-app rm -f /app/ZaloCRM-Setup-0.2.6.exe /app/desktop-release-notes.txt
 ```
 
 The publisher calculates SHA-256, copies the installer to
@@ -119,10 +120,16 @@ closes it. Escape returns to the inbox, then hides it, unless a dialog/menu hand
 Escape. Native file pickers, confirmation dialogs and focused attachment children
 hold chat open. Picker holds time out if cancel events are lost.
 
-New eligible messages show up to three non-activating cards with CRM customer/group name,
-receiving nick, timestamp, message count and a bounded three-line snippet. Group cards
+New eligible messages show up to three non-activating 108px cards with CRM customer/group name,
+receiving nick, timestamp, message count and a bounded two-line snippet. Group cards
 also name the member sending the message. Contact/friend metadata fills missing sender
-names and avatars. Images/files/voice use type labels; original attachments are not downloaded.
+names and avatars. The authorized conversation detail API includes per-nick Zalo name/avatar;
+notifications prefer that avatar, with distinct contact/socket fallbacks. Relative avatar paths
+resolve against the CRM origin; unsafe protocols and URL credentials are rejected. A failed or
+slow image tries the next candidate. Loaded avatars survive same-customer message updates;
+when all fail, customer initials replace the old application-logo placeholder. Private previews
+strip every candidate before rendering, so they never request customer images.
+Images/files/voice use type labels; original attachments are not downloaded.
 Same-customer messages update that card instead of replacing another customer's card.
 Cards expire after nine seconds; hover pauses expiry. Clicking opens the exact conversation;
 close dismisses the toast, not unread state. Tray menu provides content/name/off
@@ -149,6 +156,8 @@ Tests use synthetic local fixtures, no production login or messages. Unit tests
 cover pagination/races, mute/privacy filtering, stale unread scans and notifications.
 Electron smoke covers the native menu/updater without CRM login, multi-customer previews,
 inbox-default, auto-hide/pin, simulated picker holds, attachment children and logout.
+Preview tests verify actual image decoding, failed/slow fallback, loaded-image reuse,
+private-image suppression, compact single/three-card bounds, close/read isolation and click targets.
 Built-frontend UI tests use 65 conversations for pagination/search/unread, A/B/A switching
 with draft restoration, bubble reopen, and 420px/laptop/wide screenshots. Actual Windows picker timing,
 real reconnects, physical multiple monitors and publisher signing need pilot checks

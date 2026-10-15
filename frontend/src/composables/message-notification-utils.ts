@@ -36,10 +36,15 @@ export function notificationAvatarUrl(value: unknown): string | null {
   try {
     const parsed = new URL(url, 'http://localhost');
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+    if (parsed.username || parsed.password) return null;
     return url;
   } catch {
     return null;
   }
+}
+
+export function notificationAvatarCandidates(...values: unknown[]): string[] {
+  return [...new Set(values.map(notificationAvatarUrl).filter((url): url is string => !!url))].slice(0, 3);
 }
 
 export function notificationRoute(convId: string, currentPath: string) {

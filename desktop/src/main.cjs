@@ -114,7 +114,7 @@ function showPreview(value) {
     preview: preferences.previewMode === 'name' ? 'Bạn có tin nhắn mới' : value.preview });
   if (previewItems.size > 3) previewItems.delete(previewItems.keys().next().value);
   if (!live(previewWindow)) {
-    previewWindow = new BrowserWindow({ width: 392, height: 204, frame: false, resizable: false, alwaysOnTop: true,
+    previewWindow = new BrowserWindow({ width: 360, height: 122, frame: false, resizable: false, alwaysOnTop: true,
       skipTaskbar: true, show: false, focusable: false, transparent: true, backgroundColor: '#00000000', webPreferences: options('preview') });
     previewWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     previewWindow.webContents.on('will-navigate', (event) => event.preventDefault());
@@ -127,9 +127,9 @@ function paintPreview() {
   if (!previewItems.size) { previewWindow.hide(); clearTimeout(previewTimer); return; }
   const anchor = bubbleWindow.getBounds();
   const work = screen.getDisplayMatching(anchor).workArea;
-  const limit = Math.max(1, Math.min(3, Math.floor((work.height - 32) / 172)));
+  const limit = Math.max(1, Math.min(3, Math.floor((work.height - 6) / 116)));
   const items = [...previewItems.values()].reverse().slice(0, limit);
-  previewWindow.setBounds(adjacentBounds(anchor, work, 392, 32 + items.length * 172));
+  previewWindow.setBounds(adjacentBounds(anchor, work, 360, 6 + items.length * 116));
   previewWindow.webContents.send('desktop:preview', items);
   previewWindow.showInactive();
   clearTimeout(previewTimer); if (!previewHovered) previewTimer = setTimeout(hidePreview, 9000);

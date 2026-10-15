@@ -24,6 +24,7 @@ import { router } from '@/router';
 import {
   compactNotificationLabel,
   notificationAvatarUrl,
+  notificationAvatarCandidates,
   notificationContext,
   notificationPreview,
   notificationRoute,
@@ -281,12 +282,15 @@ async function onSocketMessage(payload: {
         ? compactNotificationLabel(detail.groupName || payload.groupName, 120) || 'Nhóm Zalo'
         : compactNotificationLabel(detail.contact?.crmName || detail.friendship?.aliasInNick || detail.contact?.fullName || detail.friendship?.zaloDisplayName, 120) || card.name;
       const nick = compactNotificationLabel(detail.zaloAccount?.displayName, 80);
+      const avatarUrls = redacted ? [] : group
+        ? notificationAvatarCandidates(detail.groupAvatarUrl, payload.groupAvatarUrl)
+        : notificationAvatarCandidates(detail.friendship?.zaloAvatarUrl, detail.contact?.avatarUrl, payload.senderAvatarUrl);
       const added = await desktopBridge()!.notify({ id: card.id, convId: card.convId,
         name: redacted ? 'Tin nhắn mới' : name,
         senderName: redacted || !group ? '' : compactNotificationLabel(message.senderName, 120),
         context: redacted ? 'Nội dung riêng tư' : nick || (group ? 'Nhóm Zalo' : 'Tin nhắn riêng'),
         preview: redacted ? 'Bạn có tin nhắn mới' : notificationPreview(message, 240),
-        avatarUrl: redacted ? null : notificationAvatarUrl(group ? detail.groupAvatarUrl || payload.groupAvatarUrl : detail.contact?.avatarUrl || detail.friendship?.zaloAvatarUrl || payload.senderAvatarUrl),
+        avatarUrl: avatarUrls[0] || null, avatarUrls,
         redacted, announce, at: card.at, sequence });
       if (added && announce && started && version === sessionVersion) beep();
     } catch { /* Desktop shutdown must not interfere with receiving messages. */ }

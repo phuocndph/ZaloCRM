@@ -168,6 +168,23 @@ describe('personal conversation notification mute', () => {
     await mocks.handlers.get('chat:message')!(payload());
     expect(notify).toHaveBeenCalledWith(expect.objectContaining({ name: 'Đại lý Miền Nam', senderName: 'Customer', context: 'Nick CSKH', preview: 'Hello' }));
   });
+  it('prioritizes per-nick avatar and retains contact/socket images as fallbacks', async () => {
+    const notify = vi.fn(); window.zaloDesktop = { role: 'main', notify, clear: vi.fn(), dismiss: vi.fn() } as any;
+    mocks.get.mockImplementation((path: string) => Promise.resolve({ data: path.endsWith('/state') ? emptyConversationState('conv') : {
+      threadType: 'user', friendship: { zaloAvatarUrl: 'https://cdn.example.com/friend.jpg' }, contact: { avatarUrl: '/files/contact.jpg' },
+    } }));
+    await mocks.handlers.get('chat:message')!({ ...payload(), senderAvatarUrl: 'https://cdn.example.com/sender.jpg' });
+    expect(notify.mock.calls[0][0]).toMatchObject({ avatarUrl: 'https://cdn.example.com/friend.jpg',
+      avatarUrls: ['https://cdn.example.com/friend.jpg', '/files/contact.jpg', 'https://cdn.example.com/sender.jpg'] });
+  });
+  it('does not use a group member face as the group avatar and strips every private avatar candidate', async () => {
+    const notify = vi.fn(); window.zaloDesktop = { role: 'main', notify, clear: vi.fn(), dismiss: vi.fn() } as any;
+    mocks.get.mockImplementation((path: string) => Promise.resolve({ data: path.endsWith('/state') ? emptyConversationState('conv') : {
+      threadType: 'group', groupAvatarUrl: '/files/group.jpg', contact: { avatarUrl: '/files/customer.jpg' }, zaloAccount: { privacyMode: 'main' },
+    } }));
+    await mocks.handlers.get('chat:message')!({ ...payload(), senderAvatarUrl: '/files/member.jpg' });
+    expect(notify.mock.calls[0][0]).toMatchObject({ redacted: true, avatarUrl: null, avatarUrls: [] });
+  });
   it('still previews when the main CRM chat is behind another Windows app', async () => {
     Object.defineProperty(document, 'hidden', { configurable: true, value: false });
     vi.spyOn(document, 'hasFocus').mockReturnValue(false);
