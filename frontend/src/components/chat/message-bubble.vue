@@ -159,6 +159,14 @@
             </div>
           </div>
 
+          <SpecialMessageRenderer
+            v-else-if="contactCardType"
+            :type="contactCardType"
+            :content="parseContent(message.content)"
+            @open-profile="onOpenProfile"
+            @open-phone="(p) => emit('open-phone', p)"
+          />
+
           <!-- Image (có thể kèm caption phía dưới) -->
           <div v-else-if="getImageUrl(message)">
             <!-- 2026-06-11: @error → placeholder khi ảnh Zalo hết hạn link (404) thay vì
@@ -452,7 +460,7 @@ const otherSaleSenderName = computed<string | null>(() => {
 });
 
 const SPECIAL_TYPES = new Set([
-  'bank_transfer', 'call', 'qr_code', 'reminder', 'poll', 'note', 'forwarded', 'rich', 'location', 'link',
+  'bank_transfer', 'call', 'qr_code', 'reminder', 'poll', 'note', 'forwarded', 'rich', 'location', 'link', 'contact_card',
 ]);
 
 function isSpecialType(contentType: string | null | undefined): boolean {
@@ -475,7 +483,7 @@ function parseContent(content: string | null): unknown {
 function resolveSpecialType(msg: Message): string {
   // Bản cũ từng lưu danh thiếp recommened.user là qr_code vì description có
   // qrCodeUrl. Luôn đọc action để các tin lịch sử cũng lên đúng giao diện.
-  if (msg.contentType !== 'contact_card' && msg.contentType !== 'qr_code') return msg.contentType;
+  if (!isSpecialType(msg.contentType)) return msg.contentType;
   try {
     const p = safeParse(msg.content);
     const action = String(p?.action || '').toLowerCase();
@@ -483,8 +491,14 @@ function resolveSpecialType(msg: Message): string {
     if (action === 'recommened.user' || action === 'recommended.user') return 'user_suggest';
     if (action === 'recommened.link' || action === 'recommended.link') return 'link';
   } catch { /* fallthrough */ }
-  return 'contact_card';
+  return msg.contentType === 'contact_card' && !safeParse(msg.content)?.action
+    ? 'contact_card_profile' : msg.contentType;
 }
+
+const contactCardType = computed(() => {
+  const type = resolveSpecialType(props.message);
+  return type === 'contact_card_profile' || type === 'user_suggest' ? type : null;
+});
 
 // E21/E22 — mở Zalo user info dialog cho UID trong card. Parent (MessageThread) handle.
 function onOpenProfile(uid: string) {

@@ -98,7 +98,7 @@
 
     <!-- E21 Danh thiếp / E22 Gợi ý bạn bè (contact_card với action show.profile / recommened.user) -->
     <div
-      v-else-if="type === 'contact_card_profile' || type === 'user_suggest'"
+      v-else-if="type === 'contact_card' || type === 'contact_card_profile' || type === 'user_suggest'"
       class="profile-card"
       :class="{ 'is-suggest': type === 'user_suggest' }"
     >
@@ -113,21 +113,19 @@
         :class="{ 'profile-body--zalo-card': isZaloNameCard }"
         :style="profileCardStyle"
       >
-        <div class="profile-avatar">
-          <img v-if="profileAvatar" :src="profileAvatar" alt="avatar" class="profile-avatar-img" />
-          <v-icon v-else size="32" color="primary">mdi-account</v-icon>
-        </div>
+        <Avatar :src="profileAvatar" :name="profileName || 'Người liên hệ'" :size="44" class="profile-avatar" />
         <div class="profile-info">
           <div class="profile-name">{{ profileName || 'Người liên hệ' }}</div>
           <div v-if="profilePhone" class="profile-phone">
             <v-icon size="12">mdi-phone</v-icon>
             <span>{{ profilePhone }}</span>
-            <button type="button" class="profile-copy-phone" title="Sao chép số điện thoại" @click="copyAccount(profilePhone)">
-              <v-icon size="13">mdi-content-copy</v-icon>
+            <button type="button" class="profile-copy-phone" title="Sao chép số điện thoại" aria-label="Sao chép số điện thoại" @click.stop="copyProfilePhone">
+              <v-icon size="15">mdi-content-copy</v-icon>
             </button>
           </div>
           <div v-else-if="profileSubtitle" class="profile-phone">{{ profileSubtitle }}</div>
-          <div class="profile-subtitle">Danh thiếp Zalo</div>
+          <div v-else class="profile-phone profile-phone--missing">Không kèm số điện thoại</div>
+          <div class="profile-subtitle" role="status" aria-live="polite">{{ profileCopyStatus || 'Danh thiếp Zalo' }}</div>
         </div>
         <div v-if="profileQrImage" class="profile-qr-wrap">
           <img :src="profileQrImage" alt="QR danh thiếp" class="profile-qr-img" />
@@ -135,6 +133,7 @@
       </div>
       <div class="profile-actions">
         <button
+          v-if="profileUid || profilePhone"
           type="button"
           class="profile-btn primary"
           :title="type === 'user_suggest' ? 'Xem thông tin người này' : 'Mở chat với người này'"
@@ -144,6 +143,7 @@
           {{ type === 'user_suggest' ? 'Xem hồ sơ' : 'Gửi tin nhắn' }}
         </button>
         <button
+          v-if="profileUid || profilePhone"
           type="button"
           class="profile-btn"
           title="Kết bạn"
@@ -307,6 +307,8 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue';
 import { linkifyHtml } from '@/composables/use-rich-format';
+import { contactCard } from '@/composables/chat-contact-card';
+import Avatar from '@/components/ui/Avatar.vue';
 
 const props = defineProps<{
   type: string;
@@ -326,6 +328,7 @@ function onCallback() { emit('callback'); }
 function onOpenProfile() {
   const uid = profileUid.value;
   if (uid) emit('open-profile', uid);
+  else if (profilePhone.value) emit('open-phone', profilePhone.value);
 }
 
 // Click SĐT (.phone-link) bất kỳ trong tin rich → emit open-phone (event delegation
@@ -404,35 +407,37 @@ const profileDescription = computed<Record<string, unknown> | null>(() => {
     return null;
   }
 });
-const profileUid = computed<string>(() => {
-  const p = paramsObj.value;
-  return String(
-    p?.uid || p?.userId || props.content?.uid || props.content?.userId || props.content?.params || '',
-  );
-});
-const profileName = computed<string>(() => {
-  const p = paramsObj.value;
-  return String(
-    p?.zaloName || p?.displayName || p?.userName || p?.name || title.value || '',
-  ).trim();
-});
-const profileAvatar = computed<string>(() => {
-  const p = paramsObj.value;
-  const d = profileDescription.value;
-  const a = p?.avatar || p?.avatarUrl || d?.avatar || d?.avatarUrl || props.content?.thumb;
-  return typeof a === 'string' && a.startsWith('http') ? a : '';
-});
-const profilePhone = computed<string>(() => {
-  const p = paramsObj.value;
-  const d = profileDescription.value;
-  return String(p?.phone || p?.phoneNumber || d?.phone || d?.phoneNumber || '').trim();
-});
-const profileQrImage = computed<string>(() => {
-  const p = paramsObj.value;
-  const d = profileDescription.value;
-  const q = p?.qrCodeUrl || p?.qrUrl || p?.qrcode || p?.qr || d?.qrCodeUrl || props.content?.qrCodeUrl;
-  return typeof q === 'string' && q.startsWith('http') ? q : '';
-});
+const profile = computed(() => contactCard(props.content));
+const profileUid = computed(() => profile.value.uid);
+const profileName = computed(() => profile.value.name);
+const profileAvatar = computed(() => profile.value.avatar);
+const profilePhone = computed(() => profile.value.phone);
+const profileQrImage = computed(() => profile.value.qrImage);
+const profileCopyStatus = ref('');
+watch(() => props.content, () => { profileCopyStatus.value = ''; });
+
+async function copyProfilePhone() {
+  const phone = profilePhone.value;
+  if (!phone) return;
+  let copied = false;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(phone);
+      copied = true;
+    }
+  } catch { /* Fall back for HTTP deployments and denied clipboard access. */ }
+  if (!copied) {
+    const activeElement = document.activeElement as HTMLElement | null;
+    const field = document.createElement('textarea');
+    field.value = phone;
+    field.readOnly = true;
+    field.style.cssText = 'position:fixed;left:-9999px;top:0;opacity:0';
+    document.body.append(field);
+    try { field.select(); copied = document.execCommand('copy'); } catch { /* Show failure below. */ }
+    finally { field.remove(); activeElement?.focus({ preventScroll: true }); }
+  }
+  profileCopyStatus.value = copied ? 'Đã sao chép số điện thoại' : 'Không sao chép được. Hãy chọn số để sao chép.';
+}
 const isZaloNameCard = computed(() => props.type === 'user_suggest' && !!profilePhone.value);
 const profileCardStyle = computed(() => {
   if (!isZaloNameCard.value) return undefined;
@@ -442,10 +447,7 @@ const profileCardStyle = computed(() => {
     backgroundImage: image,
   };
 });
-const profileSubtitle = computed<string>(() => {
-  const desc = props.content?.description;
-  return typeof desc === 'string' ? desc.trim() : '';
-});
+const profileSubtitle = computed(() => profile.value.subtitle);
 
 // ── E28 Reminder body — Zalo lưu phần mô tả ở description hoặc params.description ──
 const reminderBody = computed<string>(() => {
@@ -869,9 +871,11 @@ const linkDescription = computed<string>(() => {
 /* ════════ E21/E22 Profile / Suggest user card ════════ */
 .profile-card {
   display: block;
-  width: min(276px, 100%);
+  width: 300px;
+  max-width: 100%;
+  box-sizing: border-box;
   padding: 12px;
-  border-radius: 12px;
+  border-radius: 8px;
   background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
   border: 1px solid rgba(15, 23, 42, 0.08);
   box-shadow: 0 8px 22px rgba(15, 23, 42, 0.08), 0 1px 2px rgba(15, 23, 42, 0.05);
@@ -911,7 +915,7 @@ const linkDescription = computed<string>(() => {
 }
 .profile-body {
   display: grid;
-  grid-template-columns: 52px minmax(0, 1fr) auto;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
 }
@@ -935,8 +939,8 @@ const linkDescription = computed<string>(() => {
 }
 .profile-body--zalo-card .profile-phone { font-weight: 600; }
 .profile-avatar {
-  width: 52px;
-  height: 52px;
+  width: 44px;
+  height: 44px;
   border-radius: 50%;
   background: linear-gradient(135deg, #eef6ff, #f3f4f6);
   display: flex;
@@ -953,9 +957,7 @@ const linkDescription = computed<string>(() => {
   font-size: 14px;
   line-height: 1.25;
   color: #172033;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
 }
 .profile-phone {
   font-size: 12px;
@@ -965,16 +967,18 @@ const linkDescription = computed<string>(() => {
   gap: 4px;
   margin-top: 3px;
   min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex-wrap: wrap;
+  overflow-wrap: anywhere;
 }
+.profile-phone > span { user-select: text; overflow-wrap: anywhere; min-width: 0; }
+.profile-phone--missing { font-size: 11px; }
 .profile-copy-phone {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
   padding: 0;
   border: 0;
   border-radius: 4px;
@@ -987,9 +991,7 @@ const linkDescription = computed<string>(() => {
   margin-top: 3px;
   font-size: 11.5px;
   color: #8a94a6;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
 }
 .profile-qr-wrap {
   width: 52px;
@@ -1013,6 +1015,11 @@ const linkDescription = computed<string>(() => {
   margin-top: 12px;
   padding-top: 10px;
   border-top: 1px solid rgba(15, 23, 42, 0.07);
+}
+.profile-actions:empty { display: none; }
+@media (max-width: 480px) {
+  .profile-body { grid-template-columns: 44px minmax(0, 1fr); }
+  .profile-qr-wrap { grid-column: 2; }
 }
 .profile-btn {
   width: 100%;

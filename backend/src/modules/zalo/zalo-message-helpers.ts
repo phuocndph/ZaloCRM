@@ -21,8 +21,6 @@ const KNOWN_MSG_TYPE_PATTERNS = [
  * Falls back to 'text' for unrecognised types or plain-string content.
  */
 export function detectContentType(msgType: string | undefined, content: any): string {
-  if (!msgType) return 'text';
-
   // ── FIX 2026-05-21: action-based dispatch PHẢI chạy trước msgType keyword check ──
   // Zalo wrap call/bank/qr trong cùng family "recommended.*" → nếu để keyword check
   // "recommended/card" ăn trước, call message sẽ bị classify nhầm thành 'contact_card'
@@ -35,7 +33,7 @@ export function detectContentType(msgType: string | undefined, content: any): st
     if (action === 'zinstant.bankcard') return 'bank_transfer';
     // Danh thiếp Zalo thường có QR kèm theo, nhưng action recommened.user mới là
     // tín hiệu quyết định. Ưu tiên nó để không biến danh thiếp thành QR thuần.
-    if (action === 'recommened.user' || action === 'recommended.user') return 'contact_card';
+    if (action === 'recommened.user' || action === 'recommended.user' || action === 'show.profile') return 'contact_card';
     if (typeof content.description === 'string' && content.description.includes('qrCodeUrl')) {
       return 'qr_code';
     }
@@ -52,6 +50,8 @@ export function detectContentType(msgType: string | undefined, content: any): st
     // Fallback shape detection cho call (1 số SDK version dùng key khác)
     if (content.callDuration !== undefined || content.callType !== undefined) return 'call';
   }
+
+  if (!msgType) return 'text';
 
   if (msgType.includes('photo') || msgType.includes('image')) return 'image';
   if (msgType.includes('sticker')) return 'sticker';
