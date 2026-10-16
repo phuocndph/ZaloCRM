@@ -8,6 +8,7 @@ import { stat, access, open } from 'node:fs/promises';
 import path from 'node:path';
 import { prisma } from '../../shared/database/prisma-client.js';
 import { authMiddleware } from '../auth/auth-middleware.js';
+import { buildPrivacyContext, canSeeConversationContent } from '../privacy/redact.js';
 import { requireZaloAccess } from '../zalo/zalo-access-middleware.js';
 import { getUserFullName, outboundDeliveryState } from './chat-helpers.js';
 import {
@@ -63,7 +64,8 @@ async function authorizedConversation(request: FastifyRequest, reply: FastifyRep
   const conversation = await prisma.conversation.findFirst({ where: { id, orgId: user.orgId }, include: { zaloAccount: true } });
   if (!conversation) { reply.status(404).send({ error: 'Conversation not found' }); return null; }
   if ((conversation.isPrivate && conversation.privateOwnerUserId !== user.id)
-    || (conversation.zaloAccount.privacyMode === 'main' && conversation.zaloAccount.ownerUserId !== user.id)) {
+    || (conversation.zaloAccount.privacyMode === 'main' && conversation.zaloAccount.ownerUserId !== user.id)
+    || !canSeeConversationContent(conversation, await buildPrivacyContext(request))) {
     reply.status(403).send({ error: 'Conversation is private', code: 'CONVERSATION_PRIVATE' }); return null;
   }
   return conversation;

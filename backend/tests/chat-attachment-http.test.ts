@@ -15,6 +15,10 @@ vi.mock('../src/modules/zalo/zalo-access-middleware.js', () => ({ requireZaloAcc
 vi.mock('../src/modules/zalo/zalo-pool.js', () => ({ zaloPool: { getIO: () => null, getInstance: vi.fn() } }));
 vi.mock('../src/shared/zalo-operations.js', () => ({ zaloOps: { sendFile: vi.fn(), sendImage: vi.fn() }, isZaloDeliveryUncertain: vi.fn(), isDeterministicZaloRejection: vi.fn(), ZaloDeliveryUncertainError: class extends Error {} }));
 vi.mock('../src/modules/ai/conversation-analysis-queue.js', () => ({ enqueueConversationAnalysis: vi.fn() }));
+vi.mock('../src/modules/privacy/redact.js', async (original) => ({
+  ...await original<typeof import('../src/modules/privacy/redact.js')>(),
+  buildPrivacyContext: vi.fn(async () => ({ viewerUserId: actor.id, orgId: actor.orgId, privacyUnlocked: false })),
+}));
 
 const root = await mkdtemp(path.join(os.tmpdir(), 'zalocrm-attachments-test-'));
 vi.stubEnv('CHAT_OUTBOX_DIR', root);
@@ -72,6 +76,39 @@ function upload(ids = ['echo-a'], filename = 'quote.pdf', contents = '%PDF-1.4\n
 }
 
 describe('attachment multipart API', () => {
+  it('blocks locked main-nick status before reading any attachment content', async () => {
+    conversation.zaloAccount.privacyMode = 'main';
+    conversation.zaloAccount.ownerUserId = actor.id;
+    const response = await app.inject({ method: 'GET', url: '/api/v1/conversations/conversation/attachments/status?echoIds=%5B%22known-echo%22%5D' });
+    expect(response.statusCode).toBe(403);
+    expect(response.json().code).toBe('CONVERSATION_PRIVATE');
+    expect(db.message.findMany).not.toHaveBeenCalled();
+    expect(db.message.updateMany).not.toHaveBeenCalled();
+  });
+  it.each(['upload', 'retry', 'status'])('denies locked main-nick %s without touching message rows', async (operation) => {
+    conversation.zaloAccount.privacyMode = 'main';
+    conversation.zaloAccount.ownerUserId = actor.id;
+    const response = operation === 'upload' ? await upload() : operation === 'retry'
+      ? await app.inject({ method: 'POST', url: '/api/v1/conversations/conversation/attachments/retry', payload: { echoIds: ['known'] } })
+      : await app.inject({ method: 'GET', url: '/api/v1/conversations/conversation/attachments/status?echoIds=%5B%22known%22%5D' });
+    expect(response.statusCode).toBe(403);
+    expect(db.message.findMany).not.toHaveBeenCalled();
+    expect(db.message.create).not.toHaveBeenCalled();
+    expect(db.message.updateMany).not.toHaveBeenCalled();
+  });
+  it('permits main-nick status after privacy is unlocked', async () => {
+    conversation.zaloAccount.privacyMode = 'main';
+    conversation.zaloAccount.ownerUserId = actor.id;
+    const { buildPrivacyContext } = await import('../src/modules/privacy/redact.js');
+    vi.mocked(buildPrivacyContext).mockResolvedValueOnce({ viewerUserId: actor.id, orgId: actor.orgId, privacyUnlocked: true });
+    const response = await app.inject({ method: 'GET', url: '/api/v1/conversations/conversation/attachments/status?echoIds=%5B%22known%22%5D' });
+    expect(response.statusCode).toBe(200);
+  });
+  it('fails closed when the conversation privacy marker is absent', async () => {
+    delete conversation.isPrivate;
+    expect((await upload()).statusCode).toBe(403);
+    expect(db.message.create).not.toHaveBeenCalled();
+  });
   it('persists the entire batch and returns queued 202 without invoking Zalo', async () => {
     const response = await upload(['a', 'b']);
     expect(response.statusCode).toBe(202);
