@@ -15,8 +15,13 @@ async function run() {
     contact: { id: `contact-${index}`, fullName: name, crmName: name, avatarUrl: index === 2 ? '/broken-contact.png' : '/avatar.png' },
     friendship: { id: `friend-${index}`, zaloAvatarUrl: '/broken-friend.png', friendshipStatus: 'accepted', relationshipKind: 'friend' },
     zaloAccount: nick, unreadCount: 0, lastMessageAt: new Date().toISOString(), messages: [], userState: { flags: {} } }));
-  const history = [{ id: 'voice', senderType: 'contact', senderName: 'An', contentType: 'voice', sentAt: new Date().toISOString(),
-    content: JSON.stringify({ title: '', thumb: '', href: '/voice.aac', params: JSON.stringify({ fileSize: audio.length, duration: 2000, m4a: '/voice.m4a' }) }) }];
+  const baseHistory = [{ id: 'voice', senderType: 'contact', senderName: 'An', contentType: 'voice', sentAt: new Date().toISOString(),
+    content: JSON.stringify({ title: '', thumb: '', href: '/voice.aac', params: JSON.stringify({ fileSize: audio.length, duration: 2000, m4a: '/voice.m4a' }) }) },
+    ...['contact_card', 'qr_code'].map((contentType, index) => ({ id: `card-${index}`, senderType: 'contact', senderName: 'An', contentType,
+      sentAt: new Date().toISOString(), content: JSON.stringify({ title: 'Khách danh thiếp tên dài để kiểm tra xuống dòng', action: 'recommened.user',
+        params: '1234567890123456789', href: 'https://zaloapp.com/qr/profile', thumb: index ? '' : '/files/avatar.png',
+        description: JSON.stringify({ phone: '0901234567', qrCodeUrl: '/files/avatar.png' }) }) }))];
+  const history = structuredClone(baseHistory);
   const writes = [], downloads = [];
   const outcomes = new Map();
   let sendMode = 'accepted', uploadRequests = 0, retryRequests = 0;
@@ -24,7 +29,7 @@ async function run() {
     const url = new URL(request.url, 'http://localhost');
     if (url.pathname.startsWith('/socket.io')) { response.writeHead(503); response.end(); return; }
     if (url.pathname.startsWith('/broken-')) { response.writeHead(404); response.end(); return; }
-    if (url.pathname === '/avatar.png') { response.setHeader('Content-Type', 'image/png'); response.end(image); return; }
+    if (['/avatar.png', '/files/avatar.png'].includes(url.pathname)) { response.setHeader('Content-Type', 'image/png'); response.end(image); return; }
     if (['/voice.aac', '/voice.m4a'].includes(url.pathname)) {
       response.setHeader('Content-Type', 'audio/mp4'); response.setHeader('Accept-Ranges', 'bytes');
       const range = request.headers.range?.match(/^bytes=(\d+)-(\d*)$/);
@@ -90,7 +95,7 @@ async function run() {
   await fs.mkdir(resultDir, { recursive: true });
   try {
     for (const platform of ['windows', 'web']) {
-      history.splice(1); outcomes.clear();
+      history.splice(0, history.length, ...structuredClone(baseHistory)); outcomes.clear();
       let desktop, browser;
       try {
         let page;
@@ -106,6 +111,7 @@ async function run() {
         assert.ok(await page.locator('.inbox-row:last-child .av-initials').isVisible(), `${platform}: broken avatars never leave an invisible hole`);
         await page.locator('.inbox-row').first().click(); await page.waitForSelector('.voice-player audio', { state: 'attached' });
         assert.equal(await page.locator('.file-card').count(), 0, `${platform}: recording is not a generic file card`);
+        await testContactCards(page, `${platform} compact`);
         await testPlayback(page, platform);
         const before = downloads.length;
         const downloaded = page.waitForResponse((response) => response.url().includes('/media/download') && response.status() === 200);
@@ -113,6 +119,7 @@ async function run() {
         assert.equal(downloads.length, before + 1); assert.equal(downloads.at(-1), '/voice.aac');
         await page.screenshot({ path: path.join(resultDir, `chat-media-${platform}-compact.png`), animations: 'disabled' });
         await page.goto(`${origin}/chat/conv-0`); await page.waitForSelector('.voice-player audio', { state: 'attached' });
+        await testContactCards(page, `${platform} full chat`);
         await testPlayback(page, `${platform} full chat`);
         await page.screenshot({ path: path.join(resultDir, `chat-media-${platform}-full.png`), animations: 'disabled' });
         const main = page;
@@ -123,9 +130,11 @@ async function run() {
             page = await opened; page.on('pageerror', (error) => errors.push(error.stack || error.message));
           } else if (platform === 'windows') page = main;
           else await page.setViewportSize(surface === 'compact' ? { width: 440, height: 720 } : { width: 1440, height: 900 });
-          history.splice(1); outcomes.clear();
+          history.splice(0, history.length, ...structuredClone(baseHistory)); outcomes.clear();
           await page.goto(`${origin}/${surface === 'compact' ? 'desktop/chat' : 'chat'}/conv-0`);
           await page.waitForSelector('.message-thread');
+          await testContactCards(page, `${platform}/${surface}`);
+          await page.screenshot({ path: path.join(resultDir, `chat-contact-cards-${platform}-${surface}.png`), animations: 'disabled' });
           const sendFile = async (mode) => {
             sendMode = mode;
             await page.locator('.message-thread input[type="file"]:not([accept])').setInputFiles({ name: 'quote.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4\nsynthetic quote\n%%EOF') });
@@ -154,8 +163,27 @@ async function run() {
       } finally { if (desktop) await desktop.close(); if (browser) await browser.close(); }
     }
     assert.ok(!writes.some((url) => /\/messages$/.test(url)), 'No outbound customer messages');
-    console.log('Chat media passed in Windows Electron and Edge web: avatars, voice playback/download, multipart file upload, queued/accepted/uncertain receipts and explicit retry without reupload in full/compact chat. All sends use an isolated fixture; no customer messages sent.');
+    console.log('Chat media passed in Windows Electron and Edge web: contact cards with name/phone/avatar/QR, phone copy, avatars, voice playback/download, multipart file upload, queued/accepted/uncertain receipts and explicit retry without reupload in full/compact chat. All sends use an isolated fixture; no customer messages sent.');
   } finally { await new Promise((resolve) => server.close(resolve)); }
+}
+async function testContactCards(page, label) {
+  await page.waitForSelector('.profile-card');
+  assert.equal(await page.locator('.profile-card').count(), 2, `${label}: old QR-classified cards and new cards render as profiles`);
+  await page.evaluate(() => {
+    window.__copiedCardPhone = null;
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (value) => { window.__copiedCardPhone = value; } } });
+  });
+  for (const card of await page.locator('.profile-card').all()) {
+    await card.scrollIntoViewIfNeeded();
+    assert.ok((await card.locator('.profile-name').textContent()).includes('Khách danh thiếp'));
+    assert.ok((await card.locator('.profile-phone').textContent()).includes('0901234567'));
+    await card.getByRole('button', { name: 'Sao chép số điện thoại', exact: true }).click();
+    await page.waitForFunction(() => window.__copiedCardPhone === '0901234567');
+    assert.ok((await card.locator('[role="status"]').textContent()).includes('Đã sao chép'));
+    assert.ok(await card.evaluate((element) => element.scrollWidth <= element.clientWidth + 1), `${label}: card content fits its width`);
+    await card.locator('.profile-qr-img').evaluate((image) => image.decode());
+  }
+  await page.locator('.profile-card .profile-avatar img').first().evaluate((image) => image.decode());
 }
 async function testPlayback(page, label) {
   const audio = page.locator('.voice-player audio').first(); await audio.evaluate((node) => { node.muted = true; });
