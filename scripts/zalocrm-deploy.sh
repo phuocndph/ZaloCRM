@@ -55,6 +55,7 @@ bind_existing_volumes() {
     "ZALOCRM_REDIS_VOLUME:zalo-crm-redis:/data" \
     "ZALOCRM_MINIO_VOLUME:zalo-crm-minio:/data" \
     "ZALOCRM_FILE_VOLUME:zalo-crm-app:/var/lib/zalo-crm/files" \
+    "ZALOCRM_OUTBOX_VOLUME:zalo-crm-app:/var/lib/zalo-crm/chat-outbox" \
     "ZALOCRM_CLAMAV_VOLUME:zalo-crm-clamav:/var/lib/clamav"; do
     key="${pair%%:*}"; pair="${pair#*:}"; service="${pair%%:*}"; destination="${pair#*:}"
     actual="$(volume_name "$service" "$destination")"

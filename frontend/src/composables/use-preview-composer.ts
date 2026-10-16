@@ -7,7 +7,7 @@ import type { RichChatDraft } from './chat-session-context';
 type Attempt = { echoId: string; content: string; draft: string; payload: Record<string, unknown>; signature: string };
 type ComposerState = { draft: string; sending: boolean; uncertain: boolean; error: string; attempt: Attempt | null };
 type DeliveryMessage = Omit<Partial<Message>, 'metadata'> & {
-  deliveryState?: string; pendingConfirmation?: boolean;
+  deliveryState?: string | null; pendingConfirmation?: boolean;
   metadata?: { sendStatus?: string; failReason?: string } | null;
 };
 

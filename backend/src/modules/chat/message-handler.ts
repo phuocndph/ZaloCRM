@@ -520,11 +520,15 @@ export async function handleIncomingMessage(
         // assign one Zalo msgId to every image in a pending album.
         let claimedRow: any = null;
         for (let claimAttempt = 0; claimAttempt < 4 && !claimedRow; claimAttempt += 1) {
+          // Only an exact SDK client ID may confirm an in-flight attachment.
+          // Native sends and concurrent files must never claim the oldest same-kind placeholder.
+          if (!msg.cliMsgId) break;
           const candidates = await prisma.message.findMany({
             where: {
               conversationId: conversation.id,
               senderType: 'self',
               contentType: msg.contentType,
+              zaloCliMsgId: msg.cliMsgId,
               zaloMsgId: null,
               deliveryState: { in: ['submitting', 'uncertain'] },
             },
@@ -613,18 +617,19 @@ export async function handleIncomingMessage(
         // Claim one durable CRM text placeholder. Matching only a pending outbox
         // row (not any recent equal content) preserves legitimate "Ok", "Ok"
         // sends while still reconciling a response that arrived through selfListen.
-        const pendingTextCandidates = await prisma.message.findMany({
+        const pendingTextCandidates = msg.cliMsgId ? await prisma.message.findMany({
           where: {
             conversationId: conversation.id,
             senderType: 'self',
             zaloMsgId: null,
             deliveryState: { in: ['submitting', 'uncertain'] },
             contentType: { in: ['text', 'rich'] },
+            zaloCliMsgId: msg.cliMsgId,
           },
           orderBy: [{ sentAt: 'asc' }, { id: 'asc' }],
           take: 12,
           select: { id: true, metadata: true, content: true },
-        });
+        }) : [];
         const listenerText = (() => {
           const parsed = safeParseJsonObject(msg.content || '');
           return typeof parsed?.title === 'string' ? parsed.title : (msg.content || '');

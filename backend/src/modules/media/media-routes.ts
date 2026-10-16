@@ -20,7 +20,8 @@ import { authMiddleware } from '../auth/auth-middleware.js';
 import { requireGrant } from '../rbac/rbac-middleware.js';
 import { userHasGrant } from '../rbac/permission-group-service.js';
 import { zaloPool } from '../zalo/zalo-pool.js';
-import { isZaloDeliveryUncertain, zaloOps } from '../../shared/zalo-operations.js';
+import { isZaloDeliveryUncertain, zaloOps, ZaloDeliveryUncertainError } from '../../shared/zalo-operations.js';
+import { attachmentMessageId } from '../chat/chat-attachment-policy.js';
 import { zaloRateLimiter } from '../zalo/zalo-rate-limiter.js';
 import { registerAsset, bumpUsage, resolveSavedVisibility, generateWatermarkVariant, disableWatermark, logMediaUsage, normalizeTags, type MediaKind } from './media-service.js';
 import { acquireMediaOutbox, createMediaMessage, getUserFullName } from '../chat/chat-helpers.js';
@@ -788,8 +789,9 @@ export async function mediaRoutes(app: FastifyInstance) {
             conversation.zaloAccountId, threadId, threadType as 0 | 1, [tmp.path], io, caption,
             { maxAttempts: 1 },
           );
+          zaloMsgId = attachmentMessageId(sendResult);
+          if (!zaloMsgId) throw new ZaloDeliveryUncertainError('Missing attachment message ID');
           deliveryAccepted = true;
-          zaloMsgId = extractZaloMsgId(sendResult);
         } else if (asset.kind === 'video') {
           // VIDEO: gửi NATIVE (player + thumbnail + duration) như chat thường — KHÔNG sendFile
           // (sendFile làm video thành "file .mp4 tải về", mất player). Sinh thumbnail bằng ffmpeg,
@@ -803,8 +805,9 @@ export async function mediaRoutes(app: FastifyInstance) {
               api: instance.api as any, accountId: conversation.zaloAccountId, videoPath: tmp.path,
               threadId, threadType: threadType as 0 | 1, message: caption, maxAttempts: 1,
             });
+            zaloMsgId = attachmentMessageId(sendResult);
+            if (!zaloMsgId) throw new ZaloDeliveryUncertainError('Missing attachment message ID');
             deliveryAccepted = true;
-            zaloMsgId = extractZaloMsgId(sendResult);
           } catch (e) {
             if (isZaloDeliveryUncertain(e)) throw e;
             logger.warn('[media] sendNativeVideo lỗi → fallback sendFile:', (e as Error)?.message ?? e);
@@ -812,8 +815,9 @@ export async function mediaRoutes(app: FastifyInstance) {
               conversation.zaloAccountId, threadId, threadType as 0 | 1, [tmp.path], io, caption,
               { maxAttempts: 1 },
             );
+            zaloMsgId = attachmentMessageId(sendResult);
+            if (!zaloMsgId) throw new ZaloDeliveryUncertainError('Missing attachment message ID');
             deliveryAccepted = true;
-            zaloMsgId = extractZaloMsgId(sendResult);
           }
           content = JSON.stringify({ href: blob.publicUrl, thumb: thumbUrl, thumbUrl, thumbnail: thumbUrl, size: blob.sizeBytes, title: caption });
         } else {
@@ -823,8 +827,9 @@ export async function mediaRoutes(app: FastifyInstance) {
             conversation.zaloAccountId, threadId, threadType as 0 | 1, [tmp.path], io, caption,
             { maxAttempts: 1 },
           );
+          zaloMsgId = attachmentMessageId(sendResult);
+          if (!zaloMsgId) throw new ZaloDeliveryUncertainError('Missing attachment message ID');
           deliveryAccepted = true;
-          zaloMsgId = extractZaloMsgId(sendResult);
         }
 
         const msg = await createMediaMessage({

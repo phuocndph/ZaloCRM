@@ -140,7 +140,10 @@
 
           <div v-if="attachmentPlaceholderLabel" class="attachment-placeholder">
             <v-icon size="20">{{ attachmentPlaceholderIcon }}</v-icon>
-            <span>{{ attachmentPlaceholderLabel }}</span>
+            <div class="attachment-placeholder-copy">
+              <strong v-if="attachmentDisplayName">{{ attachmentDisplayName }}</strong>
+              <span>{{ attachmentPlaceholderLabel }}</span>
+            </div>
           </div>
 
           <!-- Reminder card — đặt TRƯỚC image branch vì thumb URL của reminder có đuôi .png
@@ -302,6 +305,10 @@
         <div v-if="sendFailReason" class="send-failed">
           <v-icon size="13">mdi-alert-circle-outline</v-icon>
           Gửi thất bại: {{ sendFailReason }}
+          <button v-if="isSelf && message.deliveryState === 'failed' && (message.metadata?.outboundAttachment as any)?.sourceId"
+            type="button" class="retry-attachment" title="Thử gửi lại tệp" aria-label="Thử gửi lại tệp" @click="emit('retry-attachment')">
+            <v-icon size="16">mdi-refresh</v-icon>
+          </button>
         </div>
         <div v-else-if="deliverySyncLabel && !attachmentPlaceholderLabel" class="send-syncing">
           <v-icon size="13">mdi-cloud-sync-outline</v-icon>
@@ -339,16 +346,17 @@
            cho tin OUTGOING CUỐI CÙNG. Render SAU reaction-display để chip nằm
            DƯỚI reaction (anh feedback: reaction che chữ "Đã xem"). Tin sent < 3s → ẩn. -->
       <div
-        v-if="isSelf && isLastSelf && receiptState !== 'sent'"
+        v-if="isSelf && isLastSelf && receiptState !== 'failed'"
         class="receipt-chip-row"
         :class="{ 'has-reaction-above': reactions && reactions.length > 0 }"
       >
         <span class="receipt-chip" :class="receiptState" :title="receiptTooltip">
-          <svg v-if="receiptState === 'sending'" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <svg v-if="['queued', 'preparing', 'sending'].includes(receiptState)" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="9" />
             <polyline points="12 7 12 12 15 14" />
           </svg>
-          <svg v-else-if="receiptState === 'delivered'" width="13" height="9" viewBox="0 0 18 12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <v-icon v-else-if="receiptState === 'uncertain'" size="13">mdi-help-circle-outline</v-icon>
+          <svg v-else-if="receiptState === 'delivered' || receiptState === 'accepted'" width="13" height="9" viewBox="0 0 18 12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
             <polyline points="2 6 7 11 16 1" />
           </svg>
           <svg v-else width="16" height="9" viewBox="0 0 22 12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
@@ -370,6 +378,7 @@
 
 <script setup lang="ts">
 import type { Message } from '@/composables/use-chat';
+import { messageDeliveryState, deliveryLabels } from '@/composables/chat-delivery-state';
 import { computed, ref, watch } from 'vue';
 import { formatInOrgTz, weekdayInOrgTz } from '@/composables/use-org-timezone';
 import { linkifyHtml } from '@/composables/use-rich-format';
@@ -420,6 +429,7 @@ const emit = defineEmits<{
   'open-phone': [phone: string];
   'open-reaction-detail': [payload: { reactions: any[]; message: Message }];
   'jump-to-reply': [msgId: string];
+  'retry-attachment': [];
   // Luồng Mục Tiêu M11 source badge events
   'open-sequence': [sequenceId: string];
   'explain-native': [];
@@ -686,16 +696,7 @@ const formattedText = computed(() => {
  *   sending   — chưa có deliveredAt VÀ tin > 3s tuổi (clock outline)
  *   sent      — < 3s (vừa gửi, chưa có confirm) — hiện không icon (giảm noise)
  */
-const receiptState = computed<'sending' | 'delivered' | 'seen' | 'sent'>(() => {
-  const m = props.message;
-  // 2026-06-24 — tin gửi THẤT BẠI (metadata.sendStatus='failed') → trả 'sent' để ẩn chip
-  // receipt (tránh kẹt "Đang gửi"); badge "Gửi thất bại + lý do" đã hiện trong bubble.
-  if ((m.metadata as { sendStatus?: string } | null | undefined)?.sendStatus === 'failed') return 'sent';
-  if (m.seenAt) return 'seen';
-  if (m.deliveredAt) return 'delivered';
-  const ageMs = Date.now() - new Date(m.sentAt).getTime();
-  return ageMs > 3000 ? 'sending' : 'sent';
-});
+const receiptState = computed(() => messageDeliveryState(props.message));
 
 const receiptTooltip = computed<string>(() => {
   const m = props.message;
@@ -703,7 +704,9 @@ const receiptTooltip = computed<string>(() => {
     case 'seen':      return `KH đã xem${m.seenAt ? ' lúc ' + formatTime(m.seenAt) : ''}`;
     case 'delivered': return `Đã gửi tới KH${m.deliveredAt ? ' lúc ' + formatTime(m.deliveredAt) : ''}`;
     case 'sending':   return 'Đang gửi...';
-    default:          return '';
+    default:          return receiptState.value === 'uncertain'
+      ? 'Chưa có xác nhận từ Zalo. Không tự gửi lại để tránh trùng tin.'
+      : receiptState.value === 'accepted' ? 'Zalo đã tiếp nhận, chưa có xác nhận khách nhận hoặc đọc.' : deliveryLabels[receiptState.value];
   }
 });
 
@@ -713,7 +716,7 @@ const receiptLabel = computed<string>(() => {
     case 'seen':      return m.seenAt ? `Đã xem ${formatTime(m.seenAt)}` : 'Đã xem';
     case 'delivered': return 'Đã nhận';
     case 'sending':   return 'Đang gửi';
-    default:          return '';
+    default:          return deliveryLabels[receiptState.value];
   }
 });
 
@@ -765,7 +768,7 @@ const isBareMedia = computed(() => {
 // Bug B 2026-06-22: tin gửi thất bại (metadata.sendStatus='failed') → hiện lý do.
 const sendFailReason = computed<string | null>(() => {
   const m = props.message.metadata as { sendStatus?: string; failReason?: string } | null | undefined;
-  return m?.sendStatus === 'failed' ? (m.failReason || 'không gửi được') : null;
+  return receiptState.value === 'failed' ? (m?.failReason || 'không gửi được') : null;
 });
 const attachmentOutboxStatus = computed(() => {
   const metadata = props.message.metadata as {
@@ -774,15 +777,17 @@ const attachmentOutboxStatus = computed(() => {
   return metadata?.outboundAttachment?.status ?? null;
 });
 const attachmentSyncLabel = computed<string | null>(() => {
+  if (attachmentOutboxStatus.value === 'queued') return 'Chờ gửi';
+  if (attachmentOutboxStatus.value === 'preparing') return 'Đang chuẩn bị tệp';
+  if (attachmentOutboxStatus.value === 'uncertain') return 'Chưa xác định kết quả. Không tự gửi lại để tránh trùng tin.';
   if (
     attachmentOutboxStatus.value === 'submitting'
     || attachmentOutboxStatus.value === 'sending'
-    || attachmentOutboxStatus.value === 'uncertain'
   ) {
     return 'Đang xác nhận gửi qua Zalo';
   }
   if (attachmentOutboxStatus.value === 'zalo_accepted' || attachmentOutboxStatus.value === 'accepted_pending_mirror') {
-    return 'Đã gửi, đang đồng bộ bản lưu';
+    return 'Zalo đã tiếp nhận, đang lưu bản sao';
   }
   return null;
 });
@@ -794,6 +799,7 @@ const textOutboxStatus = computed(() => {
 });
 const deliverySyncLabel = computed<string | null>(() => {
   if (attachmentSyncLabel.value) return attachmentSyncLabel.value;
+  if (textOutboxStatus.value === 'uncertain') return 'Chưa xác định kết quả. Không tự gửi lại để tránh trùng tin.';
   if (textOutboxStatus.value === 'submitting' || textOutboxStatus.value === 'uncertain') {
     return 'Đang xác nhận gửi qua Zalo';
   }
@@ -809,6 +815,10 @@ const attachmentPlaceholderLabel = computed<string | null>(() => {
   if (hasMedia) return null;
   if (attachmentSyncLabel.value) return attachmentSyncLabel.value;
   return attachmentOutboxStatus.value === 'failed' ? 'Tệp đính kèm chưa được gửi' : null;
+});
+const attachmentDisplayName = computed(() => {
+  try { return String(JSON.parse(props.message.content || '{}').name || ''); }
+  catch { return ''; }
 });
 const attachmentPlaceholderIcon = computed(() => props.message.contentType === 'image'
   ? 'mdi-image-outline'
@@ -1313,6 +1323,9 @@ function onFileClick(href: string, name?: string) {
   background: rgba(37, 99, 235, 0.10);
   color: #2563eb;
 }
+.receipt-chip.uncertain { color: #8b5b00; background: rgba(214, 154, 33, 0.12); }
+.retry-attachment { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; flex: 0 0 28px; border: 0; border-radius: 4px; background: transparent; color: inherit; cursor: pointer; }
+.retry-attachment:hover { background: rgba(0, 0, 0, 0.06); }
 .receipt-chip svg { display: block; flex-shrink: 0; }
 .receipt-label { line-height: 1.2; }
 
@@ -1417,6 +1430,8 @@ function onFileClick(href: string, name?: string) {
   border-radius: 6px;
   font-size: 13px;
 }
+.attachment-placeholder-copy { min-width: 0; overflow-wrap: anywhere; }
+.attachment-placeholder-copy strong { display: block; margin-bottom: 3px; font-size: 12px; }
 .media-caption {
   margin-top: 6px;
   font-size: 13.5px;

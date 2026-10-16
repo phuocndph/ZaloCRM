@@ -23,8 +23,11 @@ export type { UploadResult } from './types.js';
 
 const driver: StorageDriver = config.storageDriver === 'r2' ? r2Driver : localDriver;
 
-export const uploadBuffer: StorageDriver['uploadBuffer'] = (buffer, mimeType, originalName) =>
-  driver.uploadBuffer(buffer, mimeType, originalName);
+export const uploadBuffer: StorageDriver['uploadBuffer'] = (buffer, mimeType, originalName, signal) =>
+  driver.uploadBuffer(buffer, mimeType, originalName, signal);
+
+export const uploadFile: StorageDriver['uploadFile'] = (file, mimeType, originalName, signal) =>
+  driver.uploadFile(file, mimeType, originalName, signal);
 
 export const getObjectStream: StorageDriver['getObjectStream'] = (key) => driver.getObjectStream(key);
 

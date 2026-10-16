@@ -26,7 +26,8 @@ export interface StorageObjectMetadata {
 
 export interface StorageDriver {
   /** Upload buffer (content-hash dedup). Key = `media/{sha256}{ext}`. */
-  uploadBuffer(buffer: Buffer, mimeType: string, originalName?: string): Promise<UploadResult>;
+  uploadBuffer(buffer: Buffer, mimeType: string, originalName?: string, signal?: AbortSignal): Promise<UploadResult>;
+  uploadFile(file: string, mimeType: string, originalName?: string, signal?: AbortSignal): Promise<UploadResult>;
   /** Lấy object dưới dạng stream. Trả null nếu key không an toàn / không tồn tại. */
   getObjectStream(key: string): Promise<NodeJS.ReadableStream | null>;
   /** Đọc toàn bộ object thành Buffer. Trả null nếu key sai / không tồn tại. */

@@ -84,6 +84,7 @@ async function runBinary(command: string, args: string[]): Promise<string> {
     const { stdout } = await execFileAsync(command, args, {
       encoding: 'utf8',
       maxBuffer: 10 * 1024 * 1024,
+      timeout: 30_000,
     });
     return stdout;
   } catch (error: any) {

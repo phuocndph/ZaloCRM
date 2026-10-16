@@ -18,6 +18,8 @@ async function run() {
   const history = [{ id: 'voice', senderType: 'contact', senderName: 'An', contentType: 'voice', sentAt: new Date().toISOString(),
     content: JSON.stringify({ title: '', thumb: '', href: '/voice.aac', params: JSON.stringify({ fileSize: audio.length, duration: 2000, m4a: '/voice.m4a' }) }) }];
   const writes = [], downloads = [];
+  const outcomes = new Map();
+  let sendMode = 'accepted', uploadRequests = 0, retryRequests = 0;
   const server = http.createServer(async (request, response) => {
     const url = new URL(request.url, 'http://localhost');
     if (url.pathname.startsWith('/socket.io')) { response.writeHead(503); response.end(); return; }
@@ -33,6 +35,36 @@ async function run() {
     if (url.pathname.startsWith('/api/')) {
       response.setHeader('Content-Type', 'application/json');
       if (request.method !== 'GET') writes.push(url.pathname);
+      if (url.pathname.endsWith('/attachments') && request.method === 'POST') {
+        const parts = []; for await (const part of request) parts.push(part);
+        assert.ok(Buffer.concat(parts).includes(Buffer.from('%PDF-1.4')), 'Browser uploads the actual synthetic file bytes');
+        const ids = JSON.parse(request.headers['x-attachment-echo-ids']); uploadRequests++;
+        const messages = ids.map((id) => {
+          const message = { id: `outbound-${id}`, clientEchoId: id, senderType: 'self', contentType: 'file', sentAt: new Date().toISOString(),
+            content: JSON.stringify({ href: '', name: 'quote.pdf', size: 30 }), deliveryState: 'prepared',
+            metadata: { sendStatus: 'queued', outboundAttachment: { status: 'queued', sourceId: 'fixture' } } };
+          history.push(message); outcomes.set(id, sendMode); return message;
+        });
+        response.writeHead(202); response.end(JSON.stringify({ messages, pendingConfirmation: true })); return;
+      }
+      if (url.pathname.endsWith('/attachments/status') || url.pathname.endsWith('/attachments/retry')) {
+        let ids;
+        if (request.method === 'POST') {
+          const parts = []; for await (const part of request) parts.push(part);
+          ids = JSON.parse(Buffer.concat(parts)).echoIds; retryRequests++;
+          ids.forEach((id) => outcomes.set(id, 'accepted'));
+        } else ids = JSON.parse(url.searchParams.get('echoIds'));
+        const messages = history.filter((message) => ids.includes(message.clientEchoId));
+        for (const message of messages) {
+          const mode = outcomes.get(message.clientEchoId);
+          message.deliveryState = mode === 'accepted' ? 'completed' : mode;
+          message.metadata.sendStatus = mode === 'accepted' ? 'sent' : mode;
+          message.metadata.outboundAttachment.status = mode === 'accepted' ? 'mirrored' : mode;
+          if (mode === 'accepted') { message.zaloMsgId = `remote-${message.clientEchoId}`; message.content = JSON.stringify({ href: '/fixture.pdf', name: 'quote.pdf', size: 30 }); }
+          if (mode === 'failed') message.metadata.failReason = 'Zalo tu choi (fixture)';
+        }
+        response.end(JSON.stringify({ messages, failedIndices: [] })); return;
+      }
       let data = [];
       if (url.pathname.endsWith('/profile')) data = { id: 'tester', orgId: 'org', role: 'owner', fullName: 'Test', passwordChangedAt: '2026-10-01', grants: {}, org: { name: 'Fixture' } };
       else if (url.pathname.endsWith('/setup/status')) data = { needsSetup: false };
@@ -58,6 +90,7 @@ async function run() {
   await fs.mkdir(resultDir, { recursive: true });
   try {
     for (const platform of ['windows', 'web']) {
+      history.splice(1); outcomes.clear();
       let desktop, browser;
       try {
         let page;
@@ -82,11 +115,46 @@ async function run() {
         await page.goto(`${origin}/chat/conv-0`); await page.waitForSelector('.voice-player audio', { state: 'attached' });
         await testPlayback(page, `${platform} full chat`);
         await page.screenshot({ path: path.join(resultDir, `chat-media-${platform}-full.png`), animations: 'disabled' });
+        const main = page;
+        for (const surface of ['compact', 'full']) {
+          if (platform === 'windows' && surface === 'compact') {
+            const bubble = desktop.windows().find((candidate) => candidate.url().endsWith('/bubble.html'));
+            const opened = desktop.waitForEvent('window'); await bubble.locator('#bubble').click();
+            page = await opened; page.on('pageerror', (error) => errors.push(error.stack || error.message));
+          } else if (platform === 'windows') page = main;
+          else await page.setViewportSize(surface === 'compact' ? { width: 440, height: 720 } : { width: 1440, height: 900 });
+          history.splice(1); outcomes.clear();
+          await page.goto(`${origin}/${surface === 'compact' ? 'desktop/chat' : 'chat'}/conv-0`);
+          await page.waitForSelector('.message-thread');
+          const sendFile = async (mode) => {
+            sendMode = mode;
+            await page.locator('.message-thread input[type="file"]:not([accept])').setInputFiles({ name: 'quote.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4\nsynthetic quote\n%%EOF') });
+            await page.waitForSelector('.pending-attachments');
+            await page.getByRole('button', { name: 'Gửi tin nhắn và tệp đính kèm', exact: true }).click();
+            await page.waitForSelector('.receipt-chip.queued');
+          };
+          await sendFile('accepted');
+          await page.waitForSelector('.receipt-chip.accepted');
+          assert.equal(await page.locator('.receipt-label').last().textContent(), 'Zalo đã tiếp nhận');
+          assert.equal(await page.locator('.pending-attachments').count(), 0, `${platform}/${surface}: queued files leave the composer`);
+          await sendFile('failed');
+          await page.waitForSelector('.send-failed .retry-attachment');
+          const beforeUploads = uploadRequests, beforeRetries = retryRequests;
+          await page.locator('.send-failed .retry-attachment').click();
+          await page.waitForSelector('.receipt-chip.accepted');
+          assert.equal(uploadRequests, beforeUploads, 'Retry reuses server bytes instead of uploading again');
+          assert.equal(retryRequests, beforeRetries + 1, 'Exactly one explicit retry request');
+          await sendFile('uncertain');
+          await page.waitForSelector('.receipt-chip.uncertain');
+          assert.equal(await page.locator('.receipt-label').last().textContent(), 'Chưa xác định kết quả');
+          assert.equal(await page.locator('.send-failed .retry-attachment').count(), 0, 'Unknown delivery is not presented as retryable failure');
+          await page.screenshot({ path: path.join(resultDir, `chat-send-${platform}-${surface}.png`), animations: 'disabled' });
+        }
         assert.deepEqual(errors, [], `${platform}: no runtime exceptions`);
       } finally { if (desktop) await desktop.close(); if (browser) await browser.close(); }
     }
     assert.ok(!writes.some((url) => /\/messages$/.test(url)), 'No outbound customer messages');
-    console.log('Chat media passed in Windows Electron and Edge web: broken avatar fallback, initials, actual AAC/MP4 decoding, playback progress, seek, pause, download and full/compact chat; no customer messages sent.');
+    console.log('Chat media passed in Windows Electron and Edge web: avatars, voice playback/download, multipart file upload, queued/accepted/uncertain receipts and explicit retry without reupload in full/compact chat. All sends use an isolated fixture; no customer messages sent.');
   } finally { await new Promise((resolve) => server.close(resolve)); }
 }
 async function testPlayback(page, label) {

@@ -43,7 +43,7 @@ COPY --from=backend-builder /app/backend/package.json /app/package.json
 COPY --from=backend-builder /app/backend/scripts    /app/scripts
 COPY --from=frontend-builder /app/frontend/dist     /app/static
 
-RUN mkdir -p /var/lib/zalo-crm/files
+RUN mkdir -p /var/lib/zalo-crm/files /var/lib/zalo-crm/chat-outbox
 
 EXPOSE 3000
 ENTRYPOINT ["/sbin/tini", "--"]
