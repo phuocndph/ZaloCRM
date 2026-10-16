@@ -21,12 +21,13 @@ import { backfillIfEmpty } from './zalo-history-backfill.js';
 import { readFile } from 'fs/promises';
 import { imageSize } from 'image-size';
 import { withProxy } from './proxy-util.js';
+import { scopedZaloFetch } from '../../shared/zalo-delivery-context.js';
 import { writeTransition, type ZaloStatus, type StatusReason } from './status-log-service.js';
 
 // zca-js has no reliable ESM type exports — load via CJS interop
 const require = createRequire(import.meta.url);
 // eslint-disable-next-line @typescript-eslint/no-require-imports
-const { Zalo } = require('zca-js') as { Zalo: new (opts: { logging: boolean; selfListen?: boolean; imageMetadataGetter?: (path: string) => Promise<{ width: number; height: number; size: number }> }) => any };
+const { Zalo } = require('zca-js') as { Zalo: new (opts: { logging: boolean; selfListen?: boolean; polyfill?: typeof fetch; imageMetadataGetter?: (path: string) => Promise<{ width: number; height: number; size: number }> }) => any };
 
 async function imageMetadataGetter(filePath: string) {
   const data = await readFile(filePath);
@@ -209,7 +210,7 @@ class ZaloAccountPool {
     const epoch = ++this.epochCounter;
     // (5) Bump epoch + set instance mới NGAY → mọi autoReconnect timer cũ đang chờ (30s/2min)
     //     khi fire sẽ thấy epoch lệch / status mới và bỏ qua, không ghi đè instance QR mới.
-    const zalo = new Zalo({ logging: false, selfListen: true, imageMetadataGetter });
+    const zalo = new Zalo({ logging: false, selfListen: true, imageMetadataGetter, polyfill: scopedZaloFetch });
     this.instances.set(accountId, { zalo, api: null, status: 'qr_pending', lastActivity: new Date(), epoch });
     logger.info(`[zalo:${accountId}] loginQR — fresh instance created (epoch=${epoch}), waiting for QR event…`);
 
@@ -393,7 +394,7 @@ class ZaloAccountPool {
     // → Zalo evict → 'closed' loop). stop() = ws.close(1000)+reset, an toàn.
     this.teardownExisting(accountId);
     const epoch = ++this.epochCounter;
-    const zalo = new Zalo({ logging: false, selfListen: true, imageMetadataGetter });
+    const zalo = new Zalo({ logging: false, selfListen: true, imageMetadataGetter, polyfill: scopedZaloFetch });
     this.instances.set(accountId, { zalo, api: null, status: 'connecting', lastActivity: new Date(), epoch });
 
     try {

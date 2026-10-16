@@ -328,11 +328,11 @@ export async function createMediaMessage(input: CreateMediaMessageInput) {
     ? 'failed'
     : metadataStatus === 'uncertain'
       ? 'uncertain'
-      : metadataStatus === 'mirrored'
+      : metadataStatus === 'mirrored' && zaloMsgId
         ? 'completed'
-        : zaloMsgId || metadataStatus === 'zalo_accepted' || metadataStatus === 'listener_confirmed'
+        : zaloMsgId
           ? 'accepted'
-          : 'submitting';
+          : ['mirrored', 'zalo_accepted', 'listener_confirmed', 'accepted_pending_mirror'].includes(metadataStatus ?? '') ? 'uncertain' : 'submitting';
 
   const build = (msgId: string | null) => ({
     id: randomUUID(),

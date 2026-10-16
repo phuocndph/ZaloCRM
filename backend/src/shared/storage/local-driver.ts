@@ -10,12 +10,14 @@
  * Dedup giống tầng cũ: key theo sha256 BYTES THẬT; nếu file đã tồn tại thì
  * SKIP ghi và trả URL bản cũ (deduped=true).
  */
-import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { createReadStream, createWriteStream } from 'node:fs';
+import { pipeline } from 'node:stream/promises';
 import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, extname, join, resolve, sep } from 'node:path';
 import { config } from '../../config/index.js';
 import { isSafeObjectKey, mimeToExt, type StorageDriver, type UploadResult } from './types.js';
+import { describeUploadFile } from './file-upload.js';
 
 const ROOT = resolve(config.uploadDir);
 
@@ -33,7 +35,8 @@ export const localDriver: StorageDriver = {
     return `${config.localPublicUrl}/${key}`;
   },
 
-  async uploadBuffer(buffer: Buffer, mimeType: string, originalName?: string): Promise<UploadResult> {
+  async uploadBuffer(buffer: Buffer, mimeType: string, originalName?: string, signal?: AbortSignal): Promise<UploadResult> {
+    signal?.throwIfAborted();
     if (!buffer || buffer.length === 0) throw new Error('uploadBuffer: empty buffer (refusing 0-byte object)');
     const ext = originalName ? extname(originalName) : mimeToExt(mimeType);
     const contentHash = createHash('sha256').update(buffer).digest('hex');
@@ -50,10 +53,29 @@ export const localDriver: StorageDriver = {
     await mkdir(dirname(abs), { recursive: true });
     // Ghi ra file tạm cùng thư mục rồi rename = atomic, tránh file nửa vời nếu crash.
     const tmp = `${abs}.tmp-${process.pid}-${contentHash.slice(0, 8)}`;
-    await writeFile(tmp, buffer);
+    await writeFile(tmp, buffer, { signal });
     const { rename } = await import('node:fs/promises');
     await rename(tmp, abs);
     return { key, url, size: buffer.length, mimeType, contentHash, deduped: false };
+  },
+
+  async uploadFile(file, mimeType, originalName, signal) {
+    const info = await describeUploadFile(file, mimeType, originalName, signal);
+    const absolute = pathForKey(info.key);
+    if (!absolute) throw new Error('Invalid storage key');
+    const result = { ...info, mimeType, url: this.publicUrl(info.key) };
+    if (await stat(absolute).then((entry) => entry.isFile() && entry.size === info.size).catch(() => false)) {
+      return { ...result, deduped: true };
+    }
+    await mkdir(dirname(absolute), { recursive: true });
+    const temporary = `${absolute}.tmp-${randomUUID()}`;
+    try {
+      await pipeline(createReadStream(file), createWriteStream(temporary, { flags: 'wx' }), { signal });
+      signal?.throwIfAborted();
+      const { rename } = await import('node:fs/promises');
+      await rename(temporary, absolute);
+      return { ...result, deduped: false };
+    } finally { await rm(temporary, { force: true }).catch(() => {}); }
   },
 
   async getObjectStream(key: string): Promise<NodeJS.ReadableStream | null> {

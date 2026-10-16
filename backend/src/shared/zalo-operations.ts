@@ -15,6 +15,7 @@ import { zaloPool } from '../modules/zalo/zalo-pool.js';
 import { zaloRateLimiter } from '../modules/zalo/zalo-rate-limiter.js';
 import { logger } from './utils/logger.js';
 import { prisma } from './database/prisma-client.js';
+import { withDeliveryDeadline, DeliveryDeadlineError, bindDeliveryUploadCallbacks } from './zalo-delivery-context.js';
 
 // ── Error types ─────────────────────────────────────────────────────────────
 export class ZaloOpError extends Error {
@@ -193,11 +194,14 @@ export async function exec<T>(opts: ExecOptions, fn: (api: any) => Promise<T>): 
 
   // 3. Execute with retry on session expiry + transient network blip.
   //    MAX_ATTEMPTS=3 để lỗi socket tạm thời (album nhiều ảnh) có cơ hội thử lại.
-  const MAX_ATTEMPTS = Math.max(1, Math.min(3, opts.maxAttempts ?? 3));
+  const MAX_ATTEMPTS = opts.deliveryOperation ? 1 : Math.max(1, Math.min(3, opts.maxAttempts ?? 3));
+  if (opts.deliveryOperation) bindDeliveryUploadCallbacks(instance.api);
   let lastError: any;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     try {
-      const result = await fn(instance.api);
+      const result = await (opts.deliveryOperation
+        ? withDeliveryDeadline(() => fn(instance.api))
+        : fn(instance.api));
 
       // Record successful operation. (getAllFriends giờ là category 'contact_sync'
       // nên đã tự đếm vào rl:daily:nick:contact_sync — không cần recordOperation riêng.)
@@ -252,7 +256,7 @@ export async function exec<T>(opts: ExecOptions, fn: (api: any) => Promise<T>): 
       }
 
       // Lỗi mạng tạm thời (socket đứt khi upload album nhiều ảnh) → retry với backoff.
-      if (isTransientNetworkError(err) && attempt < MAX_ATTEMPTS - 1) {
+      if (!opts.deliveryOperation && isTransientNetworkError(err) && attempt < MAX_ATTEMPTS - 1) {
         const delayMs = 400 * (attempt + 1); // 400ms, 800ms
         logger.warn(`[zalo-ops:${accountId}] ${operation} lỗi mạng tạm thời (attempt ${attempt + 1}/${MAX_ATTEMPTS}), thử lại sau ${delayMs}ms: ${err?.message ?? err}`);
         await new Promise((r) => setTimeout(r, delayMs));
@@ -320,6 +324,7 @@ export function isDeterministicZaloRejection(err: any): boolean {
 }
 
 export function isZaloDeliveryUncertain(err: unknown): boolean {
+  if (err instanceof DeliveryDeadlineError) return true;
   if (err instanceof ZaloDeliveryUncertainError) return true;
   if (err instanceof ZaloOpError) return err.deliveryUncertain;
   return isTransientNetworkError(err) && !isDeterministicZaloRejection(err);

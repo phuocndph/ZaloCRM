@@ -13,6 +13,7 @@
  * Dedup giống tầng cũ: HeadObject → tồn tại thì skip PutObject (deduped=true).
  */
 import { createHash } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import {
   DeleteObjectCommand,
   GetObjectCommand,
@@ -25,6 +26,7 @@ import { extname } from 'node:path';
 import { Readable } from 'node:stream';
 import { config } from '../../config/index.js';
 import { isSafeObjectKey, mimeToExt, type StorageDriver, type UploadResult } from './types.js';
+import { describeUploadFile } from './file-upload.js';
 
 const BUCKET = config.s3Bucket;
 
@@ -38,9 +40,9 @@ const client = new S3Client({
   },
 });
 
-async function objectExists(key: string): Promise<boolean> {
+async function objectExists(key: string, signal?: AbortSignal): Promise<boolean> {
   try {
-    await client.send(new HeadObjectCommand({ Bucket: BUCKET, Key: key }));
+    await client.send(new HeadObjectCommand({ Bucket: BUCKET, Key: key }), { abortSignal: signal });
     return true;
   } catch {
     return false;
@@ -53,14 +55,15 @@ export const r2Driver: StorageDriver = {
     return `${config.s3PublicUrl}/${key}`;
   },
 
-  async uploadBuffer(buffer: Buffer, mimeType: string, originalName?: string): Promise<UploadResult> {
+  async uploadBuffer(buffer: Buffer, mimeType: string, originalName?: string, signal?: AbortSignal): Promise<UploadResult> {
+    signal?.throwIfAborted();
     if (!buffer || buffer.length === 0) throw new Error('uploadBuffer: empty buffer (refusing 0-byte object)');
     const ext = originalName ? extname(originalName) : mimeToExt(mimeType);
     const contentHash = createHash('sha256').update(buffer).digest('hex');
     const key = `media/${contentHash}${ext}`;
     const url = this.publicUrl(key);
 
-    if (await objectExists(key)) {
+    if (await objectExists(key, signal)) {
       return { key, url, size: buffer.length, mimeType, contentHash, deduped: true };
     }
 
@@ -72,9 +75,22 @@ export const r2Driver: StorageDriver = {
         ContentType: mimeType,
         ContentLength: buffer.length,
         CacheControl: 'private, no-store, max-age=0',
-      }),
+      }), { abortSignal: signal },
     );
     return { key, url, size: buffer.length, mimeType, contentHash, deduped: false };
+  },
+
+  async uploadFile(file, mimeType, originalName, signal) {
+    const info = await describeUploadFile(file, mimeType, originalName, signal);
+    const result = { ...info, mimeType, url: this.publicUrl(info.key) };
+    if (await objectExists(info.key, signal)) return { ...result, deduped: true };
+    signal?.throwIfAborted();
+    const body = createReadStream(file, { signal });
+    try {
+      await client.send(new PutObjectCommand({ Bucket: BUCKET, Key: info.key, Body: body,
+        ContentLength: info.size, ContentType: mimeType, CacheControl: 'private, no-store, max-age=0' }), { abortSignal: signal });
+      return { ...result, deduped: false };
+    } finally { body.destroy(); }
   },
 
   async getObjectStream(key: string): Promise<NodeJS.ReadableStream | null> {

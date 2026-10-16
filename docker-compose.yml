@@ -42,6 +42,7 @@ services:
         condition: service_healthy
     volumes:
       - file_storage:/var/lib/zalo-crm/files
+      - chat_outbox:/var/lib/zalo-crm/chat-outbox
     tmpfs:
       - /tmp
     security_opt:
@@ -220,6 +221,8 @@ volumes:
     name: ${ZALOCRM_PG_VOLUME:-zalocrm_pg_data}
   file_storage:
     name: ${ZALOCRM_FILE_VOLUME:-zalocrm_file_storage}
+  chat_outbox:
+    name: ${ZALOCRM_OUTBOX_VOLUME:-zalocrm_chat_outbox}
   redis_data:
     name: ${ZALOCRM_REDIS_VOLUME:-zalocrm_redis_data}
   minio_data:

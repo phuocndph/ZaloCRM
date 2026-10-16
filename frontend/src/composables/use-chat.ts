@@ -223,6 +223,8 @@ export interface Message {
   clientEchoId?: string | null;
   echoId?: string | null;
   isPending?: boolean;
+  deliveryState?: 'prepared' | 'submitting' | 'uncertain' | 'failed' | 'accepted' | 'completed' | null;
+  pendingConfirmation?: boolean;
   /** Anh chốt 2026-06-03 — Persist Zalo SDK TGroupMessage.mentions để FE
    *  render mention theo pos+len thay vì đoán regex. Chỉ group có. */
   mentions?: Array<{ uid: string; pos: number; len: number; type: 0 | 1 }> | null;
@@ -249,7 +251,7 @@ export interface Message {
     };
     // Bug B 2026-06-22 — tin gửi THẤT BẠI (Zalo từ chối: chặn tin lạ / 119 / 127...):
     // message-bubble đọc 2 key này để hiện "Gửi thất bại: <lý do>" trong bubble.
-    sendStatus?: 'failed';
+    sendStatus?: 'queued' | 'preparing' | 'sending' | 'uncertain' | 'failed' | 'sent';
     failReason?: string;
     [key: string]: unknown;
   } | null;

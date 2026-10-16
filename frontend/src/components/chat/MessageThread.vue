@@ -548,6 +548,7 @@
               @open-phone="onOpenPhone"
               @open-reaction-detail="onOpenReactionDetail"
               @jump-to-reply="jumpToReply"
+              @retry-attachment="retryAttachment(item.msg)"
             />
           </div>
         </template>
@@ -1061,6 +1062,8 @@
 import { ref, watch, nextTick, computed, inject, toRef, onMounted, onBeforeUnmount } from 'vue';
 import { chatSessionKey } from '@/composables/chat-session-context';
 import { useChat, type Conversation, type Message } from '@/composables/use-chat';
+import { attachmentOutcomes } from '@/composables/chat-delivery-state';
+import { trackAttachmentDelivery } from '@/composables/chat-attachment-tracker';
 import { parseFriendAcceptedNotice } from '@/composables/zalo-system-notice';
 import { formatInOrgTz, weekdayInOrgTz, getOrgParts } from '@/composables/use-org-timezone';
 import { api } from '@/api/index';
@@ -1293,6 +1296,21 @@ const {
   reconcileOptimisticMessages,
   removeOptimisticMessages,
 } = chatSession ?? useChat();
+const observedAttachmentTransfers = new Set<string>();
+watch(() => props.messages, (messages) => {
+  const conversationId = props.conversation?.id;
+  if (!conversationId) return;
+  const ids = messages.filter((message) => {
+    const status = (message.metadata?.outboundAttachment as { status?: string } | undefined)?.status;
+    return ['prepared', 'submitting'].includes(message.deliveryState || '') || status === 'accepted_pending_mirror';
+  }).map((message) => message.clientEchoId || message.echoId).filter((id): id is string => !!id);
+  for (let offset = 0; offset < ids.length; offset += 10) {
+    const batch = ids.slice(offset, offset + 10).filter((id) => !observedAttachmentTransfers.has(`${conversationId}:${id}`));
+    if (!batch.length) continue;
+    batch.forEach((id) => observedAttachmentTransfers.add(`${conversationId}:${id}`));
+    trackAttachmentDelivery(conversationId, batch, (updates) => reconcileOptimisticMessages(conversationId, [], updates));
+  }
+}, { immediate: true });
 const notificationNow = useSharedNow();
 const notificationsMuted = computed(() => isConversationNotificationMuted(props.conversation?.userState, notificationNow.value));
 async function toggleThreadNotifications() {
@@ -2779,6 +2797,44 @@ async function onDropFiles(event: DragEvent) {
 async function sendAttachments(files: File[], caption = '') {
   if (!props.conversation?.id || !files.length || (chatSession && !chatSession.canSend.value)) return files;
   const conversationId = props.conversation.id;
+  if (files.length > 10) {
+    const remaining: File[] = [];
+    for (let offset = 0; offset < files.length; offset += 10) {
+      if (props.conversation?.id !== conversationId) { remaining.push(...files.slice(offset)); break; }
+      remaining.push(...await sendAttachments(files.slice(offset, offset + 10), caption));
+    }
+    return remaining;
+  }
+  const oversized = files.find((file) => file.size > (file.type.startsWith('image/') ? 100 : 500) * 1024 * 1024);
+  if (oversized) { toast.error(`Tệp ${oversized.name} vượt giới hạn dung lượng gửi.`); return files; }
+  const newEchoId = () => crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const fileEchoIds = files.map((file) => {
+    const id = attachmentEchoIds.get(file) || newEchoId();
+    attachmentEchoIds.set(file, id);
+    return id;
+  });
+  const temporaryIds = fileEchoIds.map((id) => `pending:${id}`);
+  let optimisticMessages: Message[] = [];
+  const reconcile = (messages: Message[]) => reconcileOptimisticMessages(conversationId,
+    messages.map((message) => `pending:${message.clientEchoId || message.echoId || ''}`), messages);
+  const applyResults = (data: { messages?: Message[]; failedIndices?: number[]; pendingConfirmationIndices?: number[] }) => {
+    const result = attachmentOutcomes(fileEchoIds, data);
+    reconcile(data.messages || []);
+    if (result.missing.size) reconcile(optimisticMessages.filter((_, index) => result.missing.has(index)).map((message) => ({
+      ...message, isPending: false, deliveryState: 'uncertain', metadata: { ...message.metadata, sendStatus: 'uncertain' },
+    })));
+    removeOptimisticMessages(conversationId, [...result.failed].map((index) => temporaryIds[index]));
+    if (result.pending.size || result.missing.size) {
+      trackAttachmentDelivery(conversationId, fileEchoIds, reconcile);
+    }
+    result.accepted.forEach((index) => attachmentEchoIds.delete(files[index]));
+    if (result.failed.size) toast.warning(`${result.failed.size} tệp gửi thất bại. Có thể thử lại từng tệp.`);
+    else if (result.missing.size) toast.warning('Chưa xác định kết quả. Kiểm tra trạng thái trước khi gửi lại.');
+    else if (result.pending.size) toast.push(`Đã tiếp nhận ${files.length} tệp, đang xử lý nền.`);
+    else toast.success(`Zalo đã tiếp nhận ${result.accepted.size} tệp.`);
+    emit('refresh-thread');
+    return files.filter((_, index) => result.failed.has(index) || result.missing.has(index));
+  };
   uploadingAttachments.value = true;
   uploadProgress.value = 0;
   uploadStatus.value = 'Đang tải tệp lên máy chủ…';
@@ -2789,17 +2845,9 @@ async function sendAttachments(files: File[], caption = '') {
     files.forEach((file) => attachmentCaptions.set(file, savedCaption));
     if (savedCaption) fd.append('caption', savedCaption);
     for (const file of files) fd.append('files', file, file.name);
-    const newEchoId = () => crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-    const fileEchoIds = files.map((file) => {
-      const existing = attachmentEchoIds.get(file);
-      if (existing) return existing;
-      const created = newEchoId();
-      attachmentEchoIds.set(file, created);
-      return created;
-    });
     const requestEchoId = newEchoId();
     const sentAt = new Date().toISOString();
-    const optimisticMessages: Message[] = files.map((file, index) => {
+    optimisticMessages = files.map((file, index) => {
       const temporaryId = `pending:${fileEchoIds[index]}`;
       const contentType = file.type.startsWith('image/')
         ? 'image'
@@ -2829,10 +2877,9 @@ async function sendAttachments(files: File[], caption = '') {
         clientEchoId: fileEchoIds[index],
         echoId: fileEchoIds[index],
         sentVia: 'user',
-        metadata: { sender: { kind: 'user_crm', name: 'Staff' } },
+        metadata: { sender: { kind: 'user_crm', name: 'Staff' }, sendStatus: 'sending' },
       };
     });
-    const temporaryIds = optimisticMessages.map((message) => message.id);
     addOptimisticMessages(conversationId, optimisticMessages);
     fd.append('echoId', requestEchoId);
     fd.append('echoIds', JSON.stringify(fileEchoIds));
@@ -2851,34 +2898,22 @@ async function sendAttachments(files: File[], caption = '') {
           : 'Đang tải tệp lên máy chủ…';
       },
     });
-    const failedIndices = new Set<number>(
-      Array.isArray(response.data.failedIndices) ? response.data.failedIndices : [],
-    );
-    if (chatSession) {
-      // HTTP 202 or a missing result is not proof of delivery. Keep the same file echo on retry.
-      for (let index = 0; index < files.length; index++) {
-        const message = (response.data.messages ?? []).find((item: Message) => (item.clientEchoId || item.echoId) === fileEchoIds[index]);
-        const delivered = message && !message.pendingConfirmation && message.deliveryState !== 'failed'
-          && (message.zaloMsgId || ['completed', 'accepted'].includes(message.deliveryState ?? ''));
-        if (!delivered) failedIndices.add(index);
-      }
-    }
-    const successfulTemporaryIds = temporaryIds.filter((_, index) => !failedIndices.has(index));
-    const failedTemporaryIds = temporaryIds.filter((_, index) => failedIndices.has(index));
-    reconcileOptimisticMessages(conversationId, successfulTemporaryIds, response.data.messages ?? []);
-    removeOptimisticMessages(conversationId, failedTemporaryIds);
-    const failedFiles = files.filter((_, index) => failedIndices.has(index));
-    files.forEach((file) => {
-      if (!failedFiles.includes(file)) attachmentEchoIds.delete(file);
-    });
-    if (failedFiles.length > 0) {
-      toast.warning(`Đã gửi ${files.length - failedFiles.length}/${files.length} tệp. ${failedFiles.length} tệp đang chờ thử lại.`);
-    } else {
-      toast.success(`Đã gửi ${files.length} tệp đính kèm`);
-    }
-    emit('refresh-thread');
-    return failedFiles;
+    return applyResults(response.data);
   } catch (err) {
+    const status = (err as { response?: { status?: number } }).response?.status;
+    if (!status || status >= 500) {
+      try {
+        const { data } = await api.get(`/conversations/${conversationId}/attachments/status`, {
+          params: { echoIds: JSON.stringify(fileEchoIds) }, timeout: 15_000,
+        });
+        if (data.messages?.length) return applyResults(data);
+      } catch { /* Preserve the same echo IDs when the server cannot be reached. */ }
+      reconcile(optimisticMessages.map((message) => ({ ...message, isPending: false, deliveryState: 'uncertain',
+        metadata: { ...message.metadata, sendStatus: 'uncertain' } })));
+      trackAttachmentDelivery(conversationId, fileEchoIds, reconcile);
+      toast.warning('Mất kết nối khi gửi. Chưa xác định kết quả; thử lại sẽ kiểm tra cùng mã gửi, không tạo mã mới.');
+      return files;
+    }
     removeOptimisticMessages(
       conversationId,
       files.map((file) => `pending:${attachmentEchoIds.get(file) ?? ''}`),
@@ -2891,6 +2926,20 @@ async function sendAttachments(files: File[], caption = '') {
     uploadingAttachments.value = false;
     uploadProgress.value = 0;
     uploadStatus.value = '';
+  }
+}
+
+async function retryAttachment(message: Message) {
+  const conversationId = props.conversation?.id;
+  const echoId = message.clientEchoId || message.echoId;
+  if (!conversationId || !echoId || (chatSession && !chatSession.canSend.value)) return;
+  try {
+    const { data } = await api.post(`/conversations/${conversationId}/attachments/retry`, { echoIds: [echoId] });
+    reconcileOptimisticMessages(conversationId, [], data.messages || []);
+    trackAttachmentDelivery(conversationId, [echoId], (messages) => reconcileOptimisticMessages(conversationId, [], messages));
+    if (data.failedIndices?.length) toast.warning('Không còn file nguồn để thử lại. Chọn lại tệp từ máy tính.');
+  } catch (error) {
+    toast.error((error as { response?: { data?: { error?: string } } }).response?.data?.error || 'Không thể thử lại');
   }
 }
 
@@ -3483,6 +3532,7 @@ async function dispatchBlockComponents(blockId: string) {
 async function handleSend() {
   if (showTemplatePopup.value) { showTemplatePopup.value = false; return; }
   if (isArchivedNick.value || props.sending || uploadingAttachments.value || (chatSession && !chatSession.canSend.value)) return;
+  const sendingConversationId = props.conversation?.id;
   if (chatSession && props.editingMessage) {
     emit('edit-message', props.editingMessage.id, inputText.value);
     return;
@@ -3496,6 +3546,7 @@ async function handleSend() {
     let delivered = false;
     if (files.length) {
       const remaining = await sendAttachments(files, rich.text);
+      if (props.conversation?.id !== sendingConversationId) return;
       const failed = new Set(remaining);
       files.filter((file) => !failed.has(file)).forEach(revokeAttachmentPreview);
       pendingAttachments.value = pendingAttachments.value.filter((file) => !files.includes(file) || failed.has(file));
@@ -3519,16 +3570,24 @@ async function handleSend() {
     if (attachmentsToSend.length && !props.editingMessage) attachmentCaption = textToSend;
     else if (props.editingMessage) emit('edit-message', props.editingMessage.id, textToSend);
     else emit('send', textToSend, props.replyingTo?.id ?? null, styles, mentions);
-    inputText.value = '';
-    editorRef.value?.clear();
-    emit('cancel-reply-edit');
+    if (!attachmentsToSend.length || props.editingMessage) {
+      inputText.value = '';
+      editorRef.value?.clear();
+      emit('cancel-reply-edit');
+    }
   }
   if (attachmentsToSend.length) {
     pendingAttachments.value = pendingAttachments.value.filter((file) => !attachmentsToSend.includes(file));
     const failedFiles = await sendAttachments(attachmentsToSend, attachmentCaption);
+    if (props.conversation?.id !== sendingConversationId) return;
     const failedSet = new Set(failedFiles);
     attachmentsToSend.filter((file) => !failedSet.has(file)).forEach(revokeAttachmentPreview);
     if (failedFiles.length) pendingAttachments.value = [...failedFiles, ...pendingAttachments.value];
+    if (!failedFiles.length && inputText.value === attachmentCaption) {
+      inputText.value = '';
+      editorRef.value?.clear();
+      emit('cancel-reply-edit');
+    }
   }
 }
 
