@@ -65,19 +65,23 @@ function identity(value) {
 function notification(value, origin = DEFAULT_ORIGIN) {
   if (!value || typeof value.convId !== 'string' || typeof value.id !== 'string' || !ID.test(value.convId) || !ID.test(value.id)) return null;
   const text = (input, length) => typeof input === 'string' ? input.replace(/[\u0000-\u001f]/g, ' ').slice(0, length) : '';
-  let avatarUrl = null;
-  try {
-    if (typeof value.avatarUrl !== 'string' || !value.avatarUrl || value.avatarUrl.length > 4096) throw new Error('no avatar');
-    const url = new URL(value.avatarUrl, origin);
-    if (url.protocol === 'https:' && !url.username && !url.password) avatarUrl = url.href;
-    else if (sameOrigin(url.href, origin)) avatarUrl = url.href;
-  } catch {}
+  const avatarUrls = [];
+  const sources = [value.avatarUrl, ...(Array.isArray(value.avatarUrls) ? value.avatarUrls.slice(0, 3) : [])];
+  if (!value.redacted) for (const source of sources) {
+    try {
+      if (typeof source !== 'string' || !source || source.length > 4096) continue;
+      const url = new URL(source, origin);
+      if (url.username || url.password || !(url.protocol === 'https:' || sameOrigin(url.href, origin))) continue;
+      if (!avatarUrls.includes(url.href)) avatarUrls.push(url.href);
+      if (avatarUrls.length === 3) break;
+    } catch {}
+  }
   return { convId: value.convId, id: value.id, redacted: value.redacted === true,
     name: value.redacted ? 'Tin nhắn mới' : text(value.name, 120) || 'Tin nhắn mới',
     senderName: value.redacted ? '' : text(value.senderName, 120),
     context: value.redacted ? 'Nội dung riêng tư' : text(value.context, 160),
     preview: value.redacted ? 'Bạn có tin nhắn mới' : text(value.preview, 240),
-    avatarUrl: value.redacted ? null : avatarUrl, announce: value.announce !== false,
+    avatarUrl: avatarUrls[0] || null, avatarUrls, announce: value.announce !== false,
     sequence: Number.isSafeInteger(value.sequence) && value.sequence > 0 ? value.sequence : 0,
     at: Number.isSafeInteger(value.at) && value.at > 0 && value.at <= Date.now() ? value.at : Date.now() };
 }

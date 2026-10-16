@@ -1,0 +1,6 @@
+Thu gọn thông báo nổi từ 164px xuống 108px: tên khách, nick nhận, thời gian, nội dung hai dòng; bỏ các dòng tiêu đề lặp.
+Sửa API chi tiết hội thoại thiếu tên và avatar Zalo theo nick. Ưu tiên avatar theo nick và dự phòng bằng ảnh hồ sơ khách/ảnh từ tin đến.
+Tự thử ảnh tiếp theo khi ảnh chính lỗi hoặc tải chậm; tin mới không làm avatar đang hiển thị nhấp nháy lại.
+Nếu tất cả ảnh đều thiếu hoặc hỏng, hiển thị chữ viết tắt tên khách thay vì logo ZaloCRM.
+Giữ số tin mới, tên người gửi trong nhóm, thao tác mở đúng hội thoại và ẩn thông báo không đánh dấu đã đọc. Thông báo riêng tư không tải avatar.
+Cần cập nhật cả backend/frontend trên VPS và ứng dụng Windows 0.2.6 để nhận đầy đủ bản sửa.

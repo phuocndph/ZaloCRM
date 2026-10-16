@@ -12,8 +12,7 @@
     </header>
     <nav v-if="recent.length" ref="recentNav" class="recent-conversations" aria-label="Hội thoại gần đây">
       <button v-for="row in recent" :key="row.id" type="button" class="recent-conversation" :class="{ selected: row.id === id }" :aria-current="row.id === id ? 'true' : undefined" :title="`${title(row)} · ${row.zaloAccount?.displayName || 'Nick Zalo'}`" @click="select(row.id)">
-        <img v-if="avatar(row)" :src="avatar(row)!" alt="" referrerpolicy="no-referrer" @error="hideImage" />
-        <span v-else class="recent-initial">{{ title(row).slice(0, 1) }}</span>
+        <Avatar :src="avatars(row)[0]" :fallback-srcs="avatars(row).slice(1)" :name="title(row)" :size="30" :is-group="row.threadType === 'group'" :group-member-avatars="groupAvatars(row)" :gradient-seed="row.id" />
         <span class="recent-copy"><strong>{{ title(row) }}</strong><small>{{ row.zaloAccount?.displayName || 'Nick Zalo' }}</small></span>
         <FilePenLine v-if="hasDraft(row.id)" class="recent-draft" :size="13" aria-label="Có bản nháp" />
         <small v-if="row.unreadCount > 0" class="recent-unread" :aria-label="`${row.unreadCount} tin chưa đọc`">{{ badge(row.unreadCount) }}</small>
@@ -31,8 +30,7 @@
           <div v-if="listLoading && !rows.length" class="inbox-empty" role="status">Đang tải hội thoại…</div>
           <div v-else-if="!rows.length && !listError" class="inbox-empty">{{ search ? 'Không tìm thấy hội thoại.' : onlyUnread ? 'Không có hội thoại chưa đọc.' : 'Chưa có hội thoại.' }}</div>
           <button v-for="row in rows" :key="row.id" type="button" class="inbox-row" :class="{ selected: id === row.id, unread: row.unreadCount > 0 }" @click="select(row.id)">
-            <img v-if="avatar(row)" class="inbox-avatar" :src="avatar(row)!" alt="" referrerpolicy="no-referrer" @error="hideImage" />
-            <span v-else class="inbox-avatar initials">{{ title(row).slice(0, 1) }}</span>
+            <Avatar class="inbox-avatar" :src="avatars(row)[0]" :fallback-srcs="avatars(row).slice(1)" :name="title(row)" :size="44" :is-group="row.threadType === 'group'" :group-member-avatars="groupAvatars(row)" :gradient-seed="row.id" />
             <span class="inbox-copy"><span class="inbox-top"><strong>{{ title(row) }}</strong><time>{{ time(row.lastMessageAt) }}</time></span><span class="inbox-nick">{{ row.zaloAccount?.displayName || 'Nick Zalo' }}</span><span class="inbox-snippet">{{ snippet(row) }}</span></span>
             <span class="inbox-indicators"><BellOff v-if="muted(row)" :size="13" aria-label="Đã tắt thông báo" /><small v-if="row.unreadCount > 0">{{ row.unreadCount > 99 ? '99+' : row.unreadCount }}</small></span>
           </button>
@@ -56,6 +54,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { ArrowLeft, BellOff, ExternalLink, FilePenLine, Maximize2, MessageCircle, Minus, Pin, Search } from 'lucide-vue-next';
 import ConversationChatWorkspace from '@/components/chat/ConversationChatWorkspace.vue';
 import AppUpdateButton from '@/components/AppUpdateButton.vue';
+import Avatar from '@/components/ui/Avatar.vue';
 import { desktopBridge } from '@/composables/desktop-bridge';
 import { useDesktopConversations } from '@/composables/use-desktop-conversations';
 import { useChatSessionDraft } from '@/composables/use-chat-session-draft';
@@ -63,7 +62,7 @@ import { useConversationPreview } from '@/composables/use-conversation-preview';
 import { useMessageNotificationInbox } from '@/composables/use-message-notification-inbox';
 import { usePrivacyVisibility } from '@/composables/use-privacy-visibility';
 import { isConversationNotificationMuted } from '@/composables/use-conversation-state';
-import { notificationAvatarUrl, notificationPreview } from '@/composables/message-notification-utils';
+import { notificationAvatarCandidates, notificationPreview } from '@/composables/message-notification-utils';
 import type { Conversation } from '@/composables/use-chat';
 import { useAuthStore } from '@/stores/auth';
 import { api } from '@/api';
@@ -84,11 +83,11 @@ let disposed = false, reading = false, lastRead = '';
 let lastRecentId = '';
 const unsubscribers: Array<() => void> = [];
 function title(row: Conversation) { return privacy.shouldBlurConv(row) || row.conversationPrivate ? 'Hội thoại riêng tư' : row.threadType === 'group' ? row.groupName || 'Nhóm Zalo' : row.contact?.crmName || row.friendship?.aliasInNick || row.contact?.fullName || row.friendship?.zaloDisplayName || 'Khách hàng'; }
-function avatar(row: Conversation) { return privacy.shouldBlurConv(row) || row.conversationPrivate ? null : notificationAvatarUrl(row.threadType === 'group' ? row.groupAvatarUrl : row.contact?.avatarUrl || row.friendship?.zaloAvatarUrl); }
+function avatars(row: Conversation) { return privacy.shouldBlurConv(row) || row.conversationPrivate ? [] : row.threadType === 'group' ? notificationAvatarCandidates(row.groupAvatarUrl) : notificationAvatarCandidates(row.friendship?.zaloAvatarUrl, row.contact?.avatarUrl); }
+function groupAvatars(row: Conversation) { return privacy.shouldBlurConv(row) || row.conversationPrivate ? [] : row.groupMemberAvatars || []; }
 function snippet(row: Conversation) { return privacy.shouldBlurConv(row) || row.conversationPrivate ? 'Nội dung riêng tư' : row.messages?.[0] ? notificationPreview(row.messages[0]) : 'Chưa có tin nhắn'; }
 function muted(row: Conversation) { const mute = row as Conversation & { zaloNotificationsMuted?: boolean; zaloMutedUntil?: string | null }; return isConversationNotificationMuted(row.userState) || (mute.zaloNotificationsMuted && (!mute.zaloMutedUntil || Date.parse(mute.zaloMutedUntil) > Date.now())); }
 function time(value: string | null) { if (!value) return ''; const date = new Date(value); if (Number.isNaN(date.getTime())) return ''; return date.toDateString() === new Date().toDateString() ? date.toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }) : date.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' }); }
-function hideImage(event: Event) { (event.target as HTMLImageElement).style.visibility = 'hidden'; }
 function onScroll(event: Event) { const node = event.target as HTMLElement; if (node.scrollHeight - node.scrollTop - node.clientHeight < 100) void list.loadMore(); }
 function select(value: string) { if (/^[a-zA-Z0-9_-]{1,100}$/.test(value)) void router.replace({ name: 'Desktop.Chat', params: { convId: value } }); }
 function back() { void router.replace({ name: 'Desktop.Chat' }); }

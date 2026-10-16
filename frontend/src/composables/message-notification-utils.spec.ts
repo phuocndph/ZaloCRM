@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   compactNotificationLabel,
   notificationAvatarUrl,
+  notificationAvatarCandidates,
   notificationContext,
   notificationPreview,
   notificationRoute,
@@ -19,6 +20,11 @@ describe('message notification formatting', () => {
     const url = `https://cdn.example.com/avatar.jpg?signature=${'a'.repeat(180)}`;
     expect(notificationAvatarUrl(url)).toBe(url);
     expect(notificationAvatarUrl('javascript:alert(1)')).toBeNull();
+    expect(notificationAvatarUrl('https://user:secret@example.com/a.jpg')).toBeNull();
+  });
+  it('keeps distinct valid avatar fallbacks in source order and caps them at three', () => {
+    expect(notificationAvatarCandidates('javascript:alert(1)', '/files/a.png', '/files/a.png', 'https://cdn.example.com/a.jpg', '/files/b.png', '/files/c.png'))
+      .toEqual(['/files/a.png', 'https://cdn.example.com/a.jpg', '/files/b.png']);
   });
 
   it('formats previews without exposing redacted content', () => {

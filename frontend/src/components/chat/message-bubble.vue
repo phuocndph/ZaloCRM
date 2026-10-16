@@ -259,19 +259,7 @@
           <!-- E10/E11 Voice / Audio — anh chốt 2026-05-21: inline player có waveform-decor +
                controls native, KHÔNG mở external link. Browser tự handle play/pause/seek/duration. -->
           <div v-else-if="message.contentType === 'voice' || message.contentType === 'audio'">
-            <!-- Trình phát thoại tuỳ biến (play/pause tròn + waveform + mm:ss) — thay <audio> thô. -->
-            <div v-if="voiceUrl" class="voice-player" :class="{ playing: voicePlaying }">
-              <button type="button" class="voice-play" :aria-label="voicePlaying ? 'Tạm dừng' : 'Phát'" @click.stop="toggleVoice">
-                <svg v-if="voicePlaying" viewBox="0 0 24 24" width="20" height="20"><rect x="6" y="5" width="4" height="14" rx="1.5" fill="currentColor"/><rect x="14" y="5" width="4" height="14" rx="1.5" fill="currentColor"/></svg>
-                <svg v-else viewBox="0 0 24 24" width="20" height="20"><path d="M8 5.5v13l11-6.5z" fill="currentColor"/></svg>
-              </button>
-              <div class="voice-wave" @click.stop="seekVoice">
-                <span v-for="(h, i) in VOICE_BARS" :key="i" :style="{ height: h + '%', opacity: (i / VOICE_BARS.length) <= voiceProgress ? 1 : 0.4 }" />
-              </div>
-              <span class="voice-dur">{{ voiceTimeLabel }}</span>
-              <audio ref="voiceEl" :src="voiceUrl" preload="metadata" @loadedmetadata="onVoiceMeta" @timeupdate="onVoiceTime" @ended="onVoiceEnd" />
-            </div>
-            <div v-else class="voice-fallback">🎤 Tin thoại (không tải được)</div>
+            <VoiceMessageBubble :audio-url="voice.urls[0] || ''" :fallback-urls="voice.urls.slice(1)" :duration-ms="voice.durationMs" />
             <div v-if="formattedCaption" class="media-caption" v-html="formattedCaption" />
           </div>
 
@@ -389,6 +377,8 @@ import SpecialMessageRenderer from '@/components/chat/special-message-renderer.v
 import ReactionDisplay from '@/components/chat/reaction-display.vue';
 import ReactionPicker from '@/components/chat/reaction-picker.vue';
 import Avatar from '@/components/ui/Avatar.vue';
+import VoiceMessageBubble from './voice-message-bubble.vue';
+import { voiceMedia } from '@/composables/voice-media';
 import MessageSourceBadge from '@/components/chat/MessageSourceBadge.vue';
 
 const props = defineProps<{
@@ -494,7 +484,7 @@ function onOpenProfile(uid: string) {
 function getImageUrl(msg: Message): string | null {
   // Skip link preview / QR / sticker / reminder / call — không render thumb như chat-image,
   // chúng có renderer riêng (link-preview-card, qr-card, special-message-renderer, ...)
-  if (msg.contentType && ['link', 'qr_code', 'sticker', 'reminder', 'call', 'contact_card'].includes(msg.contentType)) {
+  if (msg.contentType && ['link', 'qr_code', 'sticker', 'reminder', 'call', 'contact_card', 'voice', 'audio', 'video', 'file'].includes(msg.contentType)) {
     return null;
   }
   if (msg.contentType === 'image' && msg.content) {
@@ -535,6 +525,7 @@ function getVideoUrl(msg: Message): string | null {
 }
 
 function getFileInfo(msg: Message): { name: string; size: string; href: string } | null {
+  if (msg.contentType && ['voice', 'audio', 'video', 'gif', 'sticker', 'image'].includes(msg.contentType)) return null;
   if (!msg.content?.startsWith('{')) return null;
   const fmtSize = (raw: unknown) => {
     const b = typeof raw === 'number' ? raw : Number(raw || 0);
@@ -867,41 +858,10 @@ watch(() => props.message.content, (content) => {
 }, { immediate: true });
 
 const gifUrl = computed(() => extractMediaUrl('gif', props.message.content));
-const voiceUrl = computed(() => extractMediaUrl('voice', props.message.content));
+const voice = computed(() => voiceMedia(props.message.content));
 
 // ── Trình phát tin nhắn thoại (tuỳ biến, không dùng <audio controls> thô) ──
 // Waveform tĩnh trang trí (kiểu Zalo) — cao độ pseudo-random cố định, tô dần theo tiến độ.
-const VOICE_BARS = [38, 62, 50, 78, 44, 90, 55, 70, 40, 84, 48, 66, 58, 92, 46, 74, 52, 82, 42, 60];
-const voiceEl = ref<HTMLAudioElement | null>(null);
-const voicePlaying = ref(false);
-const voiceCur = ref(0);
-const voiceTotal = ref(0);
-const voiceProgress = computed(() => (voiceTotal.value > 0 ? Math.min(1, voiceCur.value / voiceTotal.value) : 0));
-const voiceTimeLabel = computed(() => {
-  const sec = voicePlaying.value || voiceCur.value > 0 ? voiceCur.value : voiceTotal.value;
-  const s = Math.max(0, Math.round(sec));
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-});
-function toggleVoice() {
-  const el = voiceEl.value;
-  if (!el) return;
-  if (voicePlaying.value) { el.pause(); voicePlaying.value = false; }
-  else { void el.play().then(() => { voicePlaying.value = true; }).catch(() => { voicePlaying.value = false; }); }
-}
-function onVoiceMeta() {
-  const d = voiceEl.value?.duration;
-  if (d && isFinite(d)) voiceTotal.value = d;
-}
-function onVoiceTime() { voiceCur.value = voiceEl.value?.currentTime ?? 0; }
-function onVoiceEnd() { voicePlaying.value = false; voiceCur.value = 0; if (voiceEl.value) voiceEl.value.currentTime = 0; }
-function seekVoice(e: MouseEvent) {
-  const el = voiceEl.value;
-  if (!el || !voiceTotal.value) return;
-  const box = (e.currentTarget as HTMLElement).getBoundingClientRect();
-  const ratio = Math.min(1, Math.max(0, (e.clientX - box.left) / box.width));
-  el.currentTime = ratio * voiceTotal.value;
-  voiceCur.value = el.currentTime;
-}
 
 const videoThumb = computed(() => {
   const p = safeParse(props.message.content);

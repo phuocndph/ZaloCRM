@@ -137,6 +137,7 @@
         <div class="ci-avatar-wrap">
           <Avatar
             :src="avatarSrcOf(conv)"
+            :fallback-srcs="conv.threadType === 'user' ? [conv.contact?.avatarUrl || ''].filter(Boolean) : []"
             :name="displayName(conv)"
             :size="48"
             :is-group="conv.threadType === 'group'"
@@ -752,7 +753,7 @@ function avatarSrcOf(conv: Conversation): string | null {
   if (conv.threadType === 'group') {
     return (conv as Conversation & { groupAvatarUrl?: string }).groupAvatarUrl || null;
   }
-  return conv.contact?.avatarUrl || null;
+  return conv.friendship?.zaloAvatarUrl || conv.contact?.avatarUrl || null;
 }
 
 // ── Redesign cột 2 (2026-07-11) — Hàng 2: người trả lời cuối + phụ trách + priority ──

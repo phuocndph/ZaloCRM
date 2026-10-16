@@ -7,6 +7,7 @@ export interface DesktopNotification {
   count?: number;
   preview?: string;
   avatarUrl?: string | null;
+  avatarUrls?: string[];
   redacted?: boolean;
   announce?: boolean;
   senderName?: string;

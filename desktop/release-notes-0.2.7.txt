@@ -1,0 +1,6 @@
+Sửa avatar trong danh sách hội thoại và thanh khách gần đây: không còn ẩn hẳn ảnh khi tải lỗi; tự thử ảnh theo nick/ảnh hồ sơ, cuối cùng hiện chữ viết tắt.
+API danh sách hội thoại trả đầy đủ avatar và tên Zalo theo nick, đồng bộ với API chi tiết.
+Sửa ghi âm bị hiển thị nhầm thành tệp hoặc ảnh. App Windows và web dùng chung trình phát: phát/dừng, tua, thời lượng, tải xuống và thử lại khi lỗi.
+Sửa phục vụ AAC/AMR: bản phát trên trình duyệt có hỗ trợ tải từng đoạn và tua; AMR chuyển sang AAC, bản gốc vẫn được giữ.
+Lưu bền vững thêm đường dẫn m4a trong metadata ghi âm để giảm phụ thuộc link Zalo hết hạn.
+Cần cập nhật backend/frontend trên VPS. Ứng dụng Windows có thể cập nhật lên 0.2.7; chỉ cài app mà chưa cập nhật VPS chưa đủ.

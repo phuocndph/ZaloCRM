@@ -155,7 +155,7 @@ export function findMirrorableMediaUrls(content: string, contentType: string): s
     if (isMirrorableUrl(value)) urls.add(value);
   }
   const params = typeof parsed.params === 'string' ? safeParseJsonObject(parsed.params) : null;
-  for (const field of ['rawUrl', 'hd'] as const) {
+  for (const field of ['rawUrl', 'hd', 'm4a'] as const) {
     const value = params?.[field];
     if (isMirrorableUrl(value)) urls.add(value);
   }
@@ -297,7 +297,7 @@ async function mirrorInboundMediaContent(
 
   const params = typeof parsed.params === 'string' ? safeParseJsonObject(parsed.params) : null;
   if (params) {
-    for (const field of ['rawUrl', 'hd'] as const) {
+    for (const field of ['rawUrl', 'hd', 'm4a'] as const) {
       const value = params[field];
       if (!isMirrorableUrl(value)) continue;
       try {

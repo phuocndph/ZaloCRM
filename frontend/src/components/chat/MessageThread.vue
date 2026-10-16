@@ -35,6 +35,7 @@
         >
           <Avatar
             :src="headerAvatarSrc"
+            :fallback-srcs="conversation.threadType === 'user' ? [conversation.contact?.avatarUrl || ''].filter(Boolean) : []"
             :name="headerName"
             :size="40"
             :gender="contactGender"
@@ -1666,8 +1667,8 @@ const headerAvatarSrc = computed(() => {
   }
   // B7 — fallback avatar Zalo của Friend nếu Contact.avatarUrl chưa có
   const friendship = props.conversation?.friendship as { zaloAvatarUrl?: string | null } | undefined;
-  return props.conversation?.contact?.avatarUrl
-    || friendship?.zaloAvatarUrl
+  return friendship?.zaloAvatarUrl
+    || props.conversation?.contact?.avatarUrl
     || null;
 });
 const contactGender = computed(() => props.conversation?.contact?.gender || null);

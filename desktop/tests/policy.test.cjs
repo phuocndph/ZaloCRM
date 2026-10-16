@@ -31,9 +31,19 @@ test('previews bounded, avatar protocols validated and credential fields discard
   assert.equal(notification({}), null);
 });
 test('redacted previews cannot carry names, text or avatar URLs', () => {
-  const value = notification({ id: 'msg', convId: 'conv', name: 'Secret name', senderName: 'Secret sender', preview: 'Secret body', redacted: true, avatarUrl: 'https://example.com/a.png' });
+  const value = notification({ id: 'msg', convId: 'conv', name: 'Secret name', senderName: 'Secret sender', preview: 'Secret body', redacted: true, avatarUrl: 'https://example.com/a.png', avatarUrls: ['https://example.com/b.png'] });
   assert.equal(value.name, 'Tin nhắn mới'); assert.equal(value.preview, 'Bạn có tin nhắn mới'); assert.equal(value.avatarUrl, null);
   assert.equal(value.senderName, '');
+  assert.deepEqual(value.avatarUrls, []);
+});
+test('normalizes and bounds avatar fallbacks without allowing unsafe protocols or credentials', () => {
+  const origin = crmOrigin();
+  assert.deepEqual(notification({ id: 'm', convId: 'c', avatarUrl: '/files/a.jpg', avatarUrls: ['/files/a.jpg', 'https://cdn.example.com/b.jpg', '/files/c.jpg', '/files/d.jpg'] }, origin).avatarUrls,
+    [`${origin}/files/a.jpg`, 'https://cdn.example.com/b.jpg', `${origin}/files/c.jpg`]);
+  for (const source of ['file:///secret', 'javascript:alert(1)', 'data:image/png;base64,abc', 'https://user:secret@example.com/a.jpg', 'http://example.com/a.jpg']) {
+    assert.deepEqual(notification({ id: 'm', convId: 'c', avatarUrls: [source] }, origin).avatarUrls, []);
+  }
+  assert.equal(notification({ id: 'm', convId: 'c', avatarUrl: '/a.jpg' }, 'http://127.0.0.1:3080').avatarUrl, 'http://127.0.0.1:3080/a.jpg');
 });
 test('native update discovery accepts only the exact repository asset with a SHA-256 digest', () => {
   const asset = { name: 'ZaloCRM-Setup-0.2.3.exe', state: 'uploaded', size: 100, digest: `sha256:${'a'.repeat(64)}`,
