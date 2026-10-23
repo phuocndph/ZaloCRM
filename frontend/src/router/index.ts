@@ -269,6 +269,7 @@ const routes: RouteRecordRaw[] = [
           // Kho chiến dịch mẫu — đặt TRƯỚC 'followup/:id' để 'templates' không bị nuốt làm :id.
           { path: 'followup/templates', name: 'CE.FollowupTemplates', component: () => import('@/views/marketing/FollowupTemplatesView.vue'), meta: { requiresAuth: true } },
           { path: 'followup/:id', name: 'CE.FollowupBuilder', component: () => import('@/views/marketing/FollowupBuilderView.vue'), meta: { requiresAuth: true } },
+          { path: 'pain-research', name: 'CE.PainResearch', component: () => import('@/views/marketing/CustomerResearchView.vue'), meta: { requiresAuth: true, resource: 'ai_knowledge' } },
         ],
       } as RouteRecordRaw]
     : []),

@@ -113,6 +113,7 @@
         <ReleaseManagerPanel v-else-if="selected === 'deploy'" />
         <PromptManagerPanel v-else-if="selected === 'prompts'" />
         <KnowledgeBasePanel v-else-if="selected === 'knowledge'" />
+        <CustomerResearchPanel v-else-if="selected === 'research'" />
         <FeedbackManagerPanel v-else-if="selected === 'feedback'" />
         <ModelsConnectionsPanel v-else-if="selected === 'models'" />
         <AutoReplyPanel v-else-if="selected === 'auto_reply'" />
@@ -179,9 +180,10 @@ import AutoReplyPanel from '@/components/ai/AutoReplyPanel.vue';
 import AiRunLogsPanel from '@/components/ai/AiRunLogsPanel.vue';
 import AiUsagePanel from '@/components/ai/AiUsagePanel.vue';
 import AiSecurityPanel from '@/components/ai/AiSecurityPanel.vue';
+import CustomerResearchPanel from '@/components/ai/CustomerResearchPanel.vue';
 
 type SectionKey =
-  | 'overview' | 'agents' | 'skills' | 'prompts' | 'knowledge'
+  | 'overview' | 'agents' | 'skills' | 'prompts' | 'knowledge' | 'research'
   | 'learning' | 'evaluations' | 'auto_reply' | 'feedback' | 'logs'
   | 'usage' | 'models' | 'security' | 'audit' | 'deploy';
 
@@ -226,6 +228,7 @@ const navigation: Array<{ label: string; items: NavigationItem[] }> = [
       { key: 'skills', label: 'Kỹ năng', description: 'Quản lý kỹ năng, quy tắc an toàn và ràng buộc tác vụ.', icon: 'mdi-puzzle-outline', available: true },
       { key: 'prompts', label: 'Lời nhắc', description: 'Quản lý phiên bản, kiểm thử, phê duyệt và khôi phục lời nhắc.', icon: 'mdi-message-text-outline', available: true },
       { key: 'knowledge', label: 'Kho tri thức', description: 'Quản lý nguồn, tài liệu, lập chỉ mục và phê duyệt kiến thức.', icon: 'mdi-book-open-page-variant-outline', available: true },
+      { key: 'research', label: 'Tìm nỗi đau & viết bài', description: 'Tìm khó khăn của chủ khách sạn, duyệt bằng chứng và tạo bài chia sẻ gửi Zalo cá nhân.', icon: 'mdi-compass-rose', available: true },
     ],
   },
   {

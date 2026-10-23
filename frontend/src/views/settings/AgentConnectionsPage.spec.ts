@@ -24,7 +24,8 @@ beforeEach(() => {
 describe('agent permission settings', () => {
   it('edits reactive configs without mutating the saved list and exposes all toggles', async () => {
     const wrapper = render(); await flushPromises(); await wrapper.get('[aria-label="Cài đặt Hermes"]').trigger('click');
-    expect(wrapper.findAll('[data-permission]')).toHaveLength(12);
+    expect(wrapper.findAll('[data-permission]')).toHaveLength(13);
+    expect(wrapper.find('[data-permission="research_execute"]').exists()).toBe(true);
     await wrapper.get('[data-permission="message_send"]').trigger('click');
     expect(agent.permissions).toEqual(['work_read']); wrapper.unmount();
   });

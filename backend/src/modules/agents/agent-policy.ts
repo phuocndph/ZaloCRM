@@ -4,7 +4,7 @@ import type { Resource, Action } from '../rbac/permission-types.js';
 export const AGENT_PERMISSIONS = [
   'work_read', 'conversation_read', 'customer_read', 'analysis_read', 'analysis_run',
   'draft_create', 'work_update', 'customer_update', 'note_create', 'appointment_read',
-  'appointment_write', 'message_send',
+  'appointment_write', 'message_send', 'research_execute',
 ] as const;
 export type AgentPermission = typeof AGENT_PERMISSIONS[number];
 export type AgentConfig = {

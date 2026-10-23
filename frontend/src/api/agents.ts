@@ -8,6 +8,7 @@ export const AGENT_PERMISSION_OPTIONS = [
   { key: 'appointment_read', label: 'Xem lịch hẹn', group: 'Đọc dữ liệu' },
   { key: 'analysis_run', label: 'Chạy phân tích AI', group: 'Xử lý công việc' },
   { key: 'draft_create', label: 'Tạo bản nháp trả lời bằng AI CRM', group: 'Xử lý công việc' },
+  { key: 'research_execute', label: 'Nhận việc tìm nỗi đau và viết bài nháp', group: 'Xử lý công việc' },
   { key: 'work_update', label: 'Hoàn thành, hoãn, mở lại công việc', group: 'Xử lý công việc' },
   { key: 'customer_update', label: 'Sửa hồ sơ, trạng thái và nhãn khách hàng', group: 'Xử lý công việc' },
   { key: 'note_create', label: 'Thêm ghi chú khách hàng', group: 'Xử lý công việc' },
@@ -30,7 +31,7 @@ export function newAgentForm(): Omit<AgentConnection, 'id' | 'revokedAt'> {
     expiresAt: new Date(Date.now() + 30 * 86400000).toISOString(), maxWritesPerDay: 100, maxSendsPerDay: 20 };
 }
 export function needsAgentConfirmation(value: Omit<AgentConnection, 'id' | 'revokedAt'>, old?: AgentConnection) {
-  const sensitive = value.permissions.some((p) => ['message_send', 'appointment_write', 'work_update'].includes(p));
+  const sensitive = value.permissions.some((p) => ['message_send', 'appointment_write', 'work_update', 'research_execute'].includes(p));
   return value.enabled && sensitive && (!old || !old.enabled || old.userId !== value.userId
     || value.accountIds.some((id) => !old.accountIds.includes(id)) || value.permissions.some((p) => !old.permissions.includes(p))
     || value.maxSendsPerDay > old.maxSendsPerDay || value.maxWritesPerDay > old.maxWritesPerDay);

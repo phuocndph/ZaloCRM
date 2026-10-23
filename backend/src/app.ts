@@ -93,6 +93,7 @@ import { integrationRoutes } from './modules/integrations/integration-routes.js'
 import { initTelegramBridge } from './modules/integrations/providers/telegram-bridge/index.js';
 // Telegram bridge routes (Zalo↔Telegram /link + provisioner) — core, stays outside _ee.
 import { telegramBridgeRoutes } from './modules/integrations/providers/telegram-bridge/telegram-bridge-routes.js';
+import { startResearchWorker, stopResearchWorker } from './modules/ai/research/research-queue.js';
 import { aiRoutes } from './modules/ai/ai-routes.js';
 import {
   startConversationAnalysisWorker,
@@ -487,6 +488,7 @@ async function bootstrap() {
     if (config.nodeEnv !== 'test') startOutreachWorker();
     // Follow-up Workflow worker (🟢 Community) — chạy các bước theo lịch (BullMQ).
     if (config.nodeEnv !== 'test') startFollowupWorker();
+    if (config.nodeEnv !== 'test') startResearchWorker();
     // Shadow analysis only: it cannot enroll a workflow or send a message.
     if (config.nodeEnv !== 'test') startConversationAnalysisWorker();
     if (config.nodeEnv !== 'test') startConversationAnalysisBackfill();
@@ -595,6 +597,7 @@ async function bootstrap() {
       try {
         await stopGroupScanWorker().catch((e) => logger.warn('[shutdown] stopGroupScanWorker lỗi:', e));
         await stopOutreachWorker().catch((e) => logger.warn('[shutdown] stopOutreachWorker lỗi:', e));
+        await stopResearchWorker().catch(() => logger.warn('[shutdown] research worker close failed'));
         await stopFollowupWorker().catch((e) => logger.warn('[shutdown] stopFollowupWorker lỗi:', e));
         stopChatMediaMirrorWorker();
         stopChatAttachmentWorker();

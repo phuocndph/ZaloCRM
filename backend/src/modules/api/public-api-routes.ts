@@ -8,16 +8,20 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { prisma } from '../../shared/database/prisma-client.js';
 import { logger } from '../../shared/utils/logger.js';
+import { runSystemQuery } from '../../shared/tenant/tenant-context.js';
+import { researchHermesRoutes } from '../ai/research/research-hermes-routes.js';
+import { authenticateHermesResearchAgent } from '../ai/research/research-hermes-agent-auth.js';
 
 // ── API key auth middleware ────────────────────────────────────────────────────
 
 async function apiKeyAuth(request: FastifyRequest, reply: FastifyReply) {
+  if (await authenticateHermesResearchAgent(request, reply)) return;
   const apiKey = request.headers['x-api-key'] as string;
   if (!apiKey) return reply.status(401).send({ error: 'API key required' });
 
-  const setting = await prisma.appSetting.findFirst({
+  const setting = await runSystemQuery(() => prisma.appSetting.findFirst({
     where: { settingKey: 'public_api_key', valuePlain: apiKey },
-  });
+  }));
   if (!setting) return reply.status(401).send({ error: 'Invalid API key' });
 
   (request as any).orgId = setting.orgId;
@@ -27,6 +31,7 @@ async function apiKeyAuth(request: FastifyRequest, reply: FastifyReply) {
 
 export async function publicApiRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', apiKeyAuth);
+  await app.register(researchHermesRoutes);
 
   // ── Contacts ─────────────────────────────────────────────────────────────
 

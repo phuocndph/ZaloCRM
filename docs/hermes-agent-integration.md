@@ -1,5 +1,12 @@
 # Hermes Agent Integration
 
+For customer pain research and draft writing, see
+[ZCRM_HERMES_GITHUB_DEPLOY.md](ZCRM_HERMES_GITHUB_DEPLOY.md).
+The research bridge can reuse this Agent key with the additional `research_execute`
+permission and the backing employee's `ai_knowledge.edit` grant. Existing keys do
+not gain that permission automatically. No approval or customer-message permission
+is required by the research bridge.
+
 ZaloCRM exposes machine access for the customer-work workflow. It does not
 provide anonymous access, a UI session, administrative access or direct SQL.
 
