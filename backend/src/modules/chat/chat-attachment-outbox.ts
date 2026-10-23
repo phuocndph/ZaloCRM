@@ -237,6 +237,10 @@ export async function processAttachment(id: string, accountId: string): Promise<
   if (!row || !job) return;
   let attempted = false;
   const remoteIds = new Map<string, string>();
+  const confirmedId = (id: string) => {
+    const value = remoteIds.get(id);
+    return value && [...remoteIds.values()].filter((other) => other === value).length === 1 ? value : '';
+  };
   let thumbnail: Awaited<ReturnType<typeof generateThumbnail>> | null = null;
   try {
     const conversation = await prisma.conversation.findUnique({ where: { id: row.conversationId }, include: { zaloAccount: true } });
@@ -288,7 +292,20 @@ export async function processAttachment(id: string, accountId: string): Promise<
     attempted = true;
     let result: unknown;
     if (job.kind === 'image') {
-      result = await zaloOps.sendImage(accountId, conversation.externalThreadId, threadType, rows.map((candidate) => sourcePath(attachmentJob(candidate)!)), null, caption, { maxAttempts: 1 });
+      result = await zaloOps.sendImage(accountId, conversation.externalThreadId, threadType, rows.map((candidate) => sourcePath(attachmentJob(candidate)!)), null, caption, { maxAttempts: 1, deliveryObserver: {
+        beforeSend: async (request) => {
+          if (request.kind !== 'image') return;
+          const candidate = rows[request.index];
+          if (!candidate || !request.clientId) throw new Error('Không đọc được mã đối chiếu của ảnh trước khi gửi Zalo.');
+          const saved = await prisma.message.updateMany({ where: { id: candidate.id, zaloMsgId: null,
+            deliveryState: 'submitting', deliveryLeaseId: candidate.deliveryLeaseId }, data: { zaloCliMsgId: request.clientId } });
+          if (!saved.count) throw new Error('Attachment lease lost before image delivery');
+        },
+        accepted: async (request, remoteId) => {
+          const candidate = request.kind === 'image' ? rows[request.index] : null;
+          if (candidate) remoteIds.set(candidate.id, remoteId);
+        },
+      } });
     } else if (job.kind === 'video' && thumbnail) {
       try {
         result = await sendNativeVideo({ api: instance.api, accountId, videoPath: sourcePath(job), thumbnailPath: thumbnail.path,
@@ -305,7 +322,7 @@ export async function processAttachment(id: string, accountId: string): Promise<
       if (ids[index] && ids.filter((value) => value === ids[index]).length === 1) remoteIds.set(candidate.id, ids[index]);
     });
     for (const candidate of rows) {
-      const remoteId = remoteIds.get(candidate.id);
+      const remoteId = confirmedId(candidate.id);
       if (!remoteId) continue;
       const source = attachmentJob(candidate)!;
       const accepted = await createMediaMessage({
@@ -317,12 +334,12 @@ export async function processAttachment(id: string, accountId: string): Promise<
       await publish(accepted).catch(() => {});
       void enqueueConversationAnalysis({ orgId: user.orgId, conversationId: conversation.id, messageId: accepted.id }).catch(() => {});
     }
-    if (remoteIds.size !== rows.length) throw new ZaloDeliveryUncertainError('Zalo did not return unique IDs for every attachment');
+    if (rows.some((candidate) => !confirmedId(candidate.id))) throw new ZaloDeliveryUncertainError('Zalo did not return unique IDs for every attachment');
     await prisma.conversation.update({ where: { id: conversation.id }, data: { lastMessageAt: new Date(), isReplied: true } });
     logger.info('[chat-outbox] accepted', { messages: remoteIds.size, accountId });
   } catch (error) {
     for (const candidate of rows) {
-      const remoteId = remoteIds.get(candidate.id) || '';
+      const remoteId = confirmedId(candidate.id);
       const source = attachmentJob(candidate)!;
       const current = candidate.clientEchoId ? await prisma.message.findUnique({ where: {
         conversationId_clientEchoId: { conversationId: candidate.conversationId, clientEchoId: candidate.clientEchoId },
@@ -337,7 +354,10 @@ export async function processAttachment(id: string, accountId: string): Promise<
         }).then((accepted) => publish(accepted)).catch(() => logger.error('[chat-outbox] acceptance persistence failed', { messageId: candidate.id }));
         continue;
       }
-      const uncertain = attempted && isZaloDeliveryUncertain(error);
+      // A deterministic rejection for one parallel request says nothing about
+      // siblings already submitted. Never make those ambiguous rows retryable.
+      const uncertain = attempted && (isZaloDeliveryUncertain(error) || rows.length > 1 &&
+        (error as { deliveryPhase?: string })?.deliveryPhase === 'after_send');
       const state = uncertain ? 'uncertain' : 'failed';
       const reason = uncertain ? 'Zalo chưa xác nhận kết quả. Không tự gửi lại để tránh trùng tin.'
         : error instanceof Error ? error.message.slice(0, 300) : 'Attachment send failed';
@@ -347,7 +367,9 @@ export async function processAttachment(id: string, accountId: string): Promise<
           metadata: attachmentMetadata(candidate, { ...source, status: state }, state, reason) },
       }).catch(() => ({ count: 0 }));
       if (updated.count) await publish(await prisma.message.findUniqueOrThrow({ where: { id: candidate.id } })).catch(() => {});
-      logger.warn('[chat-outbox] send settled', { messageId: candidate.id, accountId, state });
+      logger.warn('[chat-outbox] send settled', { messageId: candidate.id, accountId, state,
+        errorType: error instanceof Error ? error.name : 'Unknown',
+        deliveryPhase: (error as { deliveryPhase?: string })?.deliveryPhase ?? 'unknown' });
     }
   } finally {
     await thumbnail?.cleanup().catch(() => {});

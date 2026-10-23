@@ -15,7 +15,7 @@ import { zaloPool } from '../modules/zalo/zalo-pool.js';
 import { zaloRateLimiter } from '../modules/zalo/zalo-rate-limiter.js';
 import { logger } from './utils/logger.js';
 import { prisma } from './database/prisma-client.js';
-import { withDeliveryDeadline, DeliveryDeadlineError, bindDeliveryUploadCallbacks } from './zalo-delivery-context.js';
+import { withDeliveryDeadline, DeliveryDeadlineError, bindDeliveryUploadCallbacks, deliveryFailurePhase, scopedZaloFetch, type DeliveryObserver, type DeliveryPhase } from './zalo-delivery-context.js';
 
 // ── Error types ─────────────────────────────────────────────────────────────
 export class ZaloOpError extends Error {
@@ -24,6 +24,7 @@ export class ZaloOpError extends Error {
     public readonly code: 'NOT_CONNECTED' | 'RATE_LIMITED' | 'SESSION_EXPIRED' | 'API_ERROR' | 'INVALID_PARAMS',
     public readonly statusCode: number = 400,
     public readonly deliveryUncertain: boolean = false,
+    public readonly deliveryPhase?: DeliveryPhase,
   ) {
     super(message);
     this.name = 'ZaloOpError';
@@ -63,6 +64,7 @@ export interface ExecOptions {
   socketPayload?: any;         // data to emit (merged with result)
   suppressErrorLog?: (err: any) => boolean;
   maxAttempts?: number;        // reduce for non-idempotent operations that must not be sent twice
+  deliveryObserver?: DeliveryObserver;
   deliveryOperation?: boolean; // response loss may hide an accepted external send
 }
 
@@ -200,7 +202,10 @@ export async function exec<T>(opts: ExecOptions, fn: (api: any) => Promise<T>): 
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     try {
       const result = await (opts.deliveryOperation
-        ? withDeliveryDeadline(() => fn(instance.api))
+        ? withDeliveryDeadline(() => fn(instance.api), 90_000, {
+          trackTransport: instance.api.getContext?.()?.options?.polyfill === scopedZaloFetch,
+          secretKey: instance.api.getContext?.()?.secretKey, observer: opts.deliveryObserver,
+        })
         : fn(instance.api));
 
       // Record successful operation. (getAllFriends giờ là category 'contact_sync'
@@ -279,6 +284,7 @@ export async function exec<T>(opts: ExecOptions, fn: (api: any) => Promise<T>): 
   const msg = lastError?.message || String(lastError);
   const deliveryUncertain = Boolean(
     opts.deliveryOperation
+    && deliveryFailurePhase(lastError) !== 'before_send'
     && !isDeterministicZaloRejection(lastError)
     && (isTransientNetworkError(lastError) || zaloCode == null),
   );
@@ -297,6 +303,7 @@ export async function exec<T>(opts: ExecOptions, fn: (api: any) => Promise<T>): 
     'API_ERROR',
     500,
     deliveryUncertain,
+    deliveryFailurePhase(lastError),
   );
 }
 
@@ -324,6 +331,7 @@ export function isDeterministicZaloRejection(err: any): boolean {
 }
 
 export function isZaloDeliveryUncertain(err: unknown): boolean {
+  if (deliveryFailurePhase(err) === 'before_send') return false;
   if (err instanceof DeliveryDeadlineError) return true;
   if (err instanceof ZaloDeliveryUncertainError) return true;
   if (err instanceof ZaloOpError) return err.deliveryUncertain;
@@ -340,7 +348,7 @@ async function sendImage(
   attachments: any[],
   io?: Server | null,
   caption: string = '',
-  options?: Pick<ExecOptions, 'maxAttempts'>,
+  options?: Pick<ExecOptions, 'maxAttempts' | 'deliveryObserver'>,
 ) {
   return exec({ accountId, category: 'message', operation: 'sendImage', io, deliveryOperation: true, ...options },
     (api) => api.sendMessage({ msg: caption, attachments }, threadId, threadType));

@@ -90,6 +90,23 @@ describe('durable attachment worker', () => {
     expect(uploadBuffer).not.toHaveBeenCalled();
     expect(rm).not.toHaveBeenCalled();
   });
+  it('saves the exact client ID and retains an observed image acceptance after an SDK error', async () => {
+    row.contentType = 'image';
+    row.metadata.outboundAttachment = { ...row.metadata.outboundAttachment, kind: 'image', filename: 'image.png', mime: 'image/png' };
+    vi.mocked(zaloOps.sendImage).mockImplementation(async (...args) => {
+      const observer = args[6]!.deliveryObserver!;
+      const request = { kind: 'image' as const, index: 0, clientId: '1700000000000' };
+      await observer.beforeSend!(request);
+      expect(row.zaloCliMsgId).toBe(request.clientId);
+      await observer.accepted!(request, '3001');
+      throw new ZaloDeliveryUncertainError('Another SDK continuation lost its response');
+    });
+    await processAttachment('outbox', 'nick');
+    expect(row.zaloMsgId).toBe('3001'); expect(row.deliveryState).toBe('accepted');
+    expect(row.zaloCliMsgId).toBe('1700000000000');
+    expect(zaloOps.sendImage).toHaveBeenCalledTimes(1);
+    expect(zaloOps.sendFile).not.toHaveBeenCalled();
+  });
   it('keeps callback loss uncertain and will not resend on another worker tick', async () => {
     vi.mocked(zaloOps.sendFile).mockRejectedValue(new ZaloDeliveryUncertainError('lost response'));
     await processAttachment('outbox', 'nick');
@@ -203,7 +220,7 @@ describe('durable attachment worker', () => {
     await processAttachment('outbox', 'nick');
     expect(db.$transaction).toHaveBeenCalledWith(expect.any(Function), { isolationLevel: 'Serializable' });
   });
-  it('preserves image albums and confirms only members with their own unique IDs', async () => {
+  it.each([false, true])('confirms only proven image members, including partial transport replies: %s', async (partialReply) => {
     const images = [0, 1, 2].map((index) => ({ ...row, id: `image-${index}`, clientEchoId: `echo-${index}`, contentType: 'image',
       metadata: { sendStatus: 'queued', outboundAttachment: { ...source, destination, filename: `${index}.png`, kind: 'image', mime: 'image/png', batchId: 'album', status: 'queued' } } }));
     const store = new Map(images.map((image) => [image.id, image]));
@@ -225,7 +242,17 @@ describe('durable attachment worker', () => {
       store.set(current.id, { ...current, zaloMsgId: input.zaloMsgId, deliveryState: 'accepted', deliveryLeaseId: null, metadata: input.metadata });
       return store.get(current.id);
     });
-    vi.mocked(zaloOps.sendImage).mockResolvedValue({ attachment: [{ msgId: 'remote-0' }, {}, { msgId: 'remote-2' }] } as never);
+    if (partialReply) {
+      vi.mocked(zaloOps.sendImage).mockImplementation(async (...args) => {
+        const observer = args[6]!.deliveryObserver!;
+        for (let index = 0; index < 3; index++) await observer.beforeSend!({ kind: 'image', index, clientId: String(1700000000000 + index) });
+        await observer.accepted!({ kind: 'image', index: 0, clientId: '1700000000000' }, 'remote-0');
+        await observer.accepted!({ kind: 'image', index: 2, clientId: '1700000000002' }, 'remote-2');
+        // One sibling got a deterministic rejection, but the other submitted
+        // sibling results must never become retryable based on that alone.
+        throw Object.assign(new Error('One image was rejected'), { code: 112, deliveryPhase: 'after_send' });
+      });
+    } else vi.mocked(zaloOps.sendImage).mockResolvedValue({ attachment: [{ msgId: 'remote-0' }, {}, { msgId: 'remote-2' }] } as never);
     await processAttachment('image-0', 'nick');
     expect(zaloOps.sendImage).toHaveBeenCalledTimes(1);
     expect(vi.mocked(zaloOps.sendImage).mock.calls[0][3]).toHaveLength(3);
