@@ -32,3 +32,5 @@ không có nghĩa website thật đã được triển khai.
 Bản xử lý liên tục: xem `ZCRM_HERMES_CONTINUOUS.md`. Nếu hai migration đã hoàn tất,
 không cần áp lại. Cập nhật app, bridge và skill cùng bản; chạy cấu hình bỏ giới hạn
 trên đúng profile Hermes trước khi khởi động bridge.
+
+Nếu giao diện chờ Hermes mãi, xem `ZCRM_HERMES_WAITING.md`. API kết nối chung không tự khởi động tiến trình nhận việc nghiên cứu.

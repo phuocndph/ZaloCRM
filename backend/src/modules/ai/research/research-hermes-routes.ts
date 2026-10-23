@@ -7,10 +7,17 @@ import { claimHermesTask, completeHermesTask, updateHermesTask } from './researc
 
 // Registered inside publicApiRoutes: inherits its existing X-API-Key authentication.
 export async function researchHermesRoutes(app: FastifyInstance) {
-  async function execute(request: FastifyRequest, fn: (orgId: string) => Promise<unknown>) {
+  async function execute(request: FastifyRequest, fn: (orgId: string) => Promise<unknown>, recordContact = true) {
     const orgId = (request as FastifyRequest & { orgId?: string }).orgId;
     if (!orgId) throw new ResearchError('Cần API key hợp lệ.', 401, 'RESEARCH_API_KEY_REQUIRED');
-    return withTenant(orgId, () => fn(orgId));
+    return withTenant(orgId, async () => {
+      if (recordContact) {
+        const valuePlain = new Date().toISOString();
+        await prisma.appSetting.upsert({ where: { orgId_settingKey: { orgId, settingKey: 'research_hermes_last_seen' } },
+          create: { orgId, settingKey: 'research_hermes_last_seen', valuePlain }, update: { valuePlain } });
+      }
+      return fn(orgId);
+    });
   }
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof ResearchError) return reply.code(error.statusCode).send({ error: error.message, code: error.code });
@@ -18,15 +25,14 @@ export async function researchHermesRoutes(app: FastifyInstance) {
     if (statusCode && statusCode < 500) return reply.code(statusCode).send({ error: 'Yêu cầu không hợp lệ.' });
     return reply.code(500).send({ error: 'Không xử lý được công việc Hermes.', code: 'RESEARCH_HERMES_ERROR' });
   });
+  app.post('/api/public/research/hermes/check', {
+    bodyLimit: 2048, schema: { body: { type: 'object', maxProperties: 0 } },
+    config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
+  }, (r) => execute(r, async () => ({ ok: true, protocolVersion: 2, message: 'Kết nối nghiên cứu hợp lệ. Cần chạy bridge --watch để tự nhận việc.' }), false));
   app.post('/api/public/research/hermes/claim', {
     bodyLimit: 2048, schema: { body: { type: 'object', maxProperties: 0 } },
     config: { rateLimit: { max: 30, timeWindow: '1 minute' } },
-  }, (r) => execute(r, async (orgId) => {
-    const valuePlain = new Date().toISOString();
-    await prisma.appSetting.upsert({ where: { orgId_settingKey: { orgId, settingKey: 'research_hermes_last_seen' } },
-      create: { orgId, settingKey: 'research_hermes_last_seen', valuePlain }, update: { valuePlain } });
-    return claimHermesTask(orgId);
-  }));
+  }, (r) => execute(r, claimHermesTask));
   for (const action of ['progress', 'complete', 'fail'] as const) {
     app.post<{ Params: { taskId: string } }>(`/api/public/research/hermes/tasks/:taskId/${action}`, {
       bodyLimit: action === 'complete' ? 1_000_000 : 4096,
