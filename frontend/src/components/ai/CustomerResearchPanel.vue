@@ -105,9 +105,9 @@
             <strong>{{ item.title }}</strong>
             <p>{{ item.brief }}</p>
             <div class="project-meta">
-              <span>AI: {{ item.aiCalls }}/{{ item.maxAiCalls }} lượt</span>
+              <span>AI: {{ item.aiCalls }} lượt</span>
               <span v-if="item.executor === 'hermes'">Hermes Agent</span>
-              <span v-else>Chi phí: {{ formatMicrosToUsd(item.aiCostMicros) }}/{{ formatMicrosToUsd(item.maxAiCostMicros) }}</span>
+              <span v-else>Chi phí: {{ formatMicrosToUsd(item.aiCostMicros) }}</span>
             </div>
           </button>
         </div>
@@ -135,20 +135,20 @@
               </div>
               <div class="budget-pills">
                 <span>
-                  <small>{{ currentProject.executor === 'hermes' ? 'Lượt tìm nguồn' : 'Lượt tìm Google' }}</small>
-                  <strong>{{ currentProject.searchCalls }} / {{ currentProject.maxQueries }}</strong>
+                  <small>{{ currentProject.executor === 'hermes' ? 'Phần tìm nguồn đã giao' : 'Lượt tìm Google' }}</small>
+                  <strong>{{ currentProject.searchCalls }}</strong>
                 </span>
                 <span>
                   <small>Nguồn đã lưu</small>
-                  <strong>{{ sources.length }} / {{ currentProject.maxSources }}</strong>
+                  <strong>{{ sources.length }}</strong>
                 </span>
                 <span>
                   <small>{{ currentProject.executor === 'hermes' ? 'Lượt tổng hợp / viết' : 'Lượt gọi AI' }}</small>
-                  <strong>{{ currentProject.aiCalls }} / {{ currentProject.maxAiCalls }}</strong>
+                  <strong>{{ currentProject.aiCalls }}</strong>
                 </span>
                 <span v-if="currentProject.executor !== 'hermes'">
-                  <small>Chi phí AI tối đa</small>
-                  <strong>{{ formatMicrosToUsd(currentProject.aiCostMicros) }} / {{ formatMicrosToUsd(currentProject.maxAiCostMicros) }}</strong>
+                  <small>Chi phí AI đã ghi nhận</small>
+                  <strong>{{ formatMicrosToUsd(currentProject.aiCostMicros) }}</strong>
                 </span>
               </div>
             </div>
@@ -656,28 +656,11 @@
               placeholder="Nhập mã cấu hình AI đang hoạt động (Model Config ID)"
             />
             <small v-if="!availableModels.length">
-              Gợi ý: Bạn có thể tạo và duyệt cấu hình AI có khai báo giá token trong mục "Mô hình & kết nối".
+              Gợi ý: Bạn có thể tạo và duyệt cấu hình AI trong mục "Mô hình & kết nối".
             </small>
           </label>
 
-          <div class="form-row four">
-            <label>
-              <span>Tối đa lượt tìm Google</span>
-              <input v-model.number="projectForm.maxQueries" type="number" min="1" max="20" required />
-            </label>
-            <label>
-              <span>Tối đa số nguồn lưu</span>
-              <input v-model.number="projectForm.maxSources" type="number" min="1" max="60" required />
-            </label>
-            <label>
-              <span>Tối đa lượt gọi AI</span>
-              <input v-model.number="projectForm.maxAiCalls" type="number" min="1" max="30" required />
-            </label>
-            <label v-if="projectForm.executor !== 'hermes'">
-              <span>Trần chi phí AI (USD)</span>
-              <input v-model.number="projectForm.maxUsd" type="number" min="0.1" max="100" step="0.1" required />
-            </label>
-          </div>
+          <p class="help-text">Xử lý liên tục các việc đã giao, không dừng vì ngân sách hoặc số lượt. Nhiều nguồn sẽ được chia nhỏ để làm tiếp. Bạn có thể dừng công việc khi cần.</p>
         </div>
 
         <footer>
@@ -958,10 +941,6 @@ const projectForm = reactive({
   brief:
     'Tìm các khó khăn thực tế khi chủ và quản lý khách sạn Việt Nam vận hành khách sạn: nhân sự, buồng phòng, chi phí, giặt là, bảo trì và phản hồi của khách. Sau đó đánh dấu vấn đề liên quan đến chăn ga gối đệm, rèm, bảo vệ đệm và khăn Jolie’Fam.',
   modelConfigId: '',
-  maxQueries: 5,
-  maxSources: 30,
-  maxAiCalls: 10,
-  maxUsd: 1,
 });
 
 const sourceForm = reactive<{
@@ -1068,14 +1047,15 @@ function extractErrorMessage(err: unknown, fallback: string): string {
 
 function friendlyErrorCode(code: string): string {
   const map: Record<string, string> = {
-    RESEARCH_HERMES_TIME_LIMIT: 'Hermes đã hết thời gian xử lý. Kiểm tra máy chủ Hermes rồi chạy lại.',
+    RESEARCH_HERMES_BATCH_REQUIRED: 'Cần cập nhật bộ kết nối Hermes trên máy chủ rồi chạy lại.',
+    RESEARCH_HERMES_TIME_LIMIT: 'Đây là thông báo từ bản cũ. Bấm Chạy lại để tiếp tục theo cách xử lý mới.',
     RESEARCH_HERMES_FAILED: 'Hermes chưa hoàn thành. Kiểm tra công cụ và kết nối trên máy chủ Hermes.',
-    RESEARCH_SEARCH_BUDGET: 'Đã dùng hết lượt tìm kiếm của đợt này.',
+    RESEARCH_SEARCH_BUDGET: 'Đây là thông báo từ bản cũ. Bấm Chạy lại để tiếp tục theo cách xử lý mới.',
     RESEARCH_NO_SOURCES: 'Chưa có nguồn đọc được. Cần tìm hoặc dán nguồn trước khi tổng hợp.',
-    RESEARCH_MODEL_PRICING_REQUIRED: 'Mô hình AI chưa khai báo đơn giá token (cần điền giá trong phần Mô hình & kết nối).',
-    RESEARCH_AI_BUDGET: 'Đã chạm giới hạn số lượt gọi AI hoặc trần chi phí của đợt tìm hiểu này.',
+    RESEARCH_MODEL_PRICING_REQUIRED: 'Đây là thông báo từ bản cũ. Bấm Chạy lại để tiếp tục theo cách xử lý mới.',
+    RESEARCH_AI_BUDGET: 'Đây là thông báo từ bản cũ. Bấm Chạy lại để tiếp tục theo cách xử lý mới.',
     RESEARCH_SEARCH_NOT_CONFIGURED: 'Chưa cấu hình khóa tìm kiếm Google trên máy chủ.',
-    RESEARCH_TIME_LIMIT: 'Lượt chạy quá 10 phút, bạn có thể bấm Chạy lại từ bước đã lưu.',
+    RESEARCH_TIME_LIMIT: 'Đây là thông báo từ bản cũ. Bấm Chạy lại để tiếp tục theo cách xử lý mới.',
     RESEARCH_PERMISSION_REVOKED: 'Tài khoản không còn quyền chạy tác vụ này.',
     RESEARCH_INVALID_AI_OUTPUT: 'Kết quả AI trả về chưa khớp định dạng bằng chứng, hãy bấm Chạy lại.',
     RESEARCH_INVALID_EVIDENCE: 'AI trích dẫn câu không nằm nguyên văn trong nguồn, hệ thống đã chặn để tránh bịa thông tin.',
@@ -1126,7 +1106,7 @@ async function loadProjectWorkspace(projectId: string) {
   const version = ++workspaceVersion;
   const allPages = async <T,>(fetchPage: (page: number) => Promise<T[]>) => {
     const rows: T[] = [];
-    for (let page = 1; page <= 50; page++) {
+    for (let page = 1; ; page++) {
       const batch = await fetchPage(page); rows.push(...batch);
       if (batch.length < 25) break;
     }
@@ -1134,7 +1114,7 @@ async function loadProjectWorkspace(projectId: string) {
   };
   const [detail, sourceRows, painRows, contentRows] = await Promise.all([
     aiResearchApi.getProject(projectId),
-    aiResearchApi.listSources(projectId),
+    allPages((page) => aiResearchApi.listSources(projectId, page)),
     allPages((page) => aiResearchApi.listPains(projectId, page)),
     allPages((page) => aiResearchApi.listContents(projectId, page)),
   ]);
@@ -1219,16 +1199,11 @@ function openCreateProjectModal() {
 async function handleCreateProject() {
   saving.value = true;
   try {
-    const maxAiCostMicros = Math.max(1, Math.round((Number(projectForm.maxUsd) || 1) * 1_000_000));
     const created = await aiResearchApi.createProject({
       title: projectForm.title,
       brief: projectForm.brief,
       modelConfigId: projectForm.modelConfigId,
       executor: projectForm.executor,
-      maxQueries: projectForm.maxQueries,
-      maxSources: projectForm.maxSources,
-      maxAiCalls: projectForm.maxAiCalls,
-      maxAiCostMicros,
     });
     showCreateProjectModal.value = false;
     projects.value = [created, ...projects.value.filter((p) => p.id !== created.id)];

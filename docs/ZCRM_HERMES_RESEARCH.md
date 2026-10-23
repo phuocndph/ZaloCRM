@@ -5,8 +5,8 @@
 - Tao dot tim hieu voi `executor: hermes`, khong can model hoac Serper trong ZCRM.
 - Hermes lay viec bang API key ZCRM hien co; chi thay viec trong cung to chuc.
 - Nhan nguon, tong hop noi dau, viet nhap; duyet van thuc hien trong giao dien ZCRM.
-- Nhan viec co ma rieng, het han sau 120 giay neu khong bao tien do; moi viec
-  toi da 15 phut, tu dong nhan lai toi da 3 lan. Nguoi dung co the dung/chay lai.
+- Nhan viec co ma rieng, gia han moi khi bao tien do. Khong con tran ngan sach,
+  tong so luot, tong so nguon, 15 phut hay 3 lan nhan lai. Nguoi dung co the dung/chay lai.
 - Trich dan phai khop nguyen van nguon. Bai viet chi duoc tao tu van de da duyet.
 - Moi ket qua bat dau la ban nhap. Hermes khong co API duyet trong bo nay.
 
@@ -31,10 +31,15 @@ Bo ket noi khong tu sua cau hinh model, khong mo truy cap nhom Facebook rieng.
    (khong co `/api` o cuoi); `ZCRM_API_KEY` la key ket noi dang co. Khong dan key
    vao skill, file task, cau lenh co luu lich su, hoac tin nhan chat.
 4. Chay thu mot lan: `python3 /opt/zcrm-hermes/zcrm_bridge.py`.
-5. Trong ZCRM: Marketing -> Tim noi dau & tao bai -> Tao dot moi -> Hermes Agent
+5. Chay `python3 /opt/zcrm-hermes/zcrm_bridge.py --configure-continuous` trong
+   DUNG profile Hermes nhan viec. Lenh dat `agent.max_turns=none`,
+   `agent.run_budget_seconds=null`, `tool_loop_guardrails.loop_caps.max_web_searches=0`.
+   Can ban Hermes ho tro cac khoa nay; neu bao loi thi cap nhat Hermes truoc.
+6. Trong ZCRM: Marketing -> Tim noi dau & tao bai -> Tao dot moi -> Hermes Agent
    -> Giao Hermes tim thong tin. Chay lai bridge de lay viec.
-6. Sau khi thu thanh cong, dung trinh quan ly dich vu tren may chu de chay
+7. Sau khi thu thanh cong, dung trinh quan ly dich vu tren may chu de chay
    `python3 /opt/zcrm-hermes/zcrm_bridge.py --watch`. Moi 15 giay bridge hoi viec moi.
+   Khi xong mot viec, lay viec tiep theo ngay, khong cho 15 giay.
    Chi bat mot bridge cho profile nay de tranh chong cac lan chay CLI.
 
 Neu lenh Hermes nam ngoai PATH, dat `HERMES_COMMAND` bang duong dan executable.
@@ -54,9 +59,9 @@ Tat ca endpoint duoi day la POST, `Content-Type: application/json`.
 
 | Duong dan | Noi dung gui | Ket qua |
 | --- | --- | --- |
-| `/api/public/research/hermes/claim` | `{}` | `{task:null}` hoac cong viec co `taskId`, `leaseToken`, `skill`, `input`, `limits`, `deadline` |
-| `/api/public/research/hermes/tasks/:id/progress` | `leaseToken`, `message` | Gia han 120 giay, khong vuot han tong |
-| `/api/public/research/hermes/tasks/:id/complete` | `leaseToken`, `result` | Luu ban nhap va danh dau hoan thanh |
+| `/api/public/research/hermes/claim` | `{}` | `{task:null}` hoac cong viec co `taskId`, `leaseToken`, `skill`, `input`, `batch`, `protocolVersion:2`; khong co deadline tong |
+| `/api/public/research/hermes/tasks/:id/progress` | `leaseToken`, `message` | Gia han 120 giay; khong co han tong |
+| `/api/public/research/hermes/tasks/:id/complete` | `leaseToken`, `batch`, `result` | Luu phan da xong; tra task phan tiep hoac completed |
 | `/api/public/research/hermes/tasks/:id/fail` | `leaseToken`, `message` | Bao loi de nguoi dung xem/chay lai |
 
 API key xac dinh to chuc, khong nhan orgId tu agent. `leaseToken` la ma bi mat
@@ -69,18 +74,29 @@ khong chung minh Hermes da doc trang that hoac tac gia la chu khach san.
 
 Mau ket qua tung buoc nam trong ba `SKILL.md` cua goi ban giao.
 
-## Gioi han can hieu dung
+## Xu ly lien tuc
 
-- ZCRM truoc khi giao viec se danh dau so luot tim/AI da danh cho cong viec;
-  khi nhan lai cung viec khong tru lan nua. Tim kiem cua mot dot dung toi da
-  so luot da dat. Task discover duoc giao toan bo so luot tim con lai.
-- Hermes tu thuc thi gioi han so lan goi cong cu. ZCRM khong quan sat duoc moi
-  lenh tim web hoac hoa don model tren may Hermes; can dat ngan sach o Hermes/provider.
-- Chi phi USD cua ZCRM KHONG ap dung cho executor Hermes; giao dien khong hien
-  so 0 USD nhu la chi phi Hermes thuc te.
-- Nguon nhap boi Hermes giu vai tro nguoi viet la chua ro. Khong tu bien mot URL
-  thanh mot chu khach san da duoc xac minh.
-- Chua gui tin nhan Zalo hay dang bai tu dong.
+- ZCRM bo qua cac cot gioi han cu, cho ca dot da tao va dot moi. Khong can sua DB.
+  Cong viec da failed boi ban cu: bam Chay lai de tiep tuc.
+- Tong hop chia 5 nguon moi phan. API tra `status:running` va `task` tiep theo;
+  bridge lap den khi server tra completed. Khong co tran tong so phan.
+- Tim nguon co the tra `hasMore:true`, `nextSearch` kem ket qua. ZCRM luu nguon,
+  roi bridge tu chay phan tiep. Het pham vi/het nguon doc duoc thi hoan thanh;
+  khong tu tao cong viec moi vo tan. Skill phai ghi ro phan da tim de tranh lap.
+- Gui lai cung `batch`, result va leaseToken khong luu trung hay nhay qua phan.
+  Neu may chu Hermes mat ket noi, viec duoc nhan lai tu phan chua hoan thanh sau
+  khi ma nhan viec het han. Worker cu khong duoc ghi de ket qua worker moi.
+- Bridge thu gui lai khi mang loi/HTTP 429/5xx, khong dung sau 3 lan. Neu khong
+  gia han duoc ma nhan viec thi dung tien trinh con de cho phep nhan lai an toan.
+- Chi phi tren ZCRM chi ghi nhan so nha cung cap tra ve cho AI noi bo; khong phai
+  hoa don Hermes. Hermes dung tai khoan/model da cai tren may chu Hermes.
+- Van giu buoc nguoi dung duyet, quyen truy cap, nut dung va kiem tra bang chung.
+  Loi key/model/cong cu thieu can xu ly nguyen nhan; khong phai het ngan sach ZCRM.
+- Gioi han kich thuoc moi goi du lieu va toc do API van giu de web hoat dong on dinh.
+  Cac muc nay khong gioi han tong cong viec, nguon hay chi phi cua dot nghien cuu.
+- Cap nhat ZCRM, bridge VA hai skill tim/tong hop cung ban. Bridge cu khong ho tro
+  nhan phan tiep theo. Xem `ZCRM_HERMES_CONTINUOUS.md` de cai dat nhanh.
+- Nguon Hermes nhap van giu vai tro tac gia chua ro. Chua gui tin Zalo/dang bai.
 
 ## Trien khai schema va kiem thu
 

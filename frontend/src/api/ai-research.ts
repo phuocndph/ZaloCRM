@@ -149,10 +149,6 @@ export interface CreateResearchProjectInput {
   brief: string;
   modelConfigId?: string;
   executor?: 'internal' | 'hermes';
-  maxQueries?: number;
-  maxSources?: number;
-  maxAiCalls?: number;
-  maxAiCostMicros?: number;
 }
 
 export interface AddResearchSourceInput {
@@ -294,9 +290,9 @@ export const aiResearchApi = {
     return res.data;
   },
 
-  async listSources(projectId: string): Promise<ResearchSource[]> {
+  async listSources(projectId: string, page = 1): Promise<ResearchSource[]> {
     const res = await api.get<{ sources: ResearchSource[] }>(
-      `${base}/projects/${encodeURIComponent(projectId)}/sources`,
+      `${base}/projects/${encodeURIComponent(projectId)}/sources`, { params: { page } },
     );
     return res.data.sources ?? [];
   },

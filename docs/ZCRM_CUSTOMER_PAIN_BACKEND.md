@@ -1,12 +1,12 @@
 # Backend: tìm vấn đề khách sạn và tạo nội dung
 
-Đã xây phần backend dưới `/api/v1/ai/research`. Chức năng tạo lần nghiên cứu, thêm/đọc nguồn, tổng hợp vấn đề có bằng chứng, duyệt vấn đề, tạo/sửa/duyệt nội dung. Chưa có giao diện và chưa nối gửi Zalo.
+Đã xây phần backend dưới `/api/v1/ai/research`. Chức năng tạo lần nghiên cứu, thêm/đọc nguồn, tổng hợp vấn đề có bằng chứng, duyệt vấn đề, tạo/sửa/duyệt nội dung. Đã có giao diện và kết nối Hermes; chưa nối gửi Zalo.
 
 ## Chuẩn bị để chạy thật
 
 - PostgreSQL: áp migration `20261023100000_customer_research` theo quy trình triển khai của dự án. Kiểm tra các migration khác đang chờ trước khi dùng `prisma migrate deploy`; thư mục làm việc còn các migration từ công việc trước. Chưa áp vào database thật trong bước xây này.
 - Redis: hàng đợi `customer-research`; worker được khởi động/dừng cùng backend. Request chỉ xếp việc, trả `202`; xem tiến độ bằng API lấy task.
-- AI: `modelConfigId` cùng tổ chức, đang active và có key hoạt động. Khai báo `parameters.inputCostPerMillion` / `outputCostPerMillion` bằng USD/triệu token để kiểm soát chi phí; cấu hình dự phòng cũng phải có giá. Dùng AI Client hiện có, không gửi trực tiếp key xuống frontend.
+- AI: `modelConfigId` cùng tổ chức, đang active và có key hoạt động. Giá token dùng để ghi nhận chi phí; không bắt buộc khai báo giá để chạy nghiên cứu. Dùng AI Client hiện có, không gửi trực tiếp key xuống frontend.
 - `TOKEN_ENCRYPTION_KEY`: khóa 64 ký tự hex theo cấu hình mã hóa sẵn có. Nguồn được mã hóa khi lưu; email/số điện thoại được ẩn trước lưu/gửi AI. Nội dung bản nháp vẫn cần người kiểm tra danh tính trước duyệt.
 - `RESEARCH_SERPER_API_KEY`: key tìm Google qua Serper. Để trống vẫn thêm nguồn thủ công, tổng hợp và viết bài được; `discover` sẽ báo chưa cấu hình.
 - `RESEARCH_WEB_ALLOWED_DOMAINS`: danh sách tên miền được phép đọc, cách nhau bằng dấu phẩy. Ví dụ cú pháp: `example.com,*.example.org`; tên ví dụ không phải nguồn đã được duyệt. Để trống vẫn tìm thấy đường dẫn nhưng việc đọc trang bị chặn rõ `DOMAIN_NOT_ALLOWED`. Khi thêm miền, chạy `collect` để đọc lại các nguồn pending/failed/blocked, không cần tiêu thêm lượt tìm.
@@ -41,7 +41,7 @@ Mọi quan hệ project/source/pain/content/task tách theo tổ chức; FK ghé
 | PATCH `P/contents/:id` | Tạo bản nháp mới khi sửa, giữ nguyên thân bài bản cũ và thu hồi trạng thái được dùng của bản cũ. |
 | POST `P/contents/:id/approve` | Duyệt nếu vấn đề nguồn vẫn được duyệt và đúng bản. Gửi body `{}`. |
 
-GET projects, pains và contents phân trang 25 bản, `page` từ 1–10000. Nguồn giới hạn theo project (tối đa 60). API thao tác giới hạn 10 lần/phút, đọc 60 lần/phút theo rate-limit sẵn có.
+GET projects, pains và contents phân trang 25 bản, `page` từ 1–10000. Nguồn cũng phân trang 25 bản; không giới hạn tổng số nguồn trong đợt. API thao tác giới hạn 10 lần/phút, đọc 60 lần/phút theo rate-limit sẵn có.
 
 ## Luồng gọi mẫu
 
@@ -51,15 +51,11 @@ GET projects, pains và contents phân trang 25 bản, `page` từ 1–10000. Ng
 {
   "title": "Khó khăn vận hành khách sạn",
   "brief": "Tìm khó khăn chủ và quản lý khách sạn Việt Nam, gồm nhân sự, doanh thu, buồng phòng, giặt là, mua sắm và bảo trì. Phân biệt lời người vận hành với quảng cáo và đánh giá khách lưu trú.",
-  "modelConfigId": "ID_CAU_HINH_AI_DANG_HOAT_DONG",
-  "maxQueries": 5,
-  "maxSources": 30,
-  "maxAiCalls": 10,
-  "maxAiCostMicros": 1000000
+  "modelConfigId": "ID_CAU_HINH_AI_DANG_HOAT_DONG"
 }
 ```
 
-`maxAiCostMicros` nhập số nguyên; 1.000.000 tương ứng 1 USD. Trả về các trường tiền dạng chuỗi để JSON không lỗi BigInt. Đây là giới hạn dự phòng AI, chưa bao gồm giá tìm kiếm Serper.
+Các cột maxQueries/maxSources/maxAiCalls/maxAiCostMicros được giữ để tương thích dữ liệu cũ, không còn chặn xử lý. Chi phí trả về dạng chuỗi để JSON không lỗi BigInt; không bao gồm giá Serper hoặc hóa đơn Hermes.
 
 2. POST `P/tasks`:
 
@@ -108,17 +104,17 @@ Ba kiểu: article, zalo_message, checklist. Bản đầu chỉ viết giáo d�
 
 ## Giới hạn, dừng và chạy lại
 
-- Các mức là **cộng dồn cả project**, không đặt lại khi bấm retry: tối đa 20 lượt tìm, 60 nguồn, 30 lượt AI; giá trị mặc định 5/30/10. Giới hạn tiền từ 1 tới 100.000.000 micro USD. Muốn thử phạm vi/ngân sách mới thì tạo project mới.
-- AI được giữ trước một khoản dự phòng tính từ lượng đầu vào, trần đầu ra, giá khai báo, số lần thử lại và model dự phòng. `aiCostMicros` là tổng khoản giữ dự phòng (có thể lớn hơn tiền thực); chi phí trả về từng lần có trong AI audit. Không hoàn lại dự phòng khi không rõ nhà cung cấp đã tính tiền hay chưa. Đây không thay hóa đơn của nhà cung cấp. Lượt gọi không đủ ngân sách sẽ dừng trước khi gọi.
-- Không tự retry vô hạn khi AI lỗi. Chủ động retry mới tiếp tục dùng phần ngân sách còn lại. Mã idempotency dùng lại với cùng việc trả cùng task; dùng cho việc khác báo 409. Hàng đợi lỗi trả 503 sau tối đa khoảng 5 giây và giữ task queued; gọi lại cùng key để gửi lại.
+- Không chặn theo tổng tiền, lượt tìm, lượt AI hay nguồn đã lưu, kể cả đợt cũ. Không bắt buộc có giá token để chạy. Lượt tìm nội bộ lập tối đa 5 câu trong một yêu cầu, có thể giao các lượt tìm tiếp theo trong cùng đợt; đây không phải hạn mức cộng dồn.
+- Chi phí ghi nhận là tổng số `costMicros` AI Client trả về sau mỗi cuộc gọi thành công, không phải khoản dự phòng. Không biết tiền các cuộc gọi lỗi thì không suy đoán thành 0 tiền thực tế; kiểm tra hóa đơn nhà cung cấp khi cần.
+- Không giới hạn thời gian tổng của công việc còn hoạt động. Tổng hợp xử lý 5 nguồn mỗi phần tới khi hết, không giới hạn tổng số phần; nguồn và kết quả được phân trang để xem tiếp. Khi lỗi thật, người dùng thấy lỗi và có thể chạy lại từ bước đã lưu.
+- Mã chống lặp dùng lại với cùng việc trả cùng task; dùng cho việc khác báo 409. Hàng đợi lỗi trả 503 và giữ task queued; gửi lại cùng mã để đưa vào hàng đợi.
 - Dừng ngay thu hồi quyền ghi của worker cũ. Một cuộc gọi AI/tìm kiếm đang thực hiện có thể vẫn bị tính phí; kết quả trả muộn không được ghi thành vấn đề/bài. Không thể thu hồi khoản đã gửi nhà cung cấp.
-- Mỗi lượt xử lý kiểm tra mốc 10 phút trước các bước tiếp theo; khi chạm mốc sẽ dừng ở checkpoint để người dùng chạy tiếp. Một yêu cầu nhà cung cấp đang chạy có thể hoàn tất muộn hơn mốc này. Không phải bộ hẹn giờ tự gọi lại.\n- Worker lưu bước tìm và batch phân tích. Worker chết có thể retry sau khi lease hết hạn (120 giây kể từ heartbeat gần nhất); token chặn worker cũ ghi chồng. Nếu nguồn đổi trước khi chạy tiếp phân tích, yêu cầu bắt đầu lượt analyze mới.
 - Thêm nguồn làm vấn đề cũ cần duyệt lại và bài cũ outdated. Sửa/gộp/bỏ vấn đề làm bài liên quan outdated. Chỉ khi lượt tổng hợp mới hoàn thành thành công mới chuyển phiếu cũ sang superseded; lượt lỗi không thu hồi kết quả đã duyệt trước đó. Không có tác vụ nghiên cứu nào publish thông tin sản phẩm hoặc gửi tin cho khách.
 - Downloader HTTPS chặn credentials/port khác, phân giải DNS và ghim IP công khai vào kết nối; kiểm tra lại từng redirect, không mang key Serper sang trang khác. Giới hạn 1 MB/trang, 15 giây/lần tải, tối đa 4 trang chuyển hướng; không chạy JavaScript và không xử lý PDF/ảnh. Robots không xác định/không cho phép thì chặn. Trang chỉ có ít chữ không được tính là bằng chứng đầy đủ.
 - Bộ chỉ dẫn nghiên cứu và viết bài hiện là bản tích hợp trong mã nguồn; chưa có màn hình riêng sửa bộ chỉ dẫn đó.
 
 ## Kiểm tra
 
-Chạy `npm test -- customer-research` và `npx tsc --noEmit` trong backend. Test gồm kiểm bằng chứng, DNS/redirect/robots, quyền API, tính chống lặp, ngân sách, dừng giữa lượt AI, duyệt/bản sửa và migration/khóa ngoại/RLS trong PostgreSQL chạy bộ nhớ bằng PGlite. Không cần database thật, key trả phí hoặc truy cập nhóm Facebook cho các test này. Kiểm tra dịch vụ Google/AI với tài khoản thật và Redis thật là bước triển khai tiếp theo, chưa thể coi test mô phỏng là đã tìm được dữ liệu ngoài đời.
+Chạy `npm test -- customer-research` và `npx tsc --noEmit` trong backend. Test gồm kiểm bằng chứng, DNS/redirect/robots, quyền API, tính chống lặp, tiếp tục qua hạn mức cũ, dừng giữa lượt AI, duyệt/bản sửa và migration/khóa ngoại/RLS trong PostgreSQL chạy bộ nhớ bằng PGlite. Không cần database thật, key trả phí hoặc truy cập nhóm Facebook cho các test này. Kiểm tra dịch vụ Google/AI với tài khoản thật và Redis thật là bước triển khai tiếp theo, chưa thể coi test mô phỏng là đã tìm được dữ liệu ngoài đời.
 
 Kết quả kiểm tra 23/10/2026: 76 test mới của chức năng nghiên cứu đã qua; kiểm tra đăng ký API và tenant guard cũng qua. Toàn bộ backend: 905 qua, 20 bỏ qua, 17 lỗi ở hai file test chat. Đã kiểm tra lại hai file đó trong bản sao bỏ các điểm nối chức năng nghiên cứu: vẫn cùng 17 lỗi, nên không sửa các phần chat đang thuộc công việc khác. Build TypeScript thành công. Chưa chạy dịch vụ Serper/AI trả phí hoặc áp migration lên database thật.

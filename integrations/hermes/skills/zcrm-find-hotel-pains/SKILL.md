@@ -2,7 +2,7 @@
 name: zcrm-find-hotel-pains
 description: Find source material about hotel operations for a ZCRM discover task; return real source text and URLs for human review.
 metadata:
-  version: 1.0.0
+  version: 2.0.0
   hermes:
     category: research
     tags: [zcrm, hotel, research]
@@ -15,10 +15,16 @@ and a result file path. Read the task file. Write only the result object as JSON
 to the result file; the bridge handles authentication, heartbeat and submission.
 Do not read API keys or send messages to customers.
 
-- Follow `brief`, `limits.maxSearches`, `limits.maxSources` and `deadline`.
-  Stop at the first limit. A retry must count earlier searches for the SAME task
-  toward maxSearches; inspect the bridge's earlier result/artifacts if present.
-  If earlier search usage is unknown after a retry, fail instead of spending more.
+- Follow `brief`. There is no cumulative search, source, attempt, time or money
+  allowance in ZCRM. Work until the requested scope is covered or accessible
+  relevant sources are exhausted; do not repeatedly search the same material.
+- Return manageable parts (about 20 sources or fewer, under 900 KB of JSON).
+  This is a message size guideline, not a total source ceiling. If useful work
+  remains, set `hasMore=true` and give `nextSearch` with precise next queries,
+  covered topics and URLs already used. Read `input.nextSearch` on continuation.
+  The bridge automatically runs the next part, without a count of parts to obey.
+  If the remaining sources are inaccessible or no new evidence can be found,
+  finish with `hasMore=false` and `nextSearch=null`; do not loop without progress.
 - Research ALL requested hotel operations, including staff, costs, occupancy,
   maintenance, housekeeping, laundry and guest feedback. Do not narrow everything
   to bedding merely because Jolie'Fam sells textiles.
@@ -42,6 +48,8 @@ Result shape:
 
 ```json
 {
+  "hasMore": false,
+  "nextSearch": null,
   "sources": [{
     "title": "Short Vietnamese description of the actual page",
     "url": "https://source.example/original-page",
