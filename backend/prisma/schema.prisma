@@ -8,6 +8,7 @@ datasource db {
 
 // Top-level org — every resource is scoped to an org
 model Organization {
+  customerResearchProjects CustomerResearchProject[]
   id       String @id @default(uuid())
   name     String
   // Múi giờ mặc định của tổ chức (offset cố định, không tự DST). Format "+07:00" / "-05:00".
@@ -5874,4 +5875,131 @@ model StorageObjectReference {
   @@index([orgId, conversationId, createdAt])
   @@index([objectId, orgId])
   @@map("storage_object_references")
+}
+
+model CustomerResearchProject {
+  id                  String   @id @default(uuid())
+  orgId               String   @map("org_id")
+  title               String
+  brief               String   @db.Text
+  modelConfigId       String   @map("model_config_id")
+  executor            String   @default("internal")
+  maxQueries          Int      @default(5) @map("max_queries")
+  maxSources          Int      @default(30) @map("max_sources")
+  maxAiCalls          Int      @default(10) @map("max_ai_calls")
+  maxAiCostMicros      BigInt   @default(1000000) @map("max_ai_cost_micros")
+  searchCalls         Int      @default(0) @map("search_calls")
+  aiCalls             Int      @default(0) @map("ai_calls")
+  aiCostMicros        BigInt   @default(0) @map("ai_cost_micros")
+  revision            Int      @default(1)
+  createdByUserId      String   @map("created_by_user_id")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+  org                 Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  sources             CustomerResearchSource[]
+  pains               CustomerResearchPain[]
+  contents            CustomerResearchContent[]
+  tasks               CustomerResearchTask[]
+
+  @@unique([orgId, id])
+  @@index([orgId, createdAt])
+  @@map("customer_research_projects")
+}
+
+model CustomerResearchSource {
+  id                String   @id @default(uuid())
+  orgId             String   @map("org_id")
+  projectId         String   @map("project_id")
+  url               String?
+  canonicalKey      String   @map("canonical_key")
+  title             String
+  kind              String   @default("web")
+  status            String   @default("pending")
+  speakerRole       String   @default("unknown") @map("speaker_role")
+  contentEncrypted  String?  @map("content_encrypted") @db.Text
+  contentHash       String?  @map("content_hash")
+  duplicateOfId     String?  @map("duplicate_of_id")
+  publishedAt       DateTime? @map("published_at")
+  readAt            DateTime? @map("read_at")
+  errorCode         String?  @map("error_code")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+  project           CustomerResearchProject @relation(fields: [orgId, projectId], references: [orgId, id], onDelete: Cascade)
+
+  @@unique([orgId, projectId, canonicalKey])
+  @@index([orgId, projectId, status])
+  @@map("customer_research_sources")
+}
+
+model CustomerResearchPain {
+  id                String   @id @default(uuid())
+  orgId             String   @map("org_id")
+  projectId         String   @map("project_id")
+  taskId            String   @map("task_id")
+  title             String
+  detail            Json
+  evidence          Json
+  independentSources Int     @default(0) @map("independent_sources")
+  status            String   @default("draft")
+  revision          Int      @default(1)
+  approvedByUserId  String?   @map("approved_by_user_id")
+  approvedAt        DateTime? @map("approved_at")
+  mergedIntoId      String?  @map("merged_into_id")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
+  project           CustomerResearchProject @relation(fields: [orgId, projectId], references: [orgId, id], onDelete: Cascade)
+  contents          CustomerResearchContent[]
+
+  @@unique([orgId, projectId, id])
+  @@index([orgId, projectId, status])
+  @@map("customer_research_pains")
+}
+
+model CustomerResearchContent {
+  id                String   @id @default(uuid())
+  orgId             String   @map("org_id")
+  projectId         String   @map("project_id")
+  painId            String   @map("pain_id")
+  taskId            String   @map("task_id")
+  format            String
+  title             String
+  body              String   @db.Text
+  evidence          Json
+  missingInformation Json    @default("[]") @map("missing_information")
+  status            String   @default("draft")
+  version           Int      @default(1)
+  rootId            String?  @map("root_id")
+  painRevision      Int      @map("pain_revision")
+  approvedByUserId   String?  @map("approved_by_user_id")
+  approvedAt        DateTime? @map("approved_at")
+  createdAt         DateTime @default(now()) @map("created_at")
+  project           CustomerResearchProject @relation(fields: [orgId, projectId], references: [orgId, id], onDelete: Cascade)
+  pain              CustomerResearchPain @relation(fields: [orgId, projectId, painId], references: [orgId, projectId, id], onDelete: Cascade)
+
+  @@index([orgId, projectId, status])
+  @@index([orgId, painId, rootId])
+  @@map("customer_research_contents")
+}
+
+model CustomerResearchTask {
+  id                String   @id @default(uuid())
+  orgId             String   @map("org_id")
+  projectId         String   @map("project_id")
+  kind              String
+  status            String   @default("queued")
+  input             Json     @default("{}")
+  checkpoint        Json     @default("{}")
+  idempotencyKey    String   @map("idempotency_key")
+  leaseToken        String?  @map("lease_token")
+  leaseUntil        DateTime? @map("lease_until")
+  cancelRequested   Boolean  @default(false) @map("cancel_requested")
+  errorCode         String?  @map("error_code")
+  createdByUserId    String   @map("created_by_user_id")
+  createdAt         DateTime @default(now()) @map("created_at")
+  completedAt       DateTime? @map("completed_at")
+  project           CustomerResearchProject @relation(fields: [orgId, projectId], references: [orgId, id], onDelete: Cascade)
+
+  @@unique([orgId, projectId, idempotencyKey])
+  @@index([orgId, projectId, status])
+  @@map("customer_research_tasks")
 }

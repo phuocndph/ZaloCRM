@@ -13,6 +13,8 @@
  * Tên ở dạng PascalCase khớp tham số `model` của Prisma $allOperations.
  */
 export const ORG_SCOPED_MODELS: ReadonlySet<string> = new Set([
+  'CustomerResearchProject', 'CustomerResearchSource', 'CustomerResearchPain',
+  'CustomerResearchContent', 'CustomerResearchTask',
   'Team', 'User', 'ZaloAccount', 'SdkLimit', 'ZaloAccountStatusLog', 'Contact',
   'Status', 'Conversation', 'PhoneSearchEvent', 'SystemNotifyRecipient',
   'SystemNotification', 'Appointment', 'Note', 'CrmTag', 'CrmTagGroup', 'Tag',

@@ -1,0 +1,6 @@
+# Use together with the EXISTING production compose file for this release.
+# The research-only migration runner is executed before replacing the app.
+services:
+  app:
+    environment:
+      SKIP_MIGRATIONS: "1"

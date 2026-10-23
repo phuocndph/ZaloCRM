@@ -16,6 +16,7 @@ import {
 import { listProviderModels, invalidateModelCache } from './providers/list-models.js';
 import { logger } from '../../shared/utils/logger.js';
 import { prisma } from '../../shared/database/prisma-client.js';
+import { researchRoutes } from './research/research-routes.js';
 import { aiCoreRoutes } from './ai-core-routes.js';
 import { promptManagerRoutes } from './prompt-manager-routes.js';
 import { conversationContextRoutes } from './conversation-context-routes.js';
@@ -127,6 +128,7 @@ function sendHandledError(reply: FastifyReply, err: unknown, fallback: string) {
 export async function aiRoutes(app: FastifyInstance) {
   app.addHook('preHandler', authMiddleware);
   await aiCoreRoutes(app);
+  await researchRoutes(app);
   await promptManagerRoutes(app);
   await conversationContextRoutes(app);
   await conversationMemoryRoutes(app);

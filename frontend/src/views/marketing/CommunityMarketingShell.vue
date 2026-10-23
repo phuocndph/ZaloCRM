@@ -44,6 +44,7 @@ const navItems = [
   { to: '/marketing/campaigns', label: 'Chiến dịch', icon: 'mdi-rocket-launch-outline' },
   { to: '/marketing/campaign-templates', label: 'Kho mẫu chiến dịch', icon: 'mdi-library-outline' },
   { to: '/marketing/followup', label: 'Follow-up', icon: 'mdi-timeline-clock-outline' },
+  { to: '/marketing/pain-research', label: 'Tìm nỗi đau & tạo bài', icon: 'mdi-compass-rose' },
 ];
 
 function isActive(to: string): boolean {

@@ -36,7 +36,7 @@ async function validateSettings(orgId: string, value: AgentConfig, confirmSensit
   if (value.enabled && !value.accountIds.length) throw new AgentError(400, 'AGENT_ACCOUNTS_REQUIRED');
   const expiry = Date.parse(value.expiresAt);
   if (expiry <= Date.now() || expiry > Date.now() + 366 * 86400000) throw new AgentError(400, 'AGENT_EXPIRY_INVALID');
-  const sensitive = value.permissions.some((p) => ['message_send', 'appointment_write', 'work_update'].includes(p));
+  const sensitive = value.permissions.some((p) => ['message_send', 'appointment_write', 'work_update', 'research_execute'].includes(p));
   const escalated = !previous || !previous.enabled || value.userId !== previous.userId
     || value.accountIds.some((id) => !previous.accountIds.includes(id))
     || value.permissions.some((p) => !previous.permissions.includes(p))

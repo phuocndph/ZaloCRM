@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 const routeMocks = vi.hoisted(() => ({
   aiCoreRoutes: vi.fn(async () => undefined),
+  researchRoutes: vi.fn(async () => undefined),
   promptManagerRoutes: vi.fn(async () => undefined),
   conversationContextRoutes: vi.fn(async () => undefined),
   conversationMemoryRoutes: vi.fn(async () => undefined),
@@ -21,6 +22,7 @@ const routeMocks = vi.hoisted(() => ({
 vi.mock('../../src/modules/auth/auth-middleware.js', () => ({ authMiddleware: vi.fn() }));
 vi.mock('../../src/modules/rbac/rbac-middleware.js', () => ({ requireGrant: routeMocks.requireGrant }));
 vi.mock('../../src/modules/zalo/zalo-access-middleware.js', () => ({ requireZaloAccess: vi.fn(() => vi.fn()) }));
+vi.mock('../../src/modules/ai/research/research-routes.js', () => ({ researchRoutes: routeMocks.researchRoutes }));
 vi.mock('../../src/modules/ai/ai-core-routes.js', () => ({ aiCoreRoutes: routeMocks.aiCoreRoutes }));
 vi.mock('../../src/modules/ai/prompt-manager-routes.js', () => ({ promptManagerRoutes: routeMocks.promptManagerRoutes }));
 vi.mock('../../src/modules/ai/conversation-context-routes.js', () => ({ conversationContextRoutes: routeMocks.conversationContextRoutes }));
@@ -71,6 +73,7 @@ describe('aiRoutes registration', () => {
 
     expect(app.addHook).toHaveBeenCalledWith('preHandler', expect.any(Function));
     expect(routeMocks.aiCoreRoutes).toHaveBeenCalledWith(app);
+    expect(routeMocks.researchRoutes).toHaveBeenCalledWith(app);
     expect(routeMocks.promptManagerRoutes).toHaveBeenCalledWith(app);
     expect(routeMocks.conversationContextRoutes).toHaveBeenCalledWith(app);
     expect(routeMocks.conversationMemoryRoutes).toHaveBeenCalledWith(app);
