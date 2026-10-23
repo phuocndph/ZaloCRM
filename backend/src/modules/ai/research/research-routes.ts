@@ -46,7 +46,7 @@ export async function researchRoutes(app: FastifyInstance) {
   route('GET', '/projects', access, async (r) => ({ projects: await service.listProjects(actor(r), page(r)) }));
   route('POST', '/projects', aiPermissions.knowledge.create, async (r) => service.createProject(actor(r), r.body));
   route('GET', '/projects/:projectId', access, async (r, p) => service.getProject(actor(r), p.projectId));
-  route('GET', '/projects/:projectId/sources', access, async (r, p) => ({ sources: await service.listSources(actor(r), p.projectId) }));
+  route('GET', '/projects/:projectId/sources', access, async (r, p) => ({ sources: await service.listSources(actor(r), p.projectId, page(r)) }));
   route('POST', '/projects/:projectId/sources', edit, async (r, p) => service.addSource(actor(r), p.projectId, r.body));
   route('GET', '/projects/:projectId/pains', access, async (r, p) => ({ pains: await service.listPains(actor(r), p.projectId, page(r)) }));
   route('PATCH', '/projects/:projectId/pains/:id', reviewGuard, async (r, p) => service.reviewPain(actor(r), p.projectId, p.id, r.body));

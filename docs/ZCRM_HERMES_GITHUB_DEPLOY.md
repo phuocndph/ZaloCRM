@@ -28,3 +28,7 @@ cập nhật bridge đã cài nếu cần dùng khóa Agent hiện có.
 Tài liệu về ZIP cũ chỉ phục vụ cách áp dụng bản vá vào commit gốc. Khi đã lấy đầy
 đủ nhánh GitHub này thì KHÔNG chạy lại feature.patch từ ZIP cũ. GitHub có source
 không có nghĩa website thật đã được triển khai.
+
+Bản xử lý liên tục: xem `ZCRM_HERMES_CONTINUOUS.md`. Nếu hai migration đã hoàn tất,
+không cần áp lại. Cập nhật app, bridge và skill cùng bản; chạy cấu hình bỏ giới hạn
+trên đúng profile Hermes trước khi khởi động bridge.

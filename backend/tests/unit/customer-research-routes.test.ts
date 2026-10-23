@@ -31,6 +31,13 @@ describe('research API boundaries', () => {
     const result = await server.inject({ url: '/api/v1/ai/research/projects/p/sources', headers: { authorization: 'test', 'x-deny': 'access' } });
     expect(result.statusCode).toBe(403); expect(mocks.service.listSources).not.toHaveBeenCalled(); await server.close();
   });
+  it('accepts source pages past the old sixty-source total', async () => {
+    const server = await app(); mocks.service.listSources.mockResolvedValue([]);
+    const result = await server.inject({ url: '/api/v1/ai/research/projects/p/sources?page=4', headers: { authorization: 'test' } });
+    expect(result.statusCode).toBe(200);
+    expect(mocks.service.listSources).toHaveBeenCalledWith({ orgId: 'org-a', userId: 'user-a', role: 'owner' }, 'p', 4);
+    await server.close();
+  });
   it('requires the approval grant in addition to edit for approving pains', async () => {
     const server = await app();
     const result = await server.inject({ method: 'PATCH', url: '/api/v1/ai/research/projects/p/pains/x', headers: { authorization: 'test', 'x-deny': 'approve' }, payload: { status: 'approved', revision: 1 } });

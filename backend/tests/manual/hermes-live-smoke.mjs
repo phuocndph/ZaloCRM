@@ -28,12 +28,12 @@ try {
   await db.query('INSERT INTO users(id,org_id,email,password_hash,full_name,role,updated_at,password_changed_at) VALUES ($1,$2,$3,$4,$5,$6,now(),now())', [userId, orgId, `test-${userId}@example.invalid`, 'disabled-test-login', 'Hermes smoke test', 'owner']);
   await db.query('INSERT INTO app_settings(id,org_id,setting_key,value_plain,updated_at) VALUES ($1,$2,$3,$4,now())', [randomUUID(), orgId, 'public_api_key', key]);
   token = jwt.sign({ id: userId, orgId, role: 'owner', email: `test-${userId}@example.invalid`, typ: 'access', tv: 0 }, process.env.JWT_SECRET, { expiresIn: '5m' });
-  const project = await call(`${base}/projects`, { title: '[TEST] Hermes', brief: 'Dữ liệu giả lập kiểm tra vận hành khách sạn', executor: 'hermes', maxQueries: 2 });
+  const project = await call(`${base}/projects`, { title: '[TEST] Hermes', brief: 'Dữ liệu giả lập kiểm tra vận hành khách sạn', executor: 'hermes' });
   const path = `${base}/projects/${project.id}`;
   const start = (kind, extra = {}) => call(`${path}/tasks`, { kind, idempotencyKey: randomUUID(), ...extra }, false, 202);
   await start('discover');
   const discovery = (await call(`${ext}/claim`, {}, true)).task;
-  assert.equal(discovery.kind, 'discover'); assert.equal(discovery.limits.maxSearches, 2);
+  assert.equal(discovery.kind, 'discover'); assert.equal(discovery.protocolVersion, 2); assert.equal(discovery.deadline, undefined);
   const quote = 'Nội dung giả lập: khách sạn thiếu khăn sạch khi khách nhận phòng cùng lúc.';
   const found = { leaseToken: discovery.leaseToken, result: { sources: [{ title: '[TEST] Synthetic evidence', url: 'https://example.invalid/hotel-test', content: quote, permissionConfirmed: true }] } };
   await call(`${ext}/tasks/${discovery.taskId}/progress`, { leaseToken: discovery.leaseToken, message: 'Đang kiểm thử nguồn giả lập' }, true);

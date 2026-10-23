@@ -8,7 +8,7 @@ import { AIErrorHandler } from '../core/ai-error-handler.js';
 import { userHasGrant } from '../../rbac/permission-group-service.js';
 import { enqueueResearchTask } from './research-queue.js';
 import { searchGoogle, readPage } from './research-web.js';
-import { ResearchError, type ResearchActor, type Evidence, FORMATS, ROLES, object, text, integer, member, hash, redact, normalize, canonicalUrl, facebookUrl, requireApprover, validatePains, RESEARCH_INSTRUCTIONS, PAIN_SCHEMA } from './research-domain.js';
+import { ResearchError, type ResearchActor, type Evidence, FORMATS, ROLES, object, text, member, hash, redact, normalize, canonicalUrl, facebookUrl, requireApprover, validatePains, RESEARCH_INSTRUCTIONS, PAIN_SCHEMA } from './research-domain.js';
 
 type Tx = Parameters<Parameters<typeof tenantTransaction>[0]>[0];
 const json = (value: unknown) => value as Prisma.InputJsonValue;
@@ -36,11 +36,11 @@ export async function createProject(actor: ResearchActor, raw: unknown) {
   const executor = b.executor === undefined ? 'internal' : member(b.executor, ['internal', 'hermes'], 'Bên thực hiện');
   const modelConfigId = executor === 'hermes' ? 'hermes' : text(b.modelConfigId, 'Cấu hình AI', 100);
   if (executor === 'internal') await aiModelRegistry.resolve(actor.orgId, modelConfigId);
-  const maxCost = integer(b.maxAiCostMicros, 'Giới hạn chi phí AI (micro USD)', 1_000_000, 100_000_000);
   return tenantTransaction(async (tx) => {
     const project = await tx.customerResearchProject.create({ data: {
       orgId: actor.orgId, createdByUserId: actor.userId, title: text(b.title, 'Tên', 200), brief: text(b.brief, 'Yêu cầu', 5000), modelConfigId, executor,
-      maxQueries: integer(b.maxQueries, 'Số lượt tìm', 5, 20), maxSources: integer(b.maxSources, 'Số nguồn', 30, 60), maxAiCalls: integer(b.maxAiCalls, 'Số lượt AI', 10, 30), maxAiCostMicros: BigInt(maxCost),
+      // Legacy columns remain for compatibility; they no longer constrain work.
+      maxQueries: 5, maxSources: 30, maxAiCalls: 10, maxAiCostMicros: 1_000_000n,
     } });
     await audit(tx, actor, 'project_created', project.id); return projectDto(project);
   });
@@ -60,20 +60,19 @@ export async function getProject(actor: ResearchActor, id: string) {
   ]);
   return { ...projectDto(project), sources, pains, contents, tasks };
 }
-export async function listSources(actor: ResearchActor, projectId: string) {
+export async function listSources(actor: ResearchActor, projectId: string, page = 1) {
   await getProject(actor, projectId);
-  const rows = await prisma.customerResearchSource.findMany({ where: { orgId: actor.orgId, projectId }, orderBy: { createdAt: 'asc' }, take: 60 });
+  const rows = await prisma.customerResearchSource.findMany({ where: { orgId: actor.orgId, projectId }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }], take: 25, skip: (page - 1) * 25 });
   return rows.map(({ contentEncrypted, ...source }) => ({ ...source, content: contentEncrypted ? decryptToken(contentEncrypted) : null }));
 }
 export async function saveSource(tx: Tx, actor: ResearchActor, projectId: string, input: { title: string; url?: string; content?: string; kind?: string; speakerRole?: string; publishedAt?: Date | null; status?: string }) {
-  const project = await lockProject(tx, actor, projectId);
+  await lockProject(tx, actor, projectId);
   const content = input.content ? redact(normalize(input.content)).slice(0, 12000) : null;
   const contentHash = content ? hash(content) : null;
   const url = input.url ? canonicalUrl(input.url) : null;
   const canonicalKey = hash(url ?? content ?? '');
   const existing = await tx.customerResearchSource.findUnique({ where: { orgId_projectId_canonicalKey: { orgId: actor.orgId, projectId, canonicalKey } } });
   if (existing?.contentHash || (existing && !content)) return { source: existing, changed: false };
-  if (!existing && await tx.customerResearchSource.count({ where: { orgId: actor.orgId, projectId } }) >= project.maxSources) throw new ResearchError('Đã đủ số nguồn cho lần nghiên cứu.', 409, 'RESEARCH_SOURCE_LIMIT');
   const duplicate = contentHash ? await tx.customerResearchSource.findFirst({ where: { orgId: actor.orgId, projectId, contentHash, duplicateOfId: null, ...(existing ? { id: { not: existing.id } } : {}) }, select: { id: true } }) : null;
   const data = { title: input.title, url, canonicalKey, kind: input.kind ?? (url && facebookUrl(url) ? 'facebook' : 'web'), status: duplicate ? 'duplicate' : content ? 'read' : input.status ?? (url && facebookUrl(url) ? 'requires_manual' : 'pending'), speakerRole: input.speakerRole ?? 'unknown', contentHash, duplicateOfId: duplicate?.id ?? null, contentEncrypted: content ? encryptToken(content) : null, readAt: content ? new Date() : null, publishedAt: input.publishedAt ?? null };
   const source = existing ? await tx.customerResearchSource.update({ where: { id: existing.id }, data }) : await tx.customerResearchSource.create({ data: { orgId: actor.orgId, projectId, ...data } });
@@ -210,7 +209,7 @@ export async function controlTask(actor: ResearchActor, projectId: string, id: s
       if (await tx.customerResearchTask.count({ where: { orgId: actor.orgId, projectId, id: { not: id }, status: { in: ACTIVE } } })) throw new ResearchError('Đang có công việc khác.', 409, 'RESEARCH_BUSY');
       const cp = object(task.checkpoint);
       await tx.customerResearchTask.update({ where: { id }, data: { status: 'queued', cancelRequested: false, completedAt: null, errorCode: null, leaseToken: null, leaseUntil: null,
-        ...(object(task.input).executor === 'hermes' ? { checkpoint: json({ ...cp, attempts: 0, deadline: Date.now() + 15 * 60_000, progress: 'Chờ Hermes nhận lại việc' }) } : {}) } });
+        ...(object(task.input).executor === 'hermes' ? { checkpoint: json({ ...cp, progress: 'Chờ Hermes nhận lại việc' }) } : {}) } });
     }
     await audit(tx, actor, `task_${action}`, id); return { taskId: id, status: action === 'cancel' ? 'cancelled' : 'queued' };
   });
@@ -231,24 +230,16 @@ async function taskTransaction<T>(actor: ResearchActor, projectId: string, taskI
 }
 async function completeJson(actor: ResearchActor, projectId: string, taskId: string, token: string, system: string, data: unknown, schema: Record<string, unknown>) {
   const project = await prisma.customerResearchProject.findFirstOrThrow({ where: { orgId: actor.orgId, id: projectId } });
-  const runtime = await aiModelRegistry.resolve(actor.orgId, project.modelConfigId);
-  const configs = [runtime];
-  if (runtime.fallbackModelConfigId) configs.push(await aiModelRegistry.resolve(actor.orgId, runtime.fallbackModelConfigId));
   const payload = JSON.stringify(data); const maxTokens = 5000;
-  const inputBound = Buffer.byteLength(system + payload + JSON.stringify(schema)) + 4096;
-  if (configs.some((x) => x.inputCostPerMillion <= 0 || x.outputCostPerMillion <= 0)) throw new ResearchError('Cần khai báo giá token trong cấu hình AI để giới hạn chi phí.', 409, 'RESEARCH_MODEL_PRICING_REQUIRED');
-  const reserve = BigInt(Math.ceil(configs.reduce((sum, c) => sum + (inputBound * c.inputCostPerMillion + maxTokens * c.outputCostPerMillion) * (c.maxRetries + 1), 0)));
-  await taskTransaction(actor, projectId, taskId, token, async (tx, current) => {
-    if (current.aiCalls >= current.maxAiCalls || current.aiCostMicros + reserve > current.maxAiCostMicros) throw new ResearchError('Đã chạm giới hạn AI của lần nghiên cứu.', 409, 'RESEARCH_AI_BUDGET');
-    await tx.customerResearchProject.update({ where: { id: projectId }, data: { aiCalls: { increment: 1 }, aiCostMicros: { increment: reserve } } });
+  await taskTransaction(actor, projectId, taskId, token, async (tx) => {
+    await tx.customerResearchProject.update({ where: { id: projectId }, data: { aiCalls: { increment: 1 } } });
   });
-  // Keep the conservative reservation on failure: retries may have been billed.
   const result = await aiClient.complete({ orgId: actor.orgId, modelConfigId: project.modelConfigId, taskType: 'customer_research', maxTokens, temperature: 0.2,
     messages: [{ role: 'system', content: system }, { role: 'user', content: payload }], structuredOutput: { name: 'customer_research', schema } });
   await tenantTransaction(async (tx) => {
     await lockProject(tx, actor, projectId);
-    await tx.customerResearchProject.update({ where: { id: projectId }, data: { aiCostMicros: { increment: result.usage.costMicros > reserve ? result.usage.costMicros - reserve : 0n } } });
-    await audit(tx, actor, 'ai_call_completed', taskId, { requestId: result.requestId, costMicros: result.usage.costMicros.toString(), reservedMicros: reserve.toString() });
+    await tx.customerResearchProject.update({ where: { id: projectId }, data: { aiCostMicros: { increment: result.usage.costMicros } } });
+    await audit(tx, actor, 'ai_call_completed', taskId, { requestId: result.requestId, costMicros: result.usage.costMicros.toString() });
   });
   return result.structured;
 }
@@ -267,10 +258,8 @@ export async function processResearchTask(data: { orgId: string; projectId: stri
   });
   if (!task) return;
   const actor: ResearchActor = { orgId: data.orgId, userId: task.createdByUserId, role: 'system' };
-  const deadline = Date.now() + 10 * 60_000;
   const heartbeat = setInterval(() => { void prisma.customerResearchTask.updateMany({ where: { id: task.id, orgId: data.orgId, leaseToken: token, status: 'running' }, data: { leaseUntil: new Date(Date.now() + 120000) } }).catch(() => {}); }, 20000);
   const guarded = <T>(fn: (tx: Tx, project: Awaited<ReturnType<typeof lockProject>>) => Promise<T>) => {
-    if (Date.now() > deadline) return Promise.reject<T>(new ResearchError('Lượt chạy quá 10 phút; có thể chạy tiếp từ bước đã lưu.', 409, 'RESEARCH_TIME_LIMIT'));
     return taskTransaction(actor, data.projectId, task.id, token, fn);
   };
   const checkpoint = async (value: Record<string, unknown>) => guarded(async (tx) => { await tx.customerResearchTask.update({ where: { id: task.id }, data: { checkpoint: json(value) } }); });
@@ -280,31 +269,27 @@ export async function processResearchTask(data: { orgId: string; projectId: stri
     if (task.kind === 'discover' || task.kind === 'collect') {
       let queries = cp.queries as string[] | undefined;
       if (!queries && task.kind === 'discover') {
-        const output = object(await completeJson(actor, project.id, task.id, token, `${RESEARCH_INSTRUCTIONS} Chỉ lập các câu tìm tiếng Việt về toàn bộ vận hành khách sạn, bao gồm câu tìm thảo luận thực tế, không đưa ra phát hiện.`, { brief: project.brief, maxQueries: project.maxQueries }, { type: 'object', properties: { queries: { type: 'array', minItems: 1, maxItems: project.maxQueries, items: { type: 'string' } } }, required: ['queries'], additionalProperties: false }));
-        if (!Array.isArray(output.queries) || !output.queries.length || output.queries.length > project.maxQueries) throw new ResearchError('AI trả câu tìm không hợp lệ.', 502, 'RESEARCH_INVALID_AI_OUTPUT');
+        const output = object(await completeJson(actor, project.id, task.id, token, `${RESEARCH_INSTRUCTIONS} Chỉ lập các câu tìm tiếng Việt về toàn bộ vận hành khách sạn, bao gồm câu tìm thảo luận thực tế, không đưa ra phát hiện.`, { brief: project.brief, maxQueries: 5 }, { type: 'object', properties: { queries: { type: 'array', minItems: 1, maxItems: 5, items: { type: 'string' } } }, required: ['queries'], additionalProperties: false }));
+        if (!Array.isArray(output.queries) || !output.queries.length || output.queries.length > 5) throw new ResearchError('AI trả câu tìm không hợp lệ.', 502, 'RESEARCH_INVALID_AI_OUTPUT');
         queries = [...new Set(output.queries.map((q) => text(q, 'Câu tìm', 250)))];
         await checkpoint({ queries, queryIndex: 0 });
       }
       queries ??= [];
       for (let index = Number(cp.queryIndex ?? 0); index < queries.length; index++) {
-        const reserved = await guarded(async (tx, current) => {
-          const count = await tx.customerResearchSource.count({ where: { orgId: actor.orgId, projectId: project.id } });
-          if (current.searchCalls >= current.maxQueries || count >= current.maxSources) return false;
-          await tx.customerResearchProject.update({ where: { id: project.id }, data: { searchCalls: { increment: 1 } } }); return true;
+        await guarded(async (tx) => {
+          await tx.customerResearchProject.update({ where: { id: project.id }, data: { searchCalls: { increment: 1 } } });
         });
-        if (!reserved) break;
         const results = await searchGoogle(queries[index]);
         await guarded(async (tx) => {
           let changed = false;
           for (const item of results) {
-            try { changed = (await saveSource(tx, actor, project.id, item)).changed || changed; }
-            catch (error) { if (error instanceof ResearchError && error.code === 'RESEARCH_SOURCE_LIMIT') break; throw error; }
+            changed = (await saveSource(tx, actor, project.id, item)).changed || changed;
           }
           if (changed) await invalidate(tx, actor, project.id);
           await tx.customerResearchTask.update({ where: { id: task.id }, data: { checkpoint: json({ queries, queryIndex: index + 1 }) } });
         });
       }
-      const pending = await prisma.customerResearchSource.findMany({ where: { orgId: actor.orgId, projectId: project.id, status: { in: ['pending', 'failed', 'blocked'] }, url: { not: null } }, take: project.maxSources, orderBy: { createdAt: 'asc' } });
+      const pending = await prisma.customerResearchSource.findMany({ where: { orgId: actor.orgId, projectId: project.id, status: { in: ['pending', 'failed', 'blocked'] }, url: { not: null } }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] });
       for (const source of pending) {
         await guarded(async () => {});
         try {
@@ -321,7 +306,7 @@ export async function processResearchTask(data: { orgId: string; projectId: stri
         }
       }
     } else if (task.kind === 'analyze') {
-      const sources = await prisma.customerResearchSource.findMany({ where: { orgId: actor.orgId, projectId: project.id, status: 'read', duplicateOfId: null }, take: project.maxSources, orderBy: { createdAt: 'asc' } });
+      const sources = await prisma.customerResearchSource.findMany({ where: { orgId: actor.orgId, projectId: project.id, status: 'read', duplicateOfId: null }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] });
       if (!sources.length) throw new ResearchError('Chưa có nguồn đọc được để tổng hợp.', 409, 'RESEARCH_NO_EVIDENCE');
       if (!cp.started) {
         await guarded(async (tx) => {

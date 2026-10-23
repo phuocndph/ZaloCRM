@@ -36,7 +36,7 @@ beforeEach(() => {
 });
 async function claim() { return (await claimHermesTask('o1')).task!; }
 describe('Hermes research ownership and result gates', () => {
-  it('assigns a bounded task with exact source text and a private lease', async () => {
+  it('assigns the next source batch with exact text and a private lease', async () => {
     const result = await claim();
     expect(result).toMatchObject({ kind: 'analyze', skill: 'zcrm-summarize-hotel-pains', leaseSeconds: 120, input: { sources: [expect.objectContaining({ content: quote })] } });
     expect(result).not.toHaveProperty('apiKey');
@@ -82,9 +82,53 @@ describe('Hermes research ownership and result gates', () => {
     task.cancelRequested = false; mocks.permission.mockResolvedValue(false);
     await expect(completeHermesTask('o1', 't1', { leaseToken: claimed.leaseToken, result: { pains: [] } })).rejects.toMatchObject({ code: 'RESEARCH_PERMISSION_REVOKED' });
   });
-  it('caps recovery attempts and total processing time', async () => {
-    task.checkpoint = { attempts: 3 }; expect((await claimHermesTask('o1')).task).toBeNull();
-    expect(task).toMatchObject({ status: 'failed', errorCode: 'RESEARCH_HERMES_TIME_LIMIT' });
+  it('recovers without cumulative attempt, deadline, search or AI caps', async () => {
+    task.checkpoint = { attempts: 300, deadline: 1 };
+    project.aiCalls = 500; project.searchCalls = 500;
+    const result = await claim();
+    expect(result).not.toHaveProperty('deadline'); expect(task.status).toBe('running');
+    expect(task.checkpoint.attempts).toBe(301);
+    await updateHermesTask('o1', 't1', { leaseToken: result.leaseToken, message: 'Still working' }, 'progress');
+  });
+  it('continues discovery with exhausted legacy quotas and more than sixty saved sources', async () => {
+    task.kind = 'discover'; project.searchCalls = 500; project.aiCalls = 500;
+    mocks.db.customerResearchSource.count.mockResolvedValue(500);
+    const claimed = await claim();
+    const first = { leaseToken: claimed.leaseToken, batch: 0, result: { sources: [{ title: 'S', url: source.url, content: quote, permissionConfirmed: true }], hasMore: true, nextSearch: 'Tìm thêm về bảo trì' } };
+    const response = await completeHermesTask('o1', 't1', first);
+    expect(response).toMatchObject({ status: 'running', task: { batch: 1, input: { nextSearch: 'Tìm thêm về bảo trì' } } });
+    expect(await completeHermesTask('o1', 't1', first)).toMatchObject({ duplicate: true });
+    expect(mocks.saveSource).toHaveBeenCalledTimes(1);
+    expect(await completeHermesTask('o1', 't1', { leaseToken: claimed.leaseToken, batch: 1, result: { sources: [], hasMore: false } })).toMatchObject({ status: 'completed' });
+  });
+  it('processes all 66 sources, recovers a batch and ignores duplicate submissions', async () => {
+    const sources = Array.from({ length: 66 }, (_, i) => ({ ...source, id: `s${i}` }));
+    mocks.db.customerResearchSource.findMany.mockImplementation(async ({ skip = 0, take = sources.length }: any) => sources.slice(skip, skip + take));
+    mocks.db.customerResearchSource.count.mockResolvedValue(sources.length);
+    let claimed = await claim();
+    let total = 0;
+    while (true) {
+      total += claimed.input.sources.length;
+      const body = { leaseToken: claimed.leaseToken, batch: claimed.batch, result: { pains: [] } };
+      const response = await completeHermesTask('o1', 't1', body);
+      if (response.status === 'completed') break;
+      expect(mocks.db.customerResearchPain.updateMany).not.toHaveBeenCalled();
+      expect(await completeHermesTask('o1', 't1', body)).toMatchObject({ duplicate: true, task: { batch: claimed.batch + 1 } });
+      if (claimed.batch === 0) {
+        task.leaseUntil = new Date(0);
+        const recovered = await claim();
+        expect(recovered.batch).toBe(1);
+        await expect(completeHermesTask('o1', 't1', body)).rejects.toMatchObject({ code: 'RESEARCH_HERMES_LEASE_EXPIRED' });
+        claimed = recovered;
+      } else claimed = response.task!;
+    }
+    expect(total).toBe(66); expect(task.status).toBe('completed');
+    expect(mocks.db.customerResearchPain.updateMany).toHaveBeenCalledTimes(1);
+  });
+  it('refuses old bridges for multiple batches instead of silently skipping sources', async () => {
+    mocks.db.customerResearchSource.count.mockResolvedValue(66);
+    const claimed = await claim();
+    await expect(completeHermesTask('o1', 't1', { leaseToken: claimed.leaseToken, result: { pains: [] } })).rejects.toMatchObject({ code: 'RESEARCH_HERMES_BATCH_REQUIRED' });
   });
   it('extends a valid lease and stores a redacted progress message', async () => {
     const claimed = await claim();

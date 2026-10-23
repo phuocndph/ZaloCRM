@@ -35,7 +35,7 @@ describe('Hermes external API', () => {
   });
   it('passes authenticated org and lease to result validation', async () => {
     const server = await app(); mocks.complete.mockResolvedValue({ status: 'completed' });
-    const payload = { leaseToken: 'worker-token', result: { pains: [] } };
+    const payload = { leaseToken: 'worker-token', batch: 42, result: { pains: [] } };
     const result = await server.inject({ method: 'POST', url: '/api/public/research/hermes/tasks/t1/complete', headers: { 'x-api-key': 'existing-key' }, payload });
     expect(result.statusCode).toBe(200); expect(mocks.complete).toHaveBeenCalledWith('o1', 't1', payload); await server.close();
   });

@@ -10,7 +10,7 @@ vi.mock('../../src/modules/ai/core/index.js', () => ({ aiClient: { complete: moc
 vi.mock('../../src/modules/ai/research/research-queue.js', () => ({ enqueueResearchTask: mocks.enqueue }));
 vi.mock('../../src/modules/rbac/permission-group-service.js', () => ({ userHasGrant: mocks.permission }));
 vi.mock('../../src/modules/integrations/_shared/token-encryption.util.js', () => ({ encryptToken: (s: string) => `enc:${s}`, decryptToken: (s: string) => s.replace(/^enc:/, '') }));
-import { createProject, getProject, addSource, reviewPain, mergePains, approveContent, editContent, createTask, controlTask, processResearchTask } from '../../src/modules/ai/research/research-service.js';
+import { createProject, getProject, listSources, addSource, reviewPain, mergePains, approveContent, editContent, createTask, controlTask, processResearchTask } from '../../src/modules/ai/research/research-service.js';
 const actor = { orgId: 'org-a', userId: 'user-a', role: 'owner' };
 let project: any, task: any;
 const quote = 'Tôi quản lý khách sạn thường xuyên thiếu khăn sạch trong giờ cao điểm.';
@@ -65,11 +65,35 @@ describe('research workflow service', () => {
     await expect(getProject({ ...actor, orgId: 'org-b' }, project.id)).rejects.toMatchObject({ code: 'RESEARCH_NOT_FOUND' });
     expect(mocks.db.customerResearchSource.groupBy).not.toHaveBeenCalled();
   });
-  it('creates a project with bounded settings and serialized monetary fields', async () => {
+  it('creates a project with compatible legacy fields and serialized monetary fields', async () => {
     mocks.db.customerResearchProject.create.mockImplementation(async ({ data }: any) => ({ id: project.id, ...data, aiCostMicros: 0n }));
     const result = await createProject(actor, { title: 'Khó khăn', brief: 'Vận hành khách sạn', modelConfigId: 'model-a' });
     expect(result.maxAiCostMicros).toBe('1000000');
     expect(mocks.db.customerResearchProject.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ orgId: actor.orgId, maxSources: 30, maxQueries: 5 }) }));
+  });
+  it('accepts additional sources after the old total source cap', async () => {
+    mocks.db.customerResearchSource.count.mockResolvedValue(500);
+    const result = await addSource(actor, project.id, { title: 'New source', content: quote, permissionConfirmed: true });
+    expect(result.id).toBe('source-a');
+  });
+  it('paginates sources beyond the old first-sixty cutoff', async () => {
+    mocks.db.customerResearchSource.groupBy.mockResolvedValue([]);
+    mocks.db.customerResearchPain.groupBy.mockResolvedValue([]);
+    mocks.db.customerResearchContent.groupBy.mockResolvedValue([]);
+    mocks.db.customerResearchTask.findMany.mockResolvedValue([]);
+    mocks.db.customerResearchSource.findMany.mockResolvedValue([{ id: 'source-76', contentEncrypted: `enc:${quote}` }]);
+    expect(await listSources(actor, project.id, 4)).toEqual([{ id: 'source-76', content: quote }]);
+    expect(mocks.db.customerResearchSource.findMany).toHaveBeenCalledWith(expect.objectContaining({ skip: 75, take: 25 }));
+  });
+  it('analyzes every source beyond former source and AI-call limits', async () => {
+    const sources = Array.from({ length: 66 }, (_, i) => ({ id: `source-${i}`, contentEncrypted: `enc:${quote}` }));
+    mocks.db.customerResearchSource.findMany.mockResolvedValue(sources);
+    mocks.complete.mockResolvedValue({ structured: { pains: [] }, usage: { costMicros: 20n } });
+    project.aiCalls = 100; project.aiCostMicros = 2000000n;
+    await processResearchTask({ orgId: actor.orgId, projectId: project.id, taskId: task.id });
+    expect(task.status).toBe('completed'); expect(mocks.complete).toHaveBeenCalledTimes(14);
+    expect(task.checkpoint).toMatchObject({ sourceCount: 66, batch: 14 });
+    expect(project.aiCostMicros).toBe(2000280n);
   });
   it('requires permission confirmation for manual content', async () => {
     await expect(addSource(actor, project.id, { title: 'Group', content: quote })).rejects.toThrow();
@@ -138,11 +162,12 @@ describe('research workflow service', () => {
     await processResearchTask({ orgId: actor.orgId, projectId: project.id, taskId: task.id });
     expect(task).toMatchObject({ status: 'failed', errorCode: 'RESEARCH_PERMISSION_REVOKED' }); expect(mocks.complete).not.toHaveBeenCalled();
   });
-  it('reserves and checks budget before spending on AI', async () => {
+  it('continues beyond the former money cap and records returned cost', async () => {
     project.maxAiCostMicros = 1n;
     mocks.db.customerResearchSource.findMany.mockResolvedValue([{ id: 'source-a', contentEncrypted: `enc:${quote}` }]);
     await processResearchTask({ orgId: actor.orgId, projectId: project.id, taskId: task.id });
-    expect(task).toMatchObject({ status: 'failed', errorCode: 'RESEARCH_AI_BUDGET' }); expect(mocks.complete).not.toHaveBeenCalled();
+    expect(task.status).toBe('completed'); expect(mocks.complete).toHaveBeenCalledTimes(1);
+    expect(project.aiCostMicros).toBe(20n);
   });
   it('fails invented AI evidence without persisting a pain', async () => {
     mocks.db.customerResearchSource.findMany.mockResolvedValue([{ id: 'source-a', contentEncrypted: `enc:${quote}` }]);
@@ -194,16 +219,16 @@ describe('research generation and resumption', () => {
     await processResearchTask({ orgId: actor.orgId, projectId: project.id, taskId: task.id });
     expect(task.errorCode).toBe('RESEARCH_STALE_REVISION'); expect(mocks.complete).not.toHaveBeenCalled();
   });
-  it('does not spend when the logical AI-call cap has been reached', async () => {
+  it('continues after the former logical AI-call cap has been reached', async () => {
     project.aiCalls = project.maxAiCalls;
     mocks.db.customerResearchSource.findMany.mockResolvedValue([{ id: 'source-a', contentEncrypted: `enc:${quote}` }]);
     await processResearchTask({ orgId: actor.orgId, projectId: project.id, taskId: task.id });
-    expect(task.errorCode).toBe('RESEARCH_AI_BUDGET'); expect(mocks.complete).not.toHaveBeenCalled();
+    expect(task.status).toBe('completed'); expect(project.aiCalls).toBe(11);
   });
-  it('requires known model pricing instead of silently disabling the money bound', async () => {
+  it('does not require pricing to authorize research', async () => {
     mocks.resolve.mockResolvedValue({ inputCostPerMillion: 0, outputCostPerMillion: 0, maxRetries: 0 });
     mocks.db.customerResearchSource.findMany.mockResolvedValue([{ id: 'source-a', contentEncrypted: `enc:${quote}` }]);
     await processResearchTask({ orgId: actor.orgId, projectId: project.id, taskId: task.id });
-    expect(task.errorCode).toBe('RESEARCH_MODEL_PRICING_REQUIRED'); expect(mocks.complete).not.toHaveBeenCalled();
+    expect(task.status).toBe('completed'); expect(mocks.complete).toHaveBeenCalledTimes(1);
   });
 });

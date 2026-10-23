@@ -292,6 +292,29 @@ describe('CustomerResearchPanel', () => {
     wrapper.unmount();
   });
 
+  it('xem nguồn sau số 60 và bỏ các ô đặt hạn mức', async () => {
+    const originalGet = mockGet.getMockImplementation()!;
+    mockGet.mockImplementation(async (url: string, options?: { params?: { page?: number } }) => {
+      if (url.endsWith('/proj-1/sources')) {
+        const page = options?.params?.page ?? 1;
+        return { data: { sources: Array.from({ length: page < 4 ? 25 : page === 4 ? 1 : 0 }, (_, i) => ({
+          id: `src-${(page - 1) * 25 + i + 1}`, title: `Nguồn ${(page - 1) * 25 + i + 1}`, status: 'read',
+          content: 'Nội dung nguồn đã đọc', speakerRole: 'unknown', createdAt: '2026-10-23T08:01:00Z',
+        })) } };
+      }
+      return originalGet(url, options);
+    });
+    const wrapper = mount(CustomerResearchPanel); await flushPromises();
+    expect(wrapper.findAll('.source-card')).toHaveLength(76);
+    expect(wrapper.text()).toContain('Nguồn 76');
+    expect(mockGet).toHaveBeenCalledWith('/ai/research/projects/proj-1/sources', { params: { page: 4 } });
+    await wrapper.find('.header-actions .primary').trigger('click');
+    const form = wrapper.find('form.research-modal');
+    expect(form.findAll('input[type="number"]')).toHaveLength(0);
+    expect(form.text()).toContain('không dừng vì ngân sách hoặc số lượt');
+    wrapper.unmount();
+  });
+
   it('cho phép thêm nguồn bài viết Facebook thủ công và chạy AI tổng hợp', async () => {
     const wrapper = mount(CustomerResearchPanel);
     await flushPromises();
