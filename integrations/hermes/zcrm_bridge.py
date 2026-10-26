@@ -6,8 +6,11 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
+import re
 import signal
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -23,9 +26,10 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class ApiError(Exception):
-    def __init__(self, status):
+    def __init__(self, status, code=None):
         self.status = status
-        super().__init__(f"ZCRM HTTP {status}")
+        self.code = code if isinstance(code, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{1,79}", code) else None
+        super().__init__(f"ZCRM HTTP {status}" + (f" ({self.code})" if self.code else ""))
 
 
 class Bridge:
@@ -49,8 +53,27 @@ class Bridge:
                 return json.load(response)
         except urllib.error.HTTPError as error:
             status = error.code
-            error.close()
-            raise ApiError(status) from None
+            code = None
+            try:
+                body = json.loads(error.read(4096))
+                if isinstance(body, dict):
+                    code = body.get("code") or body.get("error")
+            except (OSError, ValueError):
+                pass
+            finally:
+                error.close()
+            raise ApiError(status, code) from None
+
+    def check(self):
+        # Never claims work or launches a model merely to diagnose the connection.
+        response = self.post("check", {})
+        if response.get("ok") is not True or response.get("protocolVersion") != 2:
+            raise ValueError("ZCRM research API is outdated or returned an invalid check response")
+        command = shlex.split(os.environ.get("HERMES_COMMAND", "hermes"))
+        if not command or not shutil.which(command[0]):
+            raise ValueError("Không tìm thấy lệnh Hermes trong môi trường chạy bridge; kiểm tra HERMES_COMMAND/PATH")
+        print("OK: Kết nối nghiên cứu và quyền nhận việc hợp lệ; tìm thấy lệnh Hermes.", flush=True)
+        print("Lệnh kiểm tra không nhận việc. Chạy bridge với --watch để tự nhận việc liên tục.", flush=True)
 
     def run_once(self):
         task = self.post("claim", {}).get("task")
@@ -172,6 +195,22 @@ class Bridge:
             thread.join(timeout=26)
 
 
+def print_connection_error(error):
+    if isinstance(error, ApiError):
+        advice = {
+            401: "Khóa kết nối không hợp lệ, đã hết hạn hoặc bị thu hồi. Kiểm tra khóa trong môi trường dịch vụ.",
+            403: "Thiếu quyền nghiên cứu hoặc quyền chỉnh sửa AI của nhân viên đại diện. Kiểm tra đúng kết nối Agent.",
+            404: "Chưa có API kiểm tra/nhận việc trên địa chỉ này. Cập nhật web ZCRM và kiểm tra ZCRM_BASE_URL/ZALOCRM_URL.",
+            429: "ZCRM đang giới hạn tốc độ; bridge sẽ chờ rồi kết nối lại.",
+        }.get(error.status, "Không gọi được API nghiên cứu; kiểm tra nhật ký máy chủ ZCRM.")
+        print(str(error) + ": " + advice, flush=True)
+    elif isinstance(error, ValueError):
+        # Only locally generated messages; never print response bodies or secrets.
+        print("Cấu hình hoặc phản hồi kiểm tra chưa hợp lệ. Kiểm tra phiên bản ZCRM, HERMES_COMMAND và PATH.", flush=True)
+    else:
+        print("Không kết nối được ZCRM. Kiểm tra địa chỉ, mạng và chứng chỉ HTTPS trên máy chủ Hermes.", flush=True)
+
+
 def configure_continuous():
     """Configure only the Hermes profile selected by HERMES_COMMAND/HERMES_HOME."""
     command = shlex.split(os.environ.get("HERMES_COMMAND", "hermes"))
@@ -187,20 +226,33 @@ def configure_continuous():
 
 
 def main():
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser()
     parser.add_argument("--watch", action="store_true", help="Keep polling for research tasks")
     parser.add_argument("--configure-continuous", action="store_true", help="Remove research turn/time/search caps from the selected Hermes profile, then exit")
+    parser.add_argument("--check", action="store_true", help="Check research API access without claiming work or invoking AI")
     args = parser.parse_args()
     if args.configure_continuous:
         configure_continuous()
         return
-    bridge = Bridge()
+    try:
+        bridge = Bridge()
+    except (KeyError, ValueError):
+        raise SystemExit("Thiếu hoặc sai địa chỉ ZCRM/khóa kết nối trong môi trường chạy bridge.") from None
+    if args.check:
+        try:
+            bridge.check()
+        except (OSError, ValueError, ApiError) as error:
+            print_connection_error(error)
+            raise SystemExit(1) from None
+        return
     while True:
         worked = False
         try:
             worked = bridge.run_once()
         except (OSError, ValueError, ApiError) as error:
-            print(type(error).__name__ + ": cannot contact ZCRM research API", flush=True)
+            print_connection_error(error)
             if not args.watch:
                 raise SystemExit(1) from None
         if not args.watch:

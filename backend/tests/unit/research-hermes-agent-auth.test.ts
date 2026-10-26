@@ -13,7 +13,7 @@ async function app() {
     const handled = await authenticateHermesResearchAgent(r, reply);
     if (!handled) reply.code(401).send({ error: 'Legacy public key required' });
   });
-  for (const url of ['/api/public/research/hermes/claim', '/api/public/research/hermes/tasks/task/complete', '/api/public/contacts']) {
+  for (const url of ['/api/public/research/hermes/check', '/api/public/research/hermes/claim', '/api/public/research/hermes/tasks/task/complete', '/api/public/contacts']) {
     server.post(url, async (r) => ({ orgId: (r as any).orgId }));
   }
   await server.ready(); return server;
@@ -30,6 +30,13 @@ describe('existing scoped Agent key for research', () => {
     const result = await server.inject({ method: 'POST', url: '/api/public/research/hermes/claim', headers: { authorization: 'Bearer zcrm_agent.test' }, payload: {} });
     expect(result.statusCode).toBe(200); expect(result.json()).toEqual({ orgId: 'org-a' });
     expect(mocks.grant).toHaveBeenCalledWith('user-a', 'ai_knowledge', 'edit');
+  });
+  it('applies research scope and employee permissions to the connection check too', async () => {
+    const server = await app();
+    const request = { method: 'POST' as const, url: '/api/public/research/hermes/check', headers: { authorization: 'Bearer zcrm_agent.test' }, payload: {} };
+    expect((await server.inject(request)).statusCode).toBe(200);
+    mocks.grant.mockResolvedValue(false);
+    expect((await server.inject(request)).statusCode).toBe(403);
   });
   it('does not silently grant research access to existing Agent keys', async () => {
     mocks.authenticate.mockResolvedValue({ config: { permissions: ['work_read'] }, orgId: 'org-a', user: { id: 'user-a', role: 'owner' } });

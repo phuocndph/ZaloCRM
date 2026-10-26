@@ -28,6 +28,25 @@ describe('Hermes external API', () => {
     const result = await server.inject({ method: 'POST', url: '/api/public/research/hermes/claim', headers: { 'x-api-key': 'existing-key' }, payload: {} });
     expect(result.statusCode).toBe(200); expect(result.json()).toEqual({ task: null }); await server.close();
   });
+  it('checks access without claiming work or making an offline bridge appear online', async () => {
+    const server = await app();
+    const result = await server.inject({ method: 'POST', url: '/api/public/research/hermes/check', headers: { 'x-api-key': 'existing-key' }, payload: {} });
+    expect(result.statusCode).toBe(200); expect(result.json()).toMatchObject({ ok: true, protocolVersion: 2 });
+    expect(mocks.claim).not.toHaveBeenCalled(); expect(mocks.setting).not.toHaveBeenCalled();
+    await server.close();
+  });
+  it('does not allow an unauthenticated connection check', async () => {
+    const server = await app();
+    const result = await server.inject({ method: 'POST', url: '/api/public/research/hermes/check', payload: {} });
+    expect(result.statusCode).toBe(401); expect(mocks.setting).not.toHaveBeenCalled(); await server.close();
+  });
+  it('counts progress heartbeats as contact while Hermes is occupied by a long task', async () => {
+    const server = await app(); mocks.update.mockResolvedValue({ status: 'running' });
+    const result = await server.inject({ method: 'POST', url: '/api/public/research/hermes/tasks/t1/progress', headers: { 'x-api-key': 'existing-key' }, payload: { leaseToken: 'lease', message: 'Working' } });
+    expect(result.statusCode).toBe(200);
+    expect(mocks.setting).toHaveBeenCalledWith(expect.objectContaining({ update: { valuePlain: expect.any(String) } }));
+    expect(mocks.claim).not.toHaveBeenCalled(); await server.close();
+  });
   it('does not let callers choose an organization through claim input', async () => {
     const server = await app();
     const result = await server.inject({ method: 'POST', url: '/api/public/research/hermes/claim', headers: { 'x-api-key': 'existing-key' }, payload: { orgId: 'other' } });

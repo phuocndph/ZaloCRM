@@ -38,8 +38,12 @@
     <div v-if="currentProject?.executor === 'hermes'" class="hermes-connection" role="status">
       <span class="mdi mdi-robot-outline" aria-hidden="true" />
       <strong>Hermes Agent</strong>
-      <span>{{ hermesStatus?.recentlySeen ? 'Đã liên lạc trong 2 phút gần đây' : 'Chưa thấy Hermes lấy việc gần đây' }}</span>
-      <time v-if="hermesStatus?.lastSeenAt">{{ formatDate(hermesStatus.lastSeenAt) }}</time>
+      <span>{{ !hermesStatus ? 'Chưa đọc được trạng thái kết nối Hermes' : hermesStatus.recentlySeen ? 'Đã liên lạc trong 2 phút gần đây' : 'Hermes chưa liên lạc để nhận việc nghiên cứu trong 2 phút gần đây' }}</span>
+      <time v-if="hermesStatus?.lastSeenAt">Lần liên lạc cuối: {{ formatDate(hermesStatus.lastSeenAt) }}</time>
+      <p v-if="hermesStatus && !hermesStatus.recentlySeen" class="hermes-help">
+        Cần chạy bộ nhận việc trên máy chủ Hermes: <code>python3 /opt/zcrm-hermes/zcrm_bridge.py --watch</code>.
+        Chỉ kết nối API hoặc mở cửa sổ chat Hermes chưa tự nhận việc ở đây. Kiểm tra trong đúng môi trường đã cài khóa kết nối; không cần tạo lại công việc.
+      </p>
     </div>
     <section v-else-if="capabilities" class="capability-strip" aria-label="Trạng thái kết nối">
       <div class="cap-item" :class="{ ok: capabilities.search.configured, warn: !capabilities.search.configured }">
@@ -167,7 +171,7 @@
                 <div>
                   <strong>{{ TASK_KIND_LABELS[latestTask.kind] || latestTask.kind }}: {{ TASK_STATUS_LABELS[latestTask.status] || latestTask.status }}</strong>
                   <small v-if="latestTask.errorCode">Mã thông báo: {{ friendlyErrorCode(latestTask.errorCode) }}</small>
-                  <small v-else-if="currentProject.executor === 'hermes' && latestTask.status === 'queued'">Đang chờ Hermes lấy việc qua API.</small>
+                  <small v-else-if="currentProject.executor === 'hermes' && latestTask.status === 'queued'">{{ hermesStatus && !hermesStatus.recentlySeen ? 'Chưa có kết nối nhận việc nghiên cứu gần đây. Kiểm tra bộ nhận việc trên máy chủ Hermes theo hướng dẫn phía trên.' : 'Đang chờ Hermes nhận việc. Khi Hermes nhận, trạng thái sẽ tự đổi sang đang xử lý.' }}</small>
                   <small v-else-if="isTaskActive(latestTask)">{{ latestTask.checkpoint?.progress || 'Đang xử lý, kết quả sẽ tự cập nhật.' }}</small>
                   <small v-else>Cập nhật lúc {{ formatDate(latestTask.completedAt || latestTask.createdAt) }}</small>
                 </div>
@@ -1466,6 +1470,8 @@ onBeforeUnmount(() => {
 <style scoped>
 .hermes-connection { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 10px 0; border-bottom: 1px solid #dce4de; color: #285d42; font-size: 13px; }
 .hermes-connection time { color: #64748b; }
+.hermes-help { flex-basis: 100%; margin: 0; color: #854d0e; line-height: 1.6; }
+.hermes-help code { overflow-wrap: anywhere; }
 .hermes-note { margin: 0; font-size: 13px; color: #475569; }
 .research-shell :is(input, select, textarea, button) { max-width: 100%; }
 .research-shell :is(p, strong, dd, small, time) { overflow-wrap: anywhere; }

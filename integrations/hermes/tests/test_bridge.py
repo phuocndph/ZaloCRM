@@ -8,6 +8,8 @@ import sys
 import tempfile
 import threading
 import unittest
+import io
+from contextlib import redirect_stdout
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
 
@@ -23,6 +25,8 @@ class BridgeTest(unittest.TestCase):
         self.redirect = False
         self.complete_results = []
         self.complete_failures = 0
+        self.check_status = 200
+        self.check_code = "AGENT_RESEARCH_PERMISSION_REQUIRED"
         owner = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -32,12 +36,14 @@ class BridgeTest(unittest.TestCase):
                 failing = self.path.endswith("/complete") and owner.complete_failures > 0
                 if failing:
                     owner.complete_failures -= 1
-                self.send_response(302 if owner.redirect else 503 if failing else 200)
+                self.send_response(302 if owner.redirect else owner.check_status if self.path.endswith("/check") else 503 if failing else 200)
                 if owner.redirect:
                     self.send_header("Location", "/unexpected-redirect")
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 result = {"task": owner.task} if self.path.endswith("/claim") else {"status": "completed"}
+                if self.path.endswith("/check"):
+                    result = {"ok": True, "protocolVersion": 2} if owner.check_status == 200 else {"error": owner.check_code}
                 if self.path.endswith("/complete") and owner.complete_results and not failing:
                     result = owner.complete_results.pop(0)
                 self.wfile.write(json.dumps(result).encode())
@@ -122,6 +128,39 @@ class BridgeTest(unittest.TestCase):
             ["hermes", "-p", "research", "config", "set", "agent.run_budget_seconds", "null"],
             ["hermes", "-p", "research", "config", "set", "tool_loop_guardrails.loop_caps.max_web_searches", "0"],
         ])
+
+    def test_connection_check_never_claims_work_or_starts_hermes(self):
+        with redirect_stdout(io.StringIO()), patch.object(bridge.shutil, "which", return_value="/bin/hermes"), patch.object(bridge.subprocess, "Popen") as popen:
+            bridge.Bridge().check()
+        self.assertEqual([r[0] for r in self.requests], ["/api/public/research/hermes/check"])
+        popen.assert_not_called()
+
+    def test_connection_check_reports_the_exact_safe_permission_code(self):
+        self.check_status = 403
+        with self.assertRaises(bridge.ApiError) as caught:
+            bridge.Bridge().check()
+        self.assertEqual(caught.exception.status, 403)
+        self.assertEqual(caught.exception.code, "AGENT_RESEARCH_PERMISSION_REQUIRED")
+        output = io.StringIO()
+        with redirect_stdout(output):
+            bridge.print_connection_error(caught.exception)
+        self.assertIn("403", output.getvalue())
+        self.assertNotIn("test-key", output.getvalue())
+
+    def test_untrusted_error_text_is_never_printed(self):
+        self.check_status = 401
+        self.check_code = "Secret token test-key should never be printed"
+        with self.assertRaises(bridge.ApiError) as caught:
+            bridge.Bridge().check()
+        self.assertIsNone(caught.exception.code)
+        output = io.StringIO()
+        with redirect_stdout(output): bridge.print_connection_error(caught.exception)
+        self.assertNotIn("test-key", output.getvalue())
+
+    def test_connection_check_detects_missing_hermes_cli_without_claiming_work(self):
+        with patch.object(bridge.shutil, "which", return_value=None), self.assertRaises(ValueError):
+            bridge.Bridge().check()
+        self.assertTrue(all(r[0].endswith("/check") for r in self.requests))
 
     def test_missing_cli_reports_failure(self):
         self.make_task()

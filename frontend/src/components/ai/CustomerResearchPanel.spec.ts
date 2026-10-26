@@ -315,6 +315,23 @@ describe('CustomerResearchPanel', () => {
     wrapper.unmount();
   });
 
+  it('giải thích việc đang chờ khi bộ nhận việc Hermes không liên lạc', async () => {
+    const originalGet = mockGet.getMockImplementation()!;
+    mockGet.mockImplementation(async (url: string, options?: unknown) => {
+      if (url === '/ai/research/hermes-status') return { data: { lastSeenAt: '2026-10-23T11:52:52Z', recentlySeen: false } };
+      const result = await originalGet(url, options);
+      if (url === '/ai/research/projects/proj-1') {
+        result.data.executor = 'hermes'; result.data.tasks = [{ id: 'queued-task', kind: 'discover', status: 'queued', createdAt: '2026-10-23T13:00:00Z' }];
+      }
+      return result;
+    });
+    const wrapper = mount(CustomerResearchPanel); await flushPromises();
+    expect(wrapper.find('.hermes-connection').text()).toContain('Chỉ kết nối API hoặc mở cửa sổ chat Hermes chưa tự nhận việc');
+    expect(wrapper.find('.hermes-connection').text()).toContain('zcrm_bridge.py --watch');
+    expect(wrapper.find('.task-info').text()).toContain('Chưa có kết nối nhận việc nghiên cứu gần đây');
+    expect(mockPost).not.toHaveBeenCalled(); wrapper.unmount();
+  });
+
   it('cho phép thêm nguồn bài viết Facebook thủ công và chạy AI tổng hợp', async () => {
     const wrapper = mount(CustomerResearchPanel);
     await flushPromises();
