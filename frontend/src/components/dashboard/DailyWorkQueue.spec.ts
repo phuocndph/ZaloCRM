@@ -8,6 +8,7 @@ import type { ConversationWorkItem } from '@/composables/use-conversation-work-i
 
 const mocks = vi.hoisted(() => ({ get: vi.fn(), patch: vi.fn() }));
 vi.mock('@/api', () => ({ api: mocks }));
+vi.mock('@/api/socket', () => ({ createAppSocket: () => ({ on: vi.fn(), disconnect: vi.fn() }) }));
 
 const item: ConversationWorkItem = {
   id: 'work-1', contactId: 'contact-1', conversationId: 'conversation-1', kind: 'reply', status: 'open',
@@ -50,6 +51,35 @@ describe('DailyWorkQueue', () => {
     vi.clearAllMocks();
     mocks.get.mockResolvedValue(response());
     mocks.patch.mockResolvedValue({ data: { item } });
+  });
+
+  it('defaults to all authorized staff and preserves the employee filter through tabs, more pages and refresh', async () => {
+    const data = response([{ ...item, assignee: { id: 'staff', fullName: 'Thuỳ Linh' } }]);
+    mocks.get.mockResolvedValue({ data: { ...data.data, assignees: [{ id: 'staff', fullName: 'Thuỳ Linh' }], hasMore: true } });
+    const wrapper = await render({ allAssignees: true });
+    expect(mocks.get).toHaveBeenLastCalledWith('/work-items', expect.objectContaining({ params: expect.objectContaining({ audience: 'all' }) }));
+    expect(mocks.get.mock.calls[0][1].params.asUserId).toBeUndefined();
+    expect(wrapper.text()).toContain('Phụ trách: Thuỳ Linh');
+    expect(wrapper.get('select').element.value).toBe('');
+    await wrapper.get('select').setValue('staff');
+    await flushPromises();
+    expect(wrapper.emitted('assignee-change')?.[0]).toEqual(['staff']);
+    expect(mocks.get).toHaveBeenLastCalledWith('/work-items', expect.objectContaining({ params: expect.objectContaining({ audience: 'all', asUserId: 'staff' }) }));
+    await wrapper.get('[role="tab"]:nth-child(2)').trigger('click'); await flushPromises();
+    await wrapper.get('.dwq-load-more').trigger('click'); await flushPromises();
+    expect(mocks.get).toHaveBeenLastCalledWith('/work-items', expect.objectContaining({ params: expect.objectContaining({ audience: 'all', asUserId: 'staff', scope: 'today', offset: 1 }) }));
+    await wrapper.get('[aria-label="Tải lại danh sách"]').trigger('click'); await flushPromises();
+    expect(mocks.get).toHaveBeenLastCalledWith('/work-items', expect.objectContaining({ params: expect.objectContaining({ audience: 'all', asUserId: 'staff', offset: 0 }) }));
+    await wrapper.get('select').setValue(''); await flushPromises();
+    expect(mocks.get.mock.lastCall?.[1].params.asUserId).toBeUndefined();
+    wrapper.unmount();
+  });
+
+  it('keeps personal dashboard requests personal', async () => {
+    const wrapper = await render({ compact: true });
+    expect(mocks.get.mock.calls[0][1].params.audience).toBeUndefined();
+    expect(wrapper.find('select').exists()).toBe(false);
+    wrapper.unmount();
   });
 
   it('shows the customer situation, next action, account context and AI progress', async () => {

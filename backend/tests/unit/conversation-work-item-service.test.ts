@@ -1,8 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../src/shared/database/prisma-client.js', () => ({ prisma: {} }));
+const db = vi.hoisted(() => ({
+  zaloAccount: { findMany: vi.fn() }, organization: { findUnique: vi.fn() },
+  appointment: { findMany: vi.fn() },
+  conversation: { findMany: vi.fn() },
+  conversationWorkItem: { findMany: vi.fn(), updateMany: vi.fn() },
+  $transaction: vi.fn(),
+}));
+vi.mock('../../src/shared/database/prisma-client.js', () => ({ prisma: db }));
 
 import {
+  listConversationWorkItems,
   appointmentDueAt,
   collectAllPages,
   deriveConversationSignal,
@@ -473,5 +481,93 @@ describe('ConversationWorkItemService', () => {
       { enrollmentId: 'enrollment-primary', currentStepKey: 'sale_task_1' },
       { enrollmentId: 'enrollment-secondary', currentStepKey: 'sale_task_2' },
     ]);
+  });
+});
+
+describe('combined work queue listing', () => {
+  let organization = 0;
+  const privacy = { viewerUserId: 'owner', orgId: 'org', privacyUnlocked: false };
+  function row(id: string, assigneeUserId: string, extra: Record<string, unknown> = {}) {
+    return {
+      id, assigneeUserId, assignee: { id: assigneeUserId, fullName: assigneeUserId },
+      status: 'open', kind: 'reply', priority: 'high', priorityScore: 80,
+      title: id, dueAt: new Date(Date.now() - 60000), metadata: {}, conversation: null, ...extra,
+    };
+  }
+  function input(extra: Record<string, unknown> = {}) {
+    return { orgId: `combined-${++organization}`, assigneeUserId: 'owner', assigneeUserIds: ['owner', 'staff'], privacy, scope: 'all' as const, ...extra };
+  }
+  beforeEach(() => {
+    vi.clearAllMocks();
+    db.zaloAccount.findMany.mockResolvedValue([]);
+    db.organization.findUnique.mockResolvedValue(null);
+    db.appointment.findMany.mockResolvedValue([]);
+    db.conversation.findMany.mockResolvedValue([]);
+    db.conversationWorkItem.updateMany.mockResolvedValue({ count: 0 });
+    db.$transaction.mockResolvedValue([]);
+  });
+  function setRows(rows: ReturnType<typeof row>[]) {
+    db.conversationWorkItem.findMany.mockImplementation(async (args: any) => args.include ? rows : []);
+  }
+  it('queries all assignees in one globally ordered list, counts before paging, and returns their names', async () => {
+    setRows([row('urgent-staff', 'staff', { priority: 'critical', priorityScore: 100 }), row('owner-task', 'owner'), row('staff-task', 'staff')]);
+    const args = input({ limit: 1 });
+    const first = await listConversationWorkItems(args);
+    expect(first.items.map((item) => item.id)).toEqual(['urgent-staff']);
+    expect(first.items[0].assignee).toEqual({ id: 'staff', fullName: 'staff' });
+    expect(first).toMatchObject({ counts: { all: 3, now: 3 }, summary: { totalActive: 3, critical: 1 }, hasMore: true, nextOffset: 1 });
+    const query = db.conversationWorkItem.findMany.mock.calls.find(([query]) => query.include)?.[0];
+    expect(query).toMatchObject({ where: { orgId: args.orgId, assigneeUserId: { in: ['owner', 'staff'] } }, orderBy: [{ priorityScore: 'desc' }, { dueAt: { sort: 'asc', nulls: 'last' } }, { sourceEventAt: 'desc' }, { id: 'asc' }] });
+    const next = await listConversationWorkItems({ ...args, offset: 1 });
+    expect(next.items.map((item) => item.id)).toEqual(['owner-task']);
+    expect(db.zaloAccount.findMany).toHaveBeenCalledTimes(2); // one reconciliation per person, reused on next page
+  });
+  it('removes private conversations and redacts locked nick content before counts and paging', async () => {
+    const conversation = { isPrivate: false, privateOwnerUserId: null, zaloAccount: { privacyMode: 'sub', ownerUserId: 'staff' } };
+    setRows([
+      row('private', 'staff', { conversation: { ...conversation, isPrivate: true, privateOwnerUserId: 'staff' } }),
+      row('locked', 'staff', { customerSituation: 'secret', conversation: { ...conversation, zaloAccount: { privacyMode: 'main', ownerUserId: 'staff' } } }),
+      row('visible', 'owner', { conversation }),
+    ]);
+    const result = await listConversationWorkItems(input({ limit: 1 }));
+    expect(result.counts.all).toBe(2);
+    expect(result.items[0].id).toBe('locked');
+    expect(result.items[0].customerSituation).not.toBe('secret');
+    expect(result.items[0].metadata).toMatchObject({ redacted: true });
+    expect(result.nextOffset).toBe(1);
+  });
+  it('checks private and locked secondary conversations in tasks merged across nicks', async () => {
+    const source = { id: 'secondary', isPrivate: true, privateOwnerUserId: 'staff', zaloAccount: { privacyMode: 'sub', ownerUserId: 'staff' } };
+    db.conversation.findMany.mockResolvedValue([source]);
+    setRows([row('mixed', 'staff', { metadata: { conversationIds: ['secondary'], signals: [{ conversationId: 'secondary', title: 'private detail' }] } })]);
+    expect((await listConversationWorkItems(input())).items).toEqual([]);
+    db.conversation.findMany.mockResolvedValue([{ ...source, isPrivate: false, zaloAccount: { privacyMode: 'main', ownerUserId: 'staff' } }]);
+    const result = await listConversationWorkItems(input());
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0].metadata).toMatchObject({ redacted: true });
+    expect(JSON.stringify(result.items)).not.toContain('private detail');
+    db.conversation.findMany.mockResolvedValue([]);
+    expect((await listConversationWorkItems(input())).items).toEqual([]);
+  });
+  it('searches employee names across the combined list', async () => {
+    setRows([row('a', 'owner'), row('b', 'staff')]);
+    expect((await listConversationWorkItems(input({ query: 'staff' }))).items.map((item) => item.id)).toEqual(['b']);
+  });
+  it('keeps integration conversation/account filters ahead of combined counts and paging', async () => {
+    setRows([
+      row('outside', 'staff', { conversationId: 'other', zaloAccountId: 'nick', metadata: {} }),
+      row('inside', 'owner', { conversationId: 'allowed', zaloAccountId: 'nick', metadata: {} }),
+    ]);
+    const result = await listConversationWorkItems(input({ allowedConversationIds: ['allowed'], allowedAccountIds: ['nick'], limit: 1 }));
+    expect(result.counts.all).toBe(1);
+    expect(result.items.map((item) => item.id)).toEqual(['inside']);
+    expect(result.hasMore).toBe(false);
+  });
+  it('does not reconcile anyone for an empty authorized set', async () => {
+    setRows([]);
+    const result = await listConversationWorkItems(input({ assigneeUserIds: [] }));
+    expect(db.zaloAccount.findMany).not.toHaveBeenCalled();
+    expect(db.conversationWorkItem.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ assigneeUserId: { in: [] } }) }));
+    expect(result.counts.all).toBe(0);
   });
 });

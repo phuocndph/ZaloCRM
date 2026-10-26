@@ -16,7 +16,7 @@ type JwtUser = { id: string; role: string; orgId: string };
 
 async function canViewAssignee(user: JwtUser, assigneeUserId: string) {
   if (user.id === assigneeUserId || user.role === 'owner' || user.role === 'admin') return true;
-  const scope = await getOwnerScope({ userId: user.id, orgId: user.orgId, legacyRole: user.role, resource: 'contact' });
+  const scope = await getOwnerScope({ userId: user.id, orgId: user.orgId, legacyRole: user.role, resource: 'conversation' });
   return scope.canViewAll || scope.visibleUserIds.includes(assigneeUserId);
 }
 
@@ -53,16 +53,27 @@ export async function conversationWorkItemRoutes(app: FastifyInstance) {
 
   app.get('/api/v1/work-items', async (request, reply) => {
     const user = request.user as JwtUser;
-    const query = request.query as { asUserId?: string; scope?: string; limit?: string; offset?: string; q?: string };
+    const query = request.query as { audience?: string; asUserId?: string; scope?: string; limit?: string; offset?: string; q?: string };
+    const viewingAll = query.audience === 'all';
+    const ownerScope = await getOwnerScope({ userId: user.id, orgId: user.orgId, legacyRole: user.role, resource: 'conversation' });
+    const assignees = await prisma.user.findMany({
+      where: {
+        orgId: user.orgId,
+        isActive: true,
+        ...(ownerScope.canViewAll ? {} : { id: { in: ownerScope.visibleUserIds } }),
+      },
+      select: { id: true, fullName: true },
+      orderBy: [{ fullName: 'asc' }, { id: 'asc' }],
+    });
     const assigneeUserId = query.asUserId || user.id;
-    if (!(await canViewAssignee(user, assigneeUserId))) {
+    if ((query.asUserId || !viewingAll) && !ownerScope.canViewAll && !ownerScope.visibleUserIds.includes(assigneeUserId)) {
       return reply.status(403).send({ error: 'Bạn không có quyền xem công việc của nhân viên này', code: 'WORK_ITEMS_FORBIDDEN' });
     }
-    const assignee = await prisma.user.findFirst({
-      where: { id: assigneeUserId, orgId: user.orgId, isActive: true },
-      select: { id: true, fullName: true },
-    });
-    if (!assignee) return reply.status(404).send({ error: 'Không tìm thấy nhân viên', code: 'ASSIGNEE_NOT_FOUND' });
+    const assignee = assignees.find((row) => row.id === assigneeUserId);
+    if ((query.asUserId || !viewingAll) && !assignee) {
+      return reply.status(404).send({ error: 'Không tìm thấy nhân viên', code: 'ASSIGNEE_NOT_FOUND' });
+    }
+    const assigneeUserIds = viewingAll && !query.asUserId ? assignees.map((row) => row.id) : [assigneeUserId];
     const privacy = await buildPrivacyContext(request);
     const scope = validScope(query.scope) ? query.scope : 'now';
     const limit = Number(query.limit);
@@ -70,14 +81,16 @@ export async function conversationWorkItemRoutes(app: FastifyInstance) {
     const result = await listConversationWorkItems({
       orgId: user.orgId,
       assigneeUserId,
+      ...(viewingAll ? { assigneeUserIds } : {}),
       privacy,
       scope,
       limit: Number.isFinite(limit) ? limit : undefined,
       offset: Number.isFinite(offset) ? offset : undefined,
       query: query.q,
     });
-    const aiActivity = await listConversationAnalysisActivity({ orgId: user.orgId, assigneeUserId });
-    return { ...result, assignee, aiActivity };
+    const activities = await Promise.all(assigneeUserIds.map((id) => listConversationAnalysisActivity({ orgId: user.orgId, assigneeUserId: id })));
+    const aiActivity = [...new Map(activities.flat().map((activity) => [activity.conversationId, activity])).values()];
+    return { ...result, assignee: viewingAll && !query.asUserId ? null : assignee, assignees, viewingAll: viewingAll && !query.asUserId, aiActivity };
   });
 
   app.patch('/api/v1/work-items/:itemId', async (request, reply) => {

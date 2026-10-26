@@ -7,6 +7,7 @@ import WorkItemsView from './WorkItemsView.vue';
 
 const mocks = vi.hoisted(() => ({ get: vi.fn(), patch: vi.fn() }));
 vi.mock('@/api', () => ({ api: mocks }));
+vi.mock('@/api/socket', () => ({ createAppSocket: () => ({ on: vi.fn(), disconnect: vi.fn() }) }));
 
 describe('WorkItemsView', () => {
   beforeEach(() => {
@@ -31,7 +32,7 @@ describe('WorkItemsView', () => {
     const wrapper = mount(WorkItemsView, { global: { plugins: [router] } });
     await flushPromises();
 
-    expect(mocks.get).toHaveBeenLastCalledWith('/work-items', expect.objectContaining({ params: expect.objectContaining({ scope: 'today' }) }));
+    expect(mocks.get).toHaveBeenLastCalledWith('/work-items', expect.objectContaining({ params: expect.objectContaining({ scope: 'today', audience: 'all' }) }));
     expect(wrapper.findAll('.wi-stat-value').map((node) => node.text())).toEqual(['3', '7', '2', '4', '0', '5']);
 
     await wrapper.findAll('.wi-stat')[2].trigger('click');
@@ -60,7 +61,7 @@ describe('WorkItemsView', () => {
     await flushPromises();
     expect(mocks.get.mock.calls.length).toBeGreaterThan(previousReads);
     expect(router.currentRoute.value.fullPath).toBe('/work-items?scope=today');
-    preview.vm.$emit('close');
+    queue.vm.$emit('assignee-change', 'staff');
     await flushPromises();
     expect(wrapper.findComponent({ name: 'WorkItemConversationPreview' }).exists()).toBe(false);
     expect(wrapper.find('input[type="search"]').exists()).toBe(true);

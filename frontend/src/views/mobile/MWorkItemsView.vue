@@ -8,7 +8,7 @@
         <strong>Việc cần xử lý hôm nay</strong>
         <span>Chọn một khách để mở chat, xử lý xong thì đánh dấu hoàn thành.</span>
       </div>
-      <DailyWorkQueue ref="queue" mobile preview-enabled :selected-conversation-id="selectedConversationId" :initial-scope="scope" @scope-change="onScopeChange" @preview-conversation="openPreview" @item-updated="onItemUpdated" />
+      <DailyWorkQueue all-assignees @assignee-change="closePreview" ref="queue" mobile preview-enabled :selected-conversation-id="selectedConversationId" :initial-scope="scope" @scope-change="onScopeChange" @preview-conversation="openPreview" @item-updated="onItemUpdated" />
     </div>
     <WorkItemConversationPreview v-if="selectedConversationId" mobile :conversation-id="selectedConversationId" :item="selectedItem" :busy="previewBusy || !!queue?.mutatingId" :item-available="itemAvailable" @close="closePreview" @marked-read="queue?.refresh(true)" @message-sent="queue?.refresh(true)" @switch-conversation="openPreview($event, null)" @action="onPreviewAction" />
   </div>
