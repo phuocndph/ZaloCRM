@@ -44,6 +44,9 @@ export async function download(raw: string, options: { method?: string; headers?
   });
 }
 export function allowedDomain(host: string, allowlist = process.env.RESEARCH_WEB_ALLOWED_DOMAINS ?? ''): boolean {
+  // Public pages are the default. Operators may restrict domains explicitly;
+  // DNS pinning, robots, login checks and redirect checks still apply to every site.
+  if (!allowlist.trim()) return true;
   return allowlist.split(',').map((x) => x.trim().toLowerCase()).filter(Boolean).some((domain) => domain.startsWith('*.') ? host.endsWith(domain.slice(1)) : host === domain);
 }
 export function extractPage(html: string) {
@@ -88,13 +91,14 @@ export async function readPage(raw: string): Promise<{ status: string; errorCode
   }
   throw new ResearchError('Quá nhiều lần chuyển trang.', 400, 'RESEARCH_TOO_MANY_REDIRECTS');
 }
-export async function searchGoogle(query: string) {
-  const key = process.env.RESEARCH_SERPER_API_KEY;
+export async function searchGoogle(query: string, apiKey?: string) {
+  const key = apiKey ?? process.env.RESEARCH_SERPER_API_KEY;
   if (!key) throw new ResearchError('Chưa cấu hình dịch vụ tìm Google.', 409, 'RESEARCH_SEARCH_NOT_CONFIGURED');
   const response = await download('https://google.serper.dev/search', {
     method: 'POST', headers: { 'X-API-KEY': key, 'Content-Type': 'application/json' },
     body: JSON.stringify({ q: query, gl: 'vn', hl: 'vi', num: 10 }), limit: 256000,
   });
+  if ([401, 403].includes(response.status)) throw new ResearchError('Mã kết nối tìm kiếm bị từ chối. Hãy kiểm tra lại mã Serper.', 409, 'RESEARCH_SEARCH_AUTH_FAILED');
   if (response.status !== 200) throw new ResearchError('Dịch vụ tìm kiếm không trả kết quả.', 502, 'RESEARCH_SEARCH_FAILED');
   const payload = JSON.parse(response.body);
   if (!Array.isArray(payload.organic)) throw new ResearchError('Kết quả tìm kiếm sai định dạng.', 502, 'RESEARCH_SEARCH_FAILED');

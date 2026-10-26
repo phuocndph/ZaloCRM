@@ -30,6 +30,7 @@ describe('CustomerResearchPanel', () => {
       orgId: 'org1',
       orgName: 'JolieFam',
       grants: {
+        ai_model: { manage_secret: true },
         ai_knowledge: { access: true, create: true, edit: true, approve: true },
       },
     };
@@ -280,15 +281,17 @@ describe('CustomerResearchPanel', () => {
     );
   });
 
-  it('tạo đợt giao Hermes không yêu cầu chọn model ZCRM', async () => {
+  it('tạo đợt chạy trực tiếp và tự khởi động tìm, đọc và tổng hợp', async () => {
     const wrapper = mount(CustomerResearchPanel); await flushPromises();
     await wrapper.find('.header-actions .primary').trigger('click');
     const form = wrapper.find('form.research-modal');
-    expect((form.find('select').element as HTMLSelectElement).value).toBe('hermes');
-    expect(form.text()).not.toContain('Cấu hình mô hình AI sử dụng');
-    mockPost.mockRejectedValueOnce({ response: { data: { error: 'Test create request only' } } });
+    expect((form.find('select').element as HTMLSelectElement).value).toBe('model-1');
+    expect(form.text()).not.toContain('Hermes');
+    expect(form.text()).toContain('Tạo và bắt đầu tìm hiểu');
+    mockPost.mockResolvedValueOnce({ data: { id: 'proj-1', executor: 'internal' } }).mockResolvedValueOnce({ data: { taskId: 'run', status: 'queued' } });
     await form.trigger('submit'); await flushPromises();
-    expect(mockPost).toHaveBeenCalledWith('/ai/research/projects', expect.objectContaining({ executor: 'hermes' }));
+    expect(mockPost).toHaveBeenCalledWith('/ai/research/projects', expect.objectContaining({ executor: 'internal', modelConfigId: 'model-1' }));
+    expect(mockPost).toHaveBeenCalledWith('/ai/research/projects/proj-1/tasks', expect.objectContaining({ kind: 'research' }));
     wrapper.unmount();
   });
 
@@ -315,21 +318,79 @@ describe('CustomerResearchPanel', () => {
     wrapper.unmount();
   });
 
-  it('giải thích việc đang chờ khi bộ nhận việc Hermes không liên lạc', async () => {
+  it('chuyển đợt Hermes cũ sang ZCRM và giữ nguyên nguồn đã có', async () => {
     const originalGet = mockGet.getMockImplementation()!;
+    let direct = false;
     mockGet.mockImplementation(async (url: string, options?: unknown) => {
-      if (url === '/ai/research/hermes-status') return { data: { lastSeenAt: '2026-10-23T11:52:52Z', recentlySeen: false } };
       const result = await originalGet(url, options);
       if (url === '/ai/research/projects/proj-1') {
-        result.data.executor = 'hermes'; result.data.tasks = [{ id: 'queued-task', kind: 'discover', status: 'queued', createdAt: '2026-10-23T13:00:00Z' }];
+        result.data.executor = direct ? 'internal' : 'hermes';
+        result.data.tasks = direct ? [] : [{ id: 'queued-task', kind: 'discover', status: 'queued', input: { executor: 'hermes' }, createdAt: '2026-10-23T13:00:00Z' }];
       }
       return result;
     });
     const wrapper = mount(CustomerResearchPanel); await flushPromises();
-    expect(wrapper.find('.hermes-connection').text()).toContain('Chỉ kết nối API hoặc mở cửa sổ chat Hermes chưa tự nhận việc');
-    expect(wrapper.find('.hermes-connection').text()).toContain('zcrm_bridge.py --watch');
-    expect(wrapper.find('.task-info').text()).toContain('Chưa có kết nối nhận việc nghiên cứu gần đây');
-    expect(mockPost).not.toHaveBeenCalled(); wrapper.unmount();
+    expect(wrapper.find('.direct-switch').text()).toContain('Chuyển đợt này sang AI trong ZCRM');
+    expect(wrapper.text()).not.toContain('zcrm_bridge.py');
+    expect(mockGet).not.toHaveBeenCalledWith('/ai/research/hermes-status');
+    mockPost.mockImplementationOnce(async () => { direct = true; return { data: { executor: 'internal' } }; });
+    await wrapper.get('.direct-switch button').trigger('click'); await flushPromises();
+    expect(mockPost).toHaveBeenCalledWith('/ai/research/projects/proj-1/direct', { modelConfigId: 'model-1' });
+    expect(wrapper.find('.direct-switch').exists()).toBe(false);
+    expect(wrapper.findAll('.source-card')).toHaveLength(1);
+    expect(wrapper.find('.research-start').text()).toContain('Tự tìm');
+    wrapper.unmount();
+  });
+
+  it('chọn vấn đề để duyệt và viết bài bằng một yêu cầu, không tự gửi hay đăng bài', async () => {
+    const wrapper = mount(CustomerResearchPanel); await flushPromises();
+    await wrapper.findAll('.step-tab')[1].trigger('click');
+    await wrapper.get('.select-pain input').setValue(true);
+    await wrapper.get('.batch-write select').setValue('article');
+    mockPost.mockResolvedValueOnce({ data: { taskId: 'write', status: 'queued' } });
+    await wrapper.get('.batch-write button').trigger('click'); await flushPromises();
+    expect(mockPost).toHaveBeenCalledTimes(1);
+    expect(mockPost).toHaveBeenCalledWith('/ai/research/projects/proj-1/tasks', expect.objectContaining({ kind: 'generate_batch', pains: [{ painId: 'pain-1', revision: 1 }], format: 'article' }));
+    expect(mockPatch).not.toHaveBeenCalled();
+    expect(wrapper.get('.step-tab.active').text()).toContain('Bài viết chia sẻ');
+    wrapper.unmount();
+  });
+
+  it('giữ mã yêu cầu khi kết nối lỗi để chạy lại không tạo thêm công việc', async () => {
+    const wrapper = mount(CustomerResearchPanel); await flushPromises();
+    mockPost.mockRejectedValueOnce(new Error('network disconnected')).mockResolvedValueOnce({ data: { taskId: 'run', status: 'queued' } });
+    await wrapper.get('.research-start button').trigger('click'); await flushPromises();
+    await wrapper.get('.research-start button').trigger('click'); await flushPromises();
+    expect(mockPost.mock.calls[0][1].idempotencyKey).toBe(mockPost.mock.calls[1][1].idempotencyKey);
+    wrapper.unmount();
+  });
+
+  it('lưu mã tìm kiếm ngay trên trang và xóa mã khỏi ô nhập sau khi lưu', async () => {
+    const wrapper = mount(CustomerResearchPanel); await flushPromises();
+    await wrapper.get('.search-setup input[type="password"]').setValue('search-secret');
+    mockPost.mockResolvedValueOnce({ data: { configured: true } });
+    await wrapper.get('.search-setup form').trigger('submit'); await flushPromises();
+    expect(mockPost).toHaveBeenCalledWith('/ai/research/search-connection', { apiKey: 'search-secret' });
+    expect((wrapper.get('.search-setup input').element as HTMLInputElement).value).toBe('');
+    expect(wrapper.text()).not.toContain('search-secret');
+    wrapper.unmount();
+  });
+
+  it('đọc và tổng hợp nguồn đã thêm mà không cần kết nối Google', async () => {
+    const originalGet = mockGet.getMockImplementation()!;
+    mockGet.mockImplementation(async (url: string, options?: unknown) => {
+      const response = await originalGet(url, options);
+      if (url === '/ai/research/capabilities') response.data.search.configured = false;
+      return response;
+    });
+    const wrapper = mount(CustomerResearchPanel); await flushPromises();
+    expect(wrapper.get('.research-start button').attributes('disabled')).toBeDefined();
+    const sourceButton = wrapper.findAll('.action-group button').find((button) => button.text() === 'Đọc và tổng hợp nguồn đã thêm')!;
+    expect(sourceButton.attributes('disabled')).toBeUndefined();
+    mockPost.mockResolvedValueOnce({ data: { taskId: 'saved', status: 'queued' } });
+    await sourceButton.trigger('click'); await flushPromises();
+    expect(mockPost).toHaveBeenCalledWith('/ai/research/projects/proj-1/tasks', expect.objectContaining({ kind: 'research', sourceMode: 'saved' }));
+    wrapper.unmount();
   });
 
   it('cho phép thêm nguồn bài viết Facebook thủ công và chạy AI tổng hợp', async () => {

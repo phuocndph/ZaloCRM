@@ -2,12 +2,13 @@
 import Fastify from 'fastify';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => {
-  const service = Object.fromEntries(['listProjects','createProject','getProject','listSources','addSource','listPains','reviewPain','mergePains','listContents','editContent','approveContent','createTask','controlTask'].map((name) => [name, vi.fn()]));
-  return { service, task: vi.fn() };
+  const service = Object.fromEntries(['listProjects','createProject','getProject','listSources','addSource','listPains','reviewPain','mergePains','listContents','editContent','approveContent','createTask','controlTask','useDirectResearch'].map((name) => [name, vi.fn()]));
+  return { service, task: vi.fn(), saveKey: vi.fn(), capabilities: vi.fn() };
 });
+vi.mock('../../src/modules/ai/research/research-settings.js', () => ({ researchCapabilities: mocks.capabilities, saveResearchSearchKey: mocks.saveKey }));
 vi.mock('../../src/modules/ai/research/research-service.js', () => mocks.service);
 vi.mock('../../src/shared/database/prisma-client.js', () => ({ prisma: { customerResearchTask: { findFirst: mocks.task } } }));
-vi.mock('../../src/modules/ai/ai-control-plane-permissions.js', () => ({ aiPermissions: { knowledge: Object.fromEntries(['access','create','edit','approve'].map((action) => [action, async (request: any, reply: any) => { if (request.headers['x-deny'] === action) reply.code(403).send({ code: 'RBAC_FORBIDDEN' }); }])) } }));
+vi.mock('../../src/modules/ai/ai-control-plane-permissions.js', () => ({ aiPermissions: { model: { manageSecret: async (r: any, reply: any) => { if (r.headers['x-deny'] === 'manageSecret') reply.code(403).send({ code: 'RBAC_FORBIDDEN' }); } }, knowledge: Object.fromEntries(['access','create','edit','approve'].map((action) => [action, async (request: any, reply: any) => { if (request.headers['x-deny'] === action) reply.code(403).send({ code: 'RBAC_FORBIDDEN' }); }])) } }));
 vi.mock('../../src/modules/integrations/_shared/token-encryption.util.js', () => ({ getTokenEncryptionKeyReadiness: () => ({ ready: false }) }));
 import { researchRoutes } from '../../src/modules/ai/research/research-routes.js';
 import { ResearchError } from '../../src/modules/ai/research/research-domain.js';
@@ -60,6 +61,21 @@ describe('research API boundaries', () => {
     expect((await server.inject(input)).json()).toMatchObject({ error: 'Tên còn thiếu.' });
     mocks.service.createProject.mockRejectedValueOnce(new Error('postgresql://secret:password@internal'));
     const result = await server.inject(input); expect(result.body).not.toContain('password'); expect(result.statusCode).toBe(502); await server.close();
+  });
+  it('requires approval permission before atomically selecting pains for writing', async () => {
+    const server = await app();
+    const result = await server.inject({ method: 'POST', url: '/api/v1/ai/research/projects/p/tasks', headers: { authorization: 'test', 'x-deny': 'approve' }, payload: { kind: 'generate_batch', pains: [{ painId: 'x', revision: 1 }], format: 'article', idempotencyKey: 'batch' } });
+    expect(result.statusCode).toBe(403); expect(mocks.service.createTask).not.toHaveBeenCalled(); await server.close();
+  });
+  it('protects the search credential behind secret-management permissions', async () => {
+    const server = await app();
+    const result = await server.inject({ method: 'POST', url: '/api/v1/ai/research/search-connection', headers: { authorization: 'test', 'x-deny': 'manageSecret' }, payload: { apiKey: 'secret-key' } });
+    expect(result.statusCode).toBe(403); expect(mocks.saveKey).not.toHaveBeenCalled(); await server.close();
+  });
+  it('passes only authenticated organization context to the direct-execution switch', async () => {
+    const server = await app(); mocks.service.useDirectResearch.mockResolvedValue({ executor: 'internal' });
+    const response = await server.inject({ method: 'POST', url: '/api/v1/ai/research/projects/p/direct', headers: { authorization: 'test' }, payload: { modelConfigId: 'local' } });
+    expect(response.statusCode).toBe(200); expect(mocks.service.useDirectResearch).toHaveBeenCalledWith({ orgId: 'org-a', userId: 'user-a', role: 'owner' }, 'p', { modelConfigId: 'local' }); await server.close();
   });
   it('validates pagination without accepting unbounded reads', async () => {
     const server = await app();

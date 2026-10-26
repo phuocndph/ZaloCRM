@@ -3,14 +3,16 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => {
   const model = () => ({ findFirst: vi.fn(), findFirstOrThrow: vi.fn(), findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), updateMany: vi.fn(), count: vi.fn(), groupBy: vi.fn() });
   const db: any = { customerResearchProject: model(), customerResearchSource: model(), customerResearchPain: model(), customerResearchContent: model(), customerResearchTask: model(), user: model(), aiAuditLog: { create: vi.fn() }, $executeRaw: vi.fn() };
-  return { db, enqueue: vi.fn(), complete: vi.fn(), resolve: vi.fn(), permission: vi.fn() };
+  return { db, enqueue: vi.fn(), complete: vi.fn(), resolve: vi.fn(), permission: vi.fn(), search: vi.fn(), read: vi.fn(), searchKey: vi.fn() };
 });
 vi.mock('../../src/shared/database/prisma-client.js', () => ({ prisma: mocks.db, tenantTransaction: (fn: any) => fn(mocks.db) }));
 vi.mock('../../src/modules/ai/core/index.js', () => ({ aiClient: { complete: mocks.complete }, aiModelRegistry: { resolve: mocks.resolve } }));
 vi.mock('../../src/modules/ai/research/research-queue.js', () => ({ enqueueResearchTask: mocks.enqueue }));
 vi.mock('../../src/modules/rbac/permission-group-service.js', () => ({ userHasGrant: mocks.permission }));
 vi.mock('../../src/modules/integrations/_shared/token-encryption.util.js', () => ({ encryptToken: (s: string) => `enc:${s}`, decryptToken: (s: string) => s.replace(/^enc:/, '') }));
-import { createProject, getProject, listSources, addSource, reviewPain, mergePains, approveContent, editContent, createTask, controlTask, processResearchTask } from '../../src/modules/ai/research/research-service.js';
+vi.mock('../../src/modules/ai/research/research-web.js', () => ({ searchGoogle: mocks.search, readPage: mocks.read }));
+vi.mock('../../src/modules/ai/research/research-settings.js', () => ({ researchSearchKey: mocks.searchKey }));
+import { useDirectResearch, createProject, getProject, listSources, addSource, reviewPain, mergePains, approveContent, editContent, createTask, controlTask, processResearchTask } from '../../src/modules/ai/research/research-service.js';
 const actor = { orgId: 'org-a', userId: 'user-a', role: 'owner' };
 let project: any, task: any;
 const quote = 'Tôi quản lý khách sạn thường xuyên thiếu khăn sạch trong giờ cao điểm.';
@@ -38,6 +40,9 @@ beforeEach(() => {
   mocks.db.customerResearchPain.findFirst.mockResolvedValue(null); mocks.db.customerResearchPain.findMany.mockResolvedValue([]);
   mocks.db.customerResearchPain.updateMany.mockResolvedValue({ count: 0 }); mocks.db.customerResearchContent.updateMany.mockResolvedValue({ count: 0 });
   mocks.db.user.findFirst.mockResolvedValue({ id: actor.userId }); mocks.permission.mockResolvedValue(true);
+  mocks.searchKey.mockResolvedValue('search-key');
+  mocks.search.mockResolvedValue([]);
+  mocks.read.mockResolvedValue({ status: 'failed', errorCode: 'PAGE_HTTP_ERROR' });
   mocks.resolve.mockResolvedValue({ inputCostPerMillion: 1, outputCostPerMillion: 2, maxRetries: 0 });
   mocks.complete.mockResolvedValue({ structured: { pains: [validPain] }, usage: { costMicros: 20n }, requestId: 'request-a' });
 });
@@ -230,5 +235,103 @@ describe('research generation and resumption', () => {
     mocks.db.customerResearchSource.findMany.mockResolvedValue([{ id: 'source-a', contentEncrypted: `enc:${quote}` }]);
     await processResearchTask({ orgId: actor.orgId, projectId: project.id, taskId: task.id });
     expect(task.status).toBe('completed'); expect(mocks.complete).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('direct research workflow', () => {
+  const run = () => processResearchTask({ orgId: actor.orgId, projectId: project.id, taskId: task.id });
+  it('switches a legacy project and revokes remote leases without deleting evidence', async () => {
+    project.executor = 'hermes'; task.status = 'running'; task.leaseToken = 'remote'; task.input = { executor: 'hermes' };
+    const result = await useDirectResearch(actor, project.id, { modelConfigId: 'local-model' });
+    expect(result).toMatchObject({ executor: 'internal', modelConfigId: 'local-model' });
+    expect(task).toMatchObject({ status: 'cancelled', leaseToken: null, cancelRequested: true });
+    expect(mocks.db.customerResearchPain.updateMany).not.toHaveBeenCalled();
+    expect(mocks.db.customerResearchContent.updateMany).not.toHaveBeenCalled();
+    await expect(controlTask(actor, project.id, task.id, 'retry')).rejects.toMatchObject({ code: 'RESEARCH_DIRECT_REQUIRED' });
+  });
+  it('does not switch to an unavailable model or touch a foreign project', async () => {
+    mocks.resolve.mockRejectedValueOnce(new Error('unavailable'));
+    await expect(useDirectResearch(actor, project.id, { modelConfigId: 'bad' })).rejects.toThrow();
+    expect(mocks.db.customerResearchTask.updateMany).not.toHaveBeenCalled();
+    await expect(useDirectResearch({ ...actor, orgId: 'foreign' }, project.id, { modelConfigId: 'local' })).rejects.toMatchObject({ code: 'RESEARCH_NOT_FOUND' });
+  });
+  it('checks search and model readiness before accepting a complete run', async () => {
+    mocks.searchKey.mockResolvedValueOnce('');
+    await expect(createTask(actor, project.id, { kind: 'research', idempotencyKey: 'start' })).rejects.toMatchObject({ code: 'RESEARCH_SEARCH_NOT_CONFIGURED' });
+    expect(mocks.db.customerResearchTask.create).not.toHaveBeenCalled();
+    mocks.db.customerResearchTask.create.mockImplementation(async ({ data }: any) => ({ ...task, ...data }));
+    await createTask(actor, project.id, { kind: 'research', idempotencyKey: 'start' });
+    expect(mocks.enqueue).toHaveBeenCalledWith(actor.orgId, project.id, task.id);
+  });
+  it('finds, reads and analyzes in one background task while skipping bad searches and pages', async () => {
+    task.kind = 'research';
+    mocks.complete.mockResolvedValueOnce({ structured: { queries: ['bad query', 'hotel problems'] }, usage: { costMicros: 2n } });
+    mocks.search.mockRejectedValueOnce(new Error('one query failed')).mockResolvedValueOnce([{ title: 'Source', url: 'https://public.test/a' }]);
+    const pending = [{ id: 'broken', url: 'https://public.test/b' }, { id: 'source-a', title: 'Source', url: 'https://public.test/a' }];
+    mocks.db.customerResearchSource.findMany.mockImplementation(async ({ where }: any) => typeof where.status === 'object' ? pending : [{ id: 'source-a', speakerRole: 'unknown', contentEncrypted: `enc:${quote}` }]);
+    mocks.read.mockRejectedValueOnce(new Error('page failed')).mockResolvedValueOnce({ status: 'read', title: 'Source', content: quote });
+    await run();
+    expect(task.status).toBe('completed');
+    expect(task.checkpoint).toMatchObject({ stage: 'completed', batch: 1, sourceCount: 1, queryIndex: 2, searchFailures: [{ queryIndex: 0, code: 'RESEARCH_SEARCH_FAILED' }] });
+    expect(mocks.read).toHaveBeenCalledTimes(2);
+    expect(mocks.db.customerResearchSource.update).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'broken' }, data: { status: 'failed', errorCode: 'RESEARCH_PAGE_FAILED' } }));
+    expect(mocks.db.customerResearchPain.create).toHaveBeenCalledTimes(1);
+  });
+  it('reads saved source URLs and analyzes without a Google key or a search call', async () => {
+    task.kind = 'research'; task.input = { sourceMode: 'saved' };
+    mocks.searchKey.mockResolvedValue('');
+    mocks.db.customerResearchSource.findMany.mockImplementation(async ({ where }: any) => typeof where.status === 'object' ? [{ id: 'source-a', title: 'Saved URL', url: 'https://public.test/a' }] : [{ id: 'source-a', speakerRole: 'owner', contentEncrypted: `enc:${quote}` }]);
+    mocks.read.mockResolvedValue({ status: 'read', title: 'Saved URL', content: quote });
+    await run();
+    expect(task.status).toBe('completed');
+    expect(mocks.search).not.toHaveBeenCalled(); expect(mocks.searchKey).not.toHaveBeenCalled();
+    expect(mocks.read).toHaveBeenCalledWith('https://public.test/a');
+    expect(mocks.complete).toHaveBeenCalledTimes(1);
+  });
+  it('continues analysis after a restart without repeating search or committed source batches', async () => {
+    task.kind = 'research'; task.checkpoint = { stage: 'analyze', started: true, sourceRevision: 1, batch: 1 };
+    mocks.db.customerResearchSource.findMany.mockResolvedValue(Array.from({ length: 6 }, (_, i) => ({ id: i === 5 ? 'source-a' : `s-${i}`, speakerRole: 'unknown', contentEncrypted: `enc:${quote}` })));
+    await run();
+    expect(task.status).toBe('completed'); expect(mocks.search).not.toHaveBeenCalled();
+    expect(mocks.complete).toHaveBeenCalledTimes(1); expect(task.checkpoint.batch).toBe(2);
+  });
+  it('explains no readable sources and resets discovery so retry can find again', async () => {
+    task.kind = 'research'; task.checkpoint = { queries: ['hotel'], queryIndex: 1 };
+    mocks.db.customerResearchSource.findMany.mockResolvedValue([]);
+    await run();
+    expect(task).toMatchObject({ status: 'failed', errorCode: 'RESEARCH_NO_EVIDENCE', checkpoint: { stage: 'discover', queryIndex: 0 } });
+    expect(mocks.db.customerResearchPain.updateMany).not.toHaveBeenCalled();
+  });
+  it('requires owner approval, current revisions and finished analysis for batch writing', async () => {
+    const payload = { kind: 'generate_batch', pains: [{ painId: 'pain-a', revision: 1 }], format: 'article', idempotencyKey: 'selected' };
+    await expect(createTask({ ...actor, role: 'sale' }, project.id, payload)).rejects.toMatchObject({ code: 'RESEARCH_APPROVAL_FORBIDDEN' });
+    mocks.db.customerResearchPain.findMany.mockResolvedValue([{ id: 'pain-a', revision: 2, taskId: 'analysis', status: 'draft' }]);
+    await expect(createTask(actor, project.id, payload)).rejects.toMatchObject({ code: 'RESEARCH_STALE_REVISION' });
+    mocks.db.customerResearchPain.findMany.mockResolvedValue([{ id: 'pain-a', revision: 1, taskId: 'analysis', status: 'draft' }]);
+    await expect(createTask(actor, project.id, payload)).rejects.toMatchObject({ code: 'RESEARCH_ANALYSIS_INCOMPLETE' });
+    expect(mocks.db.customerResearchPain.update).not.toHaveBeenCalled();
+  });
+  it('approves selected pains and queues one durable batch with the approved revision', async () => {
+    mocks.db.customerResearchPain.findMany.mockResolvedValue([{ id: 'a', revision: 1, taskId: 'analysis', status: 'draft' }, { id: 'b', revision: 3, taskId: 'analysis', status: 'approved' }]);
+    mocks.db.customerResearchTask.count.mockImplementation(async ({ where }: any) => where.status === 'completed' ? 1 : 0);
+    mocks.db.customerResearchTask.create.mockImplementation(async ({ data }: any) => ({ ...task, ...data }));
+    await createTask(actor, project.id, { kind: 'generate_batch', pains: [{ painId: 'b', revision: 3 }, { painId: 'a', revision: 1 }], format: 'article', idempotencyKey: 'selected' });
+    expect(mocks.db.customerResearchPain.update).toHaveBeenCalledTimes(1);
+    expect(mocks.db.customerResearchTask.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ input: expect.objectContaining({ painRefs: [{ painId: 'a', painRevision: 2 }, { painId: 'b', painRevision: 3 }] }) }) }));
+    expect(mocks.enqueue).toHaveBeenCalledTimes(1);
+  });
+  it('writes each selected pain and resumes after the last committed draft without duplicates', async () => {
+    task.kind = 'generate_batch'; task.input = { format: 'article', painRefs: [{ painId: 'a', painRevision: 1 }, { painId: 'b', painRevision: 1 }] };
+    mocks.db.customerResearchPain.findFirst.mockImplementation(async ({ where }: any) => ({ id: where.id, revision: 1, title: where.id, detail: {}, evidence: [{ sourceId: 'source-a', quote }] }));
+    const result = { structured: { title: 'Article', body: 'Checklist', sourceIds: ['source-a'], missingInformation: [] }, usage: { costMicros: 20n } };
+    mocks.complete.mockResolvedValueOnce(result).mockRejectedValueOnce(new Error('interrupted'));
+    await run();
+    expect(task.status).toBe('failed'); expect(task.checkpoint.contentIndex).toBe(1);
+    expect(mocks.db.customerResearchContent.create).toHaveBeenCalledTimes(1);
+    await controlTask(actor, project.id, task.id, 'retry'); mocks.complete.mockResolvedValue(result);
+    await run();
+    expect(task.status).toBe('completed'); expect(task.checkpoint.contentIndex).toBe(2);
+    expect(mocks.db.customerResearchContent.create).toHaveBeenCalledTimes(2);
+    expect(mocks.db.customerResearchContent.create.mock.calls.map(([arg]: any) => arg.data.painId)).toEqual(['a', 'b']);
   });
 });

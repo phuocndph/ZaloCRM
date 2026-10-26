@@ -35,22 +35,20 @@
       </div>
     </Transition>
 
-    <div v-if="currentProject?.executor === 'hermes'" class="hermes-connection" role="status">
-      <span class="mdi mdi-robot-outline" aria-hidden="true" />
-      <strong>Hermes Agent</strong>
-      <span>{{ !hermesStatus ? 'Chưa đọc được trạng thái kết nối Hermes' : hermesStatus.recentlySeen ? 'Đã liên lạc trong 2 phút gần đây' : 'Hermes chưa liên lạc để nhận việc nghiên cứu trong 2 phút gần đây' }}</span>
-      <time v-if="hermesStatus?.lastSeenAt">Lần liên lạc cuối: {{ formatDate(hermesStatus.lastSeenAt) }}</time>
-      <p v-if="hermesStatus && !hermesStatus.recentlySeen" class="hermes-help">
-        Cần chạy bộ nhận việc trên máy chủ Hermes: <code>python3 /opt/zcrm-hermes/zcrm_bridge.py --watch</code>.
-        Chỉ kết nối API hoặc mở cửa sổ chat Hermes chưa tự nhận việc ở đây. Kiểm tra trong đúng môi trường đã cài khóa kết nối; không cần tạo lại công việc.
-      </p>
-    </div>
-    <section v-else-if="capabilities" class="capability-strip" aria-label="Trạng thái kết nối">
+    <section v-if="currentProject?.executor === 'hermes'" class="direct-switch" role="status">
+      <div><strong>Chuyển đợt này sang AI trong ZCRM</strong><p>Giữ nguồn và bài đã lưu. Công việc cũ đang chờ hoặc chạy qua Hermes sẽ dừng khi chuyển.</p></div>
+      <select v-if="availableModels.length" v-model="projectForm.modelConfigId" aria-label="AI dùng khi chuyển sang ZCRM">
+        <option v-for="model in availableModels" :key="model.id" :value="model.id">{{ model.displayName }}</option>
+      </select>
+      <input v-else v-model.trim="projectForm.modelConfigId" placeholder="Mã AI đã cấu hình trong ZCRM" aria-label="AI dùng khi chuyển sang ZCRM" />
+      <button class="button primary" type="button" :disabled="taskBusy || !canEdit || !projectForm.modelConfigId" @click="switchToDirect">Chạy trực tiếp trong ZCRM</button>
+    </section>
+    <section v-if="capabilities" class="capability-strip" aria-label="Trạng thái kết nối">
       <div class="cap-item" :class="{ ok: capabilities.search.configured, warn: !capabilities.search.configured }">
         <span class="mdi" :class="capabilities.search.configured ? 'mdi-magnify-check' : 'mdi-magnify-close'" />
         <div>
           <strong>Tìm trên Google</strong>
-          <small>{{ capabilities.search.configured ? 'Đã bật sẵn sàng' : 'Chưa gắn mã kết nối Google (vẫn dán bài thủ công được)' }}</small>
+          <small>{{ capabilities.search.configured ? 'Đã có mã kết nối' : 'Chưa có mã tìm kiếm (vẫn có thể dán nội dung để tổng hợp)' }}</small>
         </div>
       </div>
 
@@ -62,7 +60,7 @@
             {{
               capabilities.publicWeb.allowedDomains.length
                 ? `Cho phép tự đọc ${capabilities.publicWeb.allowedDomains.length} tên miền (${capabilities.publicWeb.allowedDomains.slice(0, 3).join(', ')})`
-                : 'Chưa mở danh sách trang web tự đọc (cần dán nội dung hoặc cấu hình tên miền)'
+                : 'Tự đọc trang công khai; bỏ qua trang chặn truy cập'
             }}
           </small>
         </div>
@@ -77,6 +75,14 @@
       </div>
     </section>
 
+    <details v-if="canManageSearch" class="search-setup" :open="!!capabilities && !capabilities.search.configured">
+      <summary>Thiết lập tìm kiếm Google</summary>
+      <form @submit.prevent="saveSearchConnection">
+        <label>Mã kết nối Serper <input v-model.trim="searchApiKey" type="password" autocomplete="new-password" required placeholder="Dán mã kết nối tìm kiếm" /></label>
+        <button class="button secondary" type="submit" :disabled="saving || !searchApiKey">Lưu kết nối</button>
+        <small>Mã được lưu bảo mật. Phần viết và tổng hợp dùng AI đã cấu hình trong ZCRM.</small>
+      </form>
+    </details>
     <div class="research-workspace">
       <aside class="project-sidebar">
         <div class="sidebar-header">
@@ -110,8 +116,8 @@
             <p>{{ item.brief }}</p>
             <div class="project-meta">
               <span>AI: {{ item.aiCalls }} lượt</span>
-              <span v-if="item.executor === 'hermes'">Hermes Agent</span>
-              <span v-else>Chi phí: {{ formatMicrosToUsd(item.aiCostMicros) }}</span>
+              <span>{{ item.executor === 'hermes' ? 'Đợt cũ — cần chuyển sang ZCRM' : 'AI trong ZCRM' }}</span>
+              <span v-if="item.executor !== 'hermes'">Chi phí: {{ formatMicrosToUsd(item.aiCostMicros) }}</span>
             </div>
           </button>
         </div>
@@ -157,6 +163,19 @@
               </div>
             </div>
 
+            <label v-if="currentProject.executor !== 'hermes' && availableModels.length && canEdit" class="project-model">
+              AI dùng cho đợt này
+              <select :value="currentProject.modelConfigId" :disabled="taskBusy || hasActiveTask" aria-label="Đổi AI dùng cho đợt này" @change="changeProjectModel">
+                <option v-if="!availableModels.some((model) => model.id === currentProject?.modelConfigId)" :value="currentProject.modelConfigId" disabled>AI cũ không còn sẵn sàng — hãy chọn lại</option>
+                <option v-for="model in availableModels" :key="model.id" :value="model.id">{{ model.displayName }}</option>
+              </select>
+            </label>
+            <div v-if="currentProject.executor !== 'hermes'" class="research-start">
+              <div><strong>Tự tìm → đọc nguồn → tổng hợp vấn đề</strong><p>Kết quả tự lưu dù anh đóng trang. Chọn vấn đề sau khi tổng hợp xong để tạo bài.</p></div>
+              <button type="button" class="button primary" :disabled="taskBusy || hasActiveTask || !canEdit || !capabilities?.search.configured || !capabilities?.encryption" @click="triggerTask('research')">{{ activePains.length ? 'Tìm và tổng hợp lại' : 'Bắt đầu tìm hiểu' }}</button>
+              <small v-if="!capabilities?.search.configured">Cần thiết lập tìm kiếm Google phía trên, hoặc dán nguồn để tổng hợp.</small>
+              <small v-else-if="!capabilities?.encryption">Máy chủ chưa sẵn sàng lưu nguồn bảo mật. Cần kiểm tra cấu hình mã hóa.</small>
+            </div>
             <div v-if="latestTask" class="task-banner" :class="latestTask.status">
               <div class="task-info">
                 <span
@@ -170,9 +189,10 @@
                 />
                 <div>
                   <strong>{{ TASK_KIND_LABELS[latestTask.kind] || latestTask.kind }}: {{ TASK_STATUS_LABELS[latestTask.status] || latestTask.status }}</strong>
-                  <small v-if="latestTask.errorCode">Mã thông báo: {{ friendlyErrorCode(latestTask.errorCode) }}</small>
-                  <small v-else-if="currentProject.executor === 'hermes' && latestTask.status === 'queued'">{{ hermesStatus && !hermesStatus.recentlySeen ? 'Chưa có kết nối nhận việc nghiên cứu gần đây. Kiểm tra bộ nhận việc trên máy chủ Hermes theo hướng dẫn phía trên.' : 'Đang chờ Hermes nhận việc. Khi Hermes nhận, trạng thái sẽ tự đổi sang đang xử lý.' }}</small>
-                  <small v-else-if="isTaskActive(latestTask)">{{ latestTask.checkpoint?.progress || 'Đang xử lý, kết quả sẽ tự cập nhật.' }}</small>
+                  <small v-if="latestTask.errorCode">Cần xử lý: {{ friendlyErrorCode(latestTask.errorCode) }}</small>
+                  <small v-else-if="latestTask.status === 'queued' && currentProject.executor !== 'hermes'">{{ queuedTooLong ? 'Bộ xử lý chưa nhận việc. Hệ thống đang thử lại; cần kiểm tra máy chủ nếu tình trạng kéo dài.' : 'Công việc đã lưu. ZCRM đang chuẩn bị xử lý.' }}</small>
+                  <small v-else-if="latestTask.checkpoint?.progress">{{ latestTask.checkpoint.progress }}</small>
+                  <small v-else-if="isTaskActive(latestTask)">{{ currentProject.executor === 'hermes' ? 'Chuyển sang AI trong ZCRM để tiếp tục.' : 'ZCRM đang chuẩn bị xử lý, kết quả sẽ tự cập nhật.' }}</small>
                   <small v-else>Cập nhật lúc {{ formatDate(latestTask.completedAt || latestTask.createdAt) }}</small>
                 </div>
               </div>
@@ -187,7 +207,7 @@
                   Dừng việc này
                 </button>
                 <button
-                  v-if="['failed', 'cancelled'].includes(latestTask.status)"
+                  v-if="['failed', 'cancelled'].includes(latestTask.status) && currentProject.executor !== 'hermes' && latestTask.input?.executor !== 'hermes'"
                   type="button"
                   class="button secondary"
                   :disabled="taskBusy || hasActiveTask"
@@ -199,6 +219,9 @@
             </div>
           </section>
 
+          <ol v-if="latestTask?.kind === 'research'" class="research-progress" aria-label="Tiến độ tìm hiểu">
+            <li v-for="phase in workflowPhases" :key="phase.key" :class="{ current: latestTask.checkpoint?.stage === phase.key, finished: latestTask.status === 'completed' }">{{ phase.label }}</li>
+          </ol>
           <nav class="step-tabs" aria-label="Các bước thực hiện">
             <button
               type="button"
@@ -245,33 +268,15 @@
               <div>
                 <h4>Thu thập bài viết & thảo luận thực tế</h4>
                 <p>
-                  Bạn có thể bấm cho AI tự tìm trên Google theo yêu cầu của đợt tìm hiểu, hoặc dán trực tiếp bài viết/bình luận từ hội nhóm Facebook chủ khách sạn vào đây.
+                  Bấm Bắt đầu tìm hiểu để tự tìm và tổng hợp. Có thể bổ sung bài viết hoặc bình luận anh được phép dùng từ hội nhóm Facebook.
                 </p>
               </div>
               <div class="action-group">
-                <button
-                  type="button"
-                  class="button secondary"
-                  :disabled="taskBusy || hasActiveTask || loading || !canEdit || (currentProject.executor !== 'hermes' && !capabilities?.search.configured)"
-                  @click="triggerTask('discover')"
-                >
-                  <span class="mdi mdi-google" />
-                  {{ currentProject.executor === 'hermes' ? 'Giao Hermes tìm thông tin' : 'Tìm nguồn trên Google' }}
-                </button>
-                <button
-                  type="button"
-                  class="button secondary"
-                  v-if="currentProject.executor !== 'hermes'"
-                  :disabled="taskBusy || hasActiveTask || !pendingWebSourceCount || !canEdit"
-                  @click="triggerTask('collect')"
-                >
-                  <span class="mdi mdi-file-find-outline" />
-                  2. Đọc các trang web ({{ pendingWebSourceCount }})
-                </button>
+                <button v-if="sources.length && currentProject.executor !== 'hermes'" type="button" class="button secondary" :disabled="taskBusy || hasActiveTask || !canEdit || !capabilities?.encryption" @click="triggerTask('research', { sourceMode: 'saved' })">Đọc và tổng hợp nguồn đã thêm</button>
                 <button
                   type="button"
                   class="button primary"
-                  :disabled="hasActiveTask"
+                  :disabled="hasActiveTask || !canEdit"
                   @click="showAddSourceModal = true"
                 >
                   <span class="mdi mdi-plus" />
@@ -299,7 +304,7 @@
             <div v-if="!sources.length" class="state-empty">
               <span class="mdi mdi-text-box-plus-outline" />
               <strong>Chưa có nguồn thông tin nào</strong>
-              <p>Hãy bấm "Dán bài Facebook / Thêm nguồn" để thêm các bài tâm sự, hỏi đáp của chủ khách sạn hoặc bấm "Tìm nguồn trên Google".</p>
+              <p>Hãy bấm "Dán bài Facebook / Thêm nguồn" để thêm các bài tâm sự, hỏi đáp của chủ khách sạn hoặc bấm "Bắt đầu tìm hiểu".</p>
             </div>
 
             <div v-else class="source-grid">
@@ -336,7 +341,7 @@
                 </p>
                 <p v-else class="source-missing">
                   <template v-if="source.status === 'requires_manual'">
-                    Bài viết từ Facebook không tự động quét để tránh vi phạm chính sách. Hãy mở bài, sao chép nội dung được phép dùng và bấm "Dán nội dung cho nguồn này".
+                    Bài Facebook này cần bổ sung nội dung để đọc được. Hãy mở bài, sao chép nội dung được phép dùng và bấm "Dán nội dung cho nguồn này".
                   </template>
                   <template v-else-if="source.status === 'blocked_domain'">
                     Tên miền này chưa nằm trong danh sách cho phép tự đọc. Bạn có thể dán nội dung thủ công nếu cần.
@@ -371,9 +376,9 @@
           <section v-else-if="activeStep === 'pains'" class="step-panel">
             <div class="panel-action-bar">
               <div>
-                <h4>Danh sách nỗi đau & vấn đề của chủ khách sạn</h4>
+                <h4>Chọn vấn đề muốn viết bài</h4>
                 <p>
-                  Mỗi vấn đề dưới đây đều kèm câu trích dẫn nguyên văn từ nguồn đã đọc. Bạn kiểm tra, chỉnh lại câu chữ nếu cần, rồi bấm <strong>Duyệt</strong> những vấn đề muốn dùng để viết bài.
+                  Kiểm tra bằng chứng rồi chọn các vấn đề phù hợp. Nút <strong>Duyệt và tạo bài</strong> xác nhận các vấn đề đã chọn và lần lượt viết bản nháp. Bài viết vẫn chờ anh duyệt trước khi dùng.
                 </p>
               </div>
               <div class="action-group">
@@ -389,6 +394,11 @@
               </div>
             </div>
 
+            <div v-if="canApprove && currentProject.executor !== 'hermes' && activePains.length" class="batch-write">
+              <label><input type="checkbox" :checked="allPainsSelected" :disabled="hasActiveTask || taskBusy" @change="toggleAllPains" /> Chọn tất cả vấn đề có thể dùng</label>
+              <select v-model="batchFormat" aria-label="Kiểu bài cho các vấn đề đã chọn"><option value="zalo_message">Tin nhắn Zalo ngắn</option><option value="article">Bài chia sẻ kinh nghiệm</option><option value="checklist">Danh sách kiểm tra</option></select>
+              <button class="button primary" type="button" :disabled="!selectedPains.length || taskBusy || hasActiveTask" @click="generateSelectedPains">Duyệt và tạo bài ({{ selectedPains.length }})</button>
+            </div>
             <div v-if="!activePains.length" class="state-empty">
               <span class="mdi mdi-clipboard-text-search-outline" />
               <strong>Chưa có vấn đề nào được tổng hợp</strong>
@@ -417,6 +427,7 @@
                   </div>
                 </header>
 
+                <label v-if="canApprove && currentProject.executor !== 'hermes' && pain.status !== 'rejected'" class="select-pain"><input v-model="selectedPainIds" type="checkbox" :value="pain.id" :disabled="hasActiveTask || taskBusy" :aria-label="`Chọn vấn đề: ${pain.title}`" /> Chọn để tạo bài</label>
                 <h5>{{ pain.title }}</h5>
 
                 <dl class="pain-detail-grid">
@@ -447,12 +458,13 @@
                   <ul>
                     <li v-for="(ev, idx) in pain.evidence" :key="`${ev.sourceId}-${idx}`">
                       <blockquote>“{{ ev.quote }}”</blockquote>
-                      <small>— Nguồn: {{ sourceTitleById(ev.sourceId) }}</small>
+                      <a v-if="sourceUrlById(ev.sourceId)" :href="sourceUrlById(ev.sourceId)!" target="_blank" rel="noopener noreferrer">{{ sourceTitleById(ev.sourceId) }}</a>
+                      <small v-else>— Nguồn: {{ sourceTitleById(ev.sourceId) }}</small>
                     </li>
                   </ul>
                 </div>
 
-                <div v-if="pain.status === 'approved'" class="generate-bar">
+                <div v-if="pain.status === 'approved' && currentProject.executor !== 'hermes'" class="generate-bar">
                   <div class="generate-label">
                     <span class="mdi mdi-check-decagram" />
                     <strong>Vấn đề này đã duyệt — Chọn kiểu bài để AI viết nháp:</strong>
@@ -616,14 +628,7 @@
         </header>
 
         <div class="modal-body">
-          <label>
-            <span>Bên thực hiện</span>
-            <select v-model="projectForm.executor">
-              <option value="hermes">Hermes Agent trên máy chủ của bạn</option>
-              <option value="internal">AI đang cấu hình trong ZCRM</option>
-            </select>
-          </label>
-          <p v-if="projectForm.executor === 'hermes'" class="hermes-note">Chi phí và công cụ tìm kiếm dùng theo cấu hình trên máy chủ Hermes. ZCRM giới hạn số lượt và số nguồn, không đo chi phí Hermes.</p>
+          <p class="help-text">Chạy bằng AI trong ZCRM. Khi đã có kết nối tìm kiếm, tạo đợt sẽ tự tìm, đọc và tổng hợp.</p>
           <label>
             <span>Tên đợt tìm hiểu <b>*</b></span>
             <input
@@ -645,8 +650,8 @@
             />
           </label>
 
-          <label v-if="projectForm.executor !== 'hermes'">
-            <span>Cấu hình mô hình AI sử dụng <b>*</b></span>
+          <label>
+            <span>AI dùng để tìm hiểu và viết bài <b>*</b></span>
             <select v-if="availableModels.length" v-model="projectForm.modelConfigId" required>
               <option v-for="m in availableModels" :key="m.id" :value="m.id">
                 {{ m.displayName }} ({{ m.externalModelId }}){{ m.isDefault ? ' — Mặc định' : '' }}
@@ -657,7 +662,7 @@
               v-model.trim="projectForm.modelConfigId"
               required
               maxlength="100"
-              placeholder="Nhập mã cấu hình AI đang hoạt động (Model Config ID)"
+              placeholder="Nhập mã AI đã được thiết lập trong ZCRM"
             />
             <small v-if="!availableModels.length">
               Gợi ý: Bạn có thể tạo và duyệt cấu hình AI trong mục "Mô hình & kết nối".
@@ -670,7 +675,7 @@
         <footer>
           <button type="button" class="button secondary" @click="showCreateProjectModal = false">Hủy</button>
           <button type="submit" class="button primary" :disabled="saving">
-            {{ saving ? 'Đang tạo…' : 'Tạo đợt tìm hiểu' }}
+            {{ saving ? 'Đang tạo…' : capabilities?.search.configured && capabilities?.encryption ? 'Tạo và bắt đầu tìm hiểu' : 'Tạo đợt để thêm nguồn' }}
           </button>
         </footer>
       </form>
@@ -919,7 +924,10 @@ const notice = ref('');
 const noticeOk = ref(true);
 
 const capabilities = ref<ResearchCapabilities | null>(null);
-const hermesStatus = ref<{ lastSeenAt: string | null; recentlySeen: boolean } | null>(null);
+const searchApiKey = ref('');
+const selectedPainIds = ref<string[]>([]);
+const batchFormat = ref<ResearchFormat>('zalo_message');
+const workflowPhases = [{ key: 'discover', label: '1. Tìm nguồn' }, { key: 'collect', label: '2. Đọc nội dung' }, { key: 'analyze', label: '3. Tổng hợp vấn đề' }];
 const availableModels = ref<AiModelConfig[]>([]);
 const projects = ref<ResearchProject[]>([]);
 const selectedProjectId = ref<string>('');
@@ -940,7 +948,7 @@ const mergeSourcePainId = ref('');
 const editingContent = ref<ResearchContent | null>(null);
 
 const projectForm = reactive({
-  executor: 'hermes' as 'hermes' | 'internal',
+  executor: 'internal' as const,
   title: 'Tìm nỗi đau vận hành của chủ khách sạn',
   brief:
     'Tìm các khó khăn thực tế khi chủ và quản lý khách sạn Việt Nam vận hành khách sạn: nhân sự, buồng phòng, chi phí, giặt là, bảo trì và phản hồi của khách. Sau đó đánh dấu vấn đề liên quan đến chăn ga gối đệm, rèm, bảo vệ đệm và khăn Jolie’Fam.',
@@ -989,6 +997,9 @@ const contentEditForm = reactive({
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let workspaceVersion = 0;
 let disposed = false;
+let polling = false;
+const pendingTaskKeys = new Map<string, string>();
+const canManageSearch = computed(() => ['owner', 'admin'].includes(authStore.user?.role || '') && authStore.canAccess('ai_model', 'manage_secret'));
 const canEdit = computed(() => authStore.canAccess('ai_knowledge', 'edit'));
 
 const canApprove = computed(() => {
@@ -1000,18 +1011,14 @@ const latestTask = computed<ResearchTaskSummary | null>(() => {
   return currentProject.value?.tasks?.[0] ?? null;
 });
 
+const queuedTooLong = computed(() => latestTask.value?.status === 'queued' && Date.now() - Date.parse(latestTask.value.createdAt) > 60_000);
+
 const hasActiveTask = computed(() => {
   return !!currentProject.value?.tasks?.some((t) => isTaskActive(t));
 });
 
 const readSourceCount = computed(() => {
   return sources.value.filter((s) => s.status === 'read').length;
-});
-
-const pendingWebSourceCount = computed(() => {
-  return sources.value.filter(
-    (s) => s.kind === 'web' && ['pending', 'failed', 'blocked_domain'].includes(s.status),
-  ).length;
 });
 
 const activePains = computed(() => {
@@ -1029,6 +1036,11 @@ const visibleContents = computed(() => {
 const approvedContentCount = computed(() => {
   return visibleContents.value.filter((c) => c.status === 'approved').length;
 });
+
+const selectablePains = computed(() => activePains.value.filter((p) => p.status !== 'rejected'));
+const selectedPains = computed(() => selectablePains.value.filter((p) => selectedPainIds.value.includes(p.id)));
+const allPainsSelected = computed(() => selectablePains.value.length > 0 && selectedPains.value.length === selectablePains.value.length);
+function toggleAllPains() { selectedPainIds.value = allPainsSelected.value ? [] : selectablePains.value.map((p) => p.id); }
 
 const mergeCandidatePains = computed(() => {
   if (!mergingTargetPain.value) return [];
@@ -1051,6 +1063,21 @@ function extractErrorMessage(err: unknown, fallback: string): string {
 
 function friendlyErrorCode(code: string): string {
   const map: Record<string, string> = {
+    AUTHENTICATION: 'Kết nối AI bị từ chối. Kiểm tra mã kết nối AI đang dùng.',
+    CONFIGURATION: 'AI của đợt này chưa sẵn sàng. Chọn lại AI đã thiết lập trong ZCRM.',
+    RATE_LIMITED: 'Dịch vụ AI đang nhận quá nhiều yêu cầu. Chờ một lúc rồi tiếp tục từ bước dở.',
+    TIMEOUT: 'AI phản hồi quá lâu. Có thể tiếp tục từ bước dở.',
+    PROVIDER_UNAVAILABLE: 'Chưa kết nối được dịch vụ AI. Thử lại khi kết nối trở lại.',
+    CIRCUIT_OPEN: 'Kết nối AI đang tạm gián đoạn. Chờ một lúc rồi thử lại.',
+    INVALID_RESPONSE: 'AI trả kết quả chưa hợp lệ. Hãy chạy lại phần đang dở.',
+    UNKNOWN: 'Chưa hoàn thành công việc. Hãy thử lại hoặc kiểm tra kết nối AI.',
+    RESEARCH_SEARCH_FAILED: 'Chưa lấy được kết quả tìm kiếm. Kiểm tra kết nối Google rồi thử lại.',
+    RESEARCH_STALE_REVISION: 'Nguồn hoặc vấn đề đã thay đổi. Bắt đầu lượt tổng hợp mới để dùng dữ liệu hiện tại.',
+
+    RESEARCH_SEARCH_AUTH_FAILED: 'Mã Serper bị từ chối. Kiểm tra và lưu lại mã kết nối tìm kiếm phía trên.',
+    RESEARCH_DIRECT_REQUIRED: 'Đợt cũ cần chuyển sang AI trong ZCRM rồi bắt đầu công việc mới.',
+    RESEARCH_NO_EVIDENCE: 'Chưa đọc được nguồn nào. Hãy thử tìm lại hoặc dán nội dung để tổng hợp.',
+    RESEARCH_QUEUE_UNAVAILABLE: 'Đã lưu công việc. ZCRM sẽ tự nhận lại khi bộ xử lý kết nối được; có thể bấm Chạy lại.',
     RESEARCH_HERMES_BATCH_REQUIRED: 'Cần cập nhật bộ kết nối Hermes trên máy chủ rồi chạy lại.',
     RESEARCH_HERMES_TIME_LIMIT: 'Đây là thông báo từ bản cũ. Bấm Chạy lại để tiếp tục theo cách xử lý mới.',
     RESEARCH_HERMES_FAILED: 'Hermes chưa hoàn thành. Kiểm tra công cụ và kết nối trên máy chủ Hermes.',
@@ -1086,6 +1113,39 @@ function sourceTitleById(sourceId: string): string {
   return found ? found.title : `Nguồn #${sourceId.slice(0, 8)}`;
 }
 
+function sourceUrlById(sourceId: string): string | null { return sources.value.find((s) => s.id === sourceId)?.url || null; }
+
+async function saveSearchConnection() {
+  saving.value = true;
+  try {
+    await aiResearchApi.saveSearchConnection(searchApiKey.value);
+    searchApiKey.value = '';
+    capabilities.value = await aiResearchApi.getCapabilities();
+    showNotice('Đã lưu mã kết nối tìm kiếm. Có thể bắt đầu tìm hiểu.');
+  } catch (error) { showNotice(extractErrorMessage(error, 'Chưa lưu được kết nối tìm kiếm.'), false); }
+  finally { saving.value = false; }
+}
+async function changeProjectModel(event: Event) {
+  projectForm.modelConfigId = (event.target as HTMLSelectElement).value;
+  await switchToDirect();
+}
+async function switchToDirect() {
+  if (!selectedProjectId.value) return;
+  taskBusy.value = true;
+  try {
+    await aiResearchApi.useDirect(selectedProjectId.value, projectForm.modelConfigId);
+    await loadProjectWorkspace(selectedProjectId.value);
+    showNotice('Đã lưu AI dùng cho đợt này trong ZCRM. Nguồn và bài cũ được giữ lại.');
+  } catch (error) { showNotice(extractErrorMessage(error, 'Chưa chuyển được đợt này.'), false); }
+  finally { taskBusy.value = false; }
+}
+async function generateSelectedPains() {
+  const selected = selectedPains.value.map((p) => ({ painId: p.id, revision: p.revision }));
+  if (!selected.length) return;
+  const started = await triggerTask('generate_batch', { pains: selected, format: batchFormat.value });
+  if (started) { selectedPainIds.value = []; activeStep.value = 'contents'; }
+}
+
 function painTitleById(painId: string): string {
   const found = pains.value.find((p) => p.id === painId);
   return found ? found.title : `Vấn đề #${painId.slice(0, 8)}`;
@@ -1094,8 +1154,7 @@ function painTitleById(painId: string): string {
 async function loadModelsSilently() {
   try {
     const result = await aiModelConnectionsApi.listModelConfigs();
-    const approved = (result.modelConfigs || []).filter((m) => m.status === 'approved');
-    availableModels.value = approved.length ? approved : result.modelConfigs || [];
+    availableModels.value = (result.modelConfigs || []).filter((m) => ['approved', 'active'].includes(m.status));
     if (!projectForm.modelConfigId && availableModels.value.length > 0) {
       const def = availableModels.value.find((m) => m.isDefault) || availableModels.value[0];
       if (def) projectForm.modelConfigId = def.id;
@@ -1123,7 +1182,10 @@ async function loadProjectWorkspace(projectId: string) {
     allPages((page) => aiResearchApi.listContents(projectId, page)),
   ]);
   if (disposed || version !== workspaceVersion || selectedProjectId.value !== projectId) return;
+  const previousTask = currentProject.value?.tasks?.[0];
   currentProject.value = detail;
+  const newest = detail.tasks?.[0];
+  if (newest?.kind === 'research' && (!previousTask || previousTask.id !== newest.id || previousTask.status !== newest.status || previousTask.checkpoint?.stage !== newest.checkpoint?.stage) && (newest.status === 'completed' || newest.checkpoint?.stage === 'analyze')) activeStep.value = 'pains';
   const index = projects.value.findIndex((p) => p.id === detail.id);
   if (index >= 0) projects.value[index] = detail;
   sources.value = sourceRows;
@@ -1137,17 +1199,15 @@ async function loadProjectWorkspace(projectId: string) {
   }
 
   syncPolling();
-  if (detail.executor === 'hermes') {
-    const state = await aiResearchApi.getHermesStatus().catch(() => null);
-    if (!disposed && version === workspaceVersion) hermesStatus.value = state;
-  }
+
 }
 
 function syncPolling() {
   if (hasActiveTask.value && !pollTimer) {
     pollTimer = setInterval(() => {
-      if (selectedProjectId.value) {
-        void loadProjectWorkspace(selectedProjectId.value).catch(() => {});
+      if (selectedProjectId.value && !polling) {
+        polling = true;
+        void loadProjectWorkspace(selectedProjectId.value).catch(() => {}).finally(() => { polling = false; });
       }
     }, 3500);
   } else if (!hasActiveTask.value && pollTimer) {
@@ -1185,6 +1245,7 @@ async function selectProject(projectId: string) {
   if (saving.value || taskBusy.value) return;
   selectedProjectId.value = projectId;
   currentProject.value = null;
+  selectedPainIds.value = [];
   sources.value = []; pains.value = []; contents.value = [];
   loading.value = true;
   try {
@@ -1214,7 +1275,8 @@ async function handleCreateProject() {
     selectedProjectId.value = created.id;
     activeStep.value = 'sources';
     await loadProjectWorkspace(created.id);
-    showNotice('Đã tạo đợt tìm hiểu mới. Hãy thêm nguồn hoặc bấm tìm trên Google.');
+    if (capabilities.value?.search.configured && capabilities.value.encryption) await triggerTask('research');
+    else showNotice('Đã tạo đợt tìm hiểu. Có thể dán nguồn để tổng hợp hoặc thiết lập tìm kiếm Google.');
   } catch (err) {
     showNotice(extractErrorMessage(err, 'Không tạo được đợt tìm hiểu.'), false);
   } finally {
@@ -1261,23 +1323,29 @@ async function handleAddSource() {
   }
 }
 
-async function triggerTask(kind: ResearchTaskKind, extra?: { painId?: string; format?: ResearchFormat }) {
-  if (!selectedProjectId.value) return;
+async function triggerTask(kind: ResearchTaskKind, extra?: { sourceMode?: 'saved'; painId?: string; pains?: Array<{ painId: string; revision: number }>; format?: ResearchFormat }) {
+  if (!selectedProjectId.value || currentProject.value?.executor === 'hermes') return false;
   taskBusy.value = true;
+  const signature = JSON.stringify([selectedProjectId.value, kind, extra]);
+  const key = pendingTaskKeys.get(signature) || makeResearchIdempotencyKey(kind);
+  pendingTaskKeys.set(signature, key);
   try {
     await aiResearchApi.createTask(selectedProjectId.value, {
       kind,
-      idempotencyKey: makeResearchIdempotencyKey(kind),
+      idempotencyKey: key,
       ...extra,
     });
+    pendingTaskKeys.delete(signature);
     await loadProjectWorkspace(selectedProjectId.value);
     showNotice(`Đã bắt đầu: ${TASK_KIND_LABELS[kind]}.`);
+    return true;
   } catch (err) {
     showNotice(extractErrorMessage(err, 'Không khởi chạy được công việc.'), false);
     await loadProjectWorkspace(selectedProjectId.value).catch(() => {});
   } finally {
     taskBusy.value = false;
   }
+  return false;
 }
 
 async function startAnalyzeFromSources() {
@@ -1468,11 +1536,24 @@ onBeforeUnmount(() => {
 });
 </script>
 <style scoped>
-.hermes-connection { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 10px 0; border-bottom: 1px solid #dce4de; color: #285d42; font-size: 13px; }
-.hermes-connection time { color: #64748b; }
-.hermes-help { flex-basis: 100%; margin: 0; color: #854d0e; line-height: 1.6; }
-.hermes-help code { overflow-wrap: anywhere; }
-.hermes-note { margin: 0; font-size: 13px; color: #475569; }
+.project-model { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 12px 0; font-size: 13px; font-weight: 600; }
+.project-model select { padding: 8px; max-width: 100%; background: white; border: 1px solid #cbd5e1; border-radius: 7px; }
+.direct-switch, .research-start, .batch-write { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 16px; background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 10px; margin-bottom: 16px; }
+.direct-switch p, .research-start p { margin: 4px 0 0; font-size: 13px; color: #475569; }
+.research-start > div { flex: 1 1 280px; }
+.research-start > small { flex-basis: 100%; color: #92400e; }
+.direct-switch select, .batch-write select { max-width: 100%; padding: 9px; background: white; border: 1px solid #cbd5e1; border-radius: 7px; }
+.search-setup { padding: 14px 18px; margin-bottom: 18px; background: #fff; border: 1px solid #cbd5e1; border-radius: 10px; }
+.search-setup summary { cursor: pointer; font-weight: 650; }
+.search-setup form { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin-top: 12px; }
+.search-setup input { display: block; padding: 8px; border: 1px solid #cbd5e1; border-radius: 6px; margin-top: 5px; }
+.search-setup small { flex-basis: 100%; color: #64748b; }
+.research-progress { display: flex; flex-wrap: wrap; gap: 10px; padding: 0; list-style: none; }
+.research-progress li { padding: 9px 14px; background: #e2e8f0; border-radius: 8px; color: #475569; }
+.research-progress li.current { background: #dbeafe; color: #1d4ed8; font-weight: 700; }
+.research-progress li.finished { background: #dcfce7; color: #166534; }
+.select-pain, .batch-write label { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+
 .research-shell :is(input, select, textarea, button) { max-width: 100%; }
 .research-shell :is(p, strong, dd, small, time) { overflow-wrap: anywhere; }
 .research-shell label { min-width: 0; }

@@ -1,5 +1,9 @@
 # Hermes Agent Integration
 
+Luồng tìm nỗi đau và tạo bài mới chạy trực tiếp trong ZCRM. Xem
+[Hướng dẫn chạy trực tiếp](ZCRM_DIRECT_RESEARCH.md). Tài liệu Hermes bên dưới
+được giữ cho các kết nối và công việc cũ.
+
 For customer pain research and draft writing, see
 [ZCRM_HERMES_GITHUB_DEPLOY.md](ZCRM_HERMES_GITHUB_DEPLOY.md).
 The research bridge can reuse this Agent key with the additional `research_execute`

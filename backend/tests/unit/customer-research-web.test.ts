@@ -40,6 +40,18 @@ describe('research network boundaries', () => {
     expect(await readPage('https://other.test/post')).toMatchObject({ errorCode: 'DOMAIN_NOT_ALLOWED' });
     expect(mocks.request).not.toHaveBeenCalled();
   });
+  it('reads arbitrary public sites by default while retaining DNS and robots checks', async () => {
+    vi.stubEnv('RESEARCH_WEB_ALLOWED_DOMAINS', '');
+    respond(404, ''); respond(200, `<article>${'Hotel operations discussion. '.repeat(10)}</article>`);
+    expect(await readPage('https://public-hotel.test/post')).toMatchObject({ status: 'read' });
+    expect(mocks.lookup).toHaveBeenCalledWith('public-hotel.test', { all: true });
+    expect(mocks.request).toHaveBeenCalledTimes(2);
+  });
+  it('uses the organization search key rather than another organization or environment key', async () => {
+    respond(200, JSON.stringify({ organic: [] }), { 'content-type': 'application/json' });
+    await searchGoogle('hotel', 'org-secret');
+    expect(mocks.request.mock.calls[0][1].headers['X-API-KEY']).toBe('org-secret');
+  });
   it('respects robots exclusion without fetching the article', async () => {
     respond(200, 'User-agent: *\nDisallow: /private');
     expect(await readPage('https://safe.test/private')).toMatchObject({ errorCode: 'ROBOTS_DENIED' });
@@ -60,6 +72,10 @@ describe('research network boundaries', () => {
     expect(await searchGoogle('khó khăn khách sạn')).toEqual([{ url: 'https://safe.test/article', title: 'T' }]);
     expect(mocks.request.mock.calls[0][0].origin).toBe('https://google.serper.dev');
     expect(mocks.request.mock.calls[0][1].headers['X-API-KEY']).toBe('test-key');
+  });
+  it('reports rejected search credentials as a connection problem', async () => {
+    respond(403, '{}', { 'content-type': 'application/json' });
+    await expect(searchGoogle('hotel')).rejects.toMatchObject({ code: 'RESEARCH_SEARCH_AUTH_FAILED' });
   });
   it('reports missing search configuration without making a call', async () => {
     vi.stubEnv('RESEARCH_SERPER_API_KEY', '');

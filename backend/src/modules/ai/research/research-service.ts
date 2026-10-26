@@ -8,6 +8,7 @@ import { AIErrorHandler } from '../core/ai-error-handler.js';
 import { userHasGrant } from '../../rbac/permission-group-service.js';
 import { enqueueResearchTask } from './research-queue.js';
 import { searchGoogle, readPage } from './research-web.js';
+import { researchSearchKey } from './research-settings.js';
 import { ResearchError, type ResearchActor, type Evidence, FORMATS, ROLES, object, text, member, hash, redact, normalize, canonicalUrl, facebookUrl, requireApprover, validatePains, RESEARCH_INSTRUCTIONS, PAIN_SCHEMA } from './research-domain.js';
 
 type Tx = Parameters<Parameters<typeof tenantTransaction>[0]>[0];
@@ -45,6 +46,22 @@ export async function createProject(actor: ResearchActor, raw: unknown) {
     await audit(tx, actor, 'project_created', project.id); return projectDto(project);
   });
 }
+export async function useDirectResearch(actor: ResearchActor, projectId: string, raw: unknown) {
+  const modelConfigId = text(object(raw).modelConfigId, 'AI sử dụng', 100);
+  await aiModelRegistry.resolve(actor.orgId, modelConfigId);
+  return tenantTransaction(async (tx) => {
+    const project = await lockProject(tx, actor, projectId);
+    if (project.executor !== 'hermes') await idle(tx, actor, projectId);
+    else await tx.customerResearchTask.updateMany({
+      where: { orgId: actor.orgId, projectId, status: { in: ACTIVE } },
+      data: { status: 'cancelled', cancelRequested: true, leaseToken: null, leaseUntil: null, completedAt: new Date() },
+    });
+    const updated = await tx.customerResearchProject.update({ where: { id: projectId }, data: { executor: 'internal', modelConfigId } });
+    await audit(tx, actor, 'direct_execution_selected', projectId);
+    return projectDto(updated);
+  });
+}
+
 export async function listProjects(actor: ResearchActor, page = 1) {
   const rows = await prisma.customerResearchProject.findMany({ where: { orgId: actor.orgId }, take: 25, skip: (page - 1) * 25, orderBy: { createdAt: 'desc' } });
   return rows.map(projectDto);
@@ -56,7 +73,7 @@ export async function getProject(actor: ResearchActor, id: string) {
     prisma.customerResearchSource.groupBy({ by: ['status'], where: { orgId: actor.orgId, projectId: id }, _count: true }),
     prisma.customerResearchPain.groupBy({ by: ['status'], where: { orgId: actor.orgId, projectId: id }, _count: true }),
     prisma.customerResearchContent.groupBy({ by: ['status'], where: { orgId: actor.orgId, projectId: id }, _count: true }),
-    prisma.customerResearchTask.findMany({ where: { orgId: actor.orgId, projectId: id }, orderBy: { createdAt: 'desc' }, take: 20, select: { id: true, kind: true, status: true, checkpoint: true, errorCode: true, cancelRequested: true, createdAt: true, completedAt: true } }),
+    prisma.customerResearchTask.findMany({ where: { orgId: actor.orgId, projectId: id }, orderBy: { createdAt: 'desc' }, take: 20, select: { id: true, kind: true, status: true, input: true, checkpoint: true, errorCode: true, cancelRequested: true, createdAt: true, completedAt: true } }),
   ]);
   return { ...projectDto(project), sources, pains, contents, tasks };
 }
@@ -167,9 +184,21 @@ export async function approveContent(actor: ResearchActor, projectId: string, id
   });
 }
 export async function createTask(actor: ResearchActor, projectId: string, raw: unknown) {
-  const b = object(raw); const kind = member(b.kind, ['discover', 'collect', 'analyze', 'generate'], 'Công việc');
+  const b = object(raw); const kind = member(b.kind, ['research', 'discover', 'collect', 'analyze', 'generate', 'generate_batch'], 'Công việc');
   const key = text(b.idempotencyKey, 'Mã chống lặp', 120);
   const input: Record<string, unknown> = {};
+  if (kind === 'research' && b.sourceMode !== undefined) input.sourceMode = member(b.sourceMode, ['saved'], 'Nguồn cần đọc');
+  if (kind === 'generate_batch') {
+    requireApprover(actor);
+    if (!Array.isArray(b.pains) || !b.pains.length) throw new ResearchError('Hãy chọn ít nhất một vấn đề.');
+    input.pains = b.pains.map((rawPain) => {
+      const pain = object(rawPain);
+      if (!Number.isInteger(pain.revision) || Number(pain.revision) < 1) throw new ResearchError('Phiên bản vấn đề không hợp lệ.');
+      return { painId: text(pain.painId, 'Vấn đề', 100), revision: pain.revision as number };
+    }).sort((a, b) => a.painId.localeCompare(b.painId));
+    if (new Set((input.pains as any[]).map((p) => p.painId)).size !== (input.pains as any[]).length) throw new ResearchError('Một vấn đề được chọn nhiều lần.');
+    input.format = member(b.format, FORMATS, 'Kiểu bài');
+  }
   if (kind === 'generate') { input.painId = text(b.painId, 'Vấn đề', 100); input.format = member(b.format, FORMATS, 'Kiểu bài'); }
   const task = await tenantTransaction(async (tx) => {
     const project = await lockProject(tx, actor, projectId);
@@ -178,12 +207,32 @@ export async function createTask(actor: ResearchActor, projectId: string, raw: u
     const existing = await tx.customerResearchTask.findUnique({ where: { orgId_projectId_idempotencyKey: { orgId: actor.orgId, projectId, idempotencyKey: key } } });
     if (existing) {
       const old = existing.input as Record<string, unknown>;
-      if (existing.kind !== kind || old.painId !== input.painId || old.format !== input.format) throw new ResearchError('Mã chống lặp đã dùng cho công việc khác.', 409, 'RESEARCH_IDEMPOTENCY_CONFLICT');
+      if (existing.kind !== kind || old.painId !== input.painId || old.format !== input.format || old.sourceMode !== input.sourceMode || JSON.stringify(old.pains) !== JSON.stringify(input.pains)) throw new ResearchError('Mã chống lặp đã dùng cho công việc khác.', 409, 'RESEARCH_IDEMPOTENCY_CONFLICT');
       return existing;
     }
     await idle(tx, actor, projectId);
+    if (hermes && ['research', 'generate_batch'].includes(kind)) throw new ResearchError('Chuyển đợt này sang chạy trực tiếp trong ZCRM trước.', 409, 'RESEARCH_DIRECT_REQUIRED');
     if (hermes && kind === 'collect') throw new ResearchError('Hermes đọc và gửi nguồn ngay trong bước tìm thông tin.');
-    if (!hermes && kind === 'discover' && !process.env.RESEARCH_SERPER_API_KEY) throw new ResearchError('Chưa cấu hình dịch vụ tìm Google.', 409, 'RESEARCH_SEARCH_NOT_CONFIGURED');
+    if (!hermes && (kind === 'discover' || kind === 'research' && input.sourceMode !== 'saved') && !await researchSearchKey(actor.orgId)) throw new ResearchError('Chưa cấu hình dịch vụ tìm Google.', 409, 'RESEARCH_SEARCH_NOT_CONFIGURED');
+    if (!hermes) await aiModelRegistry.resolve(actor.orgId, project.modelConfigId);
+    if (kind === 'generate_batch') {
+      const selected = input.pains as Array<{ painId: string; revision: number }>;
+      const rows = await tx.customerResearchPain.findMany({ where: { orgId: actor.orgId, projectId, id: { in: selected.map((p) => p.painId) }, status: { in: ['draft', 'approved', 'needs_review'] } } });
+      if (rows.length !== selected.length || selected.some((p) => !rows.some((row) => row.id === p.painId && row.revision === p.revision))) throw new ResearchError('Vấn đề đã thay đổi; hãy tải lại trước khi chọn.', 409, 'RESEARCH_STALE_REVISION');
+      const analysisIds = [...new Set(rows.map((p) => p.taskId))];
+      if (await tx.customerResearchTask.count({ where: { orgId: actor.orgId, projectId, id: { in: analysisIds }, status: 'completed' } }) !== analysisIds.length) throw new ResearchError('Chờ tổng hợp hoàn thành trước khi tạo bài.', 409, 'RESEARCH_ANALYSIS_INCOMPLETE');
+      const painRefs: Array<{ painId: string; painRevision: number }> = [];
+      for (const selectedPain of selected) {
+        const pain = rows.find((p) => p.id === selectedPain.painId)!;
+        if (pain.status !== 'approved') {
+          await tx.customerResearchPain.update({ where: { id: pain.id }, data: { status: 'approved', revision: { increment: 1 }, approvedAt: new Date(), approvedByUserId: actor.userId } });
+          await tx.customerResearchContent.updateMany({ where: { orgId: actor.orgId, projectId, painId: pain.id, status: { in: ['draft', 'approved'] } }, data: { status: 'outdated', approvedAt: null, approvedByUserId: null } });
+        }
+        painRefs.push({ painId: pain.id, painRevision: pain.revision + (pain.status === 'approved' ? 0 : 1) });
+      }
+      input.painRefs = painRefs;
+      await audit(tx, actor, 'selected_pains_approved', projectId, { painIds: selected.map((p) => p.painId) });
+    }
     if (kind === 'generate') {
       const pain = await tx.customerResearchPain.findFirst({ where: { id: input.painId as string, orgId: actor.orgId, projectId, status: 'approved' } });
       if (!pain) throw new ResearchError('Cần chọn một vấn đề đã được duyệt.', 409, 'RESEARCH_PAIN_NOT_APPROVED');
@@ -197,13 +246,14 @@ export async function createTask(actor: ResearchActor, projectId: string, raw: u
 }
 export async function controlTask(actor: ResearchActor, projectId: string, id: string, action: 'cancel' | 'retry') {
   const result = await tenantTransaction(async (tx) => {
-    await lockProject(tx, actor, projectId);
+    const project = await lockProject(tx, actor, projectId);
     const task = await tx.customerResearchTask.findFirst({ where: { id, orgId: actor.orgId, projectId } });
     if (!task) throw new ResearchError('Không tìm thấy công việc.', 404, 'RESEARCH_TASK_NOT_FOUND');
     if (action === 'cancel') {
       if (!ACTIVE.includes(task.status)) return { taskId: id, status: task.status };
       await tx.customerResearchTask.update({ where: { id }, data: { cancelRequested: true, status: 'cancelled', completedAt: new Date(), leaseToken: null, leaseUntil: null } });
     } else {
+      if (project.executor === 'internal' && object(task.input).executor === 'hermes') throw new ResearchError('Đợt này đã chuyển sang ZCRM. Bấm Bắt đầu tìm hiểu để chạy công việc mới.', 409, 'RESEARCH_DIRECT_REQUIRED');
       const expired = task.status === 'running' && !!task.leaseUntil && task.leaseUntil < new Date();
       if (!['failed', 'cancelled', 'queued'].includes(task.status) && !expired) throw new ResearchError('Công việc chưa thể chạy lại.', 409, 'RESEARCH_BUSY');
       if (await tx.customerResearchTask.count({ where: { orgId: actor.orgId, projectId, id: { not: id }, status: { in: ACTIVE } } })) throw new ResearchError('Đang có công việc khác.', 409, 'RESEARCH_BUSY');
@@ -262,13 +312,21 @@ export async function processResearchTask(data: { orgId: string; projectId: stri
   const guarded = <T>(fn: (tx: Tx, project: Awaited<ReturnType<typeof lockProject>>) => Promise<T>) => {
     return taskTransaction(actor, data.projectId, task.id, token, fn);
   };
-  const checkpoint = async (value: Record<string, unknown>) => guarded(async (tx) => { await tx.customerResearchTask.update({ where: { id: task.id }, data: { checkpoint: json(value) } }); });
+  let cp = object(task.checkpoint);
+  const storeCheckpoint = async (tx: Tx, value: Record<string, unknown>) => {
+    cp = { ...cp, ...value };
+    await tx.customerResearchTask.update({ where: { id: task.id }, data: { checkpoint: json(cp) } });
+  };
+  const checkpoint = (value: Record<string, unknown>) => guarded((tx) => storeCheckpoint(tx, value));
+  const research = task.kind === 'research';
+  const sourceOnly = research && object(task.input).sourceMode === 'saved';
   try {
-    const project = await prisma.customerResearchProject.findFirstOrThrow({ where: { id: data.projectId, orgId: data.orgId } });
-    const cp = object(task.checkpoint);
-    if (task.kind === 'discover' || task.kind === 'collect') {
+    let project = await prisma.customerResearchProject.findFirstOrThrow({ where: { id: data.projectId, orgId: data.orgId } });
+    if (task.kind === 'discover' || task.kind === 'collect' || (research && cp.stage !== 'analyze')) {
+      await checkpoint({ stage: sourceOnly || task.kind === 'collect' ? 'collect' : 'discover', progress: sourceOnly || task.kind === 'collect' ? 'Đang chuẩn bị đọc các nguồn đã thêm' : 'Đang chuẩn bị câu tìm kiếm' });
+      const searchKey = sourceOnly || task.kind === 'collect' ? '' : await researchSearchKey(actor.orgId);
       let queries = cp.queries as string[] | undefined;
-      if (!queries && task.kind === 'discover') {
+      if (!queries && (task.kind === 'discover' || research && !sourceOnly)) {
         const output = object(await completeJson(actor, project.id, task.id, token, `${RESEARCH_INSTRUCTIONS} Chỉ lập các câu tìm tiếng Việt về toàn bộ vận hành khách sạn, bao gồm câu tìm thảo luận thực tế, không đưa ra phát hiện.`, { brief: project.brief, maxQueries: 5 }, { type: 'object', properties: { queries: { type: 'array', minItems: 1, maxItems: 5, items: { type: 'string' } } }, required: ['queries'], additionalProperties: false }));
         if (!Array.isArray(output.queries) || !output.queries.length || output.queries.length > 5) throw new ResearchError('AI trả câu tìm không hợp lệ.', 502, 'RESEARCH_INVALID_AI_OUTPUT');
         queries = [...new Set(output.queries.map((q) => text(q, 'Câu tìm', 250)))];
@@ -279,19 +337,26 @@ export async function processResearchTask(data: { orgId: string; projectId: stri
         await guarded(async (tx) => {
           await tx.customerResearchProject.update({ where: { id: project.id }, data: { searchCalls: { increment: 1 } } });
         });
-        const results = await searchGoogle(queries[index]);
+        await checkpoint({ progress: `Đang tìm thông tin: ${index + 1}/${queries.length} câu tìm` });
+        let results: Awaited<ReturnType<typeof searchGoogle>>;
+        try { results = await searchGoogle(queries[index], searchKey); } catch (error) {
+          if (error instanceof ResearchError && ['RESEARCH_SEARCH_AUTH_FAILED', 'RESEARCH_SEARCH_NOT_CONFIGURED'].includes(error.code)) throw error;
+          await checkpoint({ queryIndex: index + 1, searchFailures: [...(Array.isArray(cp.searchFailures) ? cp.searchFailures : []), { queryIndex: index, code: error instanceof ResearchError ? error.code : 'RESEARCH_SEARCH_FAILED' }] });
+          continue;
+        }
         await guarded(async (tx) => {
           let changed = false;
           for (const item of results) {
             changed = (await saveSource(tx, actor, project.id, item)).changed || changed;
           }
           if (changed) await invalidate(tx, actor, project.id);
-          await tx.customerResearchTask.update({ where: { id: task.id }, data: { checkpoint: json({ queries, queryIndex: index + 1 }) } });
+          await storeCheckpoint(tx, { queries, queryIndex: index + 1 });
         });
       }
       const pending = await prisma.customerResearchSource.findMany({ where: { orgId: actor.orgId, projectId: project.id, status: { in: ['pending', 'failed', 'blocked'] }, url: { not: null } }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] });
-      for (const source of pending) {
-        await guarded(async () => {});
+      await checkpoint({ stage: 'collect', progress: `Đang đọc ${pending.length} nguồn thông tin` });
+      for (const [index, source] of pending.entries()) {
+        await checkpoint({ progress: `Đang đọc nguồn ${index + 1}/${pending.length}`, readingSourceId: source.id });
         try {
           const page = await readPage(source.url!);
           await guarded(async (tx) => {
@@ -305,17 +370,26 @@ export async function processResearchTask(data: { orgId: string; projectId: stri
           await guarded(async (tx) => { await tx.customerResearchSource.update({ where: { id: source.id }, data: { status: 'failed', errorCode: error instanceof ResearchError ? error.code : 'RESEARCH_PAGE_FAILED' } }); });
         }
       }
-    } else if (task.kind === 'analyze') {
+      if (research) {
+        project = await prisma.customerResearchProject.findFirstOrThrow({ where: { id: data.projectId, orgId: data.orgId } });
+        await checkpoint({ stage: 'analyze', progress: 'Đang tổng hợp các vấn đề có bằng chứng' });
+      }
+    }
+    if (task.kind === 'analyze' || research) {
       const sources = await prisma.customerResearchSource.findMany({ where: { orgId: actor.orgId, projectId: project.id, status: 'read', duplicateOfId: null }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] });
-      if (!sources.length) throw new ResearchError('Chưa có nguồn đọc được để tổng hợp.', 409, 'RESEARCH_NO_EVIDENCE');
+      if (!sources.length) {
+        if (research) await checkpoint({ stage: 'discover', queryIndex: 0, progress: 'Chưa đọc được nguồn nào. Có thể tìm lại hoặc dán thêm nội dung.' });
+        throw new ResearchError('Chưa có nguồn đọc được để tổng hợp.', 409, 'RESEARCH_NO_EVIDENCE');
+      }
       if (!cp.started) {
         await guarded(async (tx) => {
           // Keep the previous approved analysis until the new one finishes successfully.
-          await tx.customerResearchTask.update({ where: { id: task.id }, data: { checkpoint: json({ started: true, batch: 0, sourceRevision: project.revision }) } });
+          await storeCheckpoint(tx, { started: true, batch: 0, sourceRevision: project.revision, stage: 'analyze' });
         });
       } else if (cp.sourceRevision !== project.revision) throw new ResearchError('Nguồn đã đổi; hãy bắt đầu lượt tổng hợp mới.', 409, 'RESEARCH_STALE_REVISION');
       for (let batch = Number(cp.batch ?? 0); batch * 5 < sources.length; batch++) {
         const group = sources.slice(batch * 5, batch * 5 + 5);
+        await checkpoint({ progress: `Đang tổng hợp nguồn ${batch * 5 + 1}–${Math.min(sources.length, batch * 5 + 5)}/${sources.length}` });
         const input = group.map((s) => ({ id: s.id, title: s.title, url: s.url, speakerRole: s.speakerRole, publishedAt: s.publishedAt, text: decryptToken(s.contentEncrypted!) }));
         const output = await completeJson(actor, project.id, task.id, token, RESEARCH_INSTRUCTIONS, { brief: project.brief, sources: input }, PAIN_SCHEMA);
         const pains = validatePains(output, new Map(input.map((s) => [s.id, s.text])));
@@ -329,33 +403,43 @@ export async function processResearchTask(data: { orgId: string; projectId: stri
             if (prior) await tx.customerResearchPain.update({ where: { id: prior.id }, data: payload });
             else await tx.customerResearchPain.create({ data: { orgId: actor.orgId, projectId: project.id, taskId: task.id, title, ...payload } });
           }
-          await tx.customerResearchTask.update({ where: { id: task.id }, data: { checkpoint: json({ started: true, batch: batch + 1, sourceRevision: project.revision, sourceCount: sources.length }) } });
+          await storeCheckpoint(tx, { started: true, batch: batch + 1, sourceRevision: project.revision, sourceCount: sources.length });
         });
       }
-    } else if (task.kind === 'generate') {
-      const input = object(task.input);
-      const pain = await prisma.customerResearchPain.findFirst({ where: { id: input.painId as string, orgId: actor.orgId, projectId: project.id, status: 'approved', revision: input.painRevision as number } });
-      if (!pain) throw new ResearchError('Vấn đề chưa duyệt hoặc đã thay đổi.', 409, 'RESEARCH_PAIN_NOT_APPROVED');
-      const evidence = pain.evidence as Evidence[];
-      const output = object(await completeJson(actor, project.id, task.id, token,
-        `${RESEARCH_INSTRUCTIONS} Viết nội dung giáo dục tiếng Việt theo vấn đề đã duyệt, kiểu article/bài chia sẻ, zalo_message/tin ngắn hoặc checklist/danh sách kiểm tra. Không có dữ liệu sản phẩm đã duyệt nên KHÔNG nêu giá, công dụng, tiến độ, tỷ lệ tiết kiệm, cam kết Jolie’Fam hoặc lời chứng thực. Không suy nguyên nhân/giải pháp từ việc vấn đề tồn tại. Giải pháp chưa được chứng minh phải chuyển thành câu hỏi kiểm tra, kèm missingInformation. Không ghi danh tính tác giả nguồn. Không thêm URL. Chỉ dùng sourceIds được cung cấp.`,
-        { format: input.format, pain: { title: pain.title, detail: pain.detail }, evidence },
-        { type: 'object', properties: { title: { type: 'string' }, body: { type: 'string' }, sourceIds: { type: 'array', minItems: 1, items: { type: 'string' } }, missingInformation: { type: 'array', items: { type: 'string' } } }, required: ['title', 'body', 'sourceIds', 'missingInformation'], additionalProperties: false }));
-      const title = redact(text(output.title, 'Tiêu đề', 300)), body = redact(text(output.body, 'Bài viết', 20000));
-      if (!Array.isArray(output.sourceIds) || !output.sourceIds.length || output.sourceIds.some((id) => !evidence.some((e) => e.sourceId === id)) || !Array.isArray(output.missingInformation) || output.missingInformation.length > 20) throw new ResearchError('Nội dung AI dẫn nguồn sai.', 502, 'RESEARCH_INVALID_AI_OUTPUT');
-      const missing = output.missingInformation.map((x) => redact(text(x, 'Thông tin cần bổ sung', 1000)));
+    } else if (task.kind === 'generate' || task.kind === 'generate_batch') {
+      const batchInput = object(task.input);
+      const refs = task.kind === 'generate_batch' ? batchInput.painRefs as Array<{ painId: string; painRevision: number }> : [{ painId: batchInput.painId as string, painRevision: batchInput.painRevision as number }];
+      for (let index = Number(cp.contentIndex ?? 0); index < refs.length; index++) {
+        const input: Record<string, unknown> = { ...batchInput, ...refs[index] };
+        await checkpoint({ stage: 'generate', progress: `Đang viết bài ${index + 1}/${refs.length}`, contentTotal: refs.length });
+        const pain = await prisma.customerResearchPain.findFirst({ where: { id: input.painId as string, orgId: actor.orgId, projectId: project.id, status: 'approved', revision: input.painRevision as number } });
+        if (!pain) throw new ResearchError('Vấn đề chưa duyệt hoặc đã thay đổi.', 409, 'RESEARCH_PAIN_NOT_APPROVED');
+        const evidence = pain.evidence as Evidence[];
+        const output = object(await completeJson(actor, project.id, task.id, token,
+          `${RESEARCH_INSTRUCTIONS} Viết nội dung giáo dục tiếng Việt theo vấn đề đã duyệt, kiểu article/bài chia sẻ, zalo_message/tin ngắn hoặc checklist/danh sách kiểm tra. Không có dữ liệu sản phẩm đã duyệt nên KHÔNG nêu giá, công dụng, tiến độ, tỷ lệ tiết kiệm, cam kết Jolie’Fam hoặc lời chứng thực. Không suy nguyên nhân/giải pháp từ việc vấn đề tồn tại. Giải pháp chưa được chứng minh phải chuyển thành câu hỏi kiểm tra, kèm missingInformation. Không ghi danh tính tác giả nguồn. Không thêm URL. Chỉ dùng sourceIds được cung cấp.`,
+          { format: input.format, pain: { title: pain.title, detail: pain.detail }, evidence },
+          { type: 'object', properties: { title: { type: 'string' }, body: { type: 'string' }, sourceIds: { type: 'array', minItems: 1, items: { type: 'string' } }, missingInformation: { type: 'array', items: { type: 'string' } } }, required: ['title', 'body', 'sourceIds', 'missingInformation'], additionalProperties: false }));
+        const title = redact(text(output.title, 'Tiêu đề', 300)), body = redact(text(output.body, 'Bài viết', 20000));
+        if (!Array.isArray(output.sourceIds) || !output.sourceIds.length || output.sourceIds.some((id) => !evidence.some((e) => e.sourceId === id)) || !Array.isArray(output.missingInformation) || output.missingInformation.length > 20) throw new ResearchError('Nội dung AI dẫn nguồn sai.', 502, 'RESEARCH_INVALID_AI_OUTPUT');
+        const missing = output.missingInformation.map((x) => redact(text(x, 'Thông tin cần bổ sung', 1000)));
+        await guarded(async (tx) => {
+          await tx.customerResearchContent.create({ data: { orgId: actor.orgId, projectId: project.id, painId: pain.id, taskId: task.id, format: input.format as string, title, body, evidence: json(evidence.filter((e) => (output.sourceIds as string[]).includes(e.sourceId))), missingInformation: json(missing), painRevision: pain.revision } });
+          await storeCheckpoint(tx, { contentIndex: index + 1 });
+        });
+      }
       await guarded(async (tx) => {
-        await tx.customerResearchContent.create({ data: { orgId: actor.orgId, projectId: project.id, painId: pain.id, taskId: task.id, format: input.format as string, title, body, evidence: json(evidence.filter((e) => (output.sourceIds as string[]).includes(e.sourceId))), missingInformation: json(missing), painRevision: pain.revision } });
+        await storeCheckpoint(tx, { stage: 'completed', progress: `Đã tạo ${refs.length} bài nháp. Chờ anh duyệt trước khi dùng.` });
         await tx.customerResearchTask.update({ where: { id: task.id }, data: { status: 'completed', completedAt: new Date(), leaseToken: null, leaseUntil: null } });
         await audit(tx, actor, 'task_completed', task.id);
       });
       return;
     }
     await guarded(async (tx) => {
-      if (task.kind === 'analyze') {
+      if (task.kind === 'analyze' || research) {
         await tx.customerResearchPain.updateMany({ where: { orgId: actor.orgId, projectId: project.id, taskId: { not: task.id }, status: { in: ['draft', 'approved', 'needs_review'] } }, data: { status: 'superseded', approvedAt: null, approvedByUserId: null } });
         await tx.customerResearchContent.updateMany({ where: { orgId: actor.orgId, projectId: project.id, pain: { taskId: { not: task.id } }, status: { in: ['draft', 'approved'] } }, data: { status: 'outdated', approvedAt: null, approvedByUserId: null } });
       }
+      await storeCheckpoint(tx, { stage: 'completed', progress: research || task.kind === 'analyze' ? 'Đã tổng hợp xong. Chọn các vấn đề muốn tạo bài.' : 'Đã đọc xong nguồn thông tin.' });
       await tx.customerResearchTask.update({ where: { id: task.id }, data: { status: 'completed', completedAt: new Date(), leaseToken: null, leaseUntil: null } });
       await audit(tx, actor, 'task_completed', task.id);
     });

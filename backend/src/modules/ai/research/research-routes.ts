@@ -5,6 +5,7 @@ import { AIErrorHandler } from '../core/ai-error-handler.js';
 import { getTokenEncryptionKeyReadiness } from '../../integrations/_shared/token-encryption.util.js';
 import { prisma } from '../../../shared/database/prisma-client.js';
 import { ResearchError, type ResearchActor } from './research-domain.js';
+import { researchCapabilities, saveResearchSearchKey } from './research-settings.js';
 import * as service from './research-service.js';
 
 type Params = { projectId: string; id: string };
@@ -37,12 +38,9 @@ export async function researchRoutes(app: FastifyInstance) {
     const lastSeenAt = setting?.valuePlain ?? null;
     return { lastSeenAt, recentlySeen: !!lastSeenAt && Date.now() - Date.parse(lastSeenAt) < 120000 };
   });
-  route('GET', '/capabilities', access, async () => ({
-    search: { provider: 'serper_google', configured: !!process.env.RESEARCH_SERPER_API_KEY },
-    publicWeb: { allowedDomains: (process.env.RESEARCH_WEB_ALLOWED_DOMAINS ?? '').split(',').map((s) => s.trim()).filter(Boolean) },
-    facebook: { automaticGroupReading: false, manualImport: true }, encryption: getTokenEncryptionKeyReadiness().ready,
-    formats: ['article', 'zalo_message', 'checklist'],
-  }));
+  route('GET', '/capabilities', access, async (r) => ({ ...await researchCapabilities(actor(r).orgId), encryption: getTokenEncryptionKeyReadiness().ready }));
+  route('POST', '/search-connection', aiPermissions.model.manageSecret, async (r) => saveResearchSearchKey(actor(r), r.body));
+  route('POST', '/projects/:projectId/direct', edit, async (r, p) => service.useDirectResearch(actor(r), p.projectId, r.body));
   route('GET', '/projects', access, async (r) => ({ projects: await service.listProjects(actor(r), page(r)) }));
   route('POST', '/projects', aiPermissions.knowledge.create, async (r) => service.createProject(actor(r), r.body));
   route('GET', '/projects/:projectId', access, async (r, p) => service.getProject(actor(r), p.projectId));
@@ -54,7 +52,11 @@ export async function researchRoutes(app: FastifyInstance) {
   route('GET', '/projects/:projectId/contents', access, async (r, p) => ({ contents: await service.listContents(actor(r), p.projectId, page(r)) }));
   route('PATCH', '/projects/:projectId/contents/:id', edit, async (r, p) => service.editContent(actor(r), p.projectId, p.id, r.body));
   route('POST', '/projects/:projectId/contents/:id/approve', approve, async (r, p) => service.approveContent(actor(r), p.projectId, p.id));
-  route('POST', '/projects/:projectId/tasks', edit, async (r, p) => service.createTask(actor(r), p.projectId, r.body));
+  const taskGuard = async (r: FastifyRequest, reply: FastifyReply) => {
+    await edit(r, reply);
+    if (!reply.sent && (r.body as { kind?: string })?.kind === 'generate_batch') await approve(r, reply);
+  };
+  route('POST', '/projects/:projectId/tasks', taskGuard, async (r, p) => service.createTask(actor(r), p.projectId, r.body));
   route('GET', '/projects/:projectId/tasks/:id', access, async (r, p) => {
     const task = await prisma.customerResearchTask.findFirst({ where: { orgId: actor(r).orgId, projectId: p.projectId, id: p.id }, select: { id: true, projectId: true, kind: true, status: true, input: true, checkpoint: true, errorCode: true, cancelRequested: true, createdAt: true, completedAt: true } });
     if (!task) throw new ResearchError('Không tìm thấy công việc.', 404, 'RESEARCH_TASK_NOT_FOUND'); return task;
