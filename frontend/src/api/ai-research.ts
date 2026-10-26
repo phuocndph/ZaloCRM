@@ -4,7 +4,7 @@ import { api } from '@/api/index';
 export type ResearchFormat = 'article' | 'zalo_message' | 'checklist';
 export type ResearchSpeakerRole = 'owner' | 'manager' | 'staff' | 'supplier' | 'guest' | 'unknown';
 export type ResearchRelevance = 'direct' | 'educational' | 'outside' | 'unknown';
-export type ResearchTaskKind = 'research' | 'generate_batch' | 'discover' | 'collect' | 'analyze' | 'generate';
+export type ResearchTaskKind = 'research' | 'discover_groups' | 'generate_batch' | 'discover' | 'collect' | 'analyze' | 'generate';
 export type ResearchTaskStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type ResearchPainStatus = 'draft' | 'approved' | 'rejected' | 'needs_review' | 'merged' | 'superseded';
 export type ResearchContentStatus = 'draft' | 'approved' | 'outdated' | 'archived';
@@ -20,6 +20,7 @@ export interface ResearchCapabilities {
   };
   facebook: {
     automaticGroupReading: boolean;
+    automaticGroupDiscovery?: boolean;
     manualImport: boolean;
   };
   encryption: boolean;
@@ -230,6 +231,7 @@ export const FORMAT_LABELS: Record<ResearchFormat, string> = {
 
 export const TASK_KIND_LABELS: Record<ResearchTaskKind, string> = {
   research: 'Tìm, đọc nguồn và tổng hợp',
+  discover_groups: 'Tìm hội nhóm và bài Facebook',
   generate_batch: 'Viết bài cho các vấn đề đã chọn',
   discover: 'Tìm nguồn trên Google',
   collect: 'Đọc nội dung các trang web',
@@ -248,7 +250,8 @@ export const TASK_STATUS_LABELS: Record<ResearchTaskStatus, string> = {
 export const SOURCE_STATUS_LABELS: Record<string, string> = {
   read: 'Đã đọc nội dung',
   pending: 'Chưa đọc nội dung',
-  requires_manual: 'Cần dán nội dung thủ công (Facebook)',
+  group_found: 'Đã tìm thấy nhóm — chưa đọc nội dung',
+  requires_manual: 'Đã có đường dẫn — cần bổ sung nội dung',
   duplicate: 'Trùng nội dung với nguồn khác',
   blocked_domain: 'Trang web chưa nằm trong danh sách cho phép tự đọc',
   blocked_robots: 'Trang web chặn đọc tự động',

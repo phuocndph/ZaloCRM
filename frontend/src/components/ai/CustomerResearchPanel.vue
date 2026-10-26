@@ -52,7 +52,7 @@
         </div>
       </div>
 
-      <div class="cap-item" :class="{ ok: capabilities.publicWeb.allowedDomains.length > 0, warn: capabilities.publicWeb.allowedDomains.length === 0 }">
+      <div class="cap-item" :class="{ ok: capabilities.publicWeb.publicSitesEnabled || capabilities.publicWeb.allowedDomains.length > 0, warn: !capabilities.publicWeb.publicSitesEnabled && capabilities.publicWeb.allowedDomains.length === 0 }">
         <span class="mdi mdi-web" />
         <div>
           <strong>Đọc trang web công khai</strong>
@@ -70,7 +70,7 @@
         <span class="mdi mdi-facebook" />
         <div>
           <strong>Hội nhóm Facebook</strong>
-          <small>Dán bài viết hoặc bình luận thủ công để đảm bảo đúng bài thật và có quyền sử dụng</small>
+          <small>Tự tìm nhóm và bài Facebook qua Google; chỉ tổng hợp khi đã có nội dung đọc được</small>
         </div>
       </div>
     </section>
@@ -272,6 +272,7 @@
                 </p>
               </div>
               <div class="action-group">
+                <button v-if="currentProject.executor !== 'hermes'" type="button" class="button secondary" :disabled="taskBusy || hasActiveTask || !canEdit || !capabilities?.search.configured" @click="triggerTask('discover_groups')">Tự tìm hội nhóm Facebook</button>
                 <button v-if="sources.length && currentProject.executor !== 'hermes'" type="button" class="button secondary" :disabled="taskBusy || hasActiveTask || !canEdit || !capabilities?.encryption" @click="triggerTask('research', { sourceMode: 'saved' })">Đọc và tổng hợp nguồn đã thêm</button>
                 <button
                   type="button"
@@ -285,6 +286,14 @@
               </div>
             </div>
 
+            <div v-if="facebookGroups.length" class="group-discovery" aria-label="Hội nhóm đã tìm thấy">
+              <h4>Hội nhóm đã tìm thấy ({{ facebookGroups.length }})</h4>
+              <p>Đường dẫn do tìm kiếm trả về. Chưa xác minh nhóm công khai hay kín, chưa đọc bài bên trong. Nhóm và đoạn giới thiệu không phải bằng chứng nỗi đau.</p>
+              <article v-for="group in facebookGroups" :key="group.id">
+                <a :href="group.url!" target="_blank" rel="noopener noreferrer">{{ group.title }}</a>
+                <small>{{ group.url }}</small>
+              </article>
+            </div>
             <div v-if="readSourceCount > 0" class="next-step-callout">
               <div>
                 <strong>Đã có {{ readSourceCount }} nguồn đọc xong nội dung.</strong>
@@ -307,8 +316,8 @@
               <p>Hãy bấm "Dán bài Facebook / Thêm nguồn" để thêm các bài tâm sự, hỏi đáp của chủ khách sạn hoặc bấm "Bắt đầu tìm hiểu".</p>
             </div>
 
-            <div v-else class="source-grid">
-              <article v-for="source in sources" :key="source.id" class="source-card">
+            <div v-if="articleSources.length" class="source-grid">
+              <article v-for="source in articleSources" :key="source.id" class="source-card">
                 <div class="source-card-top">
                   <div class="source-title-block">
                     <span class="kind-badge" :class="source.kind">
@@ -731,7 +740,7 @@
               maxlength="40000"
               placeholder="Dán nguyên văn nội dung bài đăng và các bình luận đáng chú ý của chủ/quản lý khách sạn tại đây..."
             />
-            <small>Nếu chỉ nhập đường dẫn trang web công khai mà để trống nội dung, hệ thống sẽ đọc trang đó ở bước "Đọc các trang web".</small>
+            <small>Nếu chỉ nhập đường dẫn trang web công khai, bấm "Đọc và tổng hợp nguồn đã thêm" sau khi lưu để hệ thống đọc nội dung.</small>
           </label>
 
           <label v-if="sourceForm.content" class="checkbox-row">
@@ -1021,6 +1030,9 @@ const readSourceCount = computed(() => {
   return sources.value.filter((s) => s.status === 'read').length;
 });
 
+const facebookGroups = computed(() => sources.value.filter((source) => source.kind === 'facebook_group'));
+const articleSources = computed(() => sources.value.filter((source) => source.kind !== 'facebook_group'));
+
 const activePains = computed(() => {
   return pains.value.filter((p) => !['merged', 'superseded'].includes(p.status));
 });
@@ -1057,12 +1069,15 @@ function showNotice(message: string, ok = true) {
 }
 
 function extractErrorMessage(err: unknown, fallback: string): string {
-  const anyErr = err as { response?: { data?: { error?: string; message?: string } }; message?: string };
+  const anyErr = err as { response?: { data?: { code?: string; error?: string; message?: string } }; message?: string };
+  const code = anyErr.response?.data?.code;
+  if (code && friendlyErrorCode(code) !== code) return friendlyErrorCode(code);
   return anyErr?.response?.data?.error || anyErr?.response?.data?.message || anyErr?.message || fallback;
 }
 
 function friendlyErrorCode(code: string): string {
   const map: Record<string, string> = {
+    INVALID_REQUEST: 'Dịch vụ AI từ chối yêu cầu hoặc không hỗ trợ mô hình đã chọn. Hãy chọn AI khác đang hoạt động trong ZCRM.',
     AUTHENTICATION: 'Kết nối AI bị từ chối. Kiểm tra mã kết nối AI đang dùng.',
     CONFIGURATION: 'AI của đợt này chưa sẵn sàng. Chọn lại AI đã thiết lập trong ZCRM.',
     RATE_LIMITED: 'Dịch vụ AI đang nhận quá nhiều yêu cầu. Chờ một lúc rồi tiếp tục từ bước dở.',
@@ -1536,6 +1551,12 @@ onBeforeUnmount(() => {
 });
 </script>
 <style scoped>
+.group-discovery { margin: 14px 0; padding: 16px; border: 1px solid #cbd5e1; border-radius: 10px; background: #f8fafc; }
+.group-discovery h4 { margin: 0 0 6px; }
+.group-discovery p { color: #64748b; font-size: 13px; }
+.group-discovery article { display: flex; flex-direction: column; gap: 5px; padding: 10px 0; border-top: 1px solid #e2e8f0; }
+.group-discovery a { color: #1d4ed8; font-weight: 600; }
+.group-discovery small { color: #64748b; overflow-wrap: anywhere; }
 .project-model { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 12px 0; font-size: 13px; font-weight: 600; }
 .project-model select { padding: 8px; max-width: 100%; background: white; border: 1px solid #cbd5e1; border-radius: 7px; }
 .direct-switch, .research-start, .batch-write { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 16px; background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 10px; margin-bottom: 16px; }

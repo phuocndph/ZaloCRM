@@ -23,11 +23,15 @@ nghiên cứu đã có trên máy chủ thì không chạy lại migration hay b
 ## Sử dụng
 
 - Đợt mới: nhập tên/yêu cầu, chọn AI, bấm **Tạo và bắt đầu tìm hiểu**. App tự tìm
-  nguồn, đọc, bỏ trùng và tổng hợp. Không cần mở trang để giữ công việc chạy.
+  nguồn, tìm cả hội nhóm/bài Facebook qua các câu tìm riêng, đọc website, bỏ trùng và tổng hợp. Không cần mở trang để giữ công việc chạy.
 - Đợt cũ dùng Hermes: bấm **Chạy trực tiếp trong ZCRM** và chọn AI. Nguồn, nỗi đau
   và bài cũ được giữ. Các việc cũ đang chạy/chờ Hermes bị dừng và thu hồi mã nhận
   việc để kết quả cũ không ghi đè. Sau đó bấm **Bắt đầu tìm hiểu**; không thử lại
   công việc Hermes cũ. Chuyển đợt không tắt các kết nối Agent khác trong ZCRM.
+- Nút **Tự tìm hội nhóm Facebook** chỉ tìm nhóm/bài qua Google, không gọi AI.
+  Nhóm được lưu riêng với nhãn chưa đọc; các đường dẫn nhóm và mô tả ngắn của Google
+  không được dùng làm bằng chứng. Có thể tìm nhóm cả khi AI chưa hoạt động, nhưng
+  vẫn cần mã kết nối tìm kiếm. Nhóm kín/không truy cập được không được tự đọc.
 - Có nguồn nhập tay hoặc đường dẫn: dùng **Đọc và tổng hợp nguồn đã thêm**,
   không bắt buộc có Serper và không tìm thêm trên Google.
 - Chọn các vấn đề có bằng chứng và kiểu bài rồi bấm **Duyệt và tạo bài**. Đây là
@@ -39,6 +43,9 @@ nghiên cứu đã có trên máy chủ thì không chạy lại migration hay b
 
 - Một câu tìm/trang web lỗi: tiếp tục các nguồn khác. Mã Serper sai được báo riêng.
 - Không nguồn nào đọc được: báo thiếu nguồn, không tạo nỗi đau tưởng tượng.
+- AI báo `INVALID_REQUEST`: kiểm tra nhà cung cấp còn hỗ trợ mô hình đã chọn
+  cho tài khoản/nhóm của mã kết nối. Nhãn active/approved trong ZCRM không đảm bảo
+  mô hình vẫn còn được cấp ở nhà cung cấp. Có thể chọn AI khác cho đợt hiện tại.
 - Lỗi AI: giữ những phần đã lưu; **Chạy lại từ bước dở** tiếp tục phần chưa xong.
   Bài đã ghi và vị trí đã làm được lưu trong cùng giao dịch để không tạo trùng.
 - App/Redis mất kết nối: bộ xử lý kiểm tra lại các việc trực tiếp đang chờ hoặc

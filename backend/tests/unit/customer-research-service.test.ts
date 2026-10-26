@@ -272,10 +272,47 @@ describe('direct research workflow', () => {
     mocks.read.mockRejectedValueOnce(new Error('page failed')).mockResolvedValueOnce({ status: 'read', title: 'Source', content: quote });
     await run();
     expect(task.status).toBe('completed');
-    expect(task.checkpoint).toMatchObject({ stage: 'completed', batch: 1, sourceCount: 1, queryIndex: 2, searchFailures: [{ queryIndex: 0, code: 'RESEARCH_SEARCH_FAILED' }] });
+    expect(task.checkpoint).toMatchObject({ stage: 'completed', batch: 1, sourceCount: 1, queryIndex: 6, searchFailures: [{ queryIndex: 0, code: 'RESEARCH_SEARCH_FAILED' }] });
     expect(mocks.read).toHaveBeenCalledTimes(2);
     expect(mocks.db.customerResearchSource.update).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'broken' }, data: { status: 'failed', errorCode: 'RESEARCH_PAGE_FAILED' } }));
     expect(mocks.db.customerResearchPain.create).toHaveBeenCalledTimes(1);
+  });
+  it('finds Facebook groups without asking AI to invent group URLs or claiming snippets as evidence', async () => {
+    task.kind = 'discover_groups';
+    mocks.search.mockResolvedValue([
+      { title: 'Chủ khách sạn', url: 'https://facebook.com/groups/hotel/' },
+      { title: 'Bài khăn ố vàng', url: 'https://m.facebook.com/groups/hotel/posts/123/?utm_source=google' },
+      { title: 'Unrelated search result', url: 'https://unrelated.test/groups/hotel/' },
+    ]);
+    await run();
+    expect(task.status).toBe('completed'); expect(mocks.complete).not.toHaveBeenCalled();
+    expect(mocks.read).not.toHaveBeenCalled();
+    const created = mocks.db.customerResearchSource.create.mock.calls.map(([args]: any) => args.data);
+    expect(created).toContainEqual(expect.objectContaining({ url: 'https://www.facebook.com/groups/hotel/', kind: 'facebook_group', status: 'group_found', contentEncrypted: null }));
+    expect(created).toContainEqual(expect.objectContaining({ url: 'https://www.facebook.com/groups/hotel/posts/123/', kind: 'facebook', status: 'requires_manual', contentEncrypted: null }));
+    expect(created.some((source: any) => source.url.includes('unrelated'))).toBe(false);
+    expect(mocks.db.customerResearchPain.create).not.toHaveBeenCalled();
+    expect(mocks.db.customerResearchPain.updateMany).not.toHaveBeenCalled();
+  });
+  it('requires a search connection before creating a group discovery job', async () => {
+    mocks.searchKey.mockResolvedValue('');
+    await expect(createTask(actor, project.id, { kind: 'discover_groups', idempotencyKey: 'groups' })).rejects.toMatchObject({ code: 'RESEARCH_SEARCH_NOT_CONFIGURED' });
+    expect(mocks.enqueue).not.toHaveBeenCalled(); expect(mocks.resolve).not.toHaveBeenCalled();
+  });
+  it('includes dedicated Facebook group searches in the automatic research plan', async () => {
+    task.kind = 'research';
+    mocks.complete.mockResolvedValueOnce({ structured: { queries: ['khăn khách sạn nhanh hỏng'] }, usage: { costMicros: 2n } });
+    mocks.db.customerResearchSource.findMany.mockResolvedValue([]);
+    await run();
+    expect(mocks.search.mock.calls.slice(0, 2).every(([query]: any) => query.startsWith('site:facebook.com/groups/'))).toBe(true);
+    expect(mocks.search.mock.calls.some(([query]: any) => query === 'khăn khách sạn nhanh hỏng')).toBe(true);
+    expect(task.status).toBe('failed'); expect(task.errorCode).toBe('RESEARCH_NO_EVIDENCE');
+  });
+  it('does not require a configured AI model merely to search group links', async () => {
+    mocks.resolve.mockRejectedValue(new Error('model not set'));
+    mocks.db.customerResearchTask.create.mockImplementation(async ({ data }: any) => ({ ...task, ...data }));
+    await createTask(actor, project.id, { kind: 'discover_groups', idempotencyKey: 'groups' });
+    expect(mocks.resolve).not.toHaveBeenCalled(); expect(mocks.enqueue).toHaveBeenCalled();
   });
   it('reads saved source URLs and analyzes without a Google key or a search call', async () => {
     task.kind = 'research'; task.input = { sourceMode: 'saved' };

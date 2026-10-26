@@ -16,7 +16,7 @@ export async function researchCapabilities(orgId: string) {
   return {
     search: { provider: 'serper_google', configured: !!key },
     publicWeb: { allowedDomains, publicSitesEnabled: true },
-    facebook: { automaticGroupReading: false, manualImport: true },
+    facebook: { automaticGroupReading: false, automaticGroupDiscovery: !!key, manualImport: true },
     formats: ['article', 'zalo_message', 'checklist'],
   };
 }

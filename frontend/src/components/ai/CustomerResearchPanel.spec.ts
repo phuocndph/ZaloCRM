@@ -393,6 +393,35 @@ describe('CustomerResearchPanel', () => {
     wrapper.unmount();
   });
 
+  it('tự tìm hội nhóm và hiển thị nhóm riêng, không coi đường dẫn là bằng chứng đã đọc', async () => {
+    const originalGet = mockGet.getMockImplementation()!;
+    mockGet.mockImplementation(async (url: string, options?: unknown) => {
+      const result = await originalGet(url, options);
+      if (url.endsWith('/proj-1/sources')) result.data.sources.push({ id: 'group-1', title: 'Hội chủ khách sạn', url: 'https://www.facebook.com/groups/hotel/', kind: 'facebook_group', status: 'group_found', content: null });
+      return result;
+    });
+    const wrapper = mount(CustomerResearchPanel); await flushPromises();
+    expect(wrapper.get('[aria-label="Hội nhóm đã tìm thấy"]').text()).toContain('Hội chủ khách sạn');
+    expect(wrapper.get('[aria-label="Hội nhóm đã tìm thấy"]').text()).toContain('chưa đọc bài bên trong');
+    expect(wrapper.findAll('.source-card')).toHaveLength(1);
+    mockPost.mockResolvedValueOnce({ data: { taskId: 'group-search', status: 'queued' } });
+    const button = wrapper.findAll('button').find((button) => button.text() === 'Tự tìm hội nhóm Facebook')!;
+    await button.trigger('click'); await flushPromises();
+    expect(mockPost).toHaveBeenCalledWith('/ai/research/projects/proj-1/tasks', expect.objectContaining({ kind: 'discover_groups' }));
+    wrapper.unmount();
+  });
+  it('hiển thị lỗi AI dễ hiểu khi dịch vụ không hỗ trợ mô hình được chọn', async () => {
+    const originalGet = mockGet.getMockImplementation()!;
+    mockGet.mockImplementation(async (url: string, options?: unknown) => {
+      const result = await originalGet(url, options);
+      if (url === '/ai/research/projects/proj-1') result.data.tasks = [{ id: 'failed', kind: 'research', status: 'failed', errorCode: 'INVALID_REQUEST', createdAt: '2026-10-23T08:00:00Z' }];
+      return result;
+    });
+    const wrapper = mount(CustomerResearchPanel); await flushPromises();
+    expect(wrapper.get('.task-info').text()).toContain('không hỗ trợ mô hình đã chọn');
+    expect(wrapper.get('.task-info').text()).not.toContain('INVALID_REQUEST');
+    wrapper.unmount();
+  });
   it('cho phép thêm nguồn bài viết Facebook thủ công và chạy AI tổng hợp', async () => {
     const wrapper = mount(CustomerResearchPanel);
     await flushPromises();
