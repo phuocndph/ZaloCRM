@@ -38,6 +38,7 @@ export async function researchRoutes(app: FastifyInstance) {
     const lastSeenAt = setting?.valuePlain ?? null;
     return { lastSeenAt, recentlySeen: !!lastSeenAt && Date.now() - Date.parse(lastSeenAt) < 120000 };
   });
+  route('GET', '/models', access, async (r) => ({ models: await service.listResearchModels(actor(r)) }));
   route('GET', '/capabilities', access, async (r) => ({ ...await researchCapabilities(actor(r).orgId), encryption: getTokenEncryptionKeyReadiness().ready }));
   route('POST', '/search-connection', aiPermissions.model.manageSecret, async (r) => saveResearchSearchKey(actor(r), r.body));
   route('POST', '/projects/:projectId/direct', edit, async (r, p) => service.useDirectResearch(actor(r), p.projectId, r.body));

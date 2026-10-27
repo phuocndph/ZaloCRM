@@ -10,7 +10,11 @@ nghiên cứu đã có trên máy chủ thì không chạy lại migration hay b
    khai hiện tại. Giữ cấu hình, khóa mã hóa và dữ liệu hiện có.
 2. Thay bản app bằng image mới. App cần Redis đang hoạt động để nhận việc nền.
    Luồng mới không cần triển khai hoặc khởi động bridge Hermes.
-3. Mở `/marketing/pain-research`, chọn AI đang hoạt động trong ZCRM.
+3. Mở `/marketing/pain-research`, chọn AI đã kiểm tra kết nối thành công.
+   Riêng nghiên cứu được dùng cấu hình đang ở bước đã kiểm tra/chờ duyệt, không
+   cần một tài khoản khác phê duyệt. Máy chủ kiểm tra lịch sử lần thử mô hình gần
+   nhất và kết nối còn hoạt động; sửa cấu hình hoặc thử lại thất bại thì phải
+   kiểm tra lại. Quy tắc này không mở cấu hình đó cho các luồng AI khác.
 4. Nếu trang báo chưa có tìm kiếm, chủ tài khoản/quản trị có quyền quản lý khóa AI
    nhập mã Serper trong **Thiết lập tìm kiếm Google** ngay trên trang. Mã được lưu
    mã hóa riêng theo tổ chức, không trả về trình duyệt. Cấu hình cũ
@@ -36,6 +40,7 @@ nghiên cứu đã có trên máy chủ thì không chạy lại migration hay b
   không bắt buộc có Serper và không tìm thêm trên Google.
 - Chọn các vấn đề có bằng chứng và kiểu bài rồi bấm **Duyệt và tạo bài**. Đây là
   thao tác người dùng duyệt vấn đề. AI không tự duyệt vấn đề hoặc bài viết.
+- Cấu hình AI dùng riêng cho nghiên cứu không cần duyệt; vấn đề và bài viết vẫn theo thao tác duyệt dưới đây.
 - Bài được tạo lần lượt, luôn là bản nháp. Người có quyền duyệt kiểm tra rồi duyệt
   bài; chức năng này không tự gửi Zalo hoặc đăng bài.
 

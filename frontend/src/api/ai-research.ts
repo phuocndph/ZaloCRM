@@ -9,6 +9,13 @@ export type ResearchTaskStatus = 'queued' | 'running' | 'completed' | 'failed' |
 export type ResearchPainStatus = 'draft' | 'approved' | 'rejected' | 'needs_review' | 'merged' | 'superseded';
 export type ResearchContentStatus = 'draft' | 'approved' | 'outdated' | 'archived';
 
+export interface ResearchModel {
+  id: string;
+  displayName: string;
+  externalModelId: string;
+  status: string;
+}
+
 export interface ResearchCapabilities {
   search: {
     provider: string;
@@ -294,6 +301,11 @@ export const aiResearchApi = {
   async listProjects(page = 1): Promise<ResearchProject[]> {
     const res = await api.get<{ projects: ResearchProject[] }>(`${base}/projects`, { params: { page } });
     return res.data.projects ?? [];
+  },
+
+  async listModels(): Promise<ResearchModel[]> {
+    const res = await api.get<{ models: ResearchModel[] }>(`${base}/models`);
+    return res.data.models ?? [];
   },
 
   async createProject(input: CreateResearchProjectInput): Promise<ResearchProject> {

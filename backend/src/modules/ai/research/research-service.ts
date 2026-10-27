@@ -33,11 +33,25 @@ export async function invalidate(tx: Tx, actor: ResearchActor, projectId: string
   await tx.customerResearchContent.updateMany({ where: { orgId: actor.orgId, projectId, status: { in: ['draft', 'approved'] } }, data: { status: 'outdated', approvedAt: null, approvedByUserId: null } });
 }
 function projectDto(project: Awaited<ReturnType<typeof lockProject>>) { return { ...project, maxAiCostMicros: project.maxAiCostMicros.toString(), aiCostMicros: project.aiCostMicros.toString() }; }
+export async function listResearchModels(actor: ResearchActor) {
+  const models = await prisma.aiModelConfig.findMany({
+    where: { orgId: actor.orgId, deletedAt: null, status: { in: ['active', 'approved', 'testing', 'submitted'] } },
+    orderBy: { updatedAt: 'desc' }, select: { id: true, name: true, model: true, status: true },
+  });
+  const ready = [];
+  for (const model of models) {
+    try {
+      await aiModelRegistry.resolve(actor.orgId, model.id, { purpose: 'customer_research' });
+      ready.push({ id: model.id, displayName: model.name, externalModelId: model.model, status: model.status });
+    } catch { /* Unavailable credentials or untested models cannot be selected. */ }
+  }
+  return ready;
+}
 export async function createProject(actor: ResearchActor, raw: unknown) {
   const b = object(raw);
   const executor = b.executor === undefined ? 'internal' : member(b.executor, ['internal', 'hermes'], 'Bên thực hiện');
   const modelConfigId = executor === 'hermes' ? 'hermes' : text(b.modelConfigId, 'Cấu hình AI', 100);
-  if (executor === 'internal') await aiModelRegistry.resolve(actor.orgId, modelConfigId);
+  if (executor === 'internal') await aiModelRegistry.resolve(actor.orgId, modelConfigId, { purpose: 'customer_research' });
   return tenantTransaction(async (tx) => {
     const project = await tx.customerResearchProject.create({ data: {
       orgId: actor.orgId, createdByUserId: actor.userId, title: text(b.title, 'Tên', 200), brief: text(b.brief, 'Yêu cầu', 5000), modelConfigId, executor,
@@ -49,7 +63,7 @@ export async function createProject(actor: ResearchActor, raw: unknown) {
 }
 export async function useDirectResearch(actor: ResearchActor, projectId: string, raw: unknown) {
   const modelConfigId = text(object(raw).modelConfigId, 'AI sử dụng', 100);
-  await aiModelRegistry.resolve(actor.orgId, modelConfigId);
+  await aiModelRegistry.resolve(actor.orgId, modelConfigId, { purpose: 'customer_research' });
   return tenantTransaction(async (tx) => {
     const project = await lockProject(tx, actor, projectId);
     if (project.executor !== 'hermes') await idle(tx, actor, projectId);
@@ -215,7 +229,7 @@ export async function createTask(actor: ResearchActor, projectId: string, raw: u
     if (hermes && ['research', 'discover_groups', 'generate_batch'].includes(kind)) throw new ResearchError('Chuyển đợt này sang chạy trực tiếp trong ZCRM trước.', 409, 'RESEARCH_DIRECT_REQUIRED');
     if (hermes && kind === 'collect') throw new ResearchError('Hermes đọc và gửi nguồn ngay trong bước tìm thông tin.');
     if (!hermes && (['discover', 'discover_groups'].includes(kind) || kind === 'research' && input.sourceMode !== 'saved') && !await researchSearchKey(actor.orgId)) throw new ResearchError('Chưa cấu hình dịch vụ tìm Google.', 409, 'RESEARCH_SEARCH_NOT_CONFIGURED');
-    if (!hermes && kind !== 'discover_groups') await aiModelRegistry.resolve(actor.orgId, project.modelConfigId);
+    if (!hermes && kind !== 'discover_groups') await aiModelRegistry.resolve(actor.orgId, project.modelConfigId, { purpose: 'customer_research' });
     if (kind === 'generate_batch') {
       const selected = input.pains as Array<{ painId: string; revision: number }>;
       const rows = await tx.customerResearchPain.findMany({ where: { orgId: actor.orgId, projectId, id: { in: selected.map((p) => p.painId) }, status: { in: ['draft', 'approved', 'needs_review'] } } });

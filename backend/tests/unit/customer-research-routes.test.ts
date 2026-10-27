@@ -2,7 +2,7 @@
 import Fastify from 'fastify';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => {
-  const service = Object.fromEntries(['listProjects','createProject','getProject','listSources','addSource','listPains','reviewPain','mergePains','listContents','editContent','approveContent','createTask','controlTask','useDirectResearch'].map((name) => [name, vi.fn()]));
+  const service = Object.fromEntries(['listResearchModels','listProjects','createProject','getProject','listSources','addSource','listPains','reviewPain','mergePains','listContents','editContent','approveContent','createTask','controlTask','useDirectResearch'].map((name) => [name, vi.fn()]));
   return { service, task: vi.fn(), saveKey: vi.fn(), capabilities: vi.fn() };
 });
 vi.mock('../../src/modules/ai/research/research-settings.js', () => ({ researchCapabilities: mocks.capabilities, saveResearchSearchKey: mocks.saveKey }));
@@ -22,6 +22,14 @@ async function app() {
 }
 beforeEach(() => { vi.clearAllMocks(); });
 describe('research API boundaries', () => {
+  it('lists research-ready models with research access and scopes them to the authenticated tenant', async () => {
+    const server = await app(); mocks.service.listResearchModels.mockResolvedValue([{ id: 'tested', status: 'testing' }]);
+    const result = await server.inject({ url: '/api/v1/ai/research/models', headers: { authorization: 'test' } });
+    expect(result.statusCode).toBe(200); expect(result.json().models).toEqual([{ id: 'tested', status: 'testing' }]);
+    expect(mocks.service.listResearchModels).toHaveBeenCalledWith({ orgId: 'org-a', userId: 'user-a', role: 'owner' });
+    const denied = await server.inject({ url: '/api/v1/ai/research/models', headers: { authorization: 'test', 'x-deny': 'access' } });
+    expect(denied.statusCode).toBe(403); await server.close();
+  });
   it('requires the parent authentication hook', async () => {
     const server = await app();
     expect((await server.inject({ url: '/api/v1/ai/research/projects' })).statusCode).toBe(401);

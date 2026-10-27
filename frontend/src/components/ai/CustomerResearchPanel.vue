@@ -169,6 +169,7 @@
                 <option v-if="!availableModels.some((model) => model.id === currentProject?.modelConfigId)" :value="currentProject.modelConfigId" disabled>AI cũ không còn sẵn sàng — hãy chọn lại</option>
                 <option v-for="model in availableModels" :key="model.id" :value="model.id">{{ model.displayName }}</option>
               </select>
+              <small>AI đã kiểm tra kết nối dùng ngay cho nghiên cứu, không cần duyệt cấu hình.</small>
             </label>
             <div v-if="currentProject.executor !== 'hermes'" class="research-start">
               <div><strong>Tự tìm → đọc nguồn → tổng hợp vấn đề</strong><p>Kết quả tự lưu dù anh đóng trang. Chọn vấn đề sau khi tổng hợp xong để tạo bài.</p></div>
@@ -586,7 +587,7 @@
                 </div>
 
                 <div v-if="item.evidence?.length" class="evidence-mini">
-                  <small>Dựa trên {{ item.evidence.length }} trích dẫn thực tế từ nguồn đã thu thập.</small>
+                  <small>Dựa trên {{ item.evidence.length }} trích dẫn từ nguồn đã lưu.</small>
                 </div>
 
                 <footer class="content-actions">
@@ -663,7 +664,7 @@
             <span>AI dùng để tìm hiểu và viết bài <b>*</b></span>
             <select v-if="availableModels.length" v-model="projectForm.modelConfigId" required>
               <option v-for="m in availableModels" :key="m.id" :value="m.id">
-                {{ m.displayName }} ({{ m.externalModelId }}){{ m.isDefault ? ' — Mặc định' : '' }}
+                {{ m.displayName }} ({{ m.externalModelId }})
               </option>
             </select>
             <input
@@ -674,7 +675,7 @@
               placeholder="Nhập mã AI đã được thiết lập trong ZCRM"
             />
             <small v-if="!availableModels.length">
-              Gợi ý: Bạn có thể tạo và duyệt cấu hình AI trong mục "Mô hình & kết nối".
+              Gợi ý: Bạn có thể tạo cấu hình AI và kiểm tra kết nối trong mục "Mô hình & kết nối".
             </small>
           </label>
 
@@ -898,7 +899,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { useAuthStore } from '@/stores/auth';
-import { aiModelConnectionsApi, type AiModelConfig } from '@/api/ai-model-connections';
+import type { ResearchModel } from '@/api/ai-research';
 import {
   aiResearchApi,
   CONTENT_STATUS_LABELS,
@@ -937,7 +938,7 @@ const searchApiKey = ref('');
 const selectedPainIds = ref<string[]>([]);
 const batchFormat = ref<ResearchFormat>('zalo_message');
 const workflowPhases = [{ key: 'discover', label: '1. Tìm nguồn' }, { key: 'collect', label: '2. Đọc nội dung' }, { key: 'analyze', label: '3. Tổng hợp vấn đề' }];
-const availableModels = ref<AiModelConfig[]>([]);
+const availableModels = ref<ResearchModel[]>([]);
 const projects = ref<ResearchProject[]>([]);
 const selectedProjectId = ref<string>('');
 const currentProject = ref<ResearchProjectDetail | null>(null);
@@ -1168,14 +1169,13 @@ function painTitleById(painId: string): string {
 
 async function loadModelsSilently() {
   try {
-    const result = await aiModelConnectionsApi.listModelConfigs();
-    availableModels.value = (result.modelConfigs || []).filter((m) => ['approved', 'active'].includes(m.status));
+    availableModels.value = await aiResearchApi.listModels();
     if (!projectForm.modelConfigId && availableModels.value.length > 0) {
-      const def = availableModels.value.find((m) => m.isDefault) || availableModels.value[0];
+      const def = availableModels.value[0];
       if (def) projectForm.modelConfigId = def.id;
     }
   } catch {
-    // Không chặn màn hình nếu người dùng không có quyền đọc danh sách model admin
+    // Các thao tác còn lại vẫn dùng được khi chưa tải được danh sách AI.
   }
 }
 

@@ -51,15 +51,15 @@ describe('CustomerResearchPanel', () => {
           },
         };
       }
-      if (url === '/ai/model-configs') {
+      if (url === '/ai/research/models') {
         return {
           data: {
-            modelConfigs: [
+            models: [
               {
                 id: 'model-1',
                 displayName: 'GPT-4o Nghiên cứu',
                 externalModelId: 'gpt-4o',
-                status: 'approved',
+                status: 'submitted',
                 isDefault: true,
               },
             ],

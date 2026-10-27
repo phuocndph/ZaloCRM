@@ -146,7 +146,7 @@ export class AIClient {
   async complete<T = unknown>(request: AIClientRequest<T>): Promise<AIClientResponse<T>> {
     const requestId = randomUUID();
     const startedAt = this.now();
-    const primary = await this.registry.resolve(request.orgId, request.modelConfigId);
+    const primary = await this.registry.resolve(request.orgId, request.modelConfigId, request.taskType === 'customer_research' ? { purpose: 'customer_research' } : {});
     const contentHash = AISafeLogger.hashContent(request.messages.map((message) => (
       typeof message.content === 'string' ? message.content : JSON.stringify(message.content)
     )).join('\n'));
@@ -169,7 +169,7 @@ export class AIClient {
         || !normalized.retryable
         || normalized.code === 'RATE_LIMITED'
         || normalized.code === 'CIRCUIT_OPEN') throw normalized;
-      selected = await this.registry.resolve(request.orgId, primary.fallbackModelConfigId);
+      selected = await this.registry.resolve(request.orgId, primary.fallbackModelConfigId, request.taskType === 'customer_research' ? { purpose: 'customer_research' } : {});
       if (selected.id === primary.id) throw normalized;
       usedFallback = true;
       this.safeLogger.warn('fallback_selected', {
@@ -211,7 +211,7 @@ export class AIClient {
   }
 
   async *stream(request: AIClientRequest): AsyncIterable<AIStreamEvent> {
-    const config = await this.registry.resolve(request.orgId, request.modelConfigId);
+    const config = await this.registry.resolve(request.orgId, request.modelConfigId, request.taskType === 'customer_research' ? { purpose: 'customer_research' } : {});
     const provider = this.registry.provider(config.provider);
     if (!provider.stream) throw new AIError('CONFIGURATION', 'Streaming is not supported by this provider', false, 400, config.provider);
     this.enforceRateLimit(request.orgId, config);

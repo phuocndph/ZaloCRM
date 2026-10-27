@@ -2,7 +2,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => {
   const model = () => ({ findFirst: vi.fn(), findFirstOrThrow: vi.fn(), findUnique: vi.fn(), findMany: vi.fn(), create: vi.fn(), update: vi.fn(), updateMany: vi.fn(), count: vi.fn(), groupBy: vi.fn() });
-  const db: any = { customerResearchProject: model(), customerResearchSource: model(), customerResearchPain: model(), customerResearchContent: model(), customerResearchTask: model(), user: model(), aiAuditLog: { create: vi.fn() }, $executeRaw: vi.fn() };
+  const db: any = { aiModelConfig: model(), customerResearchProject: model(), customerResearchSource: model(), customerResearchPain: model(), customerResearchContent: model(), customerResearchTask: model(), user: model(), aiAuditLog: { create: vi.fn() }, $executeRaw: vi.fn() };
   return { db, enqueue: vi.fn(), complete: vi.fn(), resolve: vi.fn(), permission: vi.fn(), search: vi.fn(), read: vi.fn(), searchKey: vi.fn() };
 });
 vi.mock('../../src/shared/database/prisma-client.js', () => ({ prisma: mocks.db, tenantTransaction: (fn: any) => fn(mocks.db) }));
@@ -12,7 +12,7 @@ vi.mock('../../src/modules/rbac/permission-group-service.js', () => ({ userHasGr
 vi.mock('../../src/modules/integrations/_shared/token-encryption.util.js', () => ({ encryptToken: (s: string) => `enc:${s}`, decryptToken: (s: string) => s.replace(/^enc:/, '') }));
 vi.mock('../../src/modules/ai/research/research-web.js', () => ({ searchGoogle: mocks.search, readPage: mocks.read }));
 vi.mock('../../src/modules/ai/research/research-settings.js', () => ({ researchSearchKey: mocks.searchKey }));
-import { useDirectResearch, createProject, getProject, listSources, addSource, reviewPain, mergePains, approveContent, editContent, createTask, controlTask, processResearchTask } from '../../src/modules/ai/research/research-service.js';
+import { listResearchModels, useDirectResearch, createProject, getProject, listSources, addSource, reviewPain, mergePains, approveContent, editContent, createTask, controlTask, processResearchTask } from '../../src/modules/ai/research/research-service.js';
 const actor = { orgId: 'org-a', userId: 'user-a', role: 'owner' };
 let project: any, task: any;
 const quote = 'Tôi quản lý khách sạn thường xuyên thiếu khăn sạch trong giờ cao điểm.';
@@ -47,6 +47,13 @@ beforeEach(() => {
   mocks.complete.mockResolvedValue({ structured: { pains: [validPain] }, usage: { costMicros: 20n }, requestId: 'request-a' });
 });
 describe('research workflow service', () => {
+  it('lists only research-ready models without returning credentials or requiring model admin access', async () => {
+    mocks.db.aiModelConfig.findMany.mockResolvedValue([{ id: 'tested', name: 'Research', model: 'working', status: 'submitted' }, { id: 'unavailable', name: 'Broken', model: 'bad', status: 'testing' }]);
+    mocks.resolve.mockImplementation(async (_orgId, id) => { if (id === 'unavailable') throw new Error('secret must not leak'); return { apiKey: 'never-return-this' }; });
+    await expect(listResearchModels(actor)).resolves.toEqual([{ id: 'tested', displayName: 'Research', externalModelId: 'working', status: 'submitted' }]);
+    expect(mocks.db.aiModelConfig.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ orgId: actor.orgId }) }));
+    expect(mocks.resolve).toHaveBeenCalledWith(actor.orgId, 'tested', { purpose: 'customer_research' });
+  });
   it('creates a Hermes project without resolving a local provider', async () => {
     mocks.db.customerResearchProject.create.mockImplementation(async ({ data }: any) => ({ id: project.id, ...data, aiCostMicros: 0n }));
     const result = await createProject(actor, { title: 'Hermes', brief: 'Hotel operations', executor: 'hermes' });
