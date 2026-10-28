@@ -213,7 +213,7 @@
           </div>
 
           <!-- ── Hàng 2 (metadata "ai"): phụ trách + người trả lời cuối · chip ── -->
-          <div v-if="assigneeName(conv) || lastReplierLabel(conv) || displayTags(conv).length" class="ci-row ci-row-meta">
+          <div v-if="assigneeName(conv) || lastReplierLabel(conv)" class="ci-row ci-row-meta">
             <div class="ci-who">
               <!-- NGƯỜI PHỤ TRÁCH — chủ sở hữu KH (khác người trả lời) -->
               <span
@@ -233,18 +233,6 @@
                 <v-icon size="11" class="ci-who-ic">{{ lastReplierLabel(conv)!.mdi }}</v-icon>{{ lastReplierLabel(conv)!.name }}
               </span>
             </div>
-            <div class="ci-chips">
-              <span
-                v-for="tag in displayTags(conv).slice(0, 1)"
-                :key="tag.key"
-                class="ci-chip"
-                :class="{ 'is-zalo': tag.isZalo }"
-                :style="{ '--chip-color': tag.color }"
-                :title="tag.name"
-              >
-                <ZaloBrandIcon v-if="tag.isZalo" :size="10" /><span v-else-if="tag.emoji" class="ci-chip-emoji">{{ tag.emoji }}</span><span class="ci-chip-text">{{ tag.name }}</span>
-              </span>
-            </div>
           </div>
 
           <!-- ── Hàng 3: NỘI DUNG tin cuối — nổi bật, full-width (thứ cần đọc nhất) ── -->
@@ -261,6 +249,19 @@
                 {{ cleanLastMessagePreview(conv) }}
               </template>
             </div>
+          </div>
+          <div v-if="displayTags(conv).length" class="ci-row ci-row-tags" aria-label="Tag của hội thoại">
+            <span
+              v-for="tag in displayTags(conv).slice(0, 2)"
+              :key="tag.key"
+              class="ci-chip"
+              :class="{ 'is-zalo': tag.isZalo, 'is-auto': tag.isAuto }"
+              :style="{ '--chip-color': tag.color }"
+              :title="`${tag.isZalo ? 'Zalo' : tag.isAuto ? 'Tự động' : 'CRM'}: ${tag.name}`"
+            >
+              <ZaloBrandIcon v-if="tag.isZalo" :size="10" /><span v-else-if="tag.emoji" class="ci-chip-emoji">{{ tag.emoji }}</span><span class="ci-chip-text">{{ tag.name }}</span>
+            </span>
+            <span v-if="displayTags(conv).length > 2" class="ci-tags-more" :title="displayTags(conv).slice(2).map(tag => tag.name).join(', ')" :aria-label="`Còn ${displayTags(conv).length - 2} tag: ${displayTags(conv).slice(2).map(tag => tag.name).join(', ')}`">+{{ displayTags(conv).length - 2 }}</span>
           </div>
         </div>
 
@@ -622,19 +623,10 @@ function resolveCrmTag(slug: string): DisplayTag {
   return { name: cleanTagName(slug), color: tagColor(slug) || '#6B7280', isZalo: false, key: 'c:' + slug };
 }
 
-// 2026-06-11 (perf) — memoize: displayTags gọi 3 lần/hàng × 100 hàng. Cache theo conv,
-// invalidate khi tags (zaloLabels/autoTags/crmTagsPerNick) hoặc taxonomyVersion đổi.
-const _tagsCache = new WeakMap<Conversation, { sig: string; result: DisplayTag[] }>();
 function displayTags(conv: Conversation): DisplayTag[] {
-  const tv = taxonomyVersion.value; // reactive dep — re-eval khi taxonomy load/refresh
-  const f = conv.friendship as { zaloLabels?: unknown[]; autoTags?: unknown[]; crmTagsPerNick?: unknown[] } | null | undefined;
-  const ct = Array.isArray(conv.contact?.tags) ? conv.contact!.tags as unknown[] : [];
-  const sig = `${tv}|${(f?.zaloLabels?.length ?? 0)}|${(f?.autoTags?.length ?? 0)}|${(f?.crmTagsPerNick?.length ?? 0)}|${ct.length}`;
-  const hit = _tagsCache.get(conv);
-  if (hit && hit.sig === sig) return hit.result;
-  const result = computeDisplayTags(conv);
-  _tagsCache.set(conv, { sig, result });
-  return result;
+  taxonomyVersion.value;
+  if (conv.conversationPrivate || privacyVisibility.shouldBlurConv(conv)) return [];
+  return computeDisplayTags(conv);
 }
 function computeDisplayTags(conv: Conversation): DisplayTag[] {
   const seen = new Set<string>();
@@ -676,7 +668,8 @@ function computeDisplayTags(conv: Conversation): DisplayTag[] {
     seen.add('c:' + t);
     out.push(resolveCrmTag(t));
   }
-  return out;
+  // Keep the labels chosen by staff visible before automatic activity indicators.
+  return [...out.filter(tag => !tag.isAuto), ...out.filter(tag => tag.isAuto)];
 }
 
 // ── Conversation display ───────────────────────────────────────────────────
@@ -1197,7 +1190,7 @@ onMounted(async () => {
  * Ref map: convId → row HTMLElement (registerRow gọi mỗi lần Vue mount row). */
 const scrollContainer = ref<HTMLElement | null>(null);
 const rowRefs = new Map<string, HTMLElement>();
-const VIRTUAL_ROW_HEIGHT = 80;
+const VIRTUAL_ROW_HEIGHT = 96;
 const VIRTUAL_OVERSCAN = 10;
 const virtualScrollTop = ref(0);
 const virtualViewportHeight = ref(640);
@@ -2197,6 +2190,14 @@ function truncate(s: string, n: number): string {
   .conv-list { --cl-item-h: 80px; }
   .ci-preview { font-size: 13.5px; }
 }
+
+/* A dedicated visible tag row; keep its height aligned with list virtualization. */
+.conv-list { --cl-item-h: 96px; }
+.conv-item { height: var(--cl-item-h); }
+.ci-row-tags { order: 2; display: flex; align-items: center; gap: 4px; min-width: 0; margin-top: 3px; }
+.ci-row-tags .ci-chip { display: inline-flex; flex: 0 1 auto; min-width: 0; max-width: 105px; min-height: 20px; font-size: 11px; }
+.ci-row-tags .ci-chip svg { flex-shrink: 0; }
+.ci-tags-more { flex: 0 0 auto; font-size: 10px; color: var(--cl-ink-3); line-height: 20px; cursor: help; }
 </style>
 
 <!-- Unscoped style cho teleport tooltip (đặt body, không reach được scoped CSS) -->
