@@ -6,11 +6,11 @@
         <span class="heading-icon mdi mdi-compass-rose" aria-hidden="true" />
         <div>
           <div class="heading-title">
-            <h2>Tìm nỗi đau chủ khách sạn & Tạo bài chia sẻ</h2>
+            <h2>Tìm nỗi đau & tạo bài</h2>
             <span class="scope-pill">Jolie’Fam · Zalo cá nhân</span>
           </div>
           <p>
-            Thu thập khó khăn thật khi vận hành khách sạn từ Google và hội nhóm Facebook, chọn vấn đề đúng thực tế rồi để AI soạn sẵn nội dung chia sẻ.
+            Tìm hiểu khó khăn của chủ khách sạn, rồi viết nội dung chia sẻ từ nguồn đã có.
           </p>
         </div>
       </div>
@@ -43,6 +43,17 @@
       <input v-else v-model.trim="projectForm.modelConfigId" placeholder="Mã AI đã cấu hình trong ZCRM" aria-label="AI dùng khi chuyển sang ZCRM" />
       <button class="button primary" type="button" :disabled="taskBusy || !canEdit || !projectForm.modelConfigId" @click="switchToDirect">Chạy trực tiếp trong ZCRM</button>
     </section>
+    <div v-if="capabilities" class="connection-toolbar">
+      <div class="connection-status" :class="{ warning: !capabilities.search.configured }">
+        <span class="status-dot" />
+        <span>{{ capabilities.search.configured ? 'Tìm kiếm đã kết nối' : 'Chưa kết nối tìm kiếm Google' }}</span>
+        <span class="connection-hint">{{ capabilities.search.configured ? 'Sẵn sàng tìm nguồn và hội nhóm' : 'Anh vẫn có thể thêm đường dẫn hoặc dán nội dung để dùng AI.' }}</span>
+      </div>
+      <button type="button" class="link-btn" :aria-expanded="showConnections" aria-controls="research-connections" @click="showConnections = !showConnections">
+        <span class="mdi mdi-tune-variant" /> {{ showConnections ? 'Đóng thiết lập' : 'Thiết lập kết nối' }}
+      </button>
+    </div>
+    <div id="research-connections" v-show="showConnections" class="connection-settings">
     <section v-if="capabilities" class="capability-strip" aria-label="Trạng thái kết nối">
       <div class="cap-item" :class="{ ok: capabilities.search.configured, warn: !capabilities.search.configured }">
         <span class="mdi" :class="capabilities.search.configured ? 'mdi-magnify-check' : 'mdi-magnify-close'" />
@@ -75,7 +86,7 @@
       </div>
     </section>
 
-    <details v-if="canManageSearch" class="search-setup" :open="!!capabilities && !capabilities.search.configured">
+    <details v-if="canManageSearch" class="search-setup" open>
       <summary>Thiết lập tìm kiếm Google</summary>
       <form @submit.prevent="saveSearchConnection">
         <label>Mã kết nối Serper <input v-model.trim="searchApiKey" type="password" autocomplete="new-password" required placeholder="Dán mã kết nối tìm kiếm" /></label>
@@ -83,16 +94,22 @@
         <small>Mã được lưu bảo mật. Phần viết và tổng hợp dùng AI đã cấu hình trong ZCRM.</small>
       </form>
     </details>
+    </div>
     <div class="research-workspace">
-      <aside class="project-sidebar">
+      <aside class="project-sidebar" :class="{ 'project-picker-open': showProjectPicker }">
         <div class="sidebar-header">
           <div>
             <strong>Các đợt tìm hiểu</strong>
             <small>Mỗi đợt là một chủ đề cần tìm hiểu</small>
           </div>
           <span class="count-badge">{{ projects.length }}</span>
+          <button type="button" class="mobile-project-toggle link-btn" :aria-expanded="showProjectPicker" aria-controls="research-project-list" @click="showProjectPicker = !showProjectPicker">{{ showProjectPicker ? 'Thu gọn' : 'Đổi đợt' }} <span class="mdi mdi-chevron-down" /></button>
         </div>
 
+        <label class="project-search">
+          <span class="mdi mdi-magnify" aria-hidden="true" />
+          <input v-model="projectSearch" type="search" placeholder="Tìm đợt nghiên cứu…" aria-label="Tìm đợt nghiên cứu" />
+        </label>
         <div v-if="loading && !projects.length" class="sidebar-empty">
           Đang tải danh sách…
         </div>
@@ -103,24 +120,25 @@
           <small>Bấm "Tạo đợt tìm hiểu mới" để bắt đầu tìm vấn đề của chủ khách sạn.</small>
         </div>
 
-        <div v-else class="project-list">
+        <div v-else class="project-list" id="research-project-list">
           <button
-            v-for="item in projects"
+            v-for="item in filteredProjects"
             :key="item.id"
             type="button"
             class="project-card"
             :class="{ active: selectedProjectId === item.id }"
+            :aria-current="selectedProjectId === item.id ? 'true' : undefined"
             @click="selectProject(item.id)"
           >
             <strong>{{ item.title }}</strong>
             <p>{{ item.brief }}</p>
             <div class="project-meta">
-              <span>AI: {{ item.aiCalls }} lượt</span>
-              <span>{{ item.executor === 'hermes' ? 'Đợt cũ — cần chuyển sang ZCRM' : 'AI trong ZCRM' }}</span>
-              <span v-if="item.executor !== 'hermes'">Chi phí: {{ formatMicrosToUsd(item.aiCostMicros) }}</span>
+              <span>{{ item.executor === 'hermes' ? 'Cần chuyển sang ZCRM' : 'AI trong ZCRM' }}</span>
+              <time :datetime="item.createdAt">{{ formatShortDate(item.createdAt) }}</time>
             </div>
           </button>
         </div>
+        <p v-if="projects.length && !filteredProjects.length" class="sidebar-empty">Không có đợt phù hợp. Thử từ khóa khác.</p>
       </aside>
 
       <div class="project-main">
@@ -140,41 +158,34 @@
           <section class="project-summary-card">
             <div class="summary-top">
               <div>
+                <span class="section-eyebrow">ĐỢT ĐANG XEM</span>
                 <h3>{{ currentProject.title }}</h3>
-                <p class="brief-text">{{ currentProject.brief }}</p>
               </div>
-              <div class="budget-pills">
-                <span>
-                  <small>{{ currentProject.executor === 'hermes' ? 'Phần tìm nguồn đã giao' : 'Lượt tìm Google' }}</small>
-                  <strong>{{ currentProject.searchCalls }}</strong>
-                </span>
-                <span>
-                  <small>Nguồn đã lưu</small>
-                  <strong>{{ sources.length }}</strong>
-                </span>
-                <span>
-                  <small>{{ currentProject.executor === 'hermes' ? 'Lượt tổng hợp / viết' : 'Lượt gọi AI' }}</small>
-                  <strong>{{ currentProject.aiCalls }}</strong>
-                </span>
-                <span v-if="currentProject.executor !== 'hermes'">
-                  <small>Chi phí AI đã ghi nhận</small>
-                  <strong>{{ formatMicrosToUsd(currentProject.aiCostMicros) }}</strong>
-                </span>
-              </div>
+              <details class="project-settings" :key="currentProject.id">
+                <summary><span class="mdi mdi-cog-outline" /> Thông tin & AI</summary>
+                <div class="project-settings-body">
+                  <strong>Mục tiêu tìm hiểu</strong>
+                  <p class="brief-text">{{ currentProject.brief }}</p>
+                  <label v-if="currentProject.executor !== 'hermes' && availableModels.length && canEdit" class="project-model">
+                    AI dùng cho đợt này
+                    <select :value="currentProject.modelConfigId" :disabled="taskBusy || hasActiveTask" aria-label="Đổi AI dùng cho đợt này" @change="changeProjectModel">
+                      <option v-if="!availableModels.some((model) => model.id === currentProject?.modelConfigId)" :value="currentProject.modelConfigId" disabled>AI cũ không còn sẵn sàng — hãy chọn lại</option>
+                      <option v-for="model in availableModels" :key="model.id" :value="model.id">{{ model.displayName }}</option>
+                    </select>
+                    <small>AI đã kiểm tra kết nối dùng ngay cho nghiên cứu.</small>
+                  </label>
+                  <div class="usage-summary">
+                    <span>{{ currentProject.searchCalls }} lượt tìm Google</span>
+                    <span>{{ currentProject.aiCalls }} lượt gọi AI</span>
+                    <span v-if="currentProject.executor !== 'hermes'">Chi phí đã ghi nhận: {{ formatMicrosToUsd(currentProject.aiCostMicros) }}</span>
+                  </div>
+                </div>
+              </details>
             </div>
-
-            <label v-if="currentProject.executor !== 'hermes' && availableModels.length && canEdit" class="project-model">
-              AI dùng cho đợt này
-              <select :value="currentProject.modelConfigId" :disabled="taskBusy || hasActiveTask" aria-label="Đổi AI dùng cho đợt này" @change="changeProjectModel">
-                <option v-if="!availableModels.some((model) => model.id === currentProject?.modelConfigId)" :value="currentProject.modelConfigId" disabled>AI cũ không còn sẵn sàng — hãy chọn lại</option>
-                <option v-for="model in availableModels" :key="model.id" :value="model.id">{{ model.displayName }}</option>
-              </select>
-              <small>AI đã kiểm tra kết nối dùng ngay cho nghiên cứu, không cần duyệt cấu hình.</small>
-            </label>
             <div v-if="currentProject.executor !== 'hermes'" class="research-start">
-              <div><strong>Tự tìm → đọc nguồn → tổng hợp vấn đề</strong><p>Kết quả tự lưu dù anh đóng trang. Chọn vấn đề sau khi tổng hợp xong để tạo bài.</p></div>
+              <div><strong>Tự tìm nguồn và tổng hợp vấn đề</strong><p>AI làm lần lượt và tự lưu kết quả.</p></div>
               <button type="button" class="button primary" :disabled="taskBusy || hasActiveTask || !canEdit || !capabilities?.search.configured || !capabilities?.encryption" @click="triggerTask('research')">{{ activePains.length ? 'Tìm và tổng hợp lại' : 'Bắt đầu tìm hiểu' }}</button>
-              <small v-if="!capabilities?.search.configured">Cần thiết lập tìm kiếm Google phía trên, hoặc dán nguồn để tổng hợp.</small>
+              <small v-if="!capabilities?.search.configured">Chưa có kết nối Google. Thêm nguồn ở bước 1 hoặc mở Thiết lập kết nối để bật tìm tự động.</small>
               <small v-else-if="!capabilities?.encryption">Máy chủ chưa sẵn sàng lưu nguồn bảo mật. Cần kiểm tra cấu hình mã hóa.</small>
             </div>
             <div v-if="latestTask" class="task-banner" :class="latestTask.status">
@@ -220,14 +231,15 @@
             </div>
           </section>
 
-          <ol v-if="latestTask?.kind === 'research'" class="research-progress" aria-label="Tiến độ tìm hiểu">
+          <ol v-if="latestTask?.kind === 'research' && isTaskActive(latestTask)" class="research-progress" aria-label="Tiến độ tìm hiểu">
             <li v-for="phase in workflowPhases" :key="phase.key" :class="{ current: latestTask.checkpoint?.stage === phase.key, finished: latestTask.status === 'completed' }">{{ phase.label }}</li>
           </ol>
-          <nav class="step-tabs" aria-label="Các bước thực hiện">
+          <nav class="step-tabs" aria-label="Các bước thực hiện" role="tablist" @keydown="navigateSteps">
             <button
               type="button"
               class="step-tab"
               :class="{ active: activeStep === 'sources' }"
+              id="research-tab-sources" role="tab" :tabindex="activeStep === 'sources' ? 0 : -1" :aria-selected="activeStep === 'sources'" aria-controls="research-step-panel"
               @click="activeStep = 'sources'"
             >
               <span class="step-num">1</span>
@@ -241,6 +253,7 @@
               type="button"
               class="step-tab"
               :class="{ active: activeStep === 'pains' }"
+              id="research-tab-pains" role="tab" :tabindex="activeStep === 'pains' ? 0 : -1" :aria-selected="activeStep === 'pains'" aria-controls="research-step-panel"
               @click="activeStep = 'pains'"
             >
               <span class="step-num">2</span>
@@ -254,6 +267,7 @@
               type="button"
               class="step-tab"
               :class="{ active: activeStep === 'contents' }"
+              id="research-tab-contents" role="tab" :tabindex="activeStep === 'contents' ? 0 : -1" :aria-selected="activeStep === 'contents'" aria-controls="research-step-panel"
               @click="activeStep = 'contents'"
             >
               <span class="step-num">3</span>
@@ -264,12 +278,12 @@
             </button>
           </nav>
 
-          <section v-if="activeStep === 'sources'" class="step-panel">
+          <section v-if="activeStep === 'sources'" class="step-panel" id="research-step-panel" role="tabpanel" :aria-labelledby="`research-tab-${activeStep}`">
             <div class="panel-action-bar">
               <div>
-                <h4>Thu thập bài viết & thảo luận thực tế</h4>
+                <h4>Nguồn để tìm hiểu</h4>
                 <p>
-                  Bấm Bắt đầu tìm hiểu để tự tìm và tổng hợp. Có thể bổ sung bài viết hoặc bình luận anh được phép dùng từ hội nhóm Facebook.
+                  Thêm đường dẫn, bài viết hoặc bình luận được phép dùng. AI sẽ đọc và dẫn nguồn khi tổng hợp.
                 </p>
               </div>
               <div class="action-group">
@@ -295,7 +309,7 @@
                 <small>{{ group.url }}</small>
               </article>
             </div>
-            <div v-if="readSourceCount > 0" class="next-step-callout">
+            <div v-if="readSourceCount > 0 && !activePains.length" class="next-step-callout">
               <div>
                 <strong>Đã có {{ readSourceCount }} nguồn đọc xong nội dung.</strong>
                 <span>Bạn có thể chuyển sang bước tổng hợp để AI rút ra các nỗi đau của chủ khách sạn kèm câu trích dẫn nguyên văn.</span>
@@ -383,12 +397,12 @@
               </article>
             </div>
           </section>
-          <section v-else-if="activeStep === 'pains'" class="step-panel">
+          <section v-else-if="activeStep === 'pains'" class="step-panel" id="research-step-panel" role="tabpanel" :aria-labelledby="`research-tab-${activeStep}`">
             <div class="panel-action-bar">
               <div>
                 <h4>Chọn vấn đề muốn viết bài</h4>
                 <p>
-                  Kiểm tra bằng chứng rồi chọn các vấn đề phù hợp. Nút <strong>Duyệt và tạo bài</strong> xác nhận các vấn đề đã chọn và lần lượt viết bản nháp. Bài viết vẫn chờ anh duyệt trước khi dùng.
+                  Xem nguồn dẫn, chọn vấn đề phù hợp rồi bấm <strong>Duyệt và tạo bài</strong>. AI sẽ viết bản nháp để anh kiểm tra.
                 </p>
               </div>
               <div class="action-group">
@@ -463,8 +477,8 @@
                   </div>
                 </dl>
 
-                <div class="evidence-box">
-                  <strong>Bằng chứng nguyên văn từ nguồn thu thập ({{ pain.evidence?.length || 0 }} đoạn trích):</strong>
+                <details class="evidence-box">
+                  <summary>Xem nguồn dẫn · {{ pain.evidence?.length || 0 }} đoạn trích</summary>
                   <ul>
                     <li v-for="(ev, idx) in pain.evidence" :key="`${ev.sourceId}-${idx}`">
                       <blockquote>“{{ ev.quote }}”</blockquote>
@@ -472,7 +486,7 @@
                       <small v-else>— Nguồn: {{ sourceTitleById(ev.sourceId) }}</small>
                     </li>
                   </ul>
-                </div>
+                </details>
 
                 <div v-if="pain.status === 'approved' && currentProject.executor !== 'hermes'" class="generate-bar">
                   <div class="generate-label">
@@ -541,12 +555,12 @@
             </div>
           </section>
 
-          <section v-else class="step-panel">
+          <section v-else class="step-panel" id="research-step-panel" role="tabpanel" :aria-labelledby="`research-tab-${activeStep}`">
             <div class="panel-action-bar">
               <div>
-                <h4>Kho bài viết chia sẻ & kịch bản nhắn Zalo cá nhân</h4>
+                <h4>Bài viết của đợt này</h4>
                 <p>
-                  Nội dung được AI soạn từ các nỗi đau đã duyệt, không tự bịa giá bán hay cam kết quá đà. Bạn có thể chỉnh sửa lại câu chữ, bấm <strong>Duyệt bài</strong> rồi sao chép gửi cho khách trên Zalo cá nhân.
+                  Đọc và chỉnh sửa bản nháp. Bấm <strong>Duyệt bài</strong> khi nội dung đã sẵn sàng sử dụng.
                 </p>
               </div>
             </div>
@@ -935,6 +949,28 @@ const noticeOk = ref(true);
 
 const capabilities = ref<ResearchCapabilities | null>(null);
 const searchApiKey = ref('');
+const showConnections = ref(false);
+const projectSearch = ref('');
+const showProjectPicker = ref(false);
+const filteredProjects = computed(() => {
+  const query = projectSearch.value.trim().toLocaleLowerCase('vi');
+  return projects.value.filter((project) => `${project.title} ${project.brief}`.toLocaleLowerCase('vi').includes(query));
+});
+function formatShortDate(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '—' : new Intl.DateTimeFormat('vi-VN', { day: '2-digit', month: '2-digit' }).format(date);
+}
+function navigateSteps(event: KeyboardEvent) {
+  const tabs = ['sources', 'pains', 'contents'] as const;
+  const index = tabs.indexOf(activeStep.value);
+  const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length
+    : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length
+      : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : -1;
+  if (next < 0) return;
+  event.preventDefault();
+  activeStep.value = tabs[next]!;
+  (event.currentTarget as HTMLElement).querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+}
 const selectedPainIds = ref<string[]>([]);
 const batchFormat = ref<ResearchFormat>('zalo_message');
 const workflowPhases = [{ key: 'discover', label: '1. Tìm nguồn' }, { key: 'collect', label: '2. Đọc nội dung' }, { key: 'analyze', label: '3. Tổng hợp vấn đề' }];
@@ -1257,6 +1293,7 @@ async function reloadAll() {
 }
 
 async function selectProject(projectId: string) {
+  showProjectPicker.value = false;
   if (saving.value || taskBusy.value) return;
   selectedProjectId.value = projectId;
   currentProject.value = null;
@@ -2629,5 +2666,144 @@ onBeforeUnmount(() => {
   .research-workspace {
     grid-template-columns: 1fr;
   }
+}
+
+/* Keep setup secondary and give the research results most of the screen. */
+.research-shell { color-scheme: light; gap: 18px; font-size: 14px; line-height: 1.5; }
+.research-header { align-items: center; gap: 20px; }
+.heading-icon { width: 44px; height: 44px; flex-basis: 44px; background: #e5f2f4; color: #116477; border-radius: 12px; }
+.heading-title h2 { font-size: 25px; letter-spacing: -.6px; font-weight: 750; }
+.research-heading p { margin-top: 7px; font-size: 14px; color: #64748b; }
+.scope-pill { background: transparent; border: 0; color: #64748b; padding: 0 0 0 10px; font-weight: 500; }
+.button { min-height: 40px; font-size: 13px; border-radius: 8px; padding: 9px 14px; }
+.button.primary { background: #087e96; }
+.button.primary:hover:not(:disabled) { background: #09687b; }
+.button:disabled { opacity: .5; cursor: not-allowed; }
+.connection-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 15px; border: 1px solid #e2e8f0; background: #fff; border-radius: 10px; }
+.connection-status { display: flex; align-items: center; gap: 9px; font-size: 13px; color: #285b4b; flex-wrap: wrap; }
+.status-dot { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: #229475; }
+.warning { color: #855414; }
+.warning .status-dot { background: #d49a35; }
+.connection-hint { color: #64748b; font-size: 12px; }
+.connection-toolbar .link-btn { white-space: nowrap; font-size: 13px; min-height: 32px; }
+.connection-settings { background: #fff; border: 1px solid #dce5ec; border-radius: 12px; padding: 16px; }
+.connection-settings .capability-strip { margin-bottom: 12px; }
+.connection-settings .search-setup { margin: 0; border: 0; border-top: 1px solid #e2e8f0; border-radius: 0; padding: 14px 0 0; }
+.search-setup label { flex: 1 1 250px; }
+.search-setup input { width: 100%; color: #1e293b; background: #fff; }
+.research-workspace { grid-template-columns: 236px minmax(0, 1fr); align-items: start; gap: 20px; }
+.project-sidebar { position: sticky; top: 16px; border-radius: 12px; overflow: hidden; background: #fff; }
+.sidebar-header { padding: 16px; background: #fff; border-bottom: 0; }
+.sidebar-header strong { font-size: 14px; }
+.sidebar-header small { display: none; }
+.mobile-project-toggle { display: none; }
+.project-search { display: flex; align-items: center; gap: 8px; margin: 0 12px 12px; padding: 8px 10px; border: 1px solid #e2e8f0; border-radius: 7px; color: #64748b; background: #f8fafc; }
+.project-search input { width: 100%; min-width: 0; outline: 0; border: 0; appearance: none; padding: 0; font: inherit; font-size: 12px; background: transparent; }
+.research-shell .project-search input:focus-visible { outline: 0; }
+.project-search:focus-within { outline: 2px solid #087e96; outline-offset: 1px; }
+.project-list { max-height: min(70vh, 780px); padding: 0 8px 8px; gap: 4px; }
+.project-card { padding: 13px 12px; border: 1px solid transparent; border-radius: 8px; gap: 6px; }
+.project-card.active { border: 1px solid #b8dce4; background: #edf7f9; box-shadow: inset 3px 0 #087e96; }
+.project-card strong { font-size: 13px; line-height: 1.55; font-weight: 650; }
+.project-card p { font-size: 12px; -webkit-line-clamp: 1; color: #6c7b8e; }
+.project-meta { font-size: 11px; color: #738195; font-weight: 400; }
+.project-main { gap: 16px; }
+.project-summary-card { border-radius: 12px; padding: 20px 22px 16px; box-shadow: 0 2px 3px #1e293b03; }
+.summary-top { display: block; }
+.section-eyebrow { display: block; font-size: 10px; font-weight: 700; letter-spacing: 1.3px; color: #728296; margin-bottom: 6px; }
+.summary-top h3 { font-size: 19px; line-height: 1.4; letter-spacing: -.3px; margin: 0; }
+.project-settings { margin-top: 8px; }
+.project-settings summary { display: inline-flex; align-items: center; gap: 5px; color: #64748b; cursor: pointer; font-size: 12px; list-style: none; }
+.project-settings summary::after { content: '⌄'; margin-left: 4px; }
+.project-settings[open] summary { color: #087e96; }
+.project-settings-body { margin: 12px 0; padding: 16px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; }
+.project-settings-body > strong { font-size: 12px; color: #64748b; }
+.brief-text { font-size: 14px; line-height: 1.7; margin-top: 6px; }
+.project-model { flex-direction: column; align-items: stretch; font-weight: 500; }
+.project-model small { color: #64748b; font-weight: 400; font-size: 12px; }
+.usage-summary { display: flex; flex-wrap: wrap; gap: 8px 18px; color: #64748b; font-size: 12px; }
+.research-start { background: #f7fafb; border: 1px solid #e4ebef; padding: 14px; margin: 14px 0 0; gap: 10px; border-radius: 9px; }
+.research-start > div { flex-basis: 230px; }
+.research-start strong { font-size: 13px; }
+.research-start p { color: #64748b; font-size: 12px; }
+.research-start > small { color: #86622f; font-size: 12px; }
+.task-banner { margin-top: 12px; padding: 10px 12px; border: 0; border-left: 3px solid #b8c5d4; border-radius: 6px; }
+.task-banner.completed { border-left-color: #4ba68b; background: #f0f9f5; }
+.task-banner.failed { border-left-color: #d96b6b; }
+.task-info strong { font-weight: 600; }
+.step-tabs { position: sticky; top: 0; z-index: 3; gap: 0; background: #fff; border: 1px solid #dfe7ed; border-radius: 10px; overflow: hidden; }
+.step-tab { border: 0; border-bottom: 3px solid transparent; border-radius: 0; padding: 16px 12px; gap: 10px; background: #fff; }
+.step-tab + .step-tab { border-left: 1px solid #edf1f5; }
+.step-tab.active { border-bottom-color: #087e96; background: #f2f9fa; }
+.step-num { width: 30px; height: 30px; flex-basis: 30px; background: #f0f3f6; color: #6b7d90; }
+.step-tab.active .step-num { background: #087e96; }
+.step-tab strong { font-size: 13px; font-weight: 650; }
+.step-tab small { font-size: 11px; }
+.step-panel { padding: 22px; gap: 18px; border-radius: 12px; }
+.panel-action-bar { gap: 16px; padding-bottom: 18px; }
+.panel-action-bar h4 { font-size: 17px; letter-spacing: -.25px; margin-bottom: 5px; }
+.panel-action-bar p { font-size: 13px; color: #64748b; line-height: 1.6; max-width: 620px; }
+.source-card, .pain-card, .content-card { padding: 20px; border-radius: 10px; }
+.source-card h5, .pain-card h5, .content-card h5 { font-size: 18px; line-height: 1.55; font-weight: 650; margin: 10px 0 14px; letter-spacing: -.25px; }
+.source-excerpt { font-size: 14px; line-height: 1.8; color: #475569; }
+.source-card time, .content-card time { font-size: 11px; color: #7c8999; }
+.pain-badges, .content-badges { gap: 6px; }
+.relevance-pill, .source-count-pill, .certainty-pill, .role-pill, .version-badge { font-size: 11px; font-weight: 500; background: #f4f6f8; color: #637387; }
+.pain-detail-grid { gap: 20px; margin: 18px 0; }
+.pain-detail-grid dt { font-size: 12px; color: #718096; font-weight: 500; margin-bottom: 5px; }
+.pain-detail-grid dd { font-size: 14px; line-height: 1.75; color: #334155; }
+.evidence-box { background: #f8fafc; border: 1px solid #e5ebf0; border-radius: 8px; padding: 12px 14px; }
+.evidence-box summary { cursor: pointer; font-size: 13px; font-weight: 600; color: #3f6778; }
+.evidence-box ul { padding-top: 12px; }
+.evidence-box blockquote { font-size: 14px; line-height: 1.75; }
+.batch-write { background: #f3f8fa; border-color: #dce8ed; padding: 14px; margin-bottom: 0; }
+.batch-write label { font-size: 12px; font-weight: 500; flex: 1; }
+.batch-write select { font-size: 12px; }
+.pain-actions, .content-actions { gap: 8px; padding-top: 18px; margin-top: 18px; border-top: 1px solid #edf1f5; }
+.pain-origin { font-size: 12px; color: #718096; margin-top: 12px; }
+.content-body-box { font-family: inherit; font-size: 15px; line-height: 1.95; background: #fff; border: 0; border-left: 2px solid #d8e9ee; padding: 6px 0 6px 20px; color: #273b4d; max-height: none; }
+.missing-info-box { background: #fbfaf6; border: 1px solid #eee9dc; border-radius: 8px; padding: 14px 16px; font-size: 13px; color: #75633b; }
+.missing-info-box ul { line-height: 1.75; }
+.content-card { box-shadow: 0 3px 10px #243a4e04; }
+.research-shell :is(input, select, textarea, summary):focus-visible { outline: 2px solid #087e96; outline-offset: 3px; }
+@media (max-width: 1150px) {
+  .research-workspace { grid-template-columns: 200px minmax(0, 1fr); gap: 14px; }
+  .scope-pill { display: none; }
+  .connection-hint { display: none; }
+  .header-actions { gap: 6px; }
+  .heading-title h2 { font-size: 22px; }
+  .step-tab { padding: 13px 10px; }
+  .step-tab small { display: none; }
+}
+@media (max-width: 960px) {
+  .research-workspace { grid-template-columns: minmax(0, 1fr); }
+  .project-sidebar { position: static; }
+  .project-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: 230px; }
+  .step-tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .project-search { margin-top: 0; }
+}
+@media (max-width: 600px) {
+  .research-header { gap: 14px; }
+  .research-heading { flex-basis: 100%; }
+  .heading-title h2 { font-size: 22px; }
+  .heading-icon { display: none; }
+  .header-actions { width: 100%; justify-content: flex-end; }
+  .connection-toolbar { align-items: flex-start; }
+  .connection-status { font-size: 12px; flex: 1; }
+  .connection-toolbar .link-btn { white-space: normal; text-align: right; flex: 0 0 100px; }
+  .project-sidebar .sidebar-header { padding: 12px 15px; }
+  .project-sidebar .count-badge { margin-right: auto; }
+  .mobile-project-toggle { display: inline-flex; align-items: center; gap: 4px; }
+  .project-sidebar:not(.project-picker-open) :is(.project-search, .project-list, .sidebar-empty) { display: none; }
+  .project-list { grid-template-columns: minmax(0, 1fr); max-height: 250px; }
+  .project-summary-card, .step-panel { padding: 16px; }
+  .step-tab { flex-direction: column; align-items: flex-start; gap: 7px; padding: 12px 8px; }
+  .step-tab strong { font-size: 11px; }
+  .step-num { width: 25px; height: 25px; flex-basis: 25px; font-size: 12px; }
+  .source-card, .pain-card, .content-card { padding: 15px; }
+  .pain-detail-grid { grid-template-columns: 1fr; }
+  .content-body-box { padding-left: 12px; font-size: 14px; }
+  .batch-write { align-items: stretch; }
+  .batch-write label, .batch-write select, .batch-write button { width: 100%; flex-basis: 100%; }
 }
 </style>

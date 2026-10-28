@@ -14,6 +14,8 @@ import CustomerResearchPanel from '@/components/ai/CustomerResearchPanel.vue';
   box-sizing: border-box;
   width: 100%;
   min-width: 0;
+  min-height: 100%;
+  background: #f5f7fb;
   padding: 20px 24px 40px;
 }
 

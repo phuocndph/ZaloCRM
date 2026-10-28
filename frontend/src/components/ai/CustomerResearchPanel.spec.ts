@@ -231,11 +231,39 @@ describe('CustomerResearchPanel', () => {
     });
   });
 
+  it('thu gọn thiết lập mặc định, mở được khi cần và tìm đợt mà không tạo yêu cầu mới', async () => {
+    const wrapper = mount(CustomerResearchPanel, { attachTo: document.body }); await flushPromises();
+    expect(wrapper.get('.connection-settings').isVisible()).toBe(false);
+    await wrapper.get('.connection-toolbar button').trigger('click');
+    expect(wrapper.get('.connection-settings').isVisible()).toBe(true);
+    expect(wrapper.get('.connection-toolbar button').attributes('aria-expanded')).toBe('true');
+    const calls = mockGet.mock.calls.length;
+    await wrapper.get('[aria-label="Tìm đợt nghiên cứu"]').setValue('không tồn tại');
+    expect(wrapper.findAll('.project-card')).toHaveLength(0);
+    expect(wrapper.text()).toContain('Không có đợt phù hợp');
+    await wrapper.get('[aria-label="Tìm đợt nghiên cứu"]').setValue('giặt ủi');
+    expect(wrapper.findAll('.project-card')).toHaveLength(1);
+    expect(mockGet).toHaveBeenCalledTimes(calls);
+    expect(mockPost).not.toHaveBeenCalled();
+    wrapper.unmount();
+  });
+
+  it('chuyển bước bằng bàn phím và mở nguồn dẫn để đọc', async () => {
+    const wrapper = mount(CustomerResearchPanel); await flushPromises();
+    await wrapper.get('[role="tablist"]').trigger('keydown', { key: 'ArrowRight' });
+    expect(wrapper.get('[aria-selected="true"]').text()).toContain('Nỗi đau khách hàng');
+    expect(wrapper.get('.evidence-box').element.tagName).toBe('DETAILS');
+    await wrapper.get('[role="tablist"]').trigger('keydown', { key: 'End' });
+    expect(wrapper.get('[aria-selected="true"]').text()).toContain('Bài viết chia sẻ');
+    expect(wrapper.get('[role="tabpanel"]').attributes('aria-labelledby')).toBe('research-tab-contents');
+    wrapper.unmount();
+  });
+
   it('hiển thị đầy đủ 3 bước: nguồn thông tin, nỗi đau khách hàng và bài viết chia sẻ', async () => {
     const wrapper = mount(CustomerResearchPanel);
     await flushPromises();
 
-    expect(wrapper.text()).toContain('Tìm nỗi đau chủ khách sạn & Tạo bài chia sẻ');
+    expect(wrapper.text()).toContain('Tìm nỗi đau & tạo bài');
     expect(wrapper.text()).toContain('Nỗi đau giặt ủi khách sạn 3 sao');
     expect(wrapper.text()).toContain('Tâm sự chủ khách sạn phố cổ về khăn tắm ố vàng');
 

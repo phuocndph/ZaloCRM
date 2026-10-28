@@ -77,8 +77,10 @@ function isActive(to: string): boolean {
 .ce-mkt-content { flex: 1 1 auto; min-width: 0; overflow: auto; }
 
 @media (max-width: 768px) {
-  .ce-marketing-shell { flex-direction: column; }
-  .ce-mkt-sidebar { flex: 0 0 auto; border-right: none; border-bottom: 1px solid var(--border, #e5e4e7); }
-  .ce-mkt-nav { flex-direction: row; overflow-x: auto; }
+  .ce-marketing-shell { flex-direction: column; height: calc(100dvh - var(--smax-topnav-h, 52px) - 60px); }
+  .ce-mkt-sidebar { flex: 0 0 auto; min-width: 0; padding: 6px 8px; border-right: none; border-bottom: 1px solid var(--border, #e5e4e7); }
+  .ce-mkt-header { display: none; }
+  .ce-mkt-nav { flex-direction: row; overflow-x: auto; gap: 4px; }
+  .ce-mkt-link { flex: 0 0 auto; white-space: nowrap; font-size: 12px; padding: 9px 10px; gap: 6px; }
 }
 </style>
