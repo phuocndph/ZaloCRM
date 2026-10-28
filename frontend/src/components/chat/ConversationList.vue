@@ -255,9 +255,9 @@
               v-for="tag in displayTags(conv).slice(0, 2)"
               :key="tag.key"
               class="ci-chip"
-              :class="{ 'is-zalo': tag.isZalo, 'is-auto': tag.isAuto }"
+              :class="{ 'is-zalo': tag.isZalo }"
               :style="{ '--chip-color': tag.color }"
-              :title="`${tag.isZalo ? 'Zalo' : tag.isAuto ? 'Tự động' : 'CRM'}: ${tag.name}`"
+              :title="`${tag.isZalo ? 'Zalo' : 'CRM'}: ${tag.name}`"
             >
               <ZaloBrandIcon v-if="tag.isZalo" :size="10" /><span v-else-if="tag.emoji" class="ci-chip-emoji">{{ tag.emoji }}</span><span class="ci-chip-text">{{ tag.name }}</span>
             </span>
@@ -377,7 +377,6 @@ import NickPickerPopup from '@/components/zalo-accounts/NickPickerPopup.vue';
 import ZaloBrandIcon from '@/components/icons/ZaloBrandIcon.vue';
 import { loadTagDefs, isZaloManaged, cleanTagName, tagColor } from '@/composables/use-crm-tag-defs';
 import { loadTagTaxonomy, findTagBySlug, useTagTaxonomy } from '@/composables/use-tag-taxonomy';
-import { getAutoTagDef } from '@/constants/auto-tags';
 import PrivateBlur from '@/components/privacy/PrivateBlur.vue';
 import { usePrivacyVisibility } from '@/composables/use-privacy-visibility';
 import { parseFriendAcceptedNotice } from '@/composables/zalo-system-notice';
@@ -605,8 +604,8 @@ function buildFilterParams(): Record<string, string> {
  * Dedup, Zalo tags hiển thị đầu (priority cho per-pair context). */
 // 2026-06-06 (Anh chốt) — Tag Zalo Real ở cột 2 lấy từ Friend.zaloLabels (object {name,color}
 // màu CHUẨN = zalo_labels.color, đồng bộ TagCrmBar + header) thay vì string '🔵 X' + crm_tags legacy.
-// Tag khác (manual/auto) giữ đường cũ. Trả object {name, color, isZalo} thống nhất.
-interface DisplayTag { name: string; color: string; emoji?: string | null; isZalo: boolean; isAuto?: boolean; key: string }
+// Tag CRM do nhân viên gắn lấy từ crmTagsPerNick và Contact.tags.
+interface DisplayTag { name: string; color: string; emoji?: string | null; isZalo: boolean; key: string }
 
 // Reactive trigger — displayTags đọc taxonomyVersion.value để Vue re-render khi
 // taxonomy load xong (slug→name). Không có dòng này thì tag hiện slug tới lần render sau.
@@ -640,36 +639,18 @@ function computeDisplayTags(conv: Conversation): DisplayTag[] {
       out.push({ name: z.name, color: z.color || '#0068FF', isZalo: true, key: 'z:' + (z.id ?? z.name) });
     }
   }
-  // 2. Auto-tags (Friend.autoTags) — slug cố định. Nhóm Detect (active/cold/ready/…)
-  //    dùng AUTO_TAG_DISPLAY (nhãn Việt + icon). Nhóm Engagement (engagement-hot/…) là
-  //    Tag v2 thật → resolve qua taxonomy. Ưu tiên taxonomy, fallback AUTO_TAG_DISPLAY.
-  const autoTagsRaw = (conv.friendship as { autoTags?: string[] } | null | undefined)?.autoTags;
-  if (Array.isArray(autoTagsRaw)) {
-    for (const key of autoTagsRaw) {
-      if (!key || seen.has('a:' + key)) continue;
-      seen.add('a:' + key);
-      const taxDef = findTagBySlug(key);
-      if (taxDef) {
-        out.push({ name: taxDef.name, color: taxDef.color || '#9CA3AF', emoji: taxDef.emoji, isZalo: false, isAuto: true, key: 'a:' + key });
-      } else {
-        const def = getAutoTagDef(key);
-        out.push({ name: def.label, color: def.color, emoji: def.icon, isZalo: false, isAuto: true, key: 'a:' + key });
-      }
-    }
-  }
-  // 3. Tag CRM khác (manual/crm) — Contact.tags + crmTagsPerNick lưu SLUG tag v2.
-  //    KHÔNG có prefix 🔵 (Zalo đã lấy ở trên). Resolve slug→name/màu qua taxonomy.
+  // 2. Nhãn phân loại khách do nhân viên gắn; không trộn trạng thái tự động.
   const contactTags = Array.isArray(conv.contact?.tags) ? (conv.contact!.tags as string[]) : [];
   const friendTagsRaw = (conv.friendship as { crmTagsPerNick?: string[] } | null | undefined)?.crmTagsPerNick;
   const friendTags = Array.isArray(friendTagsRaw) ? friendTagsRaw : [];
   for (const t of [...friendTags, ...contactTags]) {
+    if (findTagBySlug(t)?.source?.startsWith('auto_')) continue;
     if (t.startsWith('🔵 ')) continue; // tag Zalo mirror → đã lấy từ zaloLabels
     if (seen.has('c:' + t)) continue;
     seen.add('c:' + t);
     out.push(resolveCrmTag(t));
   }
-  // Keep the labels chosen by staff visible before automatic activity indicators.
-  return [...out.filter(tag => !tag.isAuto), ...out.filter(tag => tag.isAuto)];
+  return out;
 }
 
 // ── Conversation display ───────────────────────────────────────────────────

@@ -21,12 +21,35 @@ beforeEach(() => {
 });
 describe('conversation list tags', () => {
   it('shows Zalo and manual CRM tags below the preview, with remaining tags accessible', async () => {
-    const { wrapper } = await render();
+    const current = conversation();
+    current.contact.tags = ['interested'];
+    mocks.defs.set('interested', { name: 'Quan tâm rèm', color: '#456789' });
+    const { wrapper } = await render(current);
     const row = wrapper.get('.ci-row-tags');
     expect(row.findAll('.ci-chip').map(chip => chip.text())).toEqual(['Đã mua', 'Khách sạn']);
     expect(row.get('.ci-tags-more').text()).toBe('+1');
-    expect(row.get('.ci-tags-more').attributes('title')).toContain('Hoạt động');
+    expect(row.get('.ci-tags-more').attributes('title')).toBe('Quan tâm rèm');
+    expect(row.text()).not.toContain('Hoạt động');
     expect(row.classes()).not.toContain('ci-row-meta'); wrapper.unmount();
+  });
+  it('does not show an automatic status as a customer label', async () => {
+    const current = conversation();
+    current.friendship.zaloLabels = [];
+    current.friendship.crmTagsPerNick = [];
+    current.friendship.autoTags = ['active', 'engagement-cold'];
+    const { wrapper } = await render(current);
+    expect(wrapper.find('.ci-row-tags').exists()).toBe(false);
+    wrapper.unmount();
+  });
+  it('excludes automatic status definitions from legacy CRM arrays', async () => {
+    const current = conversation();
+    mocks.defs.set('active', { name: 'Đang chat', color: '#999999', source: 'auto_detect' });
+    current.contact.tags = ['active'];
+    const { wrapper } = await render(current);
+    expect(wrapper.get('.ci-row-tags').text()).toContain('Đã mua');
+    expect(wrapper.get('.ci-row-tags').text()).not.toContain('Đang chat');
+    expect(wrapper.find('.ci-tags-more').exists()).toBe(false);
+    wrapper.unmount();
   });
   it('updates tag name and color when a tag is replaced without changing the number of tags', async () => {
     const { wrapper, current } = await render();
