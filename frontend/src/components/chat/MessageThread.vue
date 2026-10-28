@@ -93,11 +93,13 @@
                 </button>
               </template>
               <div class="zlbl-dropdown zalo-native">
+                <p v-if="labelAccountOffline" class="zlbl-connection-notice" role="status">Nick đang mất kết nối. Kết nối lại để gắn thẻ trên Zalo. Tag CRM vẫn dùng được ở dưới ô chat.</p>
+                <p v-else-if="savingLabel" class="zlbl-connection-notice" role="status">Đang lưu thẻ trên Zalo…</p>
                 <div v-if="loadingAllLabels && !allLabels.length" class="zlbl-loading">Đang tải…</div>
 
                 <div v-else-if="!allLabels.length" class="zlbl-empty-state">
                   Tài khoản chưa có thẻ phân loại nào.<br />
-                  <button class="zlbl-inline-sync" @click="onSyncLabels"><RefreshCwIcon :size="13" :stroke-width="2" /> Đồng bộ từ Zalo</button>
+                  <button class="zlbl-inline-sync" :disabled="labelAccountOffline || savingLabel" @click="onSyncLabels"><RefreshCwIcon :size="13" :stroke-width="2" /> Đồng bộ từ Zalo</button>
                 </div>
 
                 <div v-else class="zlbl-options">
@@ -105,6 +107,7 @@
                     v-for="lbl in allLabels"
                     :key="lbl.id"
                     class="zlbl-option"
+                    :disabled="savingLabel || loadingAllLabels || labelAccountOffline"
                     :class="{ active: currentLabel?.id === lbl.id }"
                     @click="onPickLabel(lbl)"
                   >
@@ -1212,7 +1215,7 @@ import { useZaloPresence } from '@/composables/use-zalo-presence';
 import { useZaloFriendStatus } from '@/composables/use-zalo-friend-status';
 import { useFriendSocket } from '@/composables/use-friend-socket';
 import { groupAvatarStore } from '@/composables/use-group-avatar-cache';
-import { registerPendingTags, clearPendingTags } from '@/composables/use-pending-mutations';
+import { useZaloLabelAssignment, type AccountLabelView } from '@/composables/use-zalo-label-assignment';
 
 interface TemplateAttachmentItem { kind: 'image' | 'file'; assetId?: string; url: string; name?: string; mime?: string; size?: number; thumb?: string }
 interface TemplateItem {
@@ -1721,18 +1724,9 @@ const msgInCount = computed(() => props.conversation?.friendship?.totalInbound ?
  *   Nếu label đó đang active → click sẽ unassign (labelId=null).
  * - Sync 2-way: trigger /labels/touch (cooldown 5s) khi conversation đổi.
  * ───────────────────────────────────────────────────────────────────── */
-type AccountLabelView = {
-  id: number;
-  text: string;
-  color: string;
-  emoji: string | null;
-  offset: number;
-  assignedCount: number;
-  assignedTo?: boolean;  // server flag — true nếu thread hiện tại đang gắn label này
-};
-
 const allLabels = ref<AccountLabelView[]>([]);
 const loadingAllLabels = ref(false);
+const labelAccountStatus = ref<string | null>(null);
 let labelsRequestId = 0;
 const lastLabelTouchAt = new Map<string, number>();
 const lastProfileTouchAt = new Map<string, number>();
@@ -1768,6 +1762,7 @@ async function fetchAllLabels(accountId: string, threadId?: string | null) {
     const { data } = await apiClient.get(`/zalo-accounts/${accountId}/labels${query}`);
     if (requestId === labelsRequestId) {
       allLabels.value = (data.labels || []) as AccountLabelView[];
+      labelAccountStatus.value = data.account?.status ?? null;
     }
   } catch (err) {
     console.error('[zalo-labels] fetch all error', err);
@@ -1815,6 +1810,8 @@ watch(() => props.conversation?.id, (newId, oldId) => {
   // thread trước → currentLabel.find(assignedTo) trả nhãn nick cũ trong lúc chờ
   // fetchAllLabels → "hiện sai vài giây rồi nhảy đúng". Xoá xong currentLabel sẽ
   // fallback về friendship.zaloLabels của ĐÚNG nick mới (lấy từ list) cho tới khi API về.
+  labelsRequestId++;
+  labelAccountStatus.value = null;
   allLabels.value = [];
   const accId = props.conversation?.zaloAccount?.id;
   const threadId = props.conversation?.externalThreadId;
@@ -1825,84 +1822,17 @@ watch(() => props.conversation?.id, (newId, oldId) => {
   }
 }, { immediate: true });
 
-/* Optimistic UI FULL: update cả allLabels (dropdown ✓) + friendship.crmTagsPerNick
- * (tag bar cột 3 + ConversationList cột 2) NGAY khi click.
- * Tránh "show tag cũ vài giây rồi mới sang tag mới" — full snap immediately.
- * API call background; rollback nếu fail. */
-async function onPickLabel(label: AccountLabelView) {
-  const accId = props.conversation?.zaloAccount?.id;
-  const threadId = props.conversation?.externalThreadId;
-  if (!accId || !threadId) return;
-
-  // Toggle: nếu đang active → unassign (null), ngược lại assign labelId
-  const labelId = currentLabel.value?.id === label.id ? null : label.id;
-
-  // ── Snapshots cho rollback nếu fail ─────────────────────────────────
-  const snapshotAllLabels = allLabels.value.map(l => ({ ...l }));
-  const friendship = props.conversation?.friendship as {
-    crmTagsPerNick?: string[];
-    zaloLabels?: Array<{ id?: number; name?: string; color?: string }>;
-  } | null | undefined;
-  const oldCrmTags = Array.isArray(friendship?.crmTagsPerNick)
-    ? [...(friendship!.crmTagsPerNick as string[])]
-    : [];
-  const oldZaloLabels = Array.isArray(friendship?.zaloLabels)
-    ? [...(friendship!.zaloLabels as Array<{ id?: number; name?: string; color?: string }>)]
-    : [];
-
-  // ── Optimistic 1: allLabels assignedTo flag (dropdown ✓ animation) ──
-  allLabels.value = allLabels.value.map(l => ({
-    ...l,
-    assignedTo: labelId !== null && l.id === labelId,
-  }));
-
-  // ── Optimistic 2: friendship.zaloLabels — NGUỒN CHÍNH cột 2 đọc (object {id,name,color}
-  // màu chuẩn = zalo_labels.color, đồng bộ TagCrmBar + header). Single-select Zalo: 1 label/
-  // friend → assign = replace toàn bộ; unassign = []. Cập nhật NGAY, không chờ socket. ──
-  if (friendship) {
-    friendship.zaloLabels = labelId !== null
-      ? [{ id: label.id, name: label.text, color: label.color }]
-      : [];
-  }
-
-  // ── Optimistic 3: friendship.crmTagsPerNick mirror "🔵 X" — giữ cho legacy reader
-  // (filter chat-routes, timeline). Cột 2 KHÔNG còn đọc field này cho tag Zalo. ──
-  const stripped = oldCrmTags.filter(t => !t.startsWith('🔵 '));
-  const newTags = labelId !== null ? [...stripped, `🔵 ${label.text}`] : stripped;
-  if (friendship) {
-    friendship.crmTagsPerNick = newTags;
-  }
-
-  // Đăng ký pending mutation — fetchConversations giữa lúc BE đang sync sẽ apply lại
-  // newTags lên response thay vì để response (chưa có tag) ghi đè optimistic state.
-  const convId = props.conversation?.id;
-  if (convId) registerPendingTags(convId, newTags);
-
-  toast.success(labelId ? `✓ Đã gắn "${label.text}"` : `✓ Đã bỏ tag`);
-
-  // API call background — UI đã update sẵn
-  try {
-    const { api: apiClient } = await import('@/api/index');
-    await apiClient.post(`/zalo-accounts/${accId}/labels/assign-thread`, { threadId, labelId });
-    // BE đã confirm — clear pending để các fetch sau dùng BE-authoritative value
-    if (convId) clearPendingTags(convId);
-    // Reconcile với BE — fetch fresh + dispatch event để các surface khác re-fetch
-    void fetchAllLabels(accId, threadId);
-    window.dispatchEvent(new CustomEvent('zalo-labels-synced', { detail: { accountId: accId } }));
-    // Trigger timeline refresh + highlight entry "tag_change_zalo" mới
-    const contactId = props.conversation?.contact?.id;
-    if (contactId) window.dispatchEvent(new CustomEvent('timeline-updated', { detail: { contactId } }));
-  } catch (err: any) {
-    // Rollback ALL optimistic mutations + clear pending
-    allLabels.value = snapshotAllLabels;
-    if (friendship) {
-      friendship.crmTagsPerNick = oldCrmTags;
-      friendship.zaloLabels = oldZaloLabels;
-    }
-    if (convId) clearPendingTags(convId);
-    toast.error(err.response?.data?.error || 'Không gán được tag — đã hoàn tác');
-  }
-}
+const { saving: savingLabel, assign: onPickLabel } = useZaloLabelAssignment({
+  conversation: () => props.conversation,
+  labels: allLabels,
+  currentLabelId: () => currentLabel.value?.id,
+  accountStatus: () => labelAccountStatus.value,
+  refreshLabels: fetchAllLabels,
+});
+const labelAccountOffline = computed(() => {
+  const status = labelAccountStatus.value ?? props.conversation?.zaloAccount?.status;
+  return !!status && status !== 'connected';
+});
 
 async function onSyncLabels() {
   const accId = props.conversation?.zaloAccount?.id;
@@ -5049,4 +4979,7 @@ onBeforeUnmount(() => messageResizeObserver?.disconnect());
 }
 .zlbl-manage:hover { background: var(--smax-grey-50); color: var(--smax-primary); }
 .manage-icon { font-size: 14px; }
+
+.zlbl-connection-notice { max-width: 290px; margin: 0; padding: 12px; font-size: 12px; line-height: 1.6; color: #875c23; background: #fffaeb; }
+.zlbl-option:disabled { opacity: .5; cursor: not-allowed; }
 </style>
