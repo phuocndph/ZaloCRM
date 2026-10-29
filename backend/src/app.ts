@@ -86,6 +86,7 @@ import { agentSettingsRoutes, agentApiRoutes } from './modules/agents/agent-rout
 import { startContactIntelligence } from './modules/contacts/contact-intelligence.js';
 import { analyticsRoutes } from './modules/analytics/analytics-routes.js';
 import { savedReportRoutes } from './modules/analytics/saved-report-routes.js';
+import { commerceRoutes } from './modules/joliefam/commerce-routes.js';
 import { integrationRoutes } from './modules/integrations/integration-routes.js';
 // Automation + Marketing (engine, blocks, sequences, triggers, broadcasts,
 // care-session, lists, friend-invite) → extension bundle (src/_ee/automation).
@@ -364,6 +365,7 @@ async function bootstrap() {
   await app.register(analyticsRoutes);
   await app.register(savedReportRoutes);
   await app.register(integrationRoutes);
+  await app.register(commerceRoutes);
   // Automation + Marketing routes (blocks/sequences/triggers/broadcasts/care-session/
   // lists/friend-invite + bull-board/stats/manual-control) → extension bundle.
   await app.register(telegramBridgeRoutes); // Telegram bridge (Zalo↔Telegram) — core

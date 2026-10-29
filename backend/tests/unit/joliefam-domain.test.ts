@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+import { describe, expect, it } from 'vitest';
+import { parseDraft, validateSubmission, validateQuote, fingerprint, safeLink } from '../../src/modules/joliefam/commerce-domain.js';
+const input = () => ({ customerId: 'hotel-a', orderedBy: 'Người đặt', recipient: { name: 'Người nhận', phone: '0901234567', address: 'Địa chỉ khách sạn' }, desiredDate: '2026-11-01', notes: '', lines: [{ productId: 'curtain', name: 'Rèm', kind: 'custom', quantity: 2.5, unit: 'm²', proposedPrice: 250000, specifications: { measurements: '250 cm × 270 cm', material: 'Cotton' }, attachments: [] }] });
+describe('Joliefam order input boundaries', () => {
+  it('saves incomplete local drafts but blocks submitting them', () => { const draft = parseDraft({ lines: [], recipient: {} }); expect(draft.customerId).toBeNull(); expect(() => validateSubmission(draft)).toThrow('liên kết'); });
+  it('accepts custom quantities, specifications and integer VND proposal', () => { const draft = parseDraft(input()); expect(draft.lines[0].quantity).toBe(2.5); expect(() => validateSubmission(draft)).not.toThrow(); });
+  it.each([0, -1, Infinity, NaN, 1e10])('rejects invalid quantity %s', quantity => { const data = input(); data.lines[0].quantity = quantity; expect(() => parseDraft(data)).toThrow(); });
+  it.each([-1, 0.5, Infinity, 1e15])('rejects invalid VND price %s', price => { const data = input(); data.lines[0].proposedPrice = price; expect(() => parseDraft(data)).toThrow(); });
+  it('requires a custom proposal at submission while allowing a missing proposal in local draft', () => { const data = input() as any; data.lines[0].proposedPrice = null; const d = parseDraft(data); expect(() => validateSubmission(d)).toThrow('giá đề xuất'); });
+  it.each(['2026-02-30', '2026-13-01', 'tomorrow'])('rejects invalid requested date %s', date => { const data = input(); data.desiredDate = date; expect(() => parseDraft(data)).toThrow(); });
+  it('does not accept arbitrary URLs as attachments or client order status', () => { const d = parseDraft({ ...input(), status: 'approved' }); expect(d).not.toHaveProperty('status'); const bad = input() as any; bad.lines[0].attachments = [{ name: 'file', url: 'https://internal/secret' }]; expect(() => parseDraft(bad)).toThrow(); });
+  it('binds the CRM quote to the exact saved draft and expiry', () => { const d = parseDraft(input()); const q = { token: 'signed', fingerprint: fingerprint(d), expiresAt: new Date(Date.now() + 60000).toISOString(), currency: 'VND' as const, subtotal: 500000, discount: 0, shipping: 10000, tax: 0, total: 510000, warnings: [], lines: [{ productId: 'curtain', quantity: 2.5, unitPrice: 200000, total: 500000 }] }; expect(() => validateQuote(q, d)).not.toThrow(); expect(() => validateQuote(q, { ...d, notes: 'changed' })).toThrow(); expect(() => validateQuote({ ...q, total: 1 }, d)).toThrow(); expect(() => validateQuote({ ...q, expiresAt: '2000-01-01' }, d)).toThrow(); });
+  it.each(['javascript:alert(1)', 'http://crm.joliefam.vn', 'https://user:password@crm.joliefam.vn', 'not-a-url'])('rejects unsafe links %s', url => { expect(safeLink(url)).toBeNull(); });
+});

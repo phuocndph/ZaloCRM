@@ -322,6 +322,10 @@ function actionLabel(a: string) {
 }
 
 const RESOURCE_LABELS: Record<string, string> = {
+  commerce: 'Thông tin mua hàng',
+  commerce_link: 'Liên kết khách CRM',
+  commerce_draft: 'Đơn nháp CRM (phê duyệt = gửi chờ duyệt)',
+  commerce_connection: 'Kết nối CRM Joliefam',
   department: 'Quản lý phòng ban',
   user: 'Quản lý người dùng',
   permission_group: 'Quản lý quyền',

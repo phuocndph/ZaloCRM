@@ -1,0 +1,29 @@
+<!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
+<template>
+  <section class="connection-page"><h1>Kết nối CRM Joliefam</h1><p>Đọc khách, đơn hàng, giao nhận và gửi đơn nháp tới <strong>crm.joliefam.vn</strong>.</p>
+    <p v-if="error" role="alert" class="error">{{ error }}</p><p v-if="message" role="status" class="success">{{ message }}</p><p v-if="loading">Đang tải kết nối…</p>
+    <template v-if="settings"><div class="status"><b>{{ settings.enabled ? 'Kết nối đang bật' : 'Kết nối đang tắt' }}</b><p>Kiểm tra gần nhất: {{ dateTime(settings.testedAt) }}<br>Đối chiếu gần nhất: {{ dateTime(settings.lastSyncAt) }}</p><p v-if="settings.lastError" class="error">{{ settings.lastError }}</p></div>
+      <p v-if="!settings.encryptionReady" class="notice">Máy chủ chưa có khóa mã hóa. Cần cấu hình TOKEN_ENCRYPTION_KEY trước khi lưu khóa CRM.</p>
+      <form @submit.prevent="save"><fieldset :disabled="busy || !auth.canAccess('commerce_connection', 'edit')"><label>Địa chỉ CRM<input value="https://crm.joliefam.vn" readonly></label><label>Đường dẫn API<input v-model="basePath" placeholder="/api/zcrm/v1" maxlength="110"></label><label>Khóa API CRM<input v-model="token" type="password" autocomplete="new-password" :placeholder="settings.hasToken ? 'Đã lưu — để trống để giữ nguyên' : 'Nhập khóa do CRM cấp'"></label><label>Khóa xác nhận cập nhật từ CRM<input v-model="webhookSecret" type="password" autocomplete="new-password" :placeholder="settings.hasWebhookSecret ? 'Đã lưu — để trống để giữ nguyên' : 'Ít nhất 32 ký tự, giống phía CRM'"></label>
+      <h2>Ghép nhân viên giữa hai hệ thống</h2><p>Mỗi dòng nhập mã nhân viên ZCRM và mã tài khoản CRM tương ứng. Đơn sẽ ghi đúng người gửi.</p><div v-for="(m, i) in mappings" :key="i" class="mapping"><input v-model="m.zcrm" aria-label="Mã nhân viên ZCRM" placeholder="Mã nhân viên ZCRM"><input v-model="m.crm" aria-label="Mã nhân viên CRM" placeholder="Mã tài khoản CRM"><button type="button" @click="mappings.splice(i, 1)">Bỏ</button></div><button type="button" @click="mappings.push({ zcrm: '', crm: '' })">+ Thêm nhân viên</button>
+      <p class="muted">Mã tài khoản ZCRM của anh: {{ auth.user?.id }}</p><label class="toggle"><input v-model="enabled" type="checkbox"> Bật kết nối (chỉ bật sau khi kiểm tra thành công)</label>
+      <div class="actions"><button type="submit">Lưu cấu hình</button><button type="button" :disabled="!settings.hasToken || token !== '' || webhookSecret !== '' || basePath !== settings.basePath" @click="test">Kiểm tra kết nối đã lưu</button></div></fieldset></form>
+      <h2>Địa chỉ nhận cập nhật</h2><code>{{ webhookUrl }}</code><p>Giao cho người quản lý CRM cấu hình gửi thông báo có chữ ký xác nhận.</p><p class="notice">Lần đầu: lưu khi đang tắt → kiểm tra kết nối → bật và lưu. Nếu CRM chưa triển khai cổng kết nối, kiểm tra sẽ báo phần chưa sẵn sàng.</p>
+    </template>
+  </section>
+</template>
+<script setup lang="ts">
+import { ref, computed, onMounted } from 'vue';
+import { useAuthStore } from '@/stores/auth';
+import { commerceApi, purchaseError, dateTime, type Settings } from '@/api/commerce';
+const auth = useAuthStore(), settings = ref<Settings | null>(null), loading = ref(false), busy = ref(false), error = ref(''), message = ref('');
+const enabled = ref(false), basePath = ref('/api/zcrm/v1'), token = ref(''), webhookSecret = ref(''), mappings = ref<Array<{ zcrm: string; crm: string }>>([]);
+const webhookUrl = computed(() => settings.value ? `${location.origin}${settings.value.webhookPath}` : '');
+function receive(s: Settings) { settings.value = s; enabled.value = s.enabled; basePath.value = s.basePath; mappings.value = Object.entries(s.actorMap).map(([zcrm, crm]) => ({ zcrm, crm })); token.value = ''; webhookSecret.value = ''; }
+async function save() { busy.value = true; error.value = ''; message.value = ''; try { const ids = mappings.value.map(m => m.zcrm.trim()); if (new Set(ids).size !== ids.length || mappings.value.some(m => !m.zcrm.trim() || !m.crm.trim())) { error.value = 'Mã nhân viên không được trống hoặc lặp lại.'; return; } receive(await commerceApi.saveSettings({ enabled: enabled.value, basePath: basePath.value, token: token.value, webhookSecret: webhookSecret.value, actorMap: Object.fromEntries(mappings.value.map(m => [m.zcrm.trim(), m.crm.trim()])) })); message.value = 'Đã lưu cấu hình kết nối.'; } catch (e) { error.value = purchaseError(e); } finally { busy.value = false; } }
+async function test() { busy.value = true; error.value = ''; message.value = ''; try { await commerceApi.test(); receive(await commerceApi.settings()); message.value = 'Kiểm tra đạt. CRM hỗ trợ các chức năng kết nối v1; có thể bật kết nối.'; } catch (e) { error.value = purchaseError(e); try { receive(await commerceApi.settings()); } catch {} } finally { busy.value = false; } }
+onMounted(async () => { loading.value = true; try { receive(await commerceApi.settings()); } catch (e) { error.value = purchaseError(e); } finally { loading.value = false; } });
+</script>
+<style scoped>
+.connection-page{max-width:850px;color:#1e293b;line-height:1.6}h1{font-size:23px}h2{font-size:17px;margin-top:24px}.status{padding:16px;background:#f0fdfa;border:1px solid #ccebe5;border-radius:10px}.error{color:#b91c1c}.success{color:#166534}.muted{color:#64748b}.notice{background:#fff7df;padding:12px;border-radius:8px;color:#805717}fieldset{border:0;padding:0}label{display:block;margin:14px 0}input:not([type=checkbox]){display:block;width:100%;border:1px solid #cbd5e1;border-radius:7px;padding:9px;background:white;color:#1e293b;font:inherit}.mapping,.actions{display:flex;gap:8px;margin:8px 0}button{background:white;color:#155e75;border:1px solid #cbd5e1;border-radius:7px;padding:8px 12px;cursor:pointer}button:disabled{opacity:.5}code{display:block;overflow-wrap:anywhere;background:#f1f5f9;padding:12px}.toggle input{margin-right:5px}@media(max-width:600px){.mapping{flex-wrap:wrap}}
+</style>

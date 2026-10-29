@@ -13,6 +13,7 @@
  * Tên ở dạng PascalCase khớp tham số `model` của Prisma $allOperations.
  */
 export const ORG_SCOPED_MODELS: ReadonlySet<string> = new Set([
+  'JoliefamConnection', 'JoliefamCustomerLink', 'JoliefamSnapshot', 'JoliefamDraft', 'JoliefamEvent', 'JoliefamAudit',
   'CustomerResearchProject', 'CustomerResearchSource', 'CustomerResearchPain',
   'CustomerResearchContent', 'CustomerResearchTask',
   'Team', 'User', 'ZaloAccount', 'SdkLimit', 'ZaloAccountStatusLog', 'Contact',

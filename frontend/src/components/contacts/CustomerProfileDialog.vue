@@ -328,6 +328,7 @@
             </section>
 
             <!-- ─── TAB: Nick chăm ─── -->
+            <section v-else-if="activeTab === 'purchases'" class="cpd-pane"><PurchasePanel v-if="c?.id" :key="c.id" :contact-id="c.id" /></section>
             <section v-else-if="activeTab === 'nicks'" class="cpd-pane">
               <div v-if="loadingFriends" class="cpd-empty">Đang tải nick chăm…</div>
               <template v-else>
@@ -424,6 +425,7 @@
 </template>
 
 <script setup lang="ts">
+import PurchasePanel from '@/components/commerce/PurchasePanel.vue';
 import { ref, computed, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { api } from '@/api/index';
@@ -458,7 +460,7 @@ const isCreate = computed(() => props.mode === 'create');
 const router = useRouter();
 const toast = useToast();
 
-type TabKey = 'overview' | 'nicks' | 'timeline' | 'notes';
+type TabKey = 'overview' | 'nicks' | 'timeline' | 'notes' | 'purchases';
 const activeTab = ref<TabKey>('overview');
 
 const c = ref<Contact | null>(null);
@@ -792,6 +794,7 @@ const assistSales = computed(() =>
 
 const tabs = computed(() => [
   { key: 'overview' as TabKey, label: 'Tổng quan', count: undefined },
+  ...(!isCreate.value ? [{ key: 'purchases' as TabKey, label: 'Mua hàng', count: undefined }] : []),
   { key: 'nicks' as TabKey, label: 'Nick chăm', count: friends.value.length || (c.value as any)?.childrenCount || 0 },
   { key: 'timeline' as TabKey, label: 'Lịch sử', count: undefined },
   { key: 'notes' as TabKey, label: 'Ghi chú', count: notes.value.length || undefined },

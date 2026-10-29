@@ -34,6 +34,10 @@ export const RESOURCES = [
   'settings',           // Cài đặt chung       → /settings/* (org, crm, channels...)
   'audit_log',          // Nhật ký hành động   → /settings/org/audit
   // ── Khách hàng & hội thoại (menu chính) ──
+  'commerce',           // Xem thông tin mua hàng
+  'commerce_link',      // Liên kết khách CRM
+  'commerce_draft',     // Tạo / sửa / gửi đơn nháp
+  'commerce_connection',// Quản lý kết nối CRM
   'contact',            // Khách hàng          → /contacts
   'friend',             // Bạn bè (Zalo)       → /friends
   'conversation',       // Tin nhắn / Hội thoại→ /chat
@@ -69,6 +73,10 @@ export type Resource = (typeof RESOURCES)[number];
 // Mỗi resource declare actions hợp lệ (subset của ACTIONS).
 // Vd Engagement không có "create/edit/delete" — chỉ computed.
 export const RESOURCE_ACTIONS: Record<Resource, readonly Action[]> = {
+  commerce: ['access'],
+  commerce_link: ['access', 'edit'],
+  commerce_draft: ['access', 'create', 'edit', 'approve'],
+  commerce_connection: ['access', 'edit'],
   department: ['access', 'create', 'edit', 'delete'],
   user: ['access', 'create', 'edit', 'delete'],
   permission_group: ['access', 'create', 'edit', 'delete'],
