@@ -48,6 +48,15 @@
       </button>
     </header>
 
+    <div v-if="allAssignees && !compact" class="dwq-assignee-filter">
+      <label for="work-assignee">Người phụ trách</label>
+      <select id="work-assignee" v-model="selectedAssigneeId" aria-label="Lọc theo người phụ trách">
+        <option value="">Tất cả người phụ trách</option>
+        <option v-for="person in assignees" :key="person.id" :value="person.id">{{ person.fullName }}</option>
+      </select>
+      <span>{{ selectedAssigneeId ? 'Đang xem công việc của người đã chọn' : 'Đang xem tất cả công việc trong phạm vi được phép' }}</span>
+    </div>
+
     <div v-if="!compact" class="dwq-tools">
       <SearchIcon :size="15" aria-hidden="true" />
       <input
@@ -114,6 +123,7 @@
           <p v-if="item.reason" class="dwq-reason"><CircleHelpIcon :size="13" aria-hidden="true" /> {{ item.reason }}</p>
 
           <div class="dwq-meta">
+            <span v-if="allAssignees && item.assignee"><UsersRoundIcon :size="13" aria-hidden="true" /> Phụ trách: {{ item.assignee.fullName }}</span>
             <span v-if="nickLabel(item)"><MessagesSquareIcon :size="13" aria-hidden="true" /> {{ nickLabel(item) }}</span>
             <span v-if="item.metadata?.isGroup"><UsersRoundIcon :size="13" aria-hidden="true" /> Nhóm bán hàng</span>
             <span v-if="(item.metadata?.unreadCount ?? 0) > 0"><MailIcon :size="13" aria-hidden="true" /> {{ item.metadata?.unreadCount }} tin chưa đọc</span>
@@ -212,7 +222,8 @@ import {
   type WorkItemScope,
 } from '@/composables/use-conversation-work-items';
 
-const props = withDefaults(defineProps<{ asUserId?: string | null; mobile?: boolean; compact?: boolean; hideTabs?: boolean; initialScope?: WorkItemScope; previewEnabled?: boolean; selectedConversationId?: string | null }>(), {
+const props = withDefaults(defineProps<{ allAssignees?: boolean; asUserId?: string | null; mobile?: boolean; compact?: boolean; hideTabs?: boolean; initialScope?: WorkItemScope; previewEnabled?: boolean; selectedConversationId?: string | null }>(), {
+  allAssignees: false,
   asUserId: null,
   mobile: false,
   compact: false,
@@ -222,6 +233,7 @@ const props = withDefaults(defineProps<{ asUserId?: string | null; mobile?: bool
   selectedConversationId: null,
 });
 const emit = defineEmits<{
+  'assignee-change': [assigneeUserId: string | null];
   'scope-change': [scope: WorkItemScope];
   'preview-conversation': [conversationId: string, item: ConversationWorkItem | null];
   'item-updated': [item: ConversationWorkItem];
@@ -229,9 +241,10 @@ const emit = defineEmits<{
 
 const router = useRouter();
 const toast = useToast();
-const { items, aiActivity, counts, summary, loading, loadingMore, hasMore, mutatingId, error, fetchItems, loadMore, updateItem, stopRealtime } = useConversationWorkItems();
+const { items, assignees, aiActivity, counts, summary, loading, loadingMore, hasMore, mutatingId, error, fetchItems, loadMore, updateItem, stopRealtime } = useConversationWorkItems();
 const scope = ref<WorkItemScope>(props.initialScope);
 const searchQuery = ref('');
+const selectedAssigneeId = ref('');
 const snoozeOpenId = ref<string | null>(null);
 const failedImages = reactive(new Set<string>());
 let timer: ReturnType<typeof setInterval> | null = null;
@@ -285,7 +298,7 @@ const aiPendingCount = computed(() => analysisActivities.value.filter((activity)
 const aiVerificationCount = computed(() => items.value.filter((item) => aiProgress(item)?.status === 'verification').length);
 
 function refresh(quiet = true) {
-  return fetchItems(scope.value, props.asUserId, quiet, searchQuery.value);
+  return fetchItems(scope.value, props.allAssignees ? selectedAssigneeId.value || null : props.asUserId, quiet, searchQuery.value, props.allAssignees);
 }
 
 function contactName(item: ConversationWorkItem) {
@@ -460,6 +473,12 @@ watch(() => props.initialScope, (value) => {
   if (value !== scope.value) scope.value = value;
 });
 watch(() => props.asUserId, () => void refresh(false));
+watch(() => props.allAssignees, () => void refresh(false));
+watch(selectedAssigneeId, (value) => {
+  snoozeOpenId.value = null;
+  emit('assignee-change', value || null);
+  void refresh(false);
+});
 watch(searchQuery, () => {
   if (searchTimer) clearTimeout(searchTimer);
   searchTimer = setTimeout(() => void refresh(false), 250);
@@ -488,6 +507,11 @@ defineExpose({ refresh, counts, summary, items, mutatingId, performAction });
 </script>
 
 <style scoped>
+.dwq-assignee-filter { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px 14px; border-bottom: 1px solid #e4e8ee; font-size: 12px; }
+.dwq-assignee-filter label { font-weight: 650; }
+.dwq-assignee-filter select { max-width: 100%; min-height: 34px; padding: 4px 8px; border: 1px solid #d0d5dd; border-radius: 5px; background: #fff; color: #172033; font: inherit; }
+.dwq-assignee-filter > span { color: #667085; font-size: 11px; }
+
 .dwq { --dwq-border: var(--at-hairline, #e4e8ee); --dwq-text: var(--at-ink, #172033); --dwq-muted: var(--at-body, #5d6878); container-type: inline-size; background: #fff; border: 1px solid var(--dwq-border); border-radius: 8px; color: var(--dwq-text); }
 .dwq-head { min-height: 68px; display: grid; grid-template-columns: minmax(200px, 1fr) minmax(260px, 1.7fr) 32px; align-items: center; gap: 16px; padding: 10px 14px; border-bottom: 1px solid var(--dwq-border); }
 .dwq-heading { min-width: 0; }

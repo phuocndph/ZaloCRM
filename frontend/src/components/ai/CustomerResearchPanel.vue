@@ -6,11 +6,11 @@
         <span class="heading-icon mdi mdi-compass-rose" aria-hidden="true" />
         <div>
           <div class="heading-title">
-            <h2>Tìm nỗi đau chủ khách sạn & Tạo bài chia sẻ</h2>
+            <h2>Tìm nỗi đau & tạo bài</h2>
             <span class="scope-pill">Jolie’Fam · Zalo cá nhân</span>
           </div>
           <p>
-            Thu thập khó khăn thật khi vận hành khách sạn từ Google và hội nhóm Facebook, chọn vấn đề đúng thực tế rồi để AI soạn sẵn nội dung chia sẻ.
+            Tìm hiểu khó khăn của chủ khách sạn, rồi viết nội dung chia sẻ từ nguồn đã có.
           </p>
         </div>
       </div>
@@ -35,26 +35,35 @@
       </div>
     </Transition>
 
-    <div v-if="currentProject?.executor === 'hermes'" class="hermes-connection" role="status">
-      <span class="mdi mdi-robot-outline" aria-hidden="true" />
-      <strong>Hermes Agent</strong>
-      <span>{{ !hermesStatus ? 'Chưa đọc được trạng thái kết nối Hermes' : hermesStatus.recentlySeen ? 'Đã liên lạc trong 2 phút gần đây' : 'Hermes chưa liên lạc để nhận việc nghiên cứu trong 2 phút gần đây' }}</span>
-      <time v-if="hermesStatus?.lastSeenAt">Lần liên lạc cuối: {{ formatDate(hermesStatus.lastSeenAt) }}</time>
-      <p v-if="hermesStatus && !hermesStatus.recentlySeen" class="hermes-help">
-        Cần chạy bộ nhận việc trên máy chủ Hermes: <code>python3 /opt/zcrm-hermes/zcrm_bridge.py --watch</code>.
-        Chỉ kết nối API hoặc mở cửa sổ chat Hermes chưa tự nhận việc ở đây. Kiểm tra trong đúng môi trường đã cài khóa kết nối; không cần tạo lại công việc.
-      </p>
+    <section v-if="currentProject?.executor === 'hermes'" class="direct-switch" role="status">
+      <div><strong>Chuyển đợt này sang AI trong ZCRM</strong><p>Giữ nguồn và bài đã lưu. Công việc cũ đang chờ hoặc chạy qua Hermes sẽ dừng khi chuyển.</p></div>
+      <select v-if="availableModels.length" v-model="projectForm.modelConfigId" aria-label="AI dùng khi chuyển sang ZCRM">
+        <option v-for="model in availableModels" :key="model.id" :value="model.id">{{ model.displayName }}</option>
+      </select>
+      <input v-else v-model.trim="projectForm.modelConfigId" placeholder="Mã AI đã cấu hình trong ZCRM" aria-label="AI dùng khi chuyển sang ZCRM" />
+      <button class="button primary" type="button" :disabled="taskBusy || !canEdit || !projectForm.modelConfigId" @click="switchToDirect">Chạy trực tiếp trong ZCRM</button>
+    </section>
+    <div v-if="capabilities" class="connection-toolbar">
+      <div class="connection-status" :class="{ warning: !capabilities.search.configured }">
+        <span class="status-dot" />
+        <span>{{ capabilities.search.configured ? 'Tìm kiếm đã kết nối' : 'Chưa kết nối tìm kiếm Google' }}</span>
+        <span class="connection-hint">{{ capabilities.search.configured ? 'Sẵn sàng tìm nguồn và hội nhóm' : 'Anh vẫn có thể thêm đường dẫn hoặc dán nội dung để dùng AI.' }}</span>
+      </div>
+      <button type="button" class="link-btn" :aria-expanded="showConnections" aria-controls="research-connections" @click="showConnections = !showConnections">
+        <span class="mdi mdi-tune-variant" /> {{ showConnections ? 'Đóng thiết lập' : 'Thiết lập kết nối' }}
+      </button>
     </div>
-    <section v-else-if="capabilities" class="capability-strip" aria-label="Trạng thái kết nối">
+    <div id="research-connections" v-show="showConnections" class="connection-settings">
+    <section v-if="capabilities" class="capability-strip" aria-label="Trạng thái kết nối">
       <div class="cap-item" :class="{ ok: capabilities.search.configured, warn: !capabilities.search.configured }">
         <span class="mdi" :class="capabilities.search.configured ? 'mdi-magnify-check' : 'mdi-magnify-close'" />
         <div>
           <strong>Tìm trên Google</strong>
-          <small>{{ capabilities.search.configured ? 'Đã bật sẵn sàng' : 'Chưa gắn mã kết nối Google (vẫn dán bài thủ công được)' }}</small>
+          <small>{{ capabilities.search.configured ? 'Đã có mã kết nối' : 'Chưa có mã tìm kiếm (vẫn có thể dán nội dung để tổng hợp)' }}</small>
         </div>
       </div>
 
-      <div class="cap-item" :class="{ ok: capabilities.publicWeb.allowedDomains.length > 0, warn: capabilities.publicWeb.allowedDomains.length === 0 }">
+      <div class="cap-item" :class="{ ok: capabilities.publicWeb.publicSitesEnabled || capabilities.publicWeb.allowedDomains.length > 0, warn: !capabilities.publicWeb.publicSitesEnabled && capabilities.publicWeb.allowedDomains.length === 0 }">
         <span class="mdi mdi-web" />
         <div>
           <strong>Đọc trang web công khai</strong>
@@ -62,7 +71,7 @@
             {{
               capabilities.publicWeb.allowedDomains.length
                 ? `Cho phép tự đọc ${capabilities.publicWeb.allowedDomains.length} tên miền (${capabilities.publicWeb.allowedDomains.slice(0, 3).join(', ')})`
-                : 'Chưa mở danh sách trang web tự đọc (cần dán nội dung hoặc cấu hình tên miền)'
+                : 'Tự đọc trang công khai; bỏ qua trang chặn truy cập'
             }}
           </small>
         </div>
@@ -72,21 +81,35 @@
         <span class="mdi mdi-facebook" />
         <div>
           <strong>Hội nhóm Facebook</strong>
-          <small>Dán bài viết hoặc bình luận thủ công để đảm bảo đúng bài thật và có quyền sử dụng</small>
+          <small>Tự tìm nhóm và bài Facebook qua Google; chỉ tổng hợp khi đã có nội dung đọc được</small>
         </div>
       </div>
     </section>
 
+    <details v-if="canManageSearch" class="search-setup" open>
+      <summary>Thiết lập tìm kiếm Google</summary>
+      <form @submit.prevent="saveSearchConnection">
+        <label>Mã kết nối Serper <input v-model.trim="searchApiKey" type="password" autocomplete="new-password" required placeholder="Dán mã kết nối tìm kiếm" /></label>
+        <button class="button secondary" type="submit" :disabled="saving || !searchApiKey">Lưu kết nối</button>
+        <small>Mã được lưu bảo mật. Phần viết và tổng hợp dùng AI đã cấu hình trong ZCRM.</small>
+      </form>
+    </details>
+    </div>
     <div class="research-workspace">
-      <aside class="project-sidebar">
+      <aside class="project-sidebar" :class="{ 'project-picker-open': showProjectPicker }">
         <div class="sidebar-header">
           <div>
             <strong>Các đợt tìm hiểu</strong>
             <small>Mỗi đợt là một chủ đề cần tìm hiểu</small>
           </div>
           <span class="count-badge">{{ projects.length }}</span>
+          <button type="button" class="mobile-project-toggle link-btn" :aria-expanded="showProjectPicker" aria-controls="research-project-list" @click="showProjectPicker = !showProjectPicker">{{ showProjectPicker ? 'Thu gọn' : 'Đổi đợt' }} <span class="mdi mdi-chevron-down" /></button>
         </div>
 
+        <label class="project-search">
+          <span class="mdi mdi-magnify" aria-hidden="true" />
+          <input v-model="projectSearch" type="search" placeholder="Tìm đợt nghiên cứu…" aria-label="Tìm đợt nghiên cứu" />
+        </label>
         <div v-if="loading && !projects.length" class="sidebar-empty">
           Đang tải danh sách…
         </div>
@@ -97,24 +120,25 @@
           <small>Bấm "Tạo đợt tìm hiểu mới" để bắt đầu tìm vấn đề của chủ khách sạn.</small>
         </div>
 
-        <div v-else class="project-list">
+        <div v-else class="project-list" id="research-project-list">
           <button
-            v-for="item in projects"
+            v-for="item in filteredProjects"
             :key="item.id"
             type="button"
             class="project-card"
             :class="{ active: selectedProjectId === item.id }"
+            :aria-current="selectedProjectId === item.id ? 'true' : undefined"
             @click="selectProject(item.id)"
           >
             <strong>{{ item.title }}</strong>
             <p>{{ item.brief }}</p>
             <div class="project-meta">
-              <span>AI: {{ item.aiCalls }} lượt</span>
-              <span v-if="item.executor === 'hermes'">Hermes Agent</span>
-              <span v-else>Chi phí: {{ formatMicrosToUsd(item.aiCostMicros) }}</span>
+              <span>{{ item.executor === 'hermes' ? 'Cần chuyển sang ZCRM' : 'AI trong ZCRM' }}</span>
+              <time :datetime="item.createdAt">{{ formatShortDate(item.createdAt) }}</time>
             </div>
           </button>
         </div>
+        <p v-if="projects.length && !filteredProjects.length" class="sidebar-empty">Không có đợt phù hợp. Thử từ khóa khác.</p>
       </aside>
 
       <div class="project-main">
@@ -134,29 +158,36 @@
           <section class="project-summary-card">
             <div class="summary-top">
               <div>
+                <span class="section-eyebrow">ĐỢT ĐANG XEM</span>
                 <h3>{{ currentProject.title }}</h3>
-                <p class="brief-text">{{ currentProject.brief }}</p>
               </div>
-              <div class="budget-pills">
-                <span>
-                  <small>{{ currentProject.executor === 'hermes' ? 'Phần tìm nguồn đã giao' : 'Lượt tìm Google' }}</small>
-                  <strong>{{ currentProject.searchCalls }}</strong>
-                </span>
-                <span>
-                  <small>Nguồn đã lưu</small>
-                  <strong>{{ sources.length }}</strong>
-                </span>
-                <span>
-                  <small>{{ currentProject.executor === 'hermes' ? 'Lượt tổng hợp / viết' : 'Lượt gọi AI' }}</small>
-                  <strong>{{ currentProject.aiCalls }}</strong>
-                </span>
-                <span v-if="currentProject.executor !== 'hermes'">
-                  <small>Chi phí AI đã ghi nhận</small>
-                  <strong>{{ formatMicrosToUsd(currentProject.aiCostMicros) }}</strong>
-                </span>
-              </div>
+              <details class="project-settings" :key="currentProject.id">
+                <summary><span class="mdi mdi-cog-outline" /> Thông tin & AI</summary>
+                <div class="project-settings-body">
+                  <strong>Mục tiêu tìm hiểu</strong>
+                  <p class="brief-text">{{ currentProject.brief }}</p>
+                  <label v-if="currentProject.executor !== 'hermes' && availableModels.length && canEdit" class="project-model">
+                    AI dùng cho đợt này
+                    <select :value="currentProject.modelConfigId" :disabled="taskBusy || hasActiveTask" aria-label="Đổi AI dùng cho đợt này" @change="changeProjectModel">
+                      <option v-if="!availableModels.some((model) => model.id === currentProject?.modelConfigId)" :value="currentProject.modelConfigId" disabled>AI cũ không còn sẵn sàng — hãy chọn lại</option>
+                      <option v-for="model in availableModels" :key="model.id" :value="model.id">{{ model.displayName }}</option>
+                    </select>
+                    <small>AI đã kiểm tra kết nối dùng ngay cho nghiên cứu.</small>
+                  </label>
+                  <div class="usage-summary">
+                    <span>{{ currentProject.searchCalls }} lượt tìm Google</span>
+                    <span>{{ currentProject.aiCalls }} lượt gọi AI</span>
+                    <span v-if="currentProject.executor !== 'hermes'">Chi phí đã ghi nhận: {{ formatMicrosToUsd(currentProject.aiCostMicros) }}</span>
+                  </div>
+                </div>
+              </details>
             </div>
-
+            <div v-if="currentProject.executor !== 'hermes'" class="research-start">
+              <div><strong>Tự tìm nguồn và tổng hợp vấn đề</strong><p>AI làm lần lượt và tự lưu kết quả.</p></div>
+              <button type="button" class="button primary" :disabled="taskBusy || hasActiveTask || !canEdit || !capabilities?.search.configured || !capabilities?.encryption" @click="triggerTask('research')">{{ activePains.length ? 'Tìm và tổng hợp lại' : 'Bắt đầu tìm hiểu' }}</button>
+              <small v-if="!capabilities?.search.configured">Chưa có kết nối Google. Thêm nguồn ở bước 1 hoặc mở Thiết lập kết nối để bật tìm tự động.</small>
+              <small v-else-if="!capabilities?.encryption">Máy chủ chưa sẵn sàng lưu nguồn bảo mật. Cần kiểm tra cấu hình mã hóa.</small>
+            </div>
             <div v-if="latestTask" class="task-banner" :class="latestTask.status">
               <div class="task-info">
                 <span
@@ -170,9 +201,10 @@
                 />
                 <div>
                   <strong>{{ TASK_KIND_LABELS[latestTask.kind] || latestTask.kind }}: {{ TASK_STATUS_LABELS[latestTask.status] || latestTask.status }}</strong>
-                  <small v-if="latestTask.errorCode">Mã thông báo: {{ friendlyErrorCode(latestTask.errorCode) }}</small>
-                  <small v-else-if="currentProject.executor === 'hermes' && latestTask.status === 'queued'">{{ hermesStatus && !hermesStatus.recentlySeen ? 'Chưa có kết nối nhận việc nghiên cứu gần đây. Kiểm tra bộ nhận việc trên máy chủ Hermes theo hướng dẫn phía trên.' : 'Đang chờ Hermes nhận việc. Khi Hermes nhận, trạng thái sẽ tự đổi sang đang xử lý.' }}</small>
-                  <small v-else-if="isTaskActive(latestTask)">{{ latestTask.checkpoint?.progress || 'Đang xử lý, kết quả sẽ tự cập nhật.' }}</small>
+                  <small v-if="latestTask.errorCode">Cần xử lý: {{ friendlyErrorCode(latestTask.errorCode) }}</small>
+                  <small v-else-if="latestTask.status === 'queued' && currentProject.executor !== 'hermes'">{{ queuedTooLong ? 'Bộ xử lý chưa nhận việc. Hệ thống đang thử lại; cần kiểm tra máy chủ nếu tình trạng kéo dài.' : 'Công việc đã lưu. ZCRM đang chuẩn bị xử lý.' }}</small>
+                  <small v-else-if="latestTask.checkpoint?.progress">{{ latestTask.checkpoint.progress }}</small>
+                  <small v-else-if="isTaskActive(latestTask)">{{ currentProject.executor === 'hermes' ? 'Chuyển sang AI trong ZCRM để tiếp tục.' : 'ZCRM đang chuẩn bị xử lý, kết quả sẽ tự cập nhật.' }}</small>
                   <small v-else>Cập nhật lúc {{ formatDate(latestTask.completedAt || latestTask.createdAt) }}</small>
                 </div>
               </div>
@@ -187,7 +219,7 @@
                   Dừng việc này
                 </button>
                 <button
-                  v-if="['failed', 'cancelled'].includes(latestTask.status)"
+                  v-if="['failed', 'cancelled'].includes(latestTask.status) && currentProject.executor !== 'hermes' && latestTask.input?.executor !== 'hermes'"
                   type="button"
                   class="button secondary"
                   :disabled="taskBusy || hasActiveTask"
@@ -199,11 +231,15 @@
             </div>
           </section>
 
-          <nav class="step-tabs" aria-label="Các bước thực hiện">
+          <ol v-if="latestTask?.kind === 'research' && isTaskActive(latestTask)" class="research-progress" aria-label="Tiến độ tìm hiểu">
+            <li v-for="phase in workflowPhases" :key="phase.key" :class="{ current: latestTask.checkpoint?.stage === phase.key, finished: latestTask.status === 'completed' }">{{ phase.label }}</li>
+          </ol>
+          <nav class="step-tabs" aria-label="Các bước thực hiện" role="tablist" @keydown="navigateSteps">
             <button
               type="button"
               class="step-tab"
               :class="{ active: activeStep === 'sources' }"
+              id="research-tab-sources" role="tab" :tabindex="activeStep === 'sources' ? 0 : -1" :aria-selected="activeStep === 'sources'" aria-controls="research-step-panel"
               @click="activeStep = 'sources'"
             >
               <span class="step-num">1</span>
@@ -217,6 +253,7 @@
               type="button"
               class="step-tab"
               :class="{ active: activeStep === 'pains' }"
+              id="research-tab-pains" role="tab" :tabindex="activeStep === 'pains' ? 0 : -1" :aria-selected="activeStep === 'pains'" aria-controls="research-step-panel"
               @click="activeStep = 'pains'"
             >
               <span class="step-num">2</span>
@@ -230,6 +267,7 @@
               type="button"
               class="step-tab"
               :class="{ active: activeStep === 'contents' }"
+              id="research-tab-contents" role="tab" :tabindex="activeStep === 'contents' ? 0 : -1" :aria-selected="activeStep === 'contents'" aria-controls="research-step-panel"
               @click="activeStep = 'contents'"
             >
               <span class="step-num">3</span>
@@ -240,38 +278,21 @@
             </button>
           </nav>
 
-          <section v-if="activeStep === 'sources'" class="step-panel">
+          <section v-if="activeStep === 'sources'" class="step-panel" id="research-step-panel" role="tabpanel" :aria-labelledby="`research-tab-${activeStep}`">
             <div class="panel-action-bar">
               <div>
-                <h4>Thu thập bài viết & thảo luận thực tế</h4>
+                <h4>Nguồn để tìm hiểu</h4>
                 <p>
-                  Bạn có thể bấm cho AI tự tìm trên Google theo yêu cầu của đợt tìm hiểu, hoặc dán trực tiếp bài viết/bình luận từ hội nhóm Facebook chủ khách sạn vào đây.
+                  Thêm đường dẫn, bài viết hoặc bình luận được phép dùng. AI sẽ đọc và dẫn nguồn khi tổng hợp.
                 </p>
               </div>
               <div class="action-group">
-                <button
-                  type="button"
-                  class="button secondary"
-                  :disabled="taskBusy || hasActiveTask || loading || !canEdit || (currentProject.executor !== 'hermes' && !capabilities?.search.configured)"
-                  @click="triggerTask('discover')"
-                >
-                  <span class="mdi mdi-google" />
-                  {{ currentProject.executor === 'hermes' ? 'Giao Hermes tìm thông tin' : 'Tìm nguồn trên Google' }}
-                </button>
-                <button
-                  type="button"
-                  class="button secondary"
-                  v-if="currentProject.executor !== 'hermes'"
-                  :disabled="taskBusy || hasActiveTask || !pendingWebSourceCount || !canEdit"
-                  @click="triggerTask('collect')"
-                >
-                  <span class="mdi mdi-file-find-outline" />
-                  2. Đọc các trang web ({{ pendingWebSourceCount }})
-                </button>
+                <button v-if="currentProject.executor !== 'hermes'" type="button" class="button secondary" :disabled="taskBusy || hasActiveTask || !canEdit || !capabilities?.search.configured" @click="triggerTask('discover_groups')">Tự tìm hội nhóm Facebook</button>
+                <button v-if="sources.length && currentProject.executor !== 'hermes'" type="button" class="button secondary" :disabled="taskBusy || hasActiveTask || !canEdit || !capabilities?.encryption" @click="triggerTask('research', { sourceMode: 'saved' })">Đọc và tổng hợp nguồn đã thêm</button>
                 <button
                   type="button"
                   class="button primary"
-                  :disabled="hasActiveTask"
+                  :disabled="hasActiveTask || !canEdit"
                   @click="showAddSourceModal = true"
                 >
                   <span class="mdi mdi-plus" />
@@ -280,7 +301,15 @@
               </div>
             </div>
 
-            <div v-if="readSourceCount > 0" class="next-step-callout">
+            <div v-if="facebookGroups.length" class="group-discovery" aria-label="Hội nhóm đã tìm thấy">
+              <h4>Hội nhóm đã tìm thấy ({{ facebookGroups.length }})</h4>
+              <p>Đường dẫn do tìm kiếm trả về. Chưa xác minh nhóm công khai hay kín, chưa đọc bài bên trong. Nhóm và đoạn giới thiệu không phải bằng chứng nỗi đau.</p>
+              <article v-for="group in facebookGroups" :key="group.id">
+                <a :href="group.url!" target="_blank" rel="noopener noreferrer">{{ group.title }}</a>
+                <small>{{ group.url }}</small>
+              </article>
+            </div>
+            <div v-if="readSourceCount > 0 && !activePains.length" class="next-step-callout">
               <div>
                 <strong>Đã có {{ readSourceCount }} nguồn đọc xong nội dung.</strong>
                 <span>Bạn có thể chuyển sang bước tổng hợp để AI rút ra các nỗi đau của chủ khách sạn kèm câu trích dẫn nguyên văn.</span>
@@ -299,11 +328,11 @@
             <div v-if="!sources.length" class="state-empty">
               <span class="mdi mdi-text-box-plus-outline" />
               <strong>Chưa có nguồn thông tin nào</strong>
-              <p>Hãy bấm "Dán bài Facebook / Thêm nguồn" để thêm các bài tâm sự, hỏi đáp của chủ khách sạn hoặc bấm "Tìm nguồn trên Google".</p>
+              <p>Hãy bấm "Dán bài Facebook / Thêm nguồn" để thêm các bài tâm sự, hỏi đáp của chủ khách sạn hoặc bấm "Bắt đầu tìm hiểu".</p>
             </div>
 
-            <div v-else class="source-grid">
-              <article v-for="source in sources" :key="source.id" class="source-card">
+            <div v-if="articleSources.length" class="source-grid">
+              <article v-for="source in articleSources" :key="source.id" class="source-card">
                 <div class="source-card-top">
                   <div class="source-title-block">
                     <span class="kind-badge" :class="source.kind">
@@ -336,7 +365,7 @@
                 </p>
                 <p v-else class="source-missing">
                   <template v-if="source.status === 'requires_manual'">
-                    Bài viết từ Facebook không tự động quét để tránh vi phạm chính sách. Hãy mở bài, sao chép nội dung được phép dùng và bấm "Dán nội dung cho nguồn này".
+                    Bài Facebook này cần bổ sung nội dung để đọc được. Hãy mở bài, sao chép nội dung được phép dùng và bấm "Dán nội dung cho nguồn này".
                   </template>
                   <template v-else-if="source.status === 'blocked_domain'">
                     Tên miền này chưa nằm trong danh sách cho phép tự đọc. Bạn có thể dán nội dung thủ công nếu cần.
@@ -368,12 +397,12 @@
               </article>
             </div>
           </section>
-          <section v-else-if="activeStep === 'pains'" class="step-panel">
+          <section v-else-if="activeStep === 'pains'" class="step-panel" id="research-step-panel" role="tabpanel" :aria-labelledby="`research-tab-${activeStep}`">
             <div class="panel-action-bar">
               <div>
-                <h4>Danh sách nỗi đau & vấn đề của chủ khách sạn</h4>
+                <h4>Chọn vấn đề muốn viết bài</h4>
                 <p>
-                  Mỗi vấn đề dưới đây đều kèm câu trích dẫn nguyên văn từ nguồn đã đọc. Bạn kiểm tra, chỉnh lại câu chữ nếu cần, rồi bấm <strong>Duyệt</strong> những vấn đề muốn dùng để viết bài.
+                  Xem nguồn dẫn, chọn vấn đề phù hợp rồi bấm <strong>Duyệt và tạo bài</strong>. AI sẽ viết bản nháp để anh kiểm tra.
                 </p>
               </div>
               <div class="action-group">
@@ -389,6 +418,11 @@
               </div>
             </div>
 
+            <div v-if="canApprove && currentProject.executor !== 'hermes' && activePains.length" class="batch-write">
+              <label><input type="checkbox" :checked="allPainsSelected" :disabled="hasActiveTask || taskBusy" @change="toggleAllPains" /> Chọn tất cả vấn đề có thể dùng</label>
+              <select v-model="batchFormat" aria-label="Kiểu bài cho các vấn đề đã chọn"><option value="zalo_message">Tin nhắn Zalo ngắn</option><option value="article">Bài chia sẻ kinh nghiệm</option><option value="checklist">Danh sách kiểm tra</option></select>
+              <button class="button primary" type="button" :disabled="!selectedPains.length || taskBusy || hasActiveTask" @click="generateSelectedPains">Duyệt và tạo bài ({{ selectedPains.length }})</button>
+            </div>
             <div v-if="!activePains.length" class="state-empty">
               <span class="mdi mdi-clipboard-text-search-outline" />
               <strong>Chưa có vấn đề nào được tổng hợp</strong>
@@ -417,6 +451,7 @@
                   </div>
                 </header>
 
+                <label v-if="canApprove && currentProject.executor !== 'hermes' && pain.status !== 'rejected'" class="select-pain"><input v-model="selectedPainIds" type="checkbox" :value="pain.id" :disabled="hasActiveTask || taskBusy" :aria-label="`Chọn vấn đề: ${pain.title}`" /> Chọn để tạo bài</label>
                 <h5>{{ pain.title }}</h5>
 
                 <dl class="pain-detail-grid">
@@ -442,17 +477,18 @@
                   </div>
                 </dl>
 
-                <div class="evidence-box">
-                  <strong>Bằng chứng nguyên văn từ nguồn thu thập ({{ pain.evidence?.length || 0 }} đoạn trích):</strong>
+                <details class="evidence-box">
+                  <summary>Xem nguồn dẫn · {{ pain.evidence?.length || 0 }} đoạn trích</summary>
                   <ul>
                     <li v-for="(ev, idx) in pain.evidence" :key="`${ev.sourceId}-${idx}`">
                       <blockquote>“{{ ev.quote }}”</blockquote>
-                      <small>— Nguồn: {{ sourceTitleById(ev.sourceId) }}</small>
+                      <a v-if="sourceUrlById(ev.sourceId)" :href="sourceUrlById(ev.sourceId)!" target="_blank" rel="noopener noreferrer">{{ sourceTitleById(ev.sourceId) }}</a>
+                      <small v-else>— Nguồn: {{ sourceTitleById(ev.sourceId) }}</small>
                     </li>
                   </ul>
-                </div>
+                </details>
 
-                <div v-if="pain.status === 'approved'" class="generate-bar">
+                <div v-if="pain.status === 'approved' && currentProject.executor !== 'hermes'" class="generate-bar">
                   <div class="generate-label">
                     <span class="mdi mdi-check-decagram" />
                     <strong>Vấn đề này đã duyệt — Chọn kiểu bài để AI viết nháp:</strong>
@@ -519,12 +555,12 @@
             </div>
           </section>
 
-          <section v-else class="step-panel">
+          <section v-else class="step-panel" id="research-step-panel" role="tabpanel" :aria-labelledby="`research-tab-${activeStep}`">
             <div class="panel-action-bar">
               <div>
-                <h4>Kho bài viết chia sẻ & kịch bản nhắn Zalo cá nhân</h4>
+                <h4>Bài viết của đợt này</h4>
                 <p>
-                  Nội dung được AI soạn từ các nỗi đau đã duyệt, không tự bịa giá bán hay cam kết quá đà. Bạn có thể chỉnh sửa lại câu chữ, bấm <strong>Duyệt bài</strong> rồi sao chép gửi cho khách trên Zalo cá nhân.
+                  Đọc và chỉnh sửa bản nháp. Bấm <strong>Duyệt bài</strong> khi nội dung đã sẵn sàng sử dụng.
                 </p>
               </div>
             </div>
@@ -565,7 +601,7 @@
                 </div>
 
                 <div v-if="item.evidence?.length" class="evidence-mini">
-                  <small>Dựa trên {{ item.evidence.length }} trích dẫn thực tế từ nguồn đã thu thập.</small>
+                  <small>Dựa trên {{ item.evidence.length }} trích dẫn từ nguồn đã lưu.</small>
                 </div>
 
                 <footer class="content-actions">
@@ -616,14 +652,7 @@
         </header>
 
         <div class="modal-body">
-          <label>
-            <span>Bên thực hiện</span>
-            <select v-model="projectForm.executor">
-              <option value="hermes">Hermes Agent trên máy chủ của bạn</option>
-              <option value="internal">AI đang cấu hình trong ZCRM</option>
-            </select>
-          </label>
-          <p v-if="projectForm.executor === 'hermes'" class="hermes-note">Chi phí và công cụ tìm kiếm dùng theo cấu hình trên máy chủ Hermes. ZCRM giới hạn số lượt và số nguồn, không đo chi phí Hermes.</p>
+          <p class="help-text">Chạy bằng AI trong ZCRM. Khi đã có kết nối tìm kiếm, tạo đợt sẽ tự tìm, đọc và tổng hợp.</p>
           <label>
             <span>Tên đợt tìm hiểu <b>*</b></span>
             <input
@@ -645,11 +674,11 @@
             />
           </label>
 
-          <label v-if="projectForm.executor !== 'hermes'">
-            <span>Cấu hình mô hình AI sử dụng <b>*</b></span>
+          <label>
+            <span>AI dùng để tìm hiểu và viết bài <b>*</b></span>
             <select v-if="availableModels.length" v-model="projectForm.modelConfigId" required>
               <option v-for="m in availableModels" :key="m.id" :value="m.id">
-                {{ m.displayName }} ({{ m.externalModelId }}){{ m.isDefault ? ' — Mặc định' : '' }}
+                {{ m.displayName }} ({{ m.externalModelId }})
               </option>
             </select>
             <input
@@ -657,10 +686,10 @@
               v-model.trim="projectForm.modelConfigId"
               required
               maxlength="100"
-              placeholder="Nhập mã cấu hình AI đang hoạt động (Model Config ID)"
+              placeholder="Nhập mã AI đã được thiết lập trong ZCRM"
             />
             <small v-if="!availableModels.length">
-              Gợi ý: Bạn có thể tạo và duyệt cấu hình AI trong mục "Mô hình & kết nối".
+              Gợi ý: Bạn có thể tạo cấu hình AI và kiểm tra kết nối trong mục "Mô hình & kết nối".
             </small>
           </label>
 
@@ -670,7 +699,7 @@
         <footer>
           <button type="button" class="button secondary" @click="showCreateProjectModal = false">Hủy</button>
           <button type="submit" class="button primary" :disabled="saving">
-            {{ saving ? 'Đang tạo…' : 'Tạo đợt tìm hiểu' }}
+            {{ saving ? 'Đang tạo…' : capabilities?.search.configured && capabilities?.encryption ? 'Tạo và bắt đầu tìm hiểu' : 'Tạo đợt để thêm nguồn' }}
           </button>
         </footer>
       </form>
@@ -726,7 +755,7 @@
               maxlength="40000"
               placeholder="Dán nguyên văn nội dung bài đăng và các bình luận đáng chú ý của chủ/quản lý khách sạn tại đây..."
             />
-            <small>Nếu chỉ nhập đường dẫn trang web công khai mà để trống nội dung, hệ thống sẽ đọc trang đó ở bước "Đọc các trang web".</small>
+            <small>Nếu chỉ nhập đường dẫn trang web công khai, bấm "Đọc và tổng hợp nguồn đã thêm" sau khi lưu để hệ thống đọc nội dung.</small>
           </label>
 
           <label v-if="sourceForm.content" class="checkbox-row">
@@ -884,7 +913,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue';
 import { useAuthStore } from '@/stores/auth';
-import { aiModelConnectionsApi, type AiModelConfig } from '@/api/ai-model-connections';
+import type { ResearchModel } from '@/api/ai-research';
 import {
   aiResearchApi,
   CONTENT_STATUS_LABELS,
@@ -919,8 +948,33 @@ const notice = ref('');
 const noticeOk = ref(true);
 
 const capabilities = ref<ResearchCapabilities | null>(null);
-const hermesStatus = ref<{ lastSeenAt: string | null; recentlySeen: boolean } | null>(null);
-const availableModels = ref<AiModelConfig[]>([]);
+const searchApiKey = ref('');
+const showConnections = ref(false);
+const projectSearch = ref('');
+const showProjectPicker = ref(false);
+const filteredProjects = computed(() => {
+  const query = projectSearch.value.trim().toLocaleLowerCase('vi');
+  return projects.value.filter((project) => `${project.title} ${project.brief}`.toLocaleLowerCase('vi').includes(query));
+});
+function formatShortDate(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '—' : new Intl.DateTimeFormat('vi-VN', { day: '2-digit', month: '2-digit' }).format(date);
+}
+function navigateSteps(event: KeyboardEvent) {
+  const tabs = ['sources', 'pains', 'contents'] as const;
+  const index = tabs.indexOf(activeStep.value);
+  const next = event.key === 'ArrowRight' ? (index + 1) % tabs.length
+    : event.key === 'ArrowLeft' ? (index + tabs.length - 1) % tabs.length
+      : event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : -1;
+  if (next < 0) return;
+  event.preventDefault();
+  activeStep.value = tabs[next]!;
+  (event.currentTarget as HTMLElement).querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus();
+}
+const selectedPainIds = ref<string[]>([]);
+const batchFormat = ref<ResearchFormat>('zalo_message');
+const workflowPhases = [{ key: 'discover', label: '1. Tìm nguồn' }, { key: 'collect', label: '2. Đọc nội dung' }, { key: 'analyze', label: '3. Tổng hợp vấn đề' }];
+const availableModels = ref<ResearchModel[]>([]);
 const projects = ref<ResearchProject[]>([]);
 const selectedProjectId = ref<string>('');
 const currentProject = ref<ResearchProjectDetail | null>(null);
@@ -940,7 +994,7 @@ const mergeSourcePainId = ref('');
 const editingContent = ref<ResearchContent | null>(null);
 
 const projectForm = reactive({
-  executor: 'hermes' as 'hermes' | 'internal',
+  executor: 'internal' as const,
   title: 'Tìm nỗi đau vận hành của chủ khách sạn',
   brief:
     'Tìm các khó khăn thực tế khi chủ và quản lý khách sạn Việt Nam vận hành khách sạn: nhân sự, buồng phòng, chi phí, giặt là, bảo trì và phản hồi của khách. Sau đó đánh dấu vấn đề liên quan đến chăn ga gối đệm, rèm, bảo vệ đệm và khăn Jolie’Fam.',
@@ -989,6 +1043,9 @@ const contentEditForm = reactive({
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 let workspaceVersion = 0;
 let disposed = false;
+let polling = false;
+const pendingTaskKeys = new Map<string, string>();
+const canManageSearch = computed(() => ['owner', 'admin'].includes(authStore.user?.role || '') && authStore.canAccess('ai_model', 'manage_secret'));
 const canEdit = computed(() => authStore.canAccess('ai_knowledge', 'edit'));
 
 const canApprove = computed(() => {
@@ -1000,6 +1057,8 @@ const latestTask = computed<ResearchTaskSummary | null>(() => {
   return currentProject.value?.tasks?.[0] ?? null;
 });
 
+const queuedTooLong = computed(() => latestTask.value?.status === 'queued' && Date.now() - Date.parse(latestTask.value.createdAt) > 60_000);
+
 const hasActiveTask = computed(() => {
   return !!currentProject.value?.tasks?.some((t) => isTaskActive(t));
 });
@@ -1008,11 +1067,8 @@ const readSourceCount = computed(() => {
   return sources.value.filter((s) => s.status === 'read').length;
 });
 
-const pendingWebSourceCount = computed(() => {
-  return sources.value.filter(
-    (s) => s.kind === 'web' && ['pending', 'failed', 'blocked_domain'].includes(s.status),
-  ).length;
-});
+const facebookGroups = computed(() => sources.value.filter((source) => source.kind === 'facebook_group'));
+const articleSources = computed(() => sources.value.filter((source) => source.kind !== 'facebook_group'));
 
 const activePains = computed(() => {
   return pains.value.filter((p) => !['merged', 'superseded'].includes(p.status));
@@ -1030,6 +1086,11 @@ const approvedContentCount = computed(() => {
   return visibleContents.value.filter((c) => c.status === 'approved').length;
 });
 
+const selectablePains = computed(() => activePains.value.filter((p) => p.status !== 'rejected'));
+const selectedPains = computed(() => selectablePains.value.filter((p) => selectedPainIds.value.includes(p.id)));
+const allPainsSelected = computed(() => selectablePains.value.length > 0 && selectedPains.value.length === selectablePains.value.length);
+function toggleAllPains() { selectedPainIds.value = allPainsSelected.value ? [] : selectablePains.value.map((p) => p.id); }
+
 const mergeCandidatePains = computed(() => {
   if (!mergingTargetPain.value) return [];
   return activePains.value.filter((p) => p.id !== mergingTargetPain.value?.id);
@@ -1045,12 +1106,30 @@ function showNotice(message: string, ok = true) {
 }
 
 function extractErrorMessage(err: unknown, fallback: string): string {
-  const anyErr = err as { response?: { data?: { error?: string; message?: string } }; message?: string };
+  const anyErr = err as { response?: { data?: { code?: string; error?: string; message?: string } }; message?: string };
+  const code = anyErr.response?.data?.code;
+  if (code && friendlyErrorCode(code) !== code) return friendlyErrorCode(code);
   return anyErr?.response?.data?.error || anyErr?.response?.data?.message || anyErr?.message || fallback;
 }
 
 function friendlyErrorCode(code: string): string {
   const map: Record<string, string> = {
+    INVALID_REQUEST: 'Dịch vụ AI từ chối yêu cầu hoặc không hỗ trợ mô hình đã chọn. Hãy chọn AI khác đang hoạt động trong ZCRM.',
+    AUTHENTICATION: 'Kết nối AI bị từ chối. Kiểm tra mã kết nối AI đang dùng.',
+    CONFIGURATION: 'AI của đợt này chưa sẵn sàng. Chọn lại AI đã thiết lập trong ZCRM.',
+    RATE_LIMITED: 'Dịch vụ AI đang nhận quá nhiều yêu cầu. Chờ một lúc rồi tiếp tục từ bước dở.',
+    TIMEOUT: 'AI phản hồi quá lâu. Có thể tiếp tục từ bước dở.',
+    PROVIDER_UNAVAILABLE: 'Chưa kết nối được dịch vụ AI. Thử lại khi kết nối trở lại.',
+    CIRCUIT_OPEN: 'Kết nối AI đang tạm gián đoạn. Chờ một lúc rồi thử lại.',
+    INVALID_RESPONSE: 'AI trả kết quả chưa hợp lệ. Hãy chạy lại phần đang dở.',
+    UNKNOWN: 'Chưa hoàn thành công việc. Hãy thử lại hoặc kiểm tra kết nối AI.',
+    RESEARCH_SEARCH_FAILED: 'Chưa lấy được kết quả tìm kiếm. Kiểm tra kết nối Google rồi thử lại.',
+    RESEARCH_STALE_REVISION: 'Nguồn hoặc vấn đề đã thay đổi. Bắt đầu lượt tổng hợp mới để dùng dữ liệu hiện tại.',
+
+    RESEARCH_SEARCH_AUTH_FAILED: 'Mã Serper bị từ chối. Kiểm tra và lưu lại mã kết nối tìm kiếm phía trên.',
+    RESEARCH_DIRECT_REQUIRED: 'Đợt cũ cần chuyển sang AI trong ZCRM rồi bắt đầu công việc mới.',
+    RESEARCH_NO_EVIDENCE: 'Chưa đọc được nguồn nào. Hãy thử tìm lại hoặc dán nội dung để tổng hợp.',
+    RESEARCH_QUEUE_UNAVAILABLE: 'Đã lưu công việc. ZCRM sẽ tự nhận lại khi bộ xử lý kết nối được; có thể bấm Chạy lại.',
     RESEARCH_HERMES_BATCH_REQUIRED: 'Cần cập nhật bộ kết nối Hermes trên máy chủ rồi chạy lại.',
     RESEARCH_HERMES_TIME_LIMIT: 'Đây là thông báo từ bản cũ. Bấm Chạy lại để tiếp tục theo cách xử lý mới.',
     RESEARCH_HERMES_FAILED: 'Hermes chưa hoàn thành. Kiểm tra công cụ và kết nối trên máy chủ Hermes.',
@@ -1086,6 +1165,39 @@ function sourceTitleById(sourceId: string): string {
   return found ? found.title : `Nguồn #${sourceId.slice(0, 8)}`;
 }
 
+function sourceUrlById(sourceId: string): string | null { return sources.value.find((s) => s.id === sourceId)?.url || null; }
+
+async function saveSearchConnection() {
+  saving.value = true;
+  try {
+    await aiResearchApi.saveSearchConnection(searchApiKey.value);
+    searchApiKey.value = '';
+    capabilities.value = await aiResearchApi.getCapabilities();
+    showNotice('Đã lưu mã kết nối tìm kiếm. Có thể bắt đầu tìm hiểu.');
+  } catch (error) { showNotice(extractErrorMessage(error, 'Chưa lưu được kết nối tìm kiếm.'), false); }
+  finally { saving.value = false; }
+}
+async function changeProjectModel(event: Event) {
+  projectForm.modelConfigId = (event.target as HTMLSelectElement).value;
+  await switchToDirect();
+}
+async function switchToDirect() {
+  if (!selectedProjectId.value) return;
+  taskBusy.value = true;
+  try {
+    await aiResearchApi.useDirect(selectedProjectId.value, projectForm.modelConfigId);
+    await loadProjectWorkspace(selectedProjectId.value);
+    showNotice('Đã lưu AI dùng cho đợt này trong ZCRM. Nguồn và bài cũ được giữ lại.');
+  } catch (error) { showNotice(extractErrorMessage(error, 'Chưa chuyển được đợt này.'), false); }
+  finally { taskBusy.value = false; }
+}
+async function generateSelectedPains() {
+  const selected = selectedPains.value.map((p) => ({ painId: p.id, revision: p.revision }));
+  if (!selected.length) return;
+  const started = await triggerTask('generate_batch', { pains: selected, format: batchFormat.value });
+  if (started) { selectedPainIds.value = []; activeStep.value = 'contents'; }
+}
+
 function painTitleById(painId: string): string {
   const found = pains.value.find((p) => p.id === painId);
   return found ? found.title : `Vấn đề #${painId.slice(0, 8)}`;
@@ -1093,15 +1205,13 @@ function painTitleById(painId: string): string {
 
 async function loadModelsSilently() {
   try {
-    const result = await aiModelConnectionsApi.listModelConfigs();
-    const approved = (result.modelConfigs || []).filter((m) => m.status === 'approved');
-    availableModels.value = approved.length ? approved : result.modelConfigs || [];
+    availableModels.value = await aiResearchApi.listModels();
     if (!projectForm.modelConfigId && availableModels.value.length > 0) {
-      const def = availableModels.value.find((m) => m.isDefault) || availableModels.value[0];
+      const def = availableModels.value[0];
       if (def) projectForm.modelConfigId = def.id;
     }
   } catch {
-    // Không chặn màn hình nếu người dùng không có quyền đọc danh sách model admin
+    // Các thao tác còn lại vẫn dùng được khi chưa tải được danh sách AI.
   }
 }
 
@@ -1123,7 +1233,10 @@ async function loadProjectWorkspace(projectId: string) {
     allPages((page) => aiResearchApi.listContents(projectId, page)),
   ]);
   if (disposed || version !== workspaceVersion || selectedProjectId.value !== projectId) return;
+  const previousTask = currentProject.value?.tasks?.[0];
   currentProject.value = detail;
+  const newest = detail.tasks?.[0];
+  if (newest?.kind === 'research' && (!previousTask || previousTask.id !== newest.id || previousTask.status !== newest.status || previousTask.checkpoint?.stage !== newest.checkpoint?.stage) && (newest.status === 'completed' || newest.checkpoint?.stage === 'analyze')) activeStep.value = 'pains';
   const index = projects.value.findIndex((p) => p.id === detail.id);
   if (index >= 0) projects.value[index] = detail;
   sources.value = sourceRows;
@@ -1137,17 +1250,15 @@ async function loadProjectWorkspace(projectId: string) {
   }
 
   syncPolling();
-  if (detail.executor === 'hermes') {
-    const state = await aiResearchApi.getHermesStatus().catch(() => null);
-    if (!disposed && version === workspaceVersion) hermesStatus.value = state;
-  }
+
 }
 
 function syncPolling() {
   if (hasActiveTask.value && !pollTimer) {
     pollTimer = setInterval(() => {
-      if (selectedProjectId.value) {
-        void loadProjectWorkspace(selectedProjectId.value).catch(() => {});
+      if (selectedProjectId.value && !polling) {
+        polling = true;
+        void loadProjectWorkspace(selectedProjectId.value).catch(() => {}).finally(() => { polling = false; });
       }
     }, 3500);
   } else if (!hasActiveTask.value && pollTimer) {
@@ -1182,9 +1293,11 @@ async function reloadAll() {
 }
 
 async function selectProject(projectId: string) {
+  showProjectPicker.value = false;
   if (saving.value || taskBusy.value) return;
   selectedProjectId.value = projectId;
   currentProject.value = null;
+  selectedPainIds.value = [];
   sources.value = []; pains.value = []; contents.value = [];
   loading.value = true;
   try {
@@ -1214,7 +1327,8 @@ async function handleCreateProject() {
     selectedProjectId.value = created.id;
     activeStep.value = 'sources';
     await loadProjectWorkspace(created.id);
-    showNotice('Đã tạo đợt tìm hiểu mới. Hãy thêm nguồn hoặc bấm tìm trên Google.');
+    if (capabilities.value?.search.configured && capabilities.value.encryption) await triggerTask('research');
+    else showNotice('Đã tạo đợt tìm hiểu. Có thể dán nguồn để tổng hợp hoặc thiết lập tìm kiếm Google.');
   } catch (err) {
     showNotice(extractErrorMessage(err, 'Không tạo được đợt tìm hiểu.'), false);
   } finally {
@@ -1261,23 +1375,29 @@ async function handleAddSource() {
   }
 }
 
-async function triggerTask(kind: ResearchTaskKind, extra?: { painId?: string; format?: ResearchFormat }) {
-  if (!selectedProjectId.value) return;
+async function triggerTask(kind: ResearchTaskKind, extra?: { sourceMode?: 'saved'; painId?: string; pains?: Array<{ painId: string; revision: number }>; format?: ResearchFormat }) {
+  if (!selectedProjectId.value || currentProject.value?.executor === 'hermes') return false;
   taskBusy.value = true;
+  const signature = JSON.stringify([selectedProjectId.value, kind, extra]);
+  const key = pendingTaskKeys.get(signature) || makeResearchIdempotencyKey(kind);
+  pendingTaskKeys.set(signature, key);
   try {
     await aiResearchApi.createTask(selectedProjectId.value, {
       kind,
-      idempotencyKey: makeResearchIdempotencyKey(kind),
+      idempotencyKey: key,
       ...extra,
     });
+    pendingTaskKeys.delete(signature);
     await loadProjectWorkspace(selectedProjectId.value);
     showNotice(`Đã bắt đầu: ${TASK_KIND_LABELS[kind]}.`);
+    return true;
   } catch (err) {
     showNotice(extractErrorMessage(err, 'Không khởi chạy được công việc.'), false);
     await loadProjectWorkspace(selectedProjectId.value).catch(() => {});
   } finally {
     taskBusy.value = false;
   }
+  return false;
 }
 
 async function startAnalyzeFromSources() {
@@ -1468,11 +1588,30 @@ onBeforeUnmount(() => {
 });
 </script>
 <style scoped>
-.hermes-connection { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 10px 0; border-bottom: 1px solid #dce4de; color: #285d42; font-size: 13px; }
-.hermes-connection time { color: #64748b; }
-.hermes-help { flex-basis: 100%; margin: 0; color: #854d0e; line-height: 1.6; }
-.hermes-help code { overflow-wrap: anywhere; }
-.hermes-note { margin: 0; font-size: 13px; color: #475569; }
+.group-discovery { margin: 14px 0; padding: 16px; border: 1px solid #cbd5e1; border-radius: 10px; background: #f8fafc; }
+.group-discovery h4 { margin: 0 0 6px; }
+.group-discovery p { color: #64748b; font-size: 13px; }
+.group-discovery article { display: flex; flex-direction: column; gap: 5px; padding: 10px 0; border-top: 1px solid #e2e8f0; }
+.group-discovery a { color: #1d4ed8; font-weight: 600; }
+.group-discovery small { color: #64748b; overflow-wrap: anywhere; }
+.project-model { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 12px 0; font-size: 13px; font-weight: 600; }
+.project-model select { padding: 8px; max-width: 100%; background: white; border: 1px solid #cbd5e1; border-radius: 7px; }
+.direct-switch, .research-start, .batch-write { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 16px; background: #f0f9ff; border: 1px solid #bae6fd; border-radius: 10px; margin-bottom: 16px; }
+.direct-switch p, .research-start p { margin: 4px 0 0; font-size: 13px; color: #475569; }
+.research-start > div { flex: 1 1 280px; }
+.research-start > small { flex-basis: 100%; color: #92400e; }
+.direct-switch select, .batch-write select { max-width: 100%; padding: 9px; background: white; border: 1px solid #cbd5e1; border-radius: 7px; }
+.search-setup { padding: 14px 18px; margin-bottom: 18px; background: #fff; border: 1px solid #cbd5e1; border-radius: 10px; }
+.search-setup summary { cursor: pointer; font-weight: 650; }
+.search-setup form { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin-top: 12px; }
+.search-setup input { display: block; padding: 8px; border: 1px solid #cbd5e1; border-radius: 6px; margin-top: 5px; }
+.search-setup small { flex-basis: 100%; color: #64748b; }
+.research-progress { display: flex; flex-wrap: wrap; gap: 10px; padding: 0; list-style: none; }
+.research-progress li { padding: 9px 14px; background: #e2e8f0; border-radius: 8px; color: #475569; }
+.research-progress li.current { background: #dbeafe; color: #1d4ed8; font-weight: 700; }
+.research-progress li.finished { background: #dcfce7; color: #166534; }
+.select-pain, .batch-write label { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+
 .research-shell :is(input, select, textarea, button) { max-width: 100%; }
 .research-shell :is(p, strong, dd, small, time) { overflow-wrap: anywhere; }
 .research-shell label { min-width: 0; }
@@ -2527,5 +2666,144 @@ onBeforeUnmount(() => {
   .research-workspace {
     grid-template-columns: 1fr;
   }
+}
+
+/* Keep setup secondary and give the research results most of the screen. */
+.research-shell { color-scheme: light; gap: 18px; font-size: 14px; line-height: 1.5; }
+.research-header { align-items: center; gap: 20px; }
+.heading-icon { width: 44px; height: 44px; flex-basis: 44px; background: #e5f2f4; color: #116477; border-radius: 12px; }
+.heading-title h2 { font-size: 25px; letter-spacing: -.6px; font-weight: 750; }
+.research-heading p { margin-top: 7px; font-size: 14px; color: #64748b; }
+.scope-pill { background: transparent; border: 0; color: #64748b; padding: 0 0 0 10px; font-weight: 500; }
+.button { min-height: 40px; font-size: 13px; border-radius: 8px; padding: 9px 14px; }
+.button.primary { background: #087e96; }
+.button.primary:hover:not(:disabled) { background: #09687b; }
+.button:disabled { opacity: .5; cursor: not-allowed; }
+.connection-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 11px 15px; border: 1px solid #e2e8f0; background: #fff; border-radius: 10px; }
+.connection-status { display: flex; align-items: center; gap: 9px; font-size: 13px; color: #285b4b; flex-wrap: wrap; }
+.status-dot { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: #229475; }
+.warning { color: #855414; }
+.warning .status-dot { background: #d49a35; }
+.connection-hint { color: #64748b; font-size: 12px; }
+.connection-toolbar .link-btn { white-space: nowrap; font-size: 13px; min-height: 32px; }
+.connection-settings { background: #fff; border: 1px solid #dce5ec; border-radius: 12px; padding: 16px; }
+.connection-settings .capability-strip { margin-bottom: 12px; }
+.connection-settings .search-setup { margin: 0; border: 0; border-top: 1px solid #e2e8f0; border-radius: 0; padding: 14px 0 0; }
+.search-setup label { flex: 1 1 250px; }
+.search-setup input { width: 100%; color: #1e293b; background: #fff; }
+.research-workspace { grid-template-columns: 236px minmax(0, 1fr); align-items: start; gap: 20px; }
+.project-sidebar { position: sticky; top: 16px; border-radius: 12px; overflow: hidden; background: #fff; }
+.sidebar-header { padding: 16px; background: #fff; border-bottom: 0; }
+.sidebar-header strong { font-size: 14px; }
+.sidebar-header small { display: none; }
+.mobile-project-toggle { display: none; }
+.project-search { display: flex; align-items: center; gap: 8px; margin: 0 12px 12px; padding: 8px 10px; border: 1px solid #e2e8f0; border-radius: 7px; color: #64748b; background: #f8fafc; }
+.project-search input { width: 100%; min-width: 0; outline: 0; border: 0; appearance: none; padding: 0; font: inherit; font-size: 12px; background: transparent; }
+.research-shell .project-search input:focus-visible { outline: 0; }
+.project-search:focus-within { outline: 2px solid #087e96; outline-offset: 1px; }
+.project-list { max-height: min(70vh, 780px); padding: 0 8px 8px; gap: 4px; }
+.project-card { padding: 13px 12px; border: 1px solid transparent; border-radius: 8px; gap: 6px; }
+.project-card.active { border: 1px solid #b8dce4; background: #edf7f9; box-shadow: inset 3px 0 #087e96; }
+.project-card strong { font-size: 13px; line-height: 1.55; font-weight: 650; }
+.project-card p { font-size: 12px; -webkit-line-clamp: 1; color: #6c7b8e; }
+.project-meta { font-size: 11px; color: #738195; font-weight: 400; }
+.project-main { gap: 16px; }
+.project-summary-card { border-radius: 12px; padding: 20px 22px 16px; box-shadow: 0 2px 3px #1e293b03; }
+.summary-top { display: block; }
+.section-eyebrow { display: block; font-size: 10px; font-weight: 700; letter-spacing: 1.3px; color: #728296; margin-bottom: 6px; }
+.summary-top h3 { font-size: 19px; line-height: 1.4; letter-spacing: -.3px; margin: 0; }
+.project-settings { margin-top: 8px; }
+.project-settings summary { display: inline-flex; align-items: center; gap: 5px; color: #64748b; cursor: pointer; font-size: 12px; list-style: none; }
+.project-settings summary::after { content: '⌄'; margin-left: 4px; }
+.project-settings[open] summary { color: #087e96; }
+.project-settings-body { margin: 12px 0; padding: 16px; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; }
+.project-settings-body > strong { font-size: 12px; color: #64748b; }
+.brief-text { font-size: 14px; line-height: 1.7; margin-top: 6px; }
+.project-model { flex-direction: column; align-items: stretch; font-weight: 500; }
+.project-model small { color: #64748b; font-weight: 400; font-size: 12px; }
+.usage-summary { display: flex; flex-wrap: wrap; gap: 8px 18px; color: #64748b; font-size: 12px; }
+.research-start { background: #f7fafb; border: 1px solid #e4ebef; padding: 14px; margin: 14px 0 0; gap: 10px; border-radius: 9px; }
+.research-start > div { flex-basis: 230px; }
+.research-start strong { font-size: 13px; }
+.research-start p { color: #64748b; font-size: 12px; }
+.research-start > small { color: #86622f; font-size: 12px; }
+.task-banner { margin-top: 12px; padding: 10px 12px; border: 0; border-left: 3px solid #b8c5d4; border-radius: 6px; }
+.task-banner.completed { border-left-color: #4ba68b; background: #f0f9f5; }
+.task-banner.failed { border-left-color: #d96b6b; }
+.task-info strong { font-weight: 600; }
+.step-tabs { position: sticky; top: 0; z-index: 3; gap: 0; background: #fff; border: 1px solid #dfe7ed; border-radius: 10px; overflow: hidden; }
+.step-tab { border: 0; border-bottom: 3px solid transparent; border-radius: 0; padding: 16px 12px; gap: 10px; background: #fff; }
+.step-tab + .step-tab { border-left: 1px solid #edf1f5; }
+.step-tab.active { border-bottom-color: #087e96; background: #f2f9fa; }
+.step-num { width: 30px; height: 30px; flex-basis: 30px; background: #f0f3f6; color: #6b7d90; }
+.step-tab.active .step-num { background: #087e96; }
+.step-tab strong { font-size: 13px; font-weight: 650; }
+.step-tab small { font-size: 11px; }
+.step-panel { padding: 22px; gap: 18px; border-radius: 12px; }
+.panel-action-bar { gap: 16px; padding-bottom: 18px; }
+.panel-action-bar h4 { font-size: 17px; letter-spacing: -.25px; margin-bottom: 5px; }
+.panel-action-bar p { font-size: 13px; color: #64748b; line-height: 1.6; max-width: 620px; }
+.source-card, .pain-card, .content-card { padding: 20px; border-radius: 10px; }
+.source-card h5, .pain-card h5, .content-card h5 { font-size: 18px; line-height: 1.55; font-weight: 650; margin: 10px 0 14px; letter-spacing: -.25px; }
+.source-excerpt { font-size: 14px; line-height: 1.8; color: #475569; }
+.source-card time, .content-card time { font-size: 11px; color: #7c8999; }
+.pain-badges, .content-badges { gap: 6px; }
+.relevance-pill, .source-count-pill, .certainty-pill, .role-pill, .version-badge { font-size: 11px; font-weight: 500; background: #f4f6f8; color: #637387; }
+.pain-detail-grid { gap: 20px; margin: 18px 0; }
+.pain-detail-grid dt { font-size: 12px; color: #718096; font-weight: 500; margin-bottom: 5px; }
+.pain-detail-grid dd { font-size: 14px; line-height: 1.75; color: #334155; }
+.evidence-box { background: #f8fafc; border: 1px solid #e5ebf0; border-radius: 8px; padding: 12px 14px; }
+.evidence-box summary { cursor: pointer; font-size: 13px; font-weight: 600; color: #3f6778; }
+.evidence-box ul { padding-top: 12px; }
+.evidence-box blockquote { font-size: 14px; line-height: 1.75; }
+.batch-write { background: #f3f8fa; border-color: #dce8ed; padding: 14px; margin-bottom: 0; }
+.batch-write label { font-size: 12px; font-weight: 500; flex: 1; }
+.batch-write select { font-size: 12px; }
+.pain-actions, .content-actions { gap: 8px; padding-top: 18px; margin-top: 18px; border-top: 1px solid #edf1f5; }
+.pain-origin { font-size: 12px; color: #718096; margin-top: 12px; }
+.content-body-box { font-family: inherit; font-size: 15px; line-height: 1.95; background: #fff; border: 0; border-left: 2px solid #d8e9ee; padding: 6px 0 6px 20px; color: #273b4d; max-height: none; }
+.missing-info-box { background: #fbfaf6; border: 1px solid #eee9dc; border-radius: 8px; padding: 14px 16px; font-size: 13px; color: #75633b; }
+.missing-info-box ul { line-height: 1.75; }
+.content-card { box-shadow: 0 3px 10px #243a4e04; }
+.research-shell :is(input, select, textarea, summary):focus-visible { outline: 2px solid #087e96; outline-offset: 3px; }
+@media (max-width: 1150px) {
+  .research-workspace { grid-template-columns: 200px minmax(0, 1fr); gap: 14px; }
+  .scope-pill { display: none; }
+  .connection-hint { display: none; }
+  .header-actions { gap: 6px; }
+  .heading-title h2 { font-size: 22px; }
+  .step-tab { padding: 13px 10px; }
+  .step-tab small { display: none; }
+}
+@media (max-width: 960px) {
+  .research-workspace { grid-template-columns: minmax(0, 1fr); }
+  .project-sidebar { position: static; }
+  .project-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); max-height: 230px; }
+  .step-tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .project-search { margin-top: 0; }
+}
+@media (max-width: 600px) {
+  .research-header { gap: 14px; }
+  .research-heading { flex-basis: 100%; }
+  .heading-title h2 { font-size: 22px; }
+  .heading-icon { display: none; }
+  .header-actions { width: 100%; justify-content: flex-end; }
+  .connection-toolbar { align-items: flex-start; }
+  .connection-status { font-size: 12px; flex: 1; }
+  .connection-toolbar .link-btn { white-space: normal; text-align: right; flex: 0 0 100px; }
+  .project-sidebar .sidebar-header { padding: 12px 15px; }
+  .project-sidebar .count-badge { margin-right: auto; }
+  .mobile-project-toggle { display: inline-flex; align-items: center; gap: 4px; }
+  .project-sidebar:not(.project-picker-open) :is(.project-search, .project-list, .sidebar-empty) { display: none; }
+  .project-list { grid-template-columns: minmax(0, 1fr); max-height: 250px; }
+  .project-summary-card, .step-panel { padding: 16px; }
+  .step-tab { flex-direction: column; align-items: flex-start; gap: 7px; padding: 12px 8px; }
+  .step-tab strong { font-size: 11px; }
+  .step-num { width: 25px; height: 25px; flex-basis: 25px; font-size: 12px; }
+  .source-card, .pain-card, .content-card { padding: 15px; }
+  .pain-detail-grid { grid-template-columns: 1fr; }
+  .content-body-box { padding-left: 12px; font-size: 14px; }
+  .batch-write { align-items: stretch; }
+  .batch-write label, .batch-write select, .batch-write button { width: 100%; flex-basis: 100%; }
 }
 </style>

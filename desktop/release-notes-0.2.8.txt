@@ -1,0 +1,10 @@
+ZaloCRM Windows 0.2.8
+
+- Sửa kéo bong bóng: dùng tọa độ chuột Windows, di chuyển nhanh không bị hụt hoặc nhảy vị trí.
+- Tách bấm và kéo; kéo hoặc nhả chuột phải không tự mở/đóng chat.
+- Lưu vị trí ngay khi thả; đưa về vùng nhìn thấy khi đổi màn hình, đổi độ phóng đại hoặc thức máy.
+- Khôi phục bong bóng khi bị ẩn hoặc phần hiển thị bị lỗi. Menu chuột phải có “Đưa bong bóng về góc màn hình”.
+- Không hiện lại khi người dùng đã tắt bong bóng, đăng xuất hoặc khóa máy.
+- Tránh khung chat tự mở lại do phản hồi tải trang đến muộn.
+
+Cài bản Windows này để nhận phần sửa cửa sổ và thao tác kéo. Tài khoản và dữ liệu CRM không cần tạo lại.

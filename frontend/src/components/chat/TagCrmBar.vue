@@ -66,29 +66,34 @@
     >
       <span v-if="tag.emoji" class="t2-pill-emoji">{{ tag.emoji }}</span>
       <span class="t2-pill-text">{{ tag.name }}</span>
-      <button class="tag-x" title="Gỡ tag" @click="removeManualTag(tag)"><XIcon :size="12" :stroke-width="2.2" /></button>
+      <button class="tag-x" :disabled="saving" :aria-label="`Gỡ tag ${tag.name}`" title="Gỡ tag" @click="removeManualTag(tag)"><XIcon :size="12" :stroke-width="2.2" /></button>
     </span>
 
+    <span v-if="tagsError" class="tag-load-error" role="alert">{{ tagsError }} <button type="button" @click="loadFriendTags()">Thử lại</button></span>
     <!-- "+ Thêm tag" dropdown CHỈ load + gắn Manual per Nick -->
     <v-menu v-model="dropdownOpen" :close-on-content-click="false" location="top start" offset="6">
       <template #activator="{ props: actProps }">
-        <button v-bind="actProps" class="tag-add-btn">+ Thêm tag</button>
+        <button v-bind="actProps" class="tag-add-btn" :disabled="saving">{{ saving ? 'Đang lưu tag…' : '+ Thêm tag' }}</button>
       </template>
 
       <div class="tag-dropdown">
+        <p class="dd-scope">Tag CRM cho khách qua nick này · không đổi nhãn trên Zalo.</p>
         <div class="dd-search">
           <input
             ref="searchInput"
             v-model="search"
             name="tag-manual-search"
             autocomplete="off"
-            placeholder="Tìm tag riêng cho nick này..."
+            placeholder="Tìm hoặc tạo tag CRM…"
+            aria-label="Tìm hoặc tạo tag CRM"
+            :disabled="saving"
             @keydown.enter.prevent="onEnterSearch"
             @keydown.escape="dropdownOpen = false"
           />
         </div>
 
-        <div v-if="defsLoading && !manualTagDefs.length" class="dd-state">Đang tải…</div>
+        <div v-if="defsError" class="dd-state" role="alert">{{ defsError }} <button class="dd-retry" type="button" @click="loadManualTagDefs">Thử lại</button></div>
+        <div v-else-if="defsLoading" class="dd-state">Đang tải…</div>
         <div v-else-if="!filteredDefs.length && !search" class="dd-state">
           <p>Chưa có tag thủ công nào.</p>
           <p class="dd-hint">Gõ tên tag rồi Enter để tạo mới.</p>
@@ -98,6 +103,7 @@
             v-for="def in filteredDefs"
             :key="def.id"
             class="dd-option"
+            :disabled="saving || loading"
             :class="{ active: manualTags.some(t => t.id === def.id) }"
             @click="onPickTag(def)"
           >
@@ -108,6 +114,7 @@
           <button
             v-if="search.trim() && !filteredDefs.some(d => d.name.toLowerCase() === search.trim().toLowerCase())"
             class="dd-create-inline"
+            :disabled="saving || loading"
             @click="onCreateNewTag"
           >
             + Tạo "{{ search.trim() }}"
@@ -126,7 +133,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, nextTick, watch } from 'vue';
+import { ref, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { api } from '@/api/index';
 // Icon chrome — Lucide line (anh chốt 2026-06-08, bỏ ký tự/emoji nút).
@@ -166,50 +173,65 @@ const router = useRouter();
 const friendTags = ref<FriendTagAssignment[]>([]);
 const manualTagDefs = ref<TagV2[]>([]);
 const loading = ref(false);
-const defsLoading = ref(false); // riêng cho fetch dropdown defs (tách khỏi loadFriendTags)
-
-// Load FriendTag junction (active) cho friendId hiện tại.
-async function loadFriendTags() {
-  if (!props.friendId) return;
+const saving = ref(false);
+const defsLoading = ref(false);
+const defsError = ref('');
+const tagsError = ref('');
+let friendRequest = 0;
+let defsRequest = 0;
+let disposed = false;
+async function loadFriendTags(friendId = props.friendId) {
+  const request = ++friendRequest;
+  if (!friendId) { loading.value = false; return false; }
   loading.value = true;
+  tagsError.value = '';
   try {
-    const { data } = await api.get(`/friends/${props.friendId}/tags`);
-    friendTags.value = data.friendTags || [];
-  } catch (err) {
-    console.warn('[TagCrmBar] loadFriendTags failed', err);
+    const { data } = await api.get(`/friends/${friendId}/tags`);
+    if (!disposed && request === friendRequest && props.friendId === friendId) {
+      friendTags.value = (data.friendTags || []).filter((assignment: FriendTagAssignment) => !assignment.removedAt);
+      return true;
+    }
+  } catch {
+    if (!disposed && request === friendRequest && props.friendId === friendId) tagsError.value = 'Không tải được tag của khách.';
   } finally {
-    loading.value = false;
+    if (!disposed && request === friendRequest) loading.value = false;
   }
+  return false;
 }
 
-// Load Tag(scope=friend, source=manual_per_nick) cho dropdown picker.
-// 2026-06-17 FIX: lọc source=manual_per_nick NGAY ở server. Trước đây kéo limit tag rồi
-// mới filter ở client → nếu org có ≥200 nhãn zalo_real (priority 1) thì manual_per_nick
-// (priority 2) bị đẩy khỏi response → dropdown rỗng dù tag manual có tồn tại.
-let fetchedDefsOnce = false;
 async function loadManualTagDefs() {
-  if (fetchedDefsOnce) return;
+  const request = ++defsRequest;
   defsLoading.value = true;
+  defsError.value = '';
   try {
-    const { data } = await api.get('/tags', { params: { scope: 'friend', source: 'manual_per_nick', limit: 200 } });
-    manualTagDefs.value = (data.tags || []).filter((t: TagV2) => t.source === 'manual_per_nick');
-    fetchedDefsOnce = true;
-  } catch (err) {
-    console.warn('[TagCrmBar] loadManualTagDefs failed', err);
+    const tags: TagV2[] = [];
+    let cursor: string | undefined;
+    const seen = new Set<string>();
+    while (true) {
+      const { data } = await api.get('/tags', { params: { scope: 'friend', source: 'manual_per_nick', limit: 200, ...(cursor ? { cursor } : {}) } });
+      if (disposed || request !== defsRequest) return;
+      const batch = (data.tags || []) as TagV2[];
+      const fresh = batch.filter(tag => !seen.has(tag.id));
+      fresh.forEach(tag => seen.add(tag.id));
+      tags.push(...fresh.filter(tag => tag.source === 'manual_per_nick'));
+      if (batch.length < 200 || !fresh.length) break;
+      cursor = batch[batch.length - 1]?.id;
+    }
+    manualTagDefs.value = tags;
+  } catch {
+    if (!disposed && request === defsRequest) defsError.value = 'Không tải được danh sách tag. Anh thử lại nhé.';
   } finally {
-    defsLoading.value = false;
+    if (!disposed && request === defsRequest) defsLoading.value = false;
   }
 }
 
-onMounted(() => {
-  loadFriendTags();
-});
-
+onMounted(() => { void loadFriendTags(); });
+onBeforeUnmount(() => { disposed = true; friendRequest++; defsRequest++; });
 watch(() => props.friendId, () => {
-  // Xoá tag của nick cũ NGAY trước khi nạp tag mới — tránh hiện chip nick trước đó
-  // trong ~100-300ms chờ API /friends/{id}/tags (hiện trống/skeleton thay vì sai).
   friendTags.value = [];
-  loadFriendTags();
+  dropdownOpen.value = false;
+  search.value = '';
+  void loadFriendTags();
 });
 
 // 2026-06-06 (Anh chốt) — Realtime sync tag Zalo Real: khi BE emit friend:updated{zaloLabels}
@@ -260,6 +282,7 @@ const filteredDefs = computed(() => {
 
 function onEnterSearch() {
   const exact = manualTagDefs.value.find(d => d.name.toLowerCase() === search.value.trim().toLowerCase());
+  if (defsLoading.value || defsError.value) return;
   if (exact) {
     onPickTag(exact);
   } else if (search.value.trim()) {
@@ -269,83 +292,49 @@ function onEnterSearch() {
 
 // Sau khi gắn/gỡ tag manual → báo timeline KH refresh (BE đã log tag_add_crm/remove
 // với entityType=contact). CustomerTimelineSection nghe event này, lọc theo contactId.
-function notifyTimeline() {
-  if (props.contactId) {
-    window.dispatchEvent(new CustomEvent('timeline-updated', { detail: { contactId: props.contactId } }));
-  }
+function notifyTimeline(contactId: string | null | undefined) {
+  if (contactId) window.dispatchEvent(new CustomEvent('timeline-updated', { detail: { contactId } }));
+}
+function notifyConvListTags(friendId: string) {
+  const slugs = friendTags.value.filter(ft => ft.tag.source === 'manual_per_nick' && !ft.removedAt).map(ft => ft.tag.slug);
+  window.dispatchEvent(new CustomEvent('friend-crm-tags-changed', { detail: { friendId, slugs } }));
 }
 
-// 2026-06-10 — Sau khi gắn/gỡ tag manual, BE mirror SLUG vào Friend.crmTagsPerNick (dual-write).
-// Cột 2 (ConversationList) đọc field này → bắn event để ChatView patch conv trong list NGAY,
-// không bắt sale F5. Gửi slug manual hiện tại (zalo_real/auto KHÔNG vào crmTagsPerNick).
-function notifyConvListTags() {
-  if (!props.friendId) return;
-  const slugs = friendTags.value
-    .filter(ft => ft.tag.source === 'manual_per_nick' && !ft.removedAt)
-    .map(ft => ft.tag.slug);
-  window.dispatchEvent(new CustomEvent('friend-crm-tags-changed', {
-    detail: { friendId: props.friendId, slugs },
-  }));
-}
-
-async function onPickTag(def: TagV2) {
-  if (!props.friendId) return;
-  // Toggle: nếu đã có → remove, chưa có → add
-  const existing = friendTags.value.find(ft => ft.tag.id === def.id && !ft.removedAt);
-  if (existing) {
-    await removeManualTag(def);
-    return;
-  }
+async function saveManualTag(action: 'add' | 'create' | 'remove', def?: TagV2) {
+  const friendId = props.friendId;
+  const contactId = props.contactId;
+  const name = search.value.trim();
+  if (!friendId || saving.value || loading.value || tagsError.value || (action === 'create' && !name)) return;
+  saving.value = true;
   try {
-    await api.post(`/friends/${props.friendId}/tags`, {
-      tagId: def.id,
-      source: 'manual_per_nick',
-    });
-    await loadFriendTags();
-    notifyTimeline();
-    notifyConvListTags();
-    dropdownOpen.value = false;
-  } catch (err) {
-    const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Gắn tag thất bại';
-    toast.error(msg);
-  }
-}
-
-async function onCreateNewTag() {
-  if (!props.friendId || !search.value.trim()) return;
-  try {
-    await api.post(`/friends/${props.friendId}/tags`, {
-      tagName: search.value.trim(),
-      source: 'manual_per_nick',
-      autoCreate: true,
-    });
-    fetchedDefsOnce = false; // refetch defs để dropdown thấy tag mới
-    await loadManualTagDefs();
-    await loadFriendTags();
-    // Refresh taxonomy slug→name để cột 2 resolve được tag vừa tạo (không hiện slug thô).
-    await refreshTagTaxonomy();
-    notifyTimeline();
-    notifyConvListTags();
+    if (action === 'remove' && def) await api.delete(`/friends/${friendId}/tags/${def.id}`);
+    else await api.post(`/friends/${friendId}/tags`, action === 'create'
+      ? { tagName: name, source: 'manual_per_nick', autoCreate: true }
+      : { tagId: def!.id, source: 'manual_per_nick' });
+    notifyTimeline(contactId);
+    if (disposed || props.friendId !== friendId) return;
+    const loaded = await loadFriendTags(friendId);
+    if (!loaded || disposed || props.friendId !== friendId) {
+      if (!disposed && props.friendId === friendId) toast.error('Tag đã lưu, nhưng chưa tải lại được. Bấm Thử lại để xem.');
+      return;
+    }
+    notifyConvListTags(friendId);
+    if (action === 'create') {
+      await Promise.all([loadManualTagDefs(), refreshTagTaxonomy()]);
+      if (disposed || props.friendId !== friendId) return;
+    }
     search.value = '';
     dropdownOpen.value = false;
-    toast.success('Đã tạo và gắn tag mới');
-  } catch (err) {
-    const msg = (err as { response?: { data?: { error?: string } } })?.response?.data?.error ?? 'Tạo tag thất bại';
-    toast.error(msg);
-  }
+    toast.success(action === 'create' ? 'Đã tạo và gắn tag CRM' : action === 'remove' ? 'Đã gỡ tag CRM' : 'Đã gắn tag CRM');
+  } catch (error: any) {
+    if (!disposed && props.friendId === friendId) toast.error(error.response?.data?.message || error.response?.data?.error || 'Không lưu được tag. Anh thử lại nhé.');
+  } finally { saving.value = false; }
 }
-
-async function removeManualTag(tag: TagV2) {
-  if (!props.friendId) return;
-  try {
-    await api.delete(`/friends/${props.friendId}/tags/${tag.id}`);
-    await loadFriendTags();
-    notifyTimeline();
-    notifyConvListTags();
-  } catch (err) {
-    toast.error('Gỡ tag thất bại');
-  }
+function onPickTag(def: TagV2) {
+  return saveManualTag(friendTags.value.some(ft => ft.tag.id === def.id && !ft.removedAt) ? 'remove' : 'add', def);
 }
+function onCreateNewTag() { return saveManualTag('create'); }
+function removeManualTag(def: TagV2) { return saveManualTag('remove', def); }
 
 function goToSettings() {
   dropdownOpen.value = false;
@@ -537,4 +526,9 @@ function goToSettings() {
 /* Icon Lucide chrome — căn giữa (2026-06-08). */
 .bar-label, .tag-x, .dd-check { display: inline-flex; align-items: center; justify-content: center; }
 .bar-label svg, .tag-x svg, .dd-check svg, .settings-icon svg { display: block; }
+
+.dd-scope { margin: 0; padding: 10px 12px; font-size: 11px; line-height: 1.5; color: #64748b; background: #f8fafc; border-radius: 8px 8px 0 0; }
+.tag-load-error { color: #a13e32; font-size: 12px; }
+.tag-load-error button, .dd-retry { text-decoration: underline; padding: 4px; }
+.tag-crm-bar button:disabled, .tag-dropdown button:disabled { opacity: .5; cursor: not-allowed; }
 </style>

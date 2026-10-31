@@ -200,6 +200,8 @@ const routes: RouteRecordRaw[] = [
       // Automation tech-settings route → extension bundle (eeSettingsChildren).
       { path: 'channels/integrations',     name: 'Settings.Integrations',    component: () => import('@/views/IntegrationsView.vue'), meta: { resource: 'settings' } },
 
+      { path: 'channels/joliefam', name: 'Settings.Joliefam', component: () => import('@/views/settings/JoliefamConnectionPage.vue'), meta: { resource: 'commerce_connection' } },
+
       // 🛠 Dev & API
       { path: 'dev/api',           name: 'Settings.Api',          component: () => import('@/views/ApiSettingsView.vue'), meta: { resource: 'webhook' } },
       { path: 'dev/agents', name: 'Settings.Agents', component: () => import('@/views/settings/AgentConnectionsPage.vue'), meta: { resource: 'webhook', action: 'edit' } },
@@ -223,8 +225,7 @@ const routes: RouteRecordRaw[] = [
     meta: { requiresAuth: true, resource: 'contact' },
   },
   {
-    // Tab "Hồ sơ KH tổng hợp" — SKELETON, render 3 field ẩn cột 4 (email/address/occupation)
-    // + aggregate Friend rows. Backend route stub, full impl ở phase sau.
+    // Hồ sơ Contact thật và thông tin mua hàng từ CRM Joliefam.
     path: '/contacts/:id/profile',
     name: 'ContactProfile',
     component: () => import('@/views/ContactProfileView.vue'),

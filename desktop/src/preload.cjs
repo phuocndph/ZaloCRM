@@ -28,7 +28,9 @@ if (process.isMainFrame && role === 'updater' && location.protocol === 'file:') 
     onState: (callback) => subscribe('desktop:state-changed', callback),
     open: () => ipcRenderer.send('desktop:open'),
     menu: () => ipcRenderer.send('desktop:menu'),
-    move: (dx, dy) => ipcRenderer.send('desktop:move', { dx, dy }),
+    beginDrag: (id) => ipcRenderer.send('desktop:drag-start', id),
+    drag: (id) => ipcRenderer.send('desktop:drag-move', id),
+    endDrag: (id, cancelled) => ipcRenderer.invoke('desktop:drag-end', { id, cancelled: cancelled === true }),
   });
 } else if (process.isMainFrame && location.origin === origin && ['main', 'chat'].includes(role)) {
   contextBridge.exposeInMainWorld('zaloDesktop', {

@@ -19,8 +19,8 @@
 -->
 <template>
   <teleport to="body">
-    <div v-if="modelValue" class="cpd-overlay" @click.self="close">
-      <div class="cpd-modal" role="dialog" aria-modal="true">
+    <div v-if="modelValue" class="cpd-overlay" :class="{ 'cpd-commerce-open': purchaseWorkspaceOpen }" @click.self="close">
+      <div class="cpd-modal" :class="{ 'cpd-commerce-hidden': purchaseWorkspaceOpen }" :inert="purchaseWorkspaceOpen || undefined" role="dialog" :aria-modal="!purchaseWorkspaceOpen" :aria-hidden="purchaseWorkspaceOpen || undefined">
         <div v-if="loading" class="cpd-loading">⏳ Đang tải hồ sơ khách hàng…</div>
         <div v-else-if="error" class="cpd-error">⚠️ {{ error }}</div>
 
@@ -328,6 +328,7 @@
             </section>
 
             <!-- ─── TAB: Nick chăm ─── -->
+            <section v-else-if="activeTab === 'purchases'" class="cpd-pane"><PurchasePanel v-if="c?.id" :key="c.id" :contact-id="c.id" @workspace-change="purchaseWorkspaceOpen = $event" /></section>
             <section v-else-if="activeTab === 'nicks'" class="cpd-pane">
               <div v-if="loadingFriends" class="cpd-empty">Đang tải nick chăm…</div>
               <template v-else>
@@ -424,6 +425,7 @@
 </template>
 
 <script setup lang="ts">
+import PurchasePanel from '@/components/commerce/PurchasePanel.vue';
 import { ref, computed, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { api } from '@/api/index';
@@ -458,8 +460,9 @@ const isCreate = computed(() => props.mode === 'create');
 const router = useRouter();
 const toast = useToast();
 
-type TabKey = 'overview' | 'nicks' | 'timeline' | 'notes';
+type TabKey = 'overview' | 'nicks' | 'timeline' | 'notes' | 'purchases';
 const activeTab = ref<TabKey>('overview');
+const purchaseWorkspaceOpen = ref(false);
 
 const c = ref<Contact | null>(null);
 // P2 Hồ sơ — cast gọn để bind các attribute read-only (field có sẵn từ API full-row).
@@ -792,6 +795,7 @@ const assistSales = computed(() =>
 
 const tabs = computed(() => [
   { key: 'overview' as TabKey, label: 'Tổng quan', count: undefined },
+  ...(!isCreate.value ? [{ key: 'purchases' as TabKey, label: 'Mua hàng', count: undefined }] : []),
   { key: 'nicks' as TabKey, label: 'Nick chăm', count: friends.value.length || (c.value as any)?.childrenCount || 0 },
   { key: 'timeline' as TabKey, label: 'Lịch sử', count: undefined },
   { key: 'notes' as TabKey, label: 'Ghi chú', count: notes.value.length || undefined },
@@ -930,6 +934,8 @@ async function copyAttr(code: string) {
   display: flex; align-items: flex-start; justify-content: center;
   padding: 32px 16px; z-index: 1200;
 }
+.cpd-overlay.cpd-commerce-open { background: transparent; }
+.cpd-modal.cpd-commerce-hidden { visibility: hidden; }
 .cpd-modal {
   position: relative; width: 960px; max-width: calc(100vw - 32px);
   max-height: calc(100vh - 64px); background: #fff; border-radius: 12px;

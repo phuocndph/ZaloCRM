@@ -119,6 +119,7 @@ export const SETTINGS_GROUPS: SettingsGroup[] = [
       { id: 'sdk-limits', label: 'Trần an toàn SDK Zalo', icon: 'mdi-shield-alert-outline', route: '/settings/channels/sdk-limits', permission: 'admin', resource: 'settings', aliases: ['trần', 'rate limit', 'sdk', 'giới hạn', 'an toàn nick', 'khoá nick', 'quota nick', 'giới hạn gửi'] },
       // Facebook Lead Ads item → extension bundle (eeSettingsItems.channels).
       // Automation tech-settings nav item → extension bundle (eeSettingsItems.channels).
+      { id: 'joliefam', label: 'CRM Joliefam', icon: 'mdi-shopping-outline', route: '/settings/channels/joliefam', permission: 'everyone', resource: 'commerce_connection', aliases: ['đơn hàng', 'vận chuyển', 'mua hàng'] },
       { id: 'integrations', label: 'Tích hợp 3rd party', icon: 'mdi-puzzle-outline', route: '/settings/channels/integrations', permission: 'admin', resource: 'settings', aliases: ['tích hợp', 'integration', '3rd party'] },
     ],
   },

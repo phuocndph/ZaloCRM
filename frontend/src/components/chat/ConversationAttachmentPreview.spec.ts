@@ -71,4 +71,14 @@ describe('conversation attachment preview', () => {
     expect(mocks.get).not.toHaveBeenCalled();
     wrapper.unmount();
   });
+  it('allows moving to the next gallery image after the previous image fails', async () => {
+    const wrapper = render();
+    await (wrapper.vm as any).open('https://files.test/one.jpg', 'one.jpg', 'image', ['https://files.test/one.jpg', 'https://files.test/two.jpg']);
+    await wrapper.get('img').trigger('error');
+    expect(wrapper.text()).toContain('Ảnh không tải được');
+    await wrapper.get('[aria-label="Ảnh sau"]').trigger('click');
+    expect(wrapper.get('img').attributes('src')).toBe('https://files.test/two.jpg');
+    expect(wrapper.text()).not.toContain('Ảnh không tải được'); wrapper.unmount();
+  });
+
 });

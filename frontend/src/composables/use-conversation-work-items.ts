@@ -31,6 +31,8 @@ export interface ConversationWorkItemMetadata {
 
 export interface ConversationWorkItem {
   id: string;
+  assigneeUserId?: string;
+  assignee?: { id: string; fullName: string };
   contactId: string;
   conversationId: string | null;
   kind: string;
@@ -76,6 +78,7 @@ export interface WorkItemSummary {
 }
 
 type WorkItemResponse = {
+  assignees?: Array<{ id: string; fullName: string }>;
   items: ConversationWorkItem[];
   counts: WorkItemCounts;
   summary?: WorkItemSummary;
@@ -94,6 +97,7 @@ export interface ConversationAnalysisActivity {
 
 export function useConversationWorkItems() {
   const items = ref<ConversationWorkItem[]>([]);
+  const assignees = ref<Array<{ id: string; fullName: string }>>([]);
   const aiActivity = ref<ConversationAnalysisActivity[]>([]);
   const counts = ref<WorkItemCounts>({ now: 0, today: 0, waiting: 0, upcoming: 0, verify: 0, done: 0 });
   const summary = ref<WorkItemSummary>({ totalActive: 0, critical: 0, overdue: 0, waitingReply: 0, verification: 0 });
@@ -108,10 +112,11 @@ export function useConversationWorkItems() {
   let activeScope: WorkItemScope = 'now';
   let activeAsUserId: string | null | undefined;
   let activeQuery = '';
+  let activeAllAssignees = false;
 
   function scheduleRefresh() {
     if (refreshTimer) clearTimeout(refreshTimer);
-    refreshTimer = setTimeout(() => { void fetchItems(activeScope, activeAsUserId, true, activeQuery); }, 350);
+    refreshTimer = setTimeout(() => { void fetchItems(activeScope, activeAsUserId, true, activeQuery, activeAllAssignees); }, 350);
   }
 
   function startRealtime() {
@@ -124,20 +129,23 @@ export function useConversationWorkItems() {
     socket.on('work-items:updated', refreshOnActivity);
   }
 
-  async function fetchItems(scope: WorkItemScope, asUserId?: string | null, quiet = false, query = '') {
+  async function fetchItems(scope: WorkItemScope, asUserId?: string | null, quiet = false, query = '', allAssignees = false) {
     const sequence = ++requestSequence;
     activeScope = scope;
     activeAsUserId = asUserId;
+    activeAllAssignees = allAssignees;
+    loadingMore.value = false;
     activeQuery = query.trim();
     if (!quiet) loading.value = true;
     error.value = null;
     try {
       startRealtime();
       const { data } = await api.get<WorkItemResponse>('/work-items', {
-        params: { scope, limit: 40, offset: 0, ...(activeQuery ? { q: activeQuery } : {}), ...(asUserId ? { asUserId } : {}) },
+        params: { scope, limit: 40, offset: 0, ...(allAssignees ? { audience: 'all' } : {}), ...(activeQuery ? { q: activeQuery } : {}), ...(asUserId ? { asUserId } : {}) },
       });
       if (sequence !== requestSequence) return;
       items.value = data.items ?? [];
+      assignees.value = data.assignees ?? [];
       aiActivity.value = data.aiActivity ?? [];
       counts.value = { ...counts.value, ...(data.counts ?? {}) };
       summary.value = { ...summary.value, ...(data.summary ?? {}) };
@@ -157,6 +165,7 @@ export function useConversationWorkItems() {
       const { data } = await api.get<WorkItemResponse>('/work-items', {
         params: {
           scope: activeScope,
+          ...(activeAllAssignees ? { audience: 'all' } : {}),
           limit: 40,
           offset: items.value.length,
           ...(activeQuery ? { q: activeQuery } : {}),
@@ -193,5 +202,5 @@ export function useConversationWorkItems() {
     socket = null;
   }
 
-  return { items, aiActivity, counts, summary, loading, loadingMore, hasMore, mutatingId, error, fetchItems, loadMore, updateItem, stopRealtime };
+  return { items, assignees, aiActivity, counts, summary, loading, loadingMore, hasMore, mutatingId, error, fetchItems, loadMore, updateItem, stopRealtime };
 }

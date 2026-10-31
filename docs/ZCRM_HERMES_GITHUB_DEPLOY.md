@@ -1,5 +1,9 @@
 # Triển khai bản GitHub có nghiên cứu khách hàng
 
+Luồng tìm nỗi đau và tạo bài mới chạy trực tiếp trong ZCRM. Xem
+[Hướng dẫn chạy trực tiếp](ZCRM_DIRECT_RESEARCH.md). Tài liệu Hermes bên dưới
+được giữ cho các kết nối và công việc cũ.
+
 Mã phát hành được đưa lên `main`, với nhánh tham chiếu `codex/customer-research-hermes`.
 Đây là bản ghép trên `main` mới nhất tại lúc phát hành; giữ các bản sửa chat,
 ứng dụng Windows và hệ thống kết nối Agent đã có trên GitHub.

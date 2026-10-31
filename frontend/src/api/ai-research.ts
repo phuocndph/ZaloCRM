@@ -4,10 +4,17 @@ import { api } from '@/api/index';
 export type ResearchFormat = 'article' | 'zalo_message' | 'checklist';
 export type ResearchSpeakerRole = 'owner' | 'manager' | 'staff' | 'supplier' | 'guest' | 'unknown';
 export type ResearchRelevance = 'direct' | 'educational' | 'outside' | 'unknown';
-export type ResearchTaskKind = 'discover' | 'collect' | 'analyze' | 'generate';
+export type ResearchTaskKind = 'research' | 'discover_groups' | 'generate_batch' | 'discover' | 'collect' | 'analyze' | 'generate';
 export type ResearchTaskStatus = 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
 export type ResearchPainStatus = 'draft' | 'approved' | 'rejected' | 'needs_review' | 'merged' | 'superseded';
 export type ResearchContentStatus = 'draft' | 'approved' | 'outdated' | 'archived';
+
+export interface ResearchModel {
+  id: string;
+  displayName: string;
+  externalModelId: string;
+  status: string;
+}
 
 export interface ResearchCapabilities {
   search: {
@@ -16,9 +23,11 @@ export interface ResearchCapabilities {
   };
   publicWeb: {
     allowedDomains: string[];
+    publicSitesEnabled?: boolean;
   };
   facebook: {
     automaticGroupReading: boolean;
+    automaticGroupDiscovery?: boolean;
     manualImport: boolean;
   };
   encryption: boolean;
@@ -181,9 +190,11 @@ export interface MergeResearchPainInput {
 }
 
 export interface CreateResearchTaskInput {
+  sourceMode?: 'saved';
   kind: ResearchTaskKind;
   idempotencyKey: string;
   painId?: string;
+  pains?: Array<{ painId: string; revision: number }>;
   format?: ResearchFormat;
 }
 
@@ -226,6 +237,9 @@ export const FORMAT_LABELS: Record<ResearchFormat, string> = {
 };
 
 export const TASK_KIND_LABELS: Record<ResearchTaskKind, string> = {
+  research: 'Tìm, đọc nguồn và tổng hợp',
+  discover_groups: 'Tìm hội nhóm và bài Facebook',
+  generate_batch: 'Viết bài cho các vấn đề đã chọn',
   discover: 'Tìm nguồn trên Google',
   collect: 'Đọc nội dung các trang web',
   analyze: 'AI tổng hợp nỗi đau khách hàng',
@@ -243,11 +257,14 @@ export const TASK_STATUS_LABELS: Record<ResearchTaskStatus, string> = {
 export const SOURCE_STATUS_LABELS: Record<string, string> = {
   read: 'Đã đọc nội dung',
   pending: 'Chưa đọc nội dung',
-  requires_manual: 'Cần dán nội dung thủ công (Facebook)',
+  group_found: 'Đã tìm thấy nhóm — chưa đọc nội dung',
+  requires_manual: 'Đã có đường dẫn — cần bổ sung nội dung',
   duplicate: 'Trùng nội dung với nguồn khác',
   blocked_domain: 'Trang web chưa nằm trong danh sách cho phép tự đọc',
   blocked_robots: 'Trang web chặn đọc tự động',
   failed: 'Không đọc được trang này',
+  blocked: 'Trang web không cho phép đọc tự động',
+  snippet_only: 'Nội dung quá ngắn để làm bằng chứng',
 };
 
 export const PAIN_STATUS_LABELS: Record<ResearchPainStatus, string> = {
@@ -267,6 +284,12 @@ export const CONTENT_STATUS_LABELS: Record<ResearchContentStatus, string> = {
 };
 
 export const aiResearchApi = {
+  async saveSearchConnection(apiKey: string): Promise<{ configured: boolean }> {
+    return (await api.post<{ configured: boolean }>(`${base}/search-connection`, { apiKey })).data;
+  },
+  async useDirect(projectId: string, modelConfigId: string): Promise<ResearchProject> {
+    return (await api.post<ResearchProject>(`${base}/projects/${encodeURIComponent(projectId)}/direct`, { modelConfigId })).data;
+  },
   async getHermesStatus(): Promise<{ lastSeenAt: string | null; recentlySeen: boolean }> {
     return (await api.get<{ lastSeenAt: string | null; recentlySeen: boolean }>(`${base}/hermes-status`)).data;
   },
@@ -278,6 +301,11 @@ export const aiResearchApi = {
   async listProjects(page = 1): Promise<ResearchProject[]> {
     const res = await api.get<{ projects: ResearchProject[] }>(`${base}/projects`, { params: { page } });
     return res.data.projects ?? [];
+  },
+
+  async listModels(): Promise<ResearchModel[]> {
+    const res = await api.get<{ models: ResearchModel[] }>(`${base}/models`);
+    return res.data.models ?? [];
   },
 
   async createProject(input: CreateResearchProjectInput): Promise<ResearchProject> {

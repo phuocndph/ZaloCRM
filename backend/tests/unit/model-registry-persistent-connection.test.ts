@@ -133,3 +133,26 @@ describe('ModelRegistry persistent provider connections', () => {
   });
 });
 
+
+describe('research-only model readiness', () => {
+  const resolver = vi.fn(async () => ({ id: 'connection-1', adapter: 'openai_compatible', vendor: '9router', baseUrl: 'https://router.example/v1', apiKey: 'test-secret' }));
+  function setup(status: string, tested: boolean) {
+    const repository: ModelConfigRepository = { find: vi.fn(async (orgId) => orgId === 'org-1' ? stored({ status }) : null), researchTestPassed: vi.fn(async () => tested) };
+    return { registry: new ModelRegistry(repository, resolver).registerProvider(provider), repository };
+  }
+  it.each(['testing', 'submitted'])('allows successfully tested %s models for research without approval', async (status) => {
+    const { registry, repository } = setup(status, true);
+    await expect(registry.resolve('org-1', 'model-1', { purpose: 'customer_research' })).resolves.toMatchObject({ id: 'model-1' });
+    expect(repository.researchTestPassed).toHaveBeenCalledWith('org-1', 'model-1');
+    await expect(registry.resolve('org-1', 'model-1')).rejects.toMatchObject({ code: 'CONFIGURATION' });
+  });
+  it.each(['draft', 'archived', 'disabled', 'testing', 'submitted'])('refuses an unverified %s model even for research', async (status) => {
+    const { registry } = setup(status, false);
+    await expect(registry.resolve('org-1', 'model-1', { purpose: 'customer_research' })).rejects.toMatchObject({ code: 'CONFIGURATION' });
+  });
+  it('cannot use a model from another organization', async () => {
+    const { registry, repository } = setup('testing', true);
+    await expect(registry.resolve('org-other', 'model-1', { purpose: 'customer_research' })).rejects.toMatchObject({ code: 'CONFIGURATION' });
+    expect(repository.researchTestPassed).not.toHaveBeenCalled();
+  });
+});

@@ -57,10 +57,12 @@
       >
         <span class="ic"><TargetIcon :size="15" :stroke-width="2" /></span> Chăm sóc
       </button>
+      <button v-if="_authStorePanel.canAccess('commerce')" class="ip-tab" :class="{ active: activeTab === 'purchases' }" @click="activeTab = 'purchases'">Mua hàng</button>
     </nav>
 
     <!-- ════════ Tab content (scroll) ════════ -->
     <div class="ip-tab-content">
+      <PurchasePanel v-if="activeTab === 'purchases' && !conversationPrivateBlocked" :key="contactId || conversationId || 'choose'" :contact-id="contactId" :require-contact-selection="isGroupConversation" compact />
 
       <!-- ══════ TAB 1: HỒ SƠ ══════ -->
       <div v-show="activeTab === 'profile'" class="tab-pane">
@@ -457,6 +459,7 @@
 </template>
 
 <script setup lang="ts">
+import PurchasePanel from '@/components/commerce/PurchasePanel.vue';
 import { ref, reactive, computed, watch, onBeforeUnmount, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import type { Contact } from '@/composables/use-contacts';
@@ -493,6 +496,7 @@ import { notificationPreview } from '@/composables/message-notification-utils';
 
 const props = defineProps<{
   contactId: string | null;
+  isGroupConversation?: boolean;
   contact: Contact | null;
   // Nick CRM đang xem KH này — dùng để xác định Friend row "active" cho per-pair tag.
   activeZaloAccountId?: string | null;
@@ -574,7 +578,7 @@ async function saveAlias() {
 const mainTab = ref<'profile' | 'media' | 'ai' | 'followup'>('profile');
 // Show the conversation analysis first when a chat is opened; staff can still
 // switch to the profile/CRM tabs without losing the generated insight.
-const activeTab = ref<'profile' | 'crm' | 'activity'>('activity');
+const activeTab = ref<'profile' | 'crm' | 'activity' | 'purchases'>('activity');
 
 // Cho phép cha (ChatView) mở tab Media từ nút "Chèn từ kho" ở composer cột 3.
 function setMainTab(t: 'profile' | 'media' | 'ai' | 'followup') { mainTab.value = t; }

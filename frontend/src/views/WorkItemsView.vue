@@ -8,7 +8,7 @@
           <div class="wi-eyebrow"><ListTodoIcon :size="15" aria-hidden="true" /> TÁC NGHIỆP HẰNG NGÀY</div>
           <h1>{{ viewMode === 'load' ? 'Phân công hội thoại' : 'Công việc khách hàng' }}</h1>
           <p v-if="viewMode === 'load'">Xem nhanh mỗi hội thoại đang do nhân viên nào phụ trách, nick nào đang xử lý và trạng thái hiện tại.</p>
-          <p v-else>Danh sách đã được gom theo khách hàng, nick Zalo và tín hiệu từ cuộc hội thoại. Mở việc, xử lý rồi đánh dấu hoàn thành.</p>
+          <p v-else>Hiển thị công việc của tất cả nhân viên và nick Zalo trong phạm vi được phép xem. Lọc theo người phụ trách khi cần. Mở việc, xử lý rồi đánh dấu hoàn thành.</p>
         </div>
         <div class="wi-header-actions">
           <div class="wi-mode" role="tablist" aria-label="Chế độ xem công việc">
@@ -33,6 +33,8 @@
       <div v-else class="wi-workspace" :class="{ 'wi-workspace--preview': selectedConversationId }">
         <DailyWorkQueue
           ref="queue"
+          all-assignees
+          @assignee-change="closePreview"
           hide-tabs
           preview-enabled
           :selected-conversation-id="selectedConversationId"

@@ -1,4 +1,4 @@
-# Windows Chat Bubble 0.2.7
+# Windows Chat Bubble 0.2.8
 
 The client connects to https://zcrm.joliefam.vn. Employees sign in with their
 normal CRM account; no Hermes keys or additional Zalo sessions are involved.
@@ -13,6 +13,7 @@ Node.js 22.12 or newer is required for desktop tooling. From desktop/:
 npm ci
 npm test
 npm run test:smoke
+npm run test:bubble
 npm run test:preview
 npm run test:media
 npm run test:updater
@@ -21,7 +22,7 @@ npm run test:ui
 npm run dist
 ```
 
-Installer: desktop/release/ZaloCRM-Setup-0.2.7.exe. Build scripts prepare Electron
+Installer: desktop/release/ZaloCRM-Setup-0.2.8.exe. Build scripts prepare Electron
 and reuse its unpacked distribution, avoiding the ZIP temporary-directory rename
 failure seen in the first release. The NSIS icon uses a separate 512px brand image.
 The installer remains unsigned; Windows can show an unknown-publisher warning.
@@ -37,6 +38,8 @@ Closing the updater during a transfer hides its window while the same verified t
 continues. Reopening restores progress; completion brings back the confirmation window.
 
 ## Publish An Update
+
+The example below refers to the already published 0.2.7 release. Version 0.2.8 is built locally and must be published separately before using its GitHub download URL. The native window fixes in 0.2.8 do not require database changes.
 
 Installers are not committed to Git. Publish the installer as an asset in the public
 GitHub release for the same version. Native 0.2.3+ clients discover it without needing a
@@ -177,3 +180,28 @@ Built-frontend UI tests use 65 conversations for pagination/search/unread, A/B/A
 with draft restoration, bubble reopen, and 420px/laptop/wide screenshots. Actual Windows picker timing,
 real reconnects, physical multiple monitors and publisher signing need pilot checks
 on employee machines before broad rollout.
+
+## Window stability — 0.2.8
+
+The bubble now anchors a complete drag gesture in the Electron main process using
+`screen.getCursorScreenPoint()`, in desktop DIP coordinates. Renderer moves are
+coalesced to one update per animation frame. Fast moves no longer lose distances
+above 100 pixels; click, drag, cancellation, lost capture, right click and keyboard
+activation have separate handling. The final position is saved on release.
+
+Unread refresh no longer calls `showInactive()` on an already visible transparent
+window. The bubble cannot be minimized or normally closed; a visibility check restores
+an unexpectedly hidden window only while signed in, enabled and unlocked. Renderer
+crashes reload with bounded backoff; a main-renderer crash hides customer UI until
+CRM establishes the signed-in identity again. User logout and explicit bubble disabling
+remain authoritative. Work-area/DPI/display changes and resume clamp saved coordinates
+back onto an available display. The tray menu has **Đưa bong bóng về góc màn hình**
+for manual recovery. Chat requests cancelled during loading no longer reopen on a late
+page-load callback. Preference write failures cannot terminate the desktop process.
+
+Verification: 37 unit tests, Electron smoke, preview checks, a dedicated native-window
+fixture with 15 drag cycles and position persistence, offscreen startup, hide recovery,
+forced renderer crash/reload, open/close and logout. Cursor coordinates are supplied by
+the isolated fixture; physical mouse/touch gestures and mixed-DPI monitor transitions
+still need confirmation on employee PCs. No production account or messages are used.
+The installer is built locally; publishing a release or deploying the VPS is a separate step.

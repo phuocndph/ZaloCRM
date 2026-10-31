@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: AGPL-3.0-or-later -->
 <!-- Copyright (C) 2026 Nguyễn Tiến Lộc -->
 <template>
-  <div class="settings-layout" :class="{ 'settings-layout--agent': route.name === 'Settings.Agents' }">
+  <div class="settings-layout" :class="{ 'settings-layout--agent': route.name === 'Settings.Agents', 'settings-layout--commerce': route.path === '/settings/channels/joliefam' }">
     <!-- Sidebar -->
     <aside class="sl-sidebar" aria-label="Cài đặt sidebar">
       <header class="sl-header">
@@ -74,7 +74,7 @@
 
     <!-- Content panel -->
     <main class="sl-content" role="main">
-      <div v-if="route.name === 'Settings.Agents'" class="sl-agent-mobile-nav">
+      <div v-if="route.name === 'Settings.Agents' || route.path === '/settings/channels/joliefam'" class="sl-agent-mobile-nav">
         <v-select :model-value="route.path" :items="visibleGroups.flatMap(group => group.items.map(item => ({ title: item.label, value: item.route })))" label="Mục cài đặt" density="compact" hide-details @update:model-value="router.push($event)" />
       </div>
       <header class="sl-breadcrumb" v-if="activeItem">
@@ -389,12 +389,12 @@ onMounted(() => {
 }
 .sl-content-body::-webkit-scrollbar { width: 8px; }
 .sl-content-body::-webkit-scrollbar-thumb { background: #D4D6DB; border-radius: 4px; }
-.settings-layout--agent { grid-template-columns: 260px minmax(0, 1fr); letter-spacing: 0; }
+.settings-layout--agent, .settings-layout--commerce { grid-template-columns: 260px minmax(0, 1fr); letter-spacing: 0; }
 .sl-agent-mobile-nav { display: none; }
 @media (max-width: 700px) {
-  .settings-layout--agent { grid-template-columns: minmax(0, 1fr); height: calc(100dvh - 112px); }
-  .settings-layout--agent .sl-sidebar, .settings-layout--agent .sl-breadcrumb { display: none; }
-  .settings-layout--agent .sl-agent-mobile-nav { display: block; padding: 12px 16px; background: white; border-bottom: 1px solid #E4E5E9; }
-  .settings-layout--agent .sl-content-body { min-width: 0; padding: 18px 16px; }
+  .settings-layout--agent, .settings-layout--commerce { grid-template-columns: minmax(0, 1fr); height: calc(100dvh - 112px); }
+  .settings-layout--agent .sl-sidebar, .settings-layout--agent .sl-breadcrumb, .settings-layout--commerce .sl-sidebar, .settings-layout--commerce .sl-breadcrumb { display: none; }
+  .settings-layout--agent .sl-agent-mobile-nav, .settings-layout--commerce .sl-agent-mobile-nav { display: block; padding: 12px 16px; background: white; border-bottom: 1px solid #E4E5E9; }
+  .settings-layout--agent .sl-content-body, .settings-layout--commerce .sl-content-body { min-width: 0; padding: 18px 16px; }
 }
 </style>

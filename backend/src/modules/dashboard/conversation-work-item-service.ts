@@ -1317,17 +1317,16 @@ export function workItemMatchesIntegrationScope(row: any, conversationIds: Set<s
   return signals.every((signal: any) => typeof signal.zaloAccountId === 'string' && accountIds.has(signal.zaloAccountId));
 }
 
-export async function listConversationWorkItems(input: {
-  orgId: string;
-  assigneeUserId: string;
-  privacy: PrivacyContext;
-  scope?: WorkItemScope;
-  limit?: number;
-  offset?: number;
-  query?: string;
-  allowedConversationIds?: string[];
-  allowedAccountIds?: string[];
-}) {
+function secondaryWorkItemConversationIds(row: any): string[] {
+  const metadata = jsonObject(row.metadata);
+  const signals = Array.isArray(metadata.signals) ? metadata.signals : [];
+  return [...new Set([
+    ...(Array.isArray(metadata.conversationIds) ? metadata.conversationIds : []),
+    ...signals.map((signal: any) => signal.conversationId),
+  ].filter((id): id is string => typeof id === 'string' && !!id && id !== row.conversationId))];
+}
+
+async function ensureWorkItemsReconciled(input: { orgId: string; assigneeUserId: string; privacy: PrivacyContext }) {
   const cacheKey = reconciliationCacheKey(input);
   const cachedAt = reconciliationCache.get(cacheKey) ?? 0;
   if (Date.now() - cachedAt >= RECONCILIATION_TTL_MS) {
@@ -1345,15 +1344,39 @@ export async function listConversationWorkItems(input: {
       }
     }
   }
+}
+
+export async function listConversationWorkItems(input: {
+  orgId: string;
+  assigneeUserId: string;
+  assigneeUserIds?: string[];
+  privacy: PrivacyContext;
+  scope?: WorkItemScope;
+  limit?: number;
+  offset?: number;
+  query?: string;
+  allowedConversationIds?: string[];
+  allowedAccountIds?: string[];
+}) {
+  const assigneeUserIds = [...new Set(input.assigneeUserIds ?? [input.assigneeUserId])];
+  await Promise.all(assigneeUserIds.map((assigneeUserId) => ensureWorkItemsReconciled({
+    orgId: input.orgId,
+    assigneeUserId,
+    // Materialize each person's own queue; redact the combined result for the viewer below.
+    privacy: input.assigneeUserIds
+      ? { viewerUserId: assigneeUserId, orgId: input.orgId, privacyUnlocked: false }
+      : input.privacy,
+  })));
   const now = new Date();
   const rawRows = await prisma.conversationWorkItem.findMany({
     where: {
       orgId: input.orgId,
-      assigneeUserId: input.assigneeUserId,
+      assigneeUserId: { in: assigneeUserIds },
       sourceType: { in: [...CURRENT_WORK_ITEM_SOURCE_TYPES] },
       status: { in: ['open', 'snoozed', 'completed'] },
     },
     include: {
+      assignee: { select: { id: true, fullName: true } },
       contact: { select: { id: true, fullName: true, crmName: true, avatarUrl: true, priorityScore: true } },
       conversation: {
         select: {
@@ -1364,8 +1387,16 @@ export async function listConversationWorkItems(input: {
         },
       },
     },
-    orderBy: [{ priorityScore: 'desc' }, { dueAt: { sort: 'asc', nulls: 'last' } }, { sourceEventAt: 'desc' }],
+    orderBy: [{ priorityScore: 'desc' }, { dueAt: { sort: 'asc', nulls: 'last' } }, { sourceEventAt: 'desc' }, { id: 'asc' }],
   });
+  // A task can combine several nicks. Check every source, including secondary
+  // conversations, before exposing a colleague's materialized queue.
+  const secondaryIds = [...new Set(rawRows.flatMap(secondaryWorkItemConversationIds))];
+  const secondaryConversations = secondaryIds.length ? await prisma.conversation.findMany({
+    where: { orgId: input.orgId, id: { in: secondaryIds }, deletedAt: null },
+    select: { id: true, isPrivate: true, privateOwnerUserId: true, zaloAccount: { select: { privacyMode: true, ownerUserId: true } } },
+  }) : [];
+  const secondaryById = new Map(secondaryConversations.map((conversation) => [conversation.id, conversation]));
   const allowedIds = input.allowedConversationIds ? new Set(input.allowedConversationIds) : null;
   const allowedAccounts = input.allowedAccountIds ? new Set(input.allowedAccountIds) : undefined;
   const sourceConversations = await loadWorkItemSourceConversations(rawRows, input.orgId);
@@ -1394,6 +1425,7 @@ export async function listConversationWorkItems(input: {
       if (!query) return true;
       const metadata = jsonObject(row.metadata);
       return [
+        row.assignee?.fullName,
         row.title,
         row.customerSituation,
         row.nextAction,

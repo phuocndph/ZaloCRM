@@ -41,6 +41,7 @@ export type StoredModelConfig = {
 
 export type ModelConfigRepository = {
   find(orgId: string, id: string): Promise<StoredModelConfig | null>;
+  researchTestPassed?(orgId: string, id: string): Promise<boolean>;
 };
 
 export type ProviderConnectionRuntime = {
@@ -57,6 +58,19 @@ export type ProviderConnectionRuntimeResolver = (
 ) => Promise<ProviderConnectionRuntime>;
 
 const prismaRepository: ModelConfigRepository = {
+  async researchTestPassed(orgId, id) {
+    // An edit or a failed re-test invalidates the previous successful test.
+    const latest = await prisma.aiAuditLog.findFirst({
+      where: { orgId, targetType: 'ai_model_config', targetId: id, eventType: { in: ['model_config.tested', 'model_config.updated'] } },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      select: { eventType: true, outcome: true, metadata: true },
+    });
+    const model = await prisma.aiModelConfig.findFirst({
+      where: { orgId, id, deletedAt: null }, select: { connection: { select: { status: true } } },
+    });
+    return latest?.eventType === 'model_config.tested' && latest.outcome === 'success'
+      && objectValue(latest.metadata).completionVerified === true && model?.connection?.status === 'connected';
+  },
   find: (orgId, id) => prisma.aiModelConfig.findFirst({
     where: { id, orgId, deletedAt: null },
     select: {
@@ -103,10 +117,15 @@ export class ModelRegistry {
     return provider;
   }
 
-  async resolve(orgId: string, modelConfigId: string): Promise<AIModelRuntimeConfig> {
+  async resolve(orgId: string, modelConfigId: string, options: { purpose?: 'customer_research' } = {}): Promise<AIModelRuntimeConfig> {
     const stored = await this.repository.find(orgId, modelConfigId);
     if (!stored) throw new AIError('CONFIGURATION', 'AI model configuration not found', false, 404);
-    if (!['active', 'approved'].includes(stored.status)) throw new AIError('CONFIGURATION', 'AI model configuration is not active', false, 400, stored.provider);
+    if (!['active', 'approved'].includes(stored.status)) {
+      const researchReady = options.purpose === 'customer_research'
+        && ['testing', 'submitted'].includes(stored.status)
+        && await this.repository.researchTestPassed?.(orgId, modelConfigId);
+      if (!researchReady) throw new AIError('CONFIGURATION', options.purpose === 'customer_research' ? 'AI model configuration must pass a connection test before research use' : 'AI model configuration is not active', false, 400, stored.provider);
+    }
     this.provider(stored.provider);
     const parameters = objectValue(stored.parameters);
     const policy = objectValue(stored.dataPolicy);

@@ -56,7 +56,7 @@ function stored(id: string, provider: string, parameters: Record<string, unknown
   };
 }
 
-function harness(configs: NonNullable<Stored>[], providers: AIProvider[]) {
+function harness(configs: NonNullable<Stored>[], providers: AIProvider[], researchTestPassed = false) {
   const events: Array<{ event: AIUsageEvent; cost: bigint }> = [];
   const usageRepository: UsageRepository = {
     async create(event, cost) {
@@ -64,6 +64,7 @@ function harness(configs: NonNullable<Stored>[], providers: AIProvider[]) {
     },
   };
   const repository: ModelConfigRepository = {
+    researchTestPassed: async () => researchTestPassed,
     async find(orgId, id) {
       return configs.find((config) => config.orgId === orgId && config.id === id) ?? null;
     },
@@ -94,6 +95,22 @@ describe('AI Core Service', () => {
 
   afterEach(() => {
     delete process.env.AI_CORE_TEST_KEY;
+  });
+
+  it('allows a tested unapproved model only for research requests', async () => {
+    const provider = new FakeProvider('research-provider');
+    const config = { ...stored('primary', provider.id), status: 'submitted' };
+    const { client } = harness([config], [provider], true);
+    await expect(client.complete(baseRequest)).rejects.toMatchObject({ code: 'CONFIGURATION' });
+    await expect(client.complete({ ...baseRequest, taskType: 'customer_research' })).resolves.toMatchObject({ provider: provider.id });
+    expect(provider.calls).toBe(1);
+  });
+  it('applies the research readiness rule to fallback models too', async () => {
+    const primary = new FakeProvider('primary-provider'); primary.failures = 1;
+    const fallback = new FakeProvider('fallback-provider');
+    const configs = [stored('primary', primary.id, { fallbackModelConfigId: 'fallback' }), { ...stored('fallback', fallback.id), status: 'testing' }];
+    const { client } = harness(configs, [primary, fallback], true);
+    await expect(client.complete({ ...baseRequest, taskType: 'customer_research' })).resolves.toMatchObject({ usedFallback: true, provider: fallback.id });
   });
 
   it('parses structured output and tracks token cost', async () => {

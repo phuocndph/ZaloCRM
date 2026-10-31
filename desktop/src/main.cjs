@@ -3,6 +3,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { pathToFileURL } = require('node:url');
 const { crmOrigin, sameOrigin, desktopRelease, compareVersions, clampBounds, adjacentBounds, shouldAutoHide, ConversationQueue, ID } = require('./policy.cjs');
+const { BubbleDrag } = require('./bubble-drag.cjs');
 const { downloadVerifiedInstaller, latestGithubRelease } = require('./update.cjs');
 
 const origin = crmOrigin(process.env.ZALOCRM_DESKTOP_URL);
@@ -11,7 +12,9 @@ app.setAppUserModelId('vn.joliefam.zalocrm');
 const locked = app.requestSingleInstanceLock();
 if (!locked) app.quit();
 let mainWindow, chatWindow, bubbleWindow, previewWindow, updateWindow, tray;
-let quitting = false, screenLocked = false, activeConversation = '', pinned = false;
+let quitting = false, screenLocked = false, activeConversation = '', pinned = false, chatRequested = false;
+let bubbleRecoveryTimer;
+const rendererRecoveries = new WeakMap();
 let blurTimer, previewTimer, holdTimer;
 let fileChooserHolding = false, nativeDialogs = 0;
 let previewHovered = false;
@@ -32,8 +35,10 @@ try {
     position: Number.isFinite(saved.position?.x) && Number.isFinite(saved.position?.y) ? saved.position : undefined };
 } catch {}
 function savePreferences() {
-  fs.mkdirSync(path.dirname(prefsFile), { recursive: true });
-  fs.writeFileSync(prefsFile, JSON.stringify(preferences));
+  try {
+    fs.mkdirSync(path.dirname(prefsFile), { recursive: true });
+    fs.writeFileSync(prefsFile, JSON.stringify(preferences));
+  } catch { console.warn('[desktop] Could not save window preferences'); }
 }
 function live(win) { return win && !win.isDestroyed(); }
 function iconPath() { return path.join(__dirname, 'icon.png'); }
@@ -45,15 +50,84 @@ function authorized(event, roles) {
   return roles.some((role) => live(entries[role]) && event.sender === entries[role].webContents && event.senderFrame === event.sender.mainFrame
     && (role === 'bubble' ? event.senderFrame.url === pathToFileURL(bubbleFile).href : role === 'preview' ? event.senderFrame.url === pathToFileURL(previewFile).href : role === 'updater' ? event.senderFrame.url === pathToFileURL(updateFile).href : sameOrigin(event.senderFrame.url, origin)));
 }
+function bubbleAllowed() { return !quitting && preferences.bubbleEnabled && !!queue.owner && !screenLocked; }
+function recoverRenderer(win) {
+  if (!live(win) || quitting) return;
+  const previous = rendererRecoveries.get(win), now = Date.now();
+  const recovery = previous && now - previous.startedAt < 60000 ? previous : { startedAt: now, attempts: 0, pending: false };
+  if (recovery.pending || recovery.attempts >= 3) return;
+  recovery.attempts++; recovery.pending = true; rendererRecoveries.set(win, recovery);
+  setTimeout(() => { recovery.pending = false; if (live(win) && !quitting) win.reload(); }, recovery.attempts * 500);
+}
+function createBubbleWindow() {
+  if (quitting || live(bubbleWindow)) return;
+  const work = screen.getPrimaryDisplay().workArea;
+  const position = preferences.position ?? { x: work.x + work.width - 92, y: work.y + work.height - 200 };
+  const win = bubbleWindow = new BrowserWindow({ ...clampBounds(position, screen.getDisplayNearestPoint(position).workArea, 76, 76),
+    frame: false, transparent: true, resizable: false, movable: true, minimizable: false, maximizable: false,
+    alwaysOnTop: true, skipTaskbar: true, show: false, title: 'ZaloCRM Bubble', webPreferences: options('bubble') });
+  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  win.webContents.on('will-navigate', event => event.preventDefault());
+  win.webContents.on('did-finish-load', broadcast);
+  win.webContents.on('render-process-gone', () => { bubbleDrag.end(undefined, true); win.hide(); recoverRenderer(win); });
+  win.on('close', event => { if (!quitting) { event.preventDefault(); reconcileWindows(); } });
+  win.on('closed', () => { if (bubbleWindow === win) bubbleWindow = null; if (!quitting) setTimeout(syncBubble, 250); });
+  void win.loadFile(bubbleFile).catch(() => {});
+}
+function syncBubble() {
+  if (quitting) return;
+  if (!live(bubbleWindow)) createBubbleWindow();
+  if (!live(bubbleWindow)) return;
+  if (bubbleWindow.webContents.isCrashed()) { recoverRenderer(bubbleWindow); return; }
+  if (!bubbleAllowed()) { if (bubbleWindow.isVisible()) bubbleWindow.hide(); return; }
+  if (!bubbleWindow.isAlwaysOnTop()) bubbleWindow.setAlwaysOnTop(true);
+  if (bubbleWindow.isMinimized()) bubbleWindow.restore();
+  // Showing an already visible transparent window can interrupt pointer capture on Windows.
+  if (!bubbleWindow.isVisible()) bubbleWindow.showInactive();
+}
+function reconcileWindows() {
+  bubbleDrag.end(undefined, true);
+  if (live(bubbleWindow)) {
+    const bounds = bubbleWindow.getBounds(), work = screen.getDisplayNearestPoint({ x: bounds.x + 38, y: bounds.y + 38 }).workArea;
+    bubbleWindow.setBounds(clampBounds(bounds, work, 76, 76));
+    bubbleWindow.setAlwaysOnTop(true);
+    preferences.position = bubbleWindow.getBounds(); savePreferences();
+  }
+  positionChat(); hidePreview(); syncBubble();
+}
+function recoverBubblePosition() {
+  const work = screen.getDisplayNearestPoint(screen.getCursorScreenPoint()).workArea;
+  bubbleDrag.end(undefined, true); preferences.bubbleEnabled = true;
+  preferences.position = { x: work.x + work.width - 92, y: work.y + work.height - 160 };
+  if (!live(bubbleWindow)) createBubbleWindow();
+  if (live(bubbleWindow)) {
+    bubbleWindow.setBounds(clampBounds(preferences.position, work, 76, 76));
+    if (bubbleWindow.webContents.isCrashed()) bubbleWindow.reload();
+  }
+  preferences.position = live(bubbleWindow) ? bubbleWindow.getBounds() : preferences.position;
+  savePreferences(); positionChat(); hidePreview(); broadcast();
+}
+const bubbleDrag = new BubbleDrag({
+  enabled: () => live(bubbleWindow) && bubbleAllowed(),
+  cursor: () => screen.getCursorScreenPoint(), bounds: () => bubbleWindow.getBounds(),
+  workArea: point => screen.getDisplayNearestPoint(point).workArea,
+  move: (x, y) => { if (live(bubbleWindow)) bubbleWindow.setPosition(x, y); },
+  finish: (moved, cancelled) => {
+    if (!live(bubbleWindow)) return;
+    if (moved) { preferences.position = bubbleWindow.getBounds(); savePreferences(); positionChat(); }
+    if (chatRequested && live(chatWindow) && chatWindow.isVisible() && bubbleAllowed()) {
+      if (moved && !cancelled) chatWindow.focus();
+      else if (cancelled) scheduleAutoHide();
+    }
+  },
+});
 function state() { return { ...queue.snapshot(), signedIn: !!queue.owner, pinned, bubbleEnabled: preferences.bubbleEnabled, previewMode: preferences.previewMode }; }
 function broadcast() {
   const current = state();
   // The bubble needs only a counter; preview text goes only to its short-lived toast.
   for (const win of [mainWindow, chatWindow]) if (live(win)) win.webContents.send('desktop:state-changed', current);
-  if (live(bubbleWindow)) {
-    bubbleWindow.webContents.send('desktop:state-changed', { count: current.count, signedIn: current.signedIn });
-    if (preferences.bubbleEnabled && queue.owner && !screenLocked) bubbleWindow.showInactive(); else bubbleWindow.hide();
-  }
+  syncBubble();
+  if (live(bubbleWindow)) bubbleWindow.webContents.send('desktop:state-changed', { count: current.count, signedIn: current.signedIn, revision: current.revision });
   if (tray) { tray.setToolTip(`ZaloCRM${current.count ? ` (${current.count})` : ''}`); tray.setContextMenu(trayMenu()); }
 }
 function hidePreview() {
@@ -61,13 +135,13 @@ function hidePreview() {
   if (live(previewWindow)) { previewWindow.hide(); previewWindow.webContents.send('desktop:preview', []); }
 }
 function clearQueue() { queue.clear(); hidePreview(); broadcast(); }
-function hideChat() { clearTimeout(blurTimer); if (live(chatWindow)) chatWindow.hide(); activeConversation = ''; }
+function hideChat() { chatRequested = false; clearTimeout(blurTimer); if (live(chatWindow)) chatWindow.hide(); activeConversation = ''; }
 function scheduleAutoHide() {
   clearTimeout(blurTimer); activeConversation = '';
   blurTimer = setTimeout(() => {
     if (!live(chatWindow) || !chatWindow.isVisible()) return;
     const childFocused = [...children].some((child) => live(child) && child.isFocused());
-    if (shouldAutoHide({ pinned, focused: chatWindow.isFocused(), childFocused, dialogOpen: nativeDialogs > 0 || !chatWindow.isEnabled(), holding: fileChooserHolding })) hideChat();
+    if (shouldAutoHide({ pinned, focused: chatWindow.isFocused(), childFocused, dialogOpen: nativeDialogs > 0 || !chatWindow.isEnabled(), holding: fileChooserHolding || bubbleDrag.active })) hideChat();
   }, 220);
 }
 function showMain(id) {
@@ -84,12 +158,14 @@ function dismiss(id) {
 function positionChat() {
   if (!live(chatWindow) || chatWindow.isMaximized()) return;
   const anchor = bubbleWindow.getBounds(), work = screen.getDisplayMatching(anchor).workArea;
-  const bounds = chatWindow.getBounds(); chatWindow.setBounds(adjacentBounds(anchor, work, bounds.width, bounds.height));
+  const bounds = chatWindow.getBounds();
+  chatWindow.setMinimumSize(Math.min(420, work.width), Math.min(400, work.height));
+  chatWindow.setBounds(adjacentBounds(anchor, work, bounds.width, bounds.height));
 }
 function openChat(id = '', { toggle = false } = {}) {
   if (!queue.owner || screenLocked) return showMain();
-  if (toggle && live(chatWindow) && chatWindow.isVisible()) { hideChat(); return; }
-  hidePreview();
+  if (toggle && chatRequested) { hideChat(); return; }
+  chatRequested = true; clearTimeout(blurTimer); hidePreview();
   if (!live(chatWindow)) {
     const anchor = bubbleWindow.getBounds(), work = screen.getDisplayMatching(anchor).workArea;
     chatWindow = new BrowserWindow({ ...adjacentBounds(anchor, work, 540, 740), minWidth: Math.min(420, work.width), minHeight: Math.min(400, work.height), title: 'ZaloCRM - Chat',
@@ -98,7 +174,8 @@ function openChat(id = '', { toggle = false } = {}) {
     chatWindow.on('close', (event) => { if (!quitting) { event.preventDefault(); hideChat(); } });
     chatWindow.on('blur', scheduleAutoHide);
     chatWindow.on('focus', () => { clearTimeout(blurTimer); });
-    chatWindow.webContents.once('did-finish-load', () => { if (queue.owner && !screenLocked) { chatWindow.show(); chatWindow.focus(); } });
+    const openingWindow = chatWindow;
+    chatWindow.webContents.once('did-finish-load', () => { if (live(openingWindow) && openingWindow === chatWindow && chatRequested && queue.owner && !screenLocked) { positionChat(); openingWindow.show(); openingWindow.focus(); } });
     void chatWindow.loadURL(`${origin}/desktop/chat/${id ? encodeURIComponent(id) : ''}`).catch(() => {});
   } else {
     positionChat(); chatWindow.show(); chatWindow.focus();
@@ -140,7 +217,8 @@ function trayMenu() {
     { label: 'Hội thoại', enabled: !!queue.owner, click: () => openChat() },
     { label: 'Cập nhật ZaloCRM…', click: openUpdater },
     { type: 'separator' },
-    { label: 'Bong bóng chat', type: 'checkbox', checked: preferences.bubbleEnabled, click: (item) => { preferences.bubbleEnabled = item.checked; hidePreview(); savePreferences(); broadcast(); } },
+    { label: 'Bong bóng chat', type: 'checkbox', checked: preferences.bubbleEnabled, click: (item) => { preferences.bubbleEnabled = item.checked; if (!item.checked) { bubbleDrag.end(undefined, true); hideChat(); } hidePreview(); savePreferences(); broadcast(); } },
+    { label: 'Đưa bong bóng về góc màn hình', click: recoverBubblePosition },
     { label: 'Xem trước tin mới', submenu: [
       { label: 'Hiện nội dung', type: 'radio', checked: preferences.previewMode === 'content', click: () => setPreviewMode('content') },
       { label: 'Chỉ hiện tên', type: 'radio', checked: preferences.previewMode === 'name', click: () => setPreviewMode('name') },
@@ -253,7 +331,10 @@ function protect(win) {
     child.on('blur', scheduleAutoHide);
     child.on('closed', () => { children.delete(child); scheduleAutoHide(); });
   });
-  win.webContents.on('render-process-gone', () => { clearQueue(); if (win === mainWindow) { queue.setOwner(null); hideChat(); broadcast(); } });
+  win.webContents.on('render-process-gone', () => {
+    if (win === mainWindow) { queue.setOwner(null); bubbleDrag.end(undefined, true); hideChat(); clearQueue(); recoverRenderer(win); }
+    else if (win === chatWindow) { hideChat(); hidePreview(); recoverRenderer(win); }
+  });
 }
 function registerIpc() {
   ipcMain.on('desktop:open-updater', (event) => { if (authorized(event, ['main', 'chat', 'bubble'])) openUpdater(); });
@@ -271,7 +352,7 @@ function registerIpc() {
     if (!authorized(event, ['main'])) return;
     const previous = queue.owner; queue.setOwner(value);
     if (previous !== queue.owner) {
-      hidePreview(); pinned = false;
+      bubbleDrag.end(undefined, true); hidePreview(); pinned = false;
       for (const child of children) if (live(child)) child.destroy(); children.clear();
       if (live(chatWindow)) { hideChat(); chatWindow.webContents.send('desktop:reset'); }
     }
@@ -329,18 +410,16 @@ function registerIpc() {
   ipcMain.on('desktop:preview-open', (event, id) => { if (authorized(event, ['preview']) && typeof id === 'string' && previewItems.has(id)) openChat(id); });
   ipcMain.on('desktop:preview-close', (event, id) => { if (authorized(event, ['preview']) && typeof id === 'string' && previewItems.delete(id)) paintPreview(); });
   ipcMain.on('desktop:menu', (event) => { if (authorized(event, ['bubble'])) trayMenu().popup({ window: bubbleWindow }); });
-  ipcMain.on('desktop:move', (event, value) => {
-    if (!authorized(event, ['bubble']) || !Number.isFinite(value?.dx) || !Number.isFinite(value?.dy)) return;
-    hidePreview();
-    const bounds = bubbleWindow.getBounds();
-    const target = { x: bounds.x + Math.max(-100, Math.min(value.dx, 100)), y: bounds.y + Math.max(-100, Math.min(value.dy, 100)) };
-    bubbleWindow.setBounds(clampBounds(target, screen.getDisplayNearestPoint(target).workArea, bounds.width, bounds.height));
-    preferences.position = bubbleWindow.getBounds();
+  ipcMain.on('desktop:drag-start', (event, id) => {
+    if (authorized(event, ['bubble']) && bubbleDrag.begin(id)) { clearTimeout(blurTimer); hidePreview(); }
   });
+  ipcMain.on('desktop:drag-move', (event, id) => { if (authorized(event, ['bubble'])) bubbleDrag.update(id); });
+  ipcMain.handle('desktop:drag-end', (event, value) => authorized(event, ['bubble']) && Number.isSafeInteger(value?.id)
+    ? bubbleDrag.end(value.id, value.cancelled === true) : null);
 }
 if (locked) {
   app.on('second-instance', () => showMain());
-  app.on('before-quit', () => { quitting = true; savePreferences(); });
+  app.on('before-quit', () => { quitting = true; clearInterval(bubbleRecoveryTimer); bubbleDrag.end(undefined, true); savePreferences(); });
   app.on('window-all-closed', () => {});
   app.whenReady().then(() => {
     const crmSession = session.fromPartition('persist:zalocrm');
@@ -362,19 +441,15 @@ if (locked) {
       }).then(({ response }) => { if (response === 0) mainWindow.reload(); });
     });
     void mainWindow.loadURL(origin).catch(() => {});
-    const work = screen.getPrimaryDisplay().workArea;
-    const position = preferences.position ?? { x: work.x + work.width - 92, y: work.y + work.height - 200 };
-    bubbleWindow = new BrowserWindow({ ...clampBounds(position, screen.getDisplayNearestPoint(position).workArea, 76, 76),
-      frame: false, transparent: true, resizable: false, alwaysOnTop: true, skipTaskbar: true, show: false, title: 'ZaloCRM Bubble', webPreferences: options('bubble') });
-    bubbleWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-    bubbleWindow.webContents.on('will-navigate', (event) => event.preventDefault());
-    bubbleWindow.webContents.on('did-finish-load', broadcast);
-    void bubbleWindow.loadFile(bubbleFile);
+    createBubbleWindow();
     tray = new Tray(nativeImage.createFromPath(iconPath()).resize({ width: 20, height: 20 }));
     tray.on('double-click', () => showMain());
-    screen.on('display-removed', () => { const bounds = bubbleWindow.getBounds(); bubbleWindow.setBounds(clampBounds(bounds, screen.getDisplayNearestPoint(bounds).workArea, 76, 76)); positionChat(); hidePreview(); });
-    powerMonitor.on('lock-screen', () => { screenLocked = true; hideChat(); clearQueue(); });
-    powerMonitor.on('unlock-screen', () => { screenLocked = false; broadcast(); if (live(mainWindow)) mainWindow.webContents.send('desktop:sync-request'); });
+    for (const event of ['display-added', 'display-removed', 'display-metrics-changed']) screen.on(event, reconcileWindows);
+    powerMonitor.on('resume', () => { reconcileWindows(); if (live(mainWindow)) mainWindow.webContents.send('desktop:sync-request'); });
+    bubbleRecoveryTimer = setInterval(() => { bubbleDrag.expire(); syncBubble(); }, 3000);
+    bubbleRecoveryTimer.unref();
+    powerMonitor.on('lock-screen', () => { screenLocked = true; bubbleDrag.end(undefined, true); hideChat(); clearQueue(); });
+    powerMonitor.on('unlock-screen', () => { screenLocked = false; reconcileWindows(); broadcast(); if (live(mainWindow)) mainWindow.webContents.send('desktop:sync-request'); });
     broadcast();
   });
 }

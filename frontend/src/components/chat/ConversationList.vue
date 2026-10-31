@@ -213,7 +213,7 @@
           </div>
 
           <!-- ── Hàng 2 (metadata "ai"): phụ trách + người trả lời cuối · chip ── -->
-          <div v-if="assigneeName(conv) || lastReplierLabel(conv) || displayTags(conv).length" class="ci-row ci-row-meta">
+          <div v-if="assigneeName(conv) || lastReplierLabel(conv)" class="ci-row ci-row-meta">
             <div class="ci-who">
               <!-- NGƯỜI PHỤ TRÁCH — chủ sở hữu KH (khác người trả lời) -->
               <span
@@ -233,18 +233,6 @@
                 <v-icon size="11" class="ci-who-ic">{{ lastReplierLabel(conv)!.mdi }}</v-icon>{{ lastReplierLabel(conv)!.name }}
               </span>
             </div>
-            <div class="ci-chips">
-              <span
-                v-for="tag in displayTags(conv).slice(0, 1)"
-                :key="tag.key"
-                class="ci-chip"
-                :class="{ 'is-zalo': tag.isZalo }"
-                :style="{ '--chip-color': tag.color }"
-                :title="tag.name"
-              >
-                <ZaloBrandIcon v-if="tag.isZalo" :size="10" /><span v-else-if="tag.emoji" class="ci-chip-emoji">{{ tag.emoji }}</span><span class="ci-chip-text">{{ tag.name }}</span>
-              </span>
-            </div>
           </div>
 
           <!-- ── Hàng 3: NỘI DUNG tin cuối — nổi bật, full-width (thứ cần đọc nhất) ── -->
@@ -261,6 +249,19 @@
                 {{ cleanLastMessagePreview(conv) }}
               </template>
             </div>
+          </div>
+          <div v-if="displayTags(conv).length" class="ci-row ci-row-tags" aria-label="Tag của hội thoại">
+            <span
+              v-for="tag in displayTags(conv).slice(0, 2)"
+              :key="tag.key"
+              class="ci-chip"
+              :class="{ 'is-zalo': tag.isZalo }"
+              :style="{ '--chip-color': tag.color }"
+              :title="`${tag.isZalo ? 'Zalo' : 'CRM'}: ${tag.name}`"
+            >
+              <ZaloBrandIcon v-if="tag.isZalo" :size="10" /><span v-else-if="tag.emoji" class="ci-chip-emoji">{{ tag.emoji }}</span><span class="ci-chip-text">{{ tag.name }}</span>
+            </span>
+            <span v-if="displayTags(conv).length > 2" class="ci-tags-more" :title="displayTags(conv).slice(2).map(tag => tag.name).join(', ')" :aria-label="`Còn ${displayTags(conv).length - 2} tag: ${displayTags(conv).slice(2).map(tag => tag.name).join(', ')}`">+{{ displayTags(conv).length - 2 }}</span>
           </div>
         </div>
 
@@ -376,7 +377,6 @@ import NickPickerPopup from '@/components/zalo-accounts/NickPickerPopup.vue';
 import ZaloBrandIcon from '@/components/icons/ZaloBrandIcon.vue';
 import { loadTagDefs, isZaloManaged, cleanTagName, tagColor } from '@/composables/use-crm-tag-defs';
 import { loadTagTaxonomy, findTagBySlug, useTagTaxonomy } from '@/composables/use-tag-taxonomy';
-import { getAutoTagDef } from '@/constants/auto-tags';
 import PrivateBlur from '@/components/privacy/PrivateBlur.vue';
 import { usePrivacyVisibility } from '@/composables/use-privacy-visibility';
 import { parseFriendAcceptedNotice } from '@/composables/zalo-system-notice';
@@ -604,8 +604,8 @@ function buildFilterParams(): Record<string, string> {
  * Dedup, Zalo tags hiển thị đầu (priority cho per-pair context). */
 // 2026-06-06 (Anh chốt) — Tag Zalo Real ở cột 2 lấy từ Friend.zaloLabels (object {name,color}
 // màu CHUẨN = zalo_labels.color, đồng bộ TagCrmBar + header) thay vì string '🔵 X' + crm_tags legacy.
-// Tag khác (manual/auto) giữ đường cũ. Trả object {name, color, isZalo} thống nhất.
-interface DisplayTag { name: string; color: string; emoji?: string | null; isZalo: boolean; isAuto?: boolean; key: string }
+// Tag CRM do nhân viên gắn lấy từ crmTagsPerNick và Contact.tags.
+interface DisplayTag { name: string; color: string; emoji?: string | null; isZalo: boolean; key: string }
 
 // Reactive trigger — displayTags đọc taxonomyVersion.value để Vue re-render khi
 // taxonomy load xong (slug→name). Không có dòng này thì tag hiện slug tới lần render sau.
@@ -622,19 +622,10 @@ function resolveCrmTag(slug: string): DisplayTag {
   return { name: cleanTagName(slug), color: tagColor(slug) || '#6B7280', isZalo: false, key: 'c:' + slug };
 }
 
-// 2026-06-11 (perf) — memoize: displayTags gọi 3 lần/hàng × 100 hàng. Cache theo conv,
-// invalidate khi tags (zaloLabels/autoTags/crmTagsPerNick) hoặc taxonomyVersion đổi.
-const _tagsCache = new WeakMap<Conversation, { sig: string; result: DisplayTag[] }>();
 function displayTags(conv: Conversation): DisplayTag[] {
-  const tv = taxonomyVersion.value; // reactive dep — re-eval khi taxonomy load/refresh
-  const f = conv.friendship as { zaloLabels?: unknown[]; autoTags?: unknown[]; crmTagsPerNick?: unknown[] } | null | undefined;
-  const ct = Array.isArray(conv.contact?.tags) ? conv.contact!.tags as unknown[] : [];
-  const sig = `${tv}|${(f?.zaloLabels?.length ?? 0)}|${(f?.autoTags?.length ?? 0)}|${(f?.crmTagsPerNick?.length ?? 0)}|${ct.length}`;
-  const hit = _tagsCache.get(conv);
-  if (hit && hit.sig === sig) return hit.result;
-  const result = computeDisplayTags(conv);
-  _tagsCache.set(conv, { sig, result });
-  return result;
+  taxonomyVersion.value;
+  if (conv.conversationPrivate || privacyVisibility.shouldBlurConv(conv)) return [];
+  return computeDisplayTags(conv);
 }
 function computeDisplayTags(conv: Conversation): DisplayTag[] {
   const seen = new Set<string>();
@@ -648,29 +639,12 @@ function computeDisplayTags(conv: Conversation): DisplayTag[] {
       out.push({ name: z.name, color: z.color || '#0068FF', isZalo: true, key: 'z:' + (z.id ?? z.name) });
     }
   }
-  // 2. Auto-tags (Friend.autoTags) — slug cố định. Nhóm Detect (active/cold/ready/…)
-  //    dùng AUTO_TAG_DISPLAY (nhãn Việt + icon). Nhóm Engagement (engagement-hot/…) là
-  //    Tag v2 thật → resolve qua taxonomy. Ưu tiên taxonomy, fallback AUTO_TAG_DISPLAY.
-  const autoTagsRaw = (conv.friendship as { autoTags?: string[] } | null | undefined)?.autoTags;
-  if (Array.isArray(autoTagsRaw)) {
-    for (const key of autoTagsRaw) {
-      if (!key || seen.has('a:' + key)) continue;
-      seen.add('a:' + key);
-      const taxDef = findTagBySlug(key);
-      if (taxDef) {
-        out.push({ name: taxDef.name, color: taxDef.color || '#9CA3AF', emoji: taxDef.emoji, isZalo: false, isAuto: true, key: 'a:' + key });
-      } else {
-        const def = getAutoTagDef(key);
-        out.push({ name: def.label, color: def.color, emoji: def.icon, isZalo: false, isAuto: true, key: 'a:' + key });
-      }
-    }
-  }
-  // 3. Tag CRM khác (manual/crm) — Contact.tags + crmTagsPerNick lưu SLUG tag v2.
-  //    KHÔNG có prefix 🔵 (Zalo đã lấy ở trên). Resolve slug→name/màu qua taxonomy.
+  // 2. Nhãn phân loại khách do nhân viên gắn; không trộn trạng thái tự động.
   const contactTags = Array.isArray(conv.contact?.tags) ? (conv.contact!.tags as string[]) : [];
   const friendTagsRaw = (conv.friendship as { crmTagsPerNick?: string[] } | null | undefined)?.crmTagsPerNick;
   const friendTags = Array.isArray(friendTagsRaw) ? friendTagsRaw : [];
   for (const t of [...friendTags, ...contactTags]) {
+    if (findTagBySlug(t)?.source?.startsWith('auto_')) continue;
     if (t.startsWith('🔵 ')) continue; // tag Zalo mirror → đã lấy từ zaloLabels
     if (seen.has('c:' + t)) continue;
     seen.add('c:' + t);
@@ -1197,7 +1171,7 @@ onMounted(async () => {
  * Ref map: convId → row HTMLElement (registerRow gọi mỗi lần Vue mount row). */
 const scrollContainer = ref<HTMLElement | null>(null);
 const rowRefs = new Map<string, HTMLElement>();
-const VIRTUAL_ROW_HEIGHT = 80;
+const VIRTUAL_ROW_HEIGHT = 96;
 const VIRTUAL_OVERSCAN = 10;
 const virtualScrollTop = ref(0);
 const virtualViewportHeight = ref(640);
@@ -2197,6 +2171,14 @@ function truncate(s: string, n: number): string {
   .conv-list { --cl-item-h: 80px; }
   .ci-preview { font-size: 13.5px; }
 }
+
+/* A dedicated visible tag row; keep its height aligned with list virtualization. */
+.conv-list { --cl-item-h: 96px; }
+.conv-item { height: var(--cl-item-h); }
+.ci-row-tags { order: 2; display: flex; align-items: center; gap: 4px; min-width: 0; margin-top: 3px; }
+.ci-row-tags .ci-chip { display: inline-flex; flex: 0 1 auto; min-width: 0; max-width: 105px; min-height: 20px; font-size: 11px; }
+.ci-row-tags .ci-chip svg { flex-shrink: 0; }
+.ci-tags-more { flex: 0 0 auto; font-size: 10px; color: var(--cl-ink-3); line-height: 20px; cursor: help; }
 </style>
 
 <!-- Unscoped style cho teleport tooltip (đặt body, không reach được scoped CSS) -->

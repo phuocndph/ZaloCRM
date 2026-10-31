@@ -8,6 +8,13 @@ datasource db {
 
 // Top-level org — every resource is scoped to an org
 model Organization {
+  joliefamConnections JoliefamConnection[]
+  joliefamLinks JoliefamCustomerLink[]
+  joliefamSnapshots JoliefamSnapshot[]
+  joliefamDrafts JoliefamDraft[]
+  joliefamEvents JoliefamEvent[]
+  joliefamAudit JoliefamAudit[]
+
   customerResearchProjects CustomerResearchProject[]
   id       String @id @default(uuid())
   name     String
@@ -6002,4 +6009,101 @@ model CustomerResearchTask {
   @@unique([orgId, projectId, idempotencyKey])
   @@index([orgId, projectId, status])
   @@map("customer_research_tasks")
+}
+
+// Joliefam sales integration: CRM owns official orders and approval.
+model JoliefamConnection {
+  orgId String @id @map("org_id")
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  enabled Boolean @default(false)
+  basePath String @default("/api/zcrm/v1") @map("base_path")
+  tokenEncrypted String @map("token_encrypted")
+  webhookSecretEncrypted String @map("webhook_secret_encrypted")
+  actorMap Json @default("{}") @map("actor_map")
+  testedAt DateTime? @map("tested_at")
+  lastSyncAt DateTime? @map("last_sync_at")
+  lastError String? @map("last_error")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@map("joliefam_connections")
+}
+model JoliefamCustomerLink {
+  id String @id @default(uuid())
+  orgId String @map("org_id")
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  contactId String @map("contact_id")
+  customerId String @map("customer_id")
+  crmContactId String? @map("crm_contact_id")
+  customerName String @map("customer_name")
+  confirmedBy String @map("confirmed_by")
+  createdAt DateTime @default(now()) @map("created_at")
+  @@unique([orgId, contactId, customerId])
+  @@index([orgId, customerId])
+  @@map("joliefam_customer_links")
+}
+model JoliefamSnapshot {
+  id String @id @default(uuid())
+  orgId String @map("org_id")
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  customerId String @map("customer_id")
+  cacheKey String @map("cache_key")
+  data Json
+  sourceVersion BigInt @default(0) @map("source_version")
+  fetchedAt DateTime @default(now()) @map("fetched_at")
+  @@unique([orgId, customerId, cacheKey])
+  @@index([orgId, fetchedAt])
+  @@map("joliefam_snapshots")
+}
+model JoliefamDraft {
+  id String @id @default(uuid())
+  orgId String @map("org_id")
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  contactId String @map("contact_id")
+  customerId String? @map("customer_id")
+  createdBy String @map("created_by")
+  createKey String @map("create_key")
+  revision Int @default(1)
+  input Json
+  quote Json?
+  status String @default("local")
+  requestKey String? @map("request_key")
+  submissionActorId String? @map("submission_actor_id")
+  crmOrderId String? @map("crm_order_id")
+  crmOrderCode String? @map("crm_order_code")
+  approver String?
+  lastError String? @map("last_error")
+  lockedAt DateTime? @map("locked_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+  @@unique([orgId, createKey])
+  @@unique([orgId, requestKey])
+  @@index([orgId, contactId, updatedAt])
+  @@index([orgId, status, updatedAt])
+  @@map("joliefam_drafts")
+}
+model JoliefamEvent {
+  id String @id @default(uuid())
+  orgId String @map("org_id")
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  eventId String @map("event_id")
+  customerId String @map("customer_id")
+  orderId String? @map("order_id")
+  version Int
+  status String @default("pending")
+  attempts Int @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+  @@unique([orgId, eventId])
+  @@index([orgId, status, createdAt])
+  @@map("joliefam_events")
+}
+model JoliefamAudit {
+  id String @id @default(uuid())
+  orgId String @map("org_id")
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  actorId String @map("actor_id")
+  action String
+  entityId String @map("entity_id")
+  detail Json @default("{}")
+  createdAt DateTime @default(now()) @map("created_at")
+  @@index([orgId, createdAt])
+  @@map("joliefam_audit")
 }

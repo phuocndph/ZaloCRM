@@ -11,6 +11,7 @@
     </header>
 
     <div class="gmp-body">
+      <details><summary>Mua hàng — chọn người liên hệ</summary><PurchasePanel :key="conversation.id" require-contact-selection compact /></details>
       <section class="gmp-section">
         <div class="gmp-section-title">
           <ShieldCheckIcon :size="17" aria-hidden="true" />
@@ -76,6 +77,7 @@
 </template>
 
 <script setup lang="ts">
+import PurchasePanel from '@/components/commerce/PurchasePanel.vue';
 import { computed, ref, watch } from 'vue';
 import { RefreshCw as RefreshCwIcon, Save as SaveIcon, ShieldCheck as ShieldCheckIcon, UsersRound as UsersRoundIcon, X as XIcon } from 'lucide-vue-next';
 import { api } from '@/api';
