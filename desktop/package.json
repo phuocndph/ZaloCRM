@@ -1,6 +1,6 @@
 {
   "name": "zalocrm-desktop",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "private": true,
   "description": "ZaloCRM Windows desktop with floating customer chat",
   "author": "ZaloCRM",
@@ -20,7 +20,8 @@
     "prepack": "node -e \"require('electron')\"",
     "predist": "node -e \"require('electron')\"",
     "pack": "electron-builder --win --dir",
-    "dist": "electron-builder --win nsis"
+    "dist": "electron-builder --win nsis",
+    "test:bubble": "node tests/bubble-window.cjs"
   },
   "devDependencies": {
     "electron": "44.7.2",
