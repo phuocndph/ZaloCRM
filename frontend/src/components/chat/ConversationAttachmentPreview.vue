@@ -13,7 +13,7 @@
         <div v-if="loading" class="cap-state" role="status"><LoaderCircle :size="22" class="spin" /> Đang tải bản xem trước</div>
         <div v-else-if="error" class="cap-state" role="alert"><FileWarning :size="24" /><span>{{ error }}</span></div>
         <template v-else-if="attachment?.kind === 'image'">
-          <img :src="attachment.url" :alt="attachment.name" @error="error = 'Không tải được ảnh.'" />
+          <ChatImage :sources="[attachment.url]" :identity="attachment.url" :alt="attachment.name" loading="eager" />
           <button v-if="images.length > 1" class="cap-nav cap-prev" type="button" title="Ảnh trước" aria-label="Ảnh trước" :disabled="imageIndex <= 0" @click="step(-1)"><ChevronLeft :size="24" /></button>
           <button v-if="images.length > 1" class="cap-nav cap-next" type="button" title="Ảnh sau" aria-label="Ảnh sau" :disabled="imageIndex >= images.length - 1" @click="step(1)"><ChevronRight :size="24" /></button>
         </template>
@@ -31,6 +31,7 @@
 </template>
 
 <script setup lang="ts">
+import ChatImage from './ChatImage.vue';
 import { nextTick, onBeforeUnmount, ref } from 'vue';
 import { ChevronLeft, ChevronRight, Download, FileText, FileWarning, LoaderCircle, X } from 'lucide-vue-next';
 import { api } from '@/api';

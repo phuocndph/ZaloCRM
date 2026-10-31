@@ -430,15 +430,15 @@
                     class="album-tile-wrap"
                     :class="{ picked: albumSelectKey === item.key && albumPicked.has(m.id) }"
                   >
-                    <img
-                      :src="getImageUrl(m)!"
+                    <ChatImage
+                      :sources="chatImageUrls(m)" :identity="m.id"
                       alt="Hình ảnh"
                       class="album-tile"
                       loading="lazy"
                       decoding="async"
                       :data-msg-id="m.id"
                       :data-zalo-msg-id="m.zaloMsgId || ''"
-                      @click="onAlbumTileClick(item, m, $event)"
+                      @preview="(url, event) => onAlbumTileClick(item, m, event, url)"
                       @contextmenu.prevent="onAlbumTileContext(item, m, $event)"
                     />
                     <!-- Checkbox khi đang ở chế độ chọn nhiều -->
@@ -929,7 +929,7 @@
           title="Ảnh trước (←)"
           @click.stop="lightboxPrev"
         ><ChevronLeftIcon :size="28" :stroke-width="2" /></button>
-        <img :src="previewImageUrl" alt="Preview" class="lightbox-img" />
+        <ChatImage v-if="previewImageUrl" :sources="lightboxSources" :identity="previewImageUrl" alt="Ảnh phóng to" loading="eager" class="lightbox-img" />
         <button
           v-if="lightboxList.length > 1"
           class="lightbox-nav lightbox-next"
@@ -1063,6 +1063,8 @@
 
 <script setup lang="ts">
 import { ref, watch, nextTick, computed, inject, toRef, onMounted, onBeforeUnmount } from 'vue';
+import ChatImage from './ChatImage.vue';
+import { chatImageUrl as getImageUrl, chatImageUrls } from '@/composables/chat-image';
 import { chatSessionKey } from '@/composables/chat-session-context';
 import { useChat, type Conversation, type Message } from '@/composables/use-chat';
 import { attachmentOutcomes } from '@/composables/chat-delivery-state';
@@ -1362,6 +1364,10 @@ const showImagePreview = computed({ get: () => !!previewImageUrl.value, set: (v)
 // Empty list = single ảnh (không show nút điều hướng).
 const lightboxList = ref<string[]>([]);
 const lightboxIndex = ref(0);
+const lightboxSources = computed(() => {
+  const message = props.messages.find(m => chatImageUrls(m).includes(previewImageUrl.value));
+  return [...new Set([previewImageUrl.value, ...(message ? chatImageUrls(message) : [])].filter(Boolean))];
+});
 
 function openImageLightbox(url: string, list: string[] = []): void {
   lightboxList.value = list;
@@ -1382,7 +1388,7 @@ function openMessageImageLightbox(url: string, message: Message): void {
       !!getImageUrl(candidate),
     )
     .sort((a, b) => (a.albumIndex ?? 0) - (b.albumIndex ?? 0))
-    .map((candidate) => getImageUrl(candidate)!)
+    .map((candidate) => candidate.id === message.id ? url : getImageUrl(candidate)!)
     .filter((candidateUrl, index, all) => all.indexOf(candidateUrl) === index);
   openImageLightbox(url, urls.length > 1 ? urls : []);
 }
@@ -3114,7 +3120,7 @@ const albumPicked = ref<Set<string>>(new Set());  // msgId đã tick
 const albumSaving = ref(false);
 
 // Click tile: ở chế độ chọn → toggle tick; thường → mở lightbox.
-function onAlbumTileClick(item: AlbumItem, m: Message, ev: MouseEvent) {
+function onAlbumTileClick(item: AlbumItem, m: Message, ev: MouseEvent, url = getImageUrl(m)!) {
   if (albumSelectKey.value === item.key) {
     ev.stopPropagation();
     const next = new Set(albumPicked.value);
@@ -3122,8 +3128,8 @@ function onAlbumTileClick(item: AlbumItem, m: Message, ev: MouseEvent) {
     albumPicked.value = next;
     return;
   }
-  const urls = item.messages.map((x) => getImageUrl(x)!).filter(Boolean);
-  openImageLightbox(getImageUrl(m)!, urls);
+  const urls = item.messages.map((x) => x.id === m.id ? url : getImageUrl(x)!).filter(Boolean);
+  openImageLightbox(url, urls);
 }
 
 function onAlbumTileContext(item: AlbumItem, m: Message, ev: MouseEvent) {
@@ -3547,22 +3553,6 @@ onBeforeUnmount(() => { saveSessionDraft(); threadDisposed = true; });
 // ── Helpers ─────────────────────────────────────────────────────────────────
 function formatMessageTime(d: string) {
   return formatInOrgTz(d, undefined, { timeOnly: true });
-}
-
-function getImageUrl(msg: Message): string | null {
-  if (msg.contentType === 'image' && msg.content) {
-    if (msg.content.startsWith('http')) return msg.content;
-    try { const p = JSON.parse(msg.content); return p.href || p.thumb || p.hdUrl || null; } catch {}
-  }
-  if (msg.content?.startsWith('{')) {
-    try {
-      const p = JSON.parse(msg.content);
-      const href = p.href || p.thumb || '';
-      if (href && /\.(jpg|jpeg|png|webp|gif)/i.test(href)) return href;
-      if (href && href.includes('zdn.vn') && !p.params?.includes('fileExt')) return href;
-    } catch {}
-  }
-  return null;
 }
 
 /** Chỉ bám đáy khi người dùng đang đọc tin mới nhất. */

@@ -105,20 +105,7 @@
             <span class="recall-label">Tin nhắn đã thu hồi</span>
           </div>
           <div v-if="getImageUrl(message)" class="recall-media">
-            <div v-if="imgFailed" class="chat-image-failed">
-              <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
-              <span>Ảnh không tải được</span>
-            </div>
-            <img
-              v-else
-              :src="getImageUrl(message)!"
-              alt="Ảnh đã thu hồi"
-              class="recall-image"
-              loading="lazy"
-              decoding="async"
-              @click="emit('preview-image', getImageUrl(message)!)"
-              @error="imgFailed = true"
-            />
+            <ChatImage :sources="chatImageUrls(message)" :identity="message.id" alt="Ảnh đã thu hồi" class="recall-image" @preview="url => emit('preview-image', url)" />
             <div v-if="messageCaption" class="recall-caption">{{ messageCaption }}</div>
           </div>
           <div v-else-if="message.content" class="recall-body">{{ parseDisplayContent(message.content) }}</div>
@@ -171,20 +158,7 @@
           <div v-else-if="getImageUrl(message)">
             <!-- 2026-06-11: @error → placeholder khi ảnh Zalo hết hạn link (404) thay vì
                  ô vỡ + log đỏ Console. loading=lazy: ảnh ngoài màn hình không tải vội. -->
-            <div v-if="imgFailed" class="chat-image-failed">
-              <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
-              <span>Ảnh không tải được</span>
-            </div>
-            <img
-              v-else
-              :src="getImageUrl(message)!"
-              alt="Hình ảnh"
-              class="chat-image"
-              loading="lazy"
-              decoding="async"
-              @click="emit('preview-image', getImageUrl(message)!)"
-              @error="imgFailed = true"
-            />
+            <ChatImage :sources="chatImageUrls(message)" :identity="message.id" alt="Hình ảnh" class="chat-image" @preview="url => emit('preview-image', url)" />
             <div v-if="formattedCaption" class="media-caption" v-html="formattedCaption" />
           </div>
 
@@ -394,6 +368,8 @@ import SpecialMessageRenderer from '@/components/chat/special-message-renderer.v
 import ReactionDisplay from '@/components/chat/reaction-display.vue';
 import ReactionPicker from '@/components/chat/reaction-picker.vue';
 import Avatar from '@/components/ui/Avatar.vue';
+import ChatImage from './ChatImage.vue';
+import { chatImageUrl as getImageUrl, chatImageUrls } from '@/composables/chat-image';
 import VoiceMessageBubble from './voice-message-bubble.vue';
 import { voiceMedia } from '@/composables/voice-media';
 import MessageSourceBadge from '@/components/chat/MessageSourceBadge.vue';
@@ -444,8 +420,6 @@ const emit = defineEmits<{
   'audit-ai': [];
 }>();
 
-// 2026-06-11 — ảnh tin nhắn 404 (link Zalo hết hạn) → hiện placeholder thay ô vỡ.
-const imgFailed = ref(false);
 
 // M55 2026-05-30 — Sender attribution: hiện tên sale khác cùng chăm nếu tin
 // self do user khác (collaborator) gửi qua CRM. Skip nếu tin do mình gửi.
@@ -503,34 +477,6 @@ const contactCardType = computed(() => {
 // E21/E22 — mở Zalo user info dialog cho UID trong card. Parent (MessageThread) handle.
 function onOpenProfile(uid: string) {
   emit('open-profile', uid);
-}
-
-function getImageUrl(msg: Message): string | null {
-  // Skip link preview / QR / sticker / reminder / call — không render thumb như chat-image,
-  // chúng có renderer riêng (link-preview-card, qr-card, special-message-renderer, ...)
-  if (msg.contentType && ['link', 'qr_code', 'sticker', 'reminder', 'call', 'contact_card', 'voice', 'audio', 'video', 'file'].includes(msg.contentType)) {
-    return null;
-  }
-  if (msg.contentType === 'image' && msg.content) {
-    if (msg.content.startsWith('http')) return msg.content;
-    try {
-      const p = JSON.parse(msg.content);
-      return p.hdUrl || p.href || p.normalUrl || p.thumbUrl || p.thumb || null;
-    } catch {}
-  }
-  if (msg.content?.startsWith('{')) {
-    try {
-      const p = JSON.parse(msg.content);
-      const href = p.hdUrl || p.href || p.normalUrl || p.thumb || '';
-      if (href && /\.(jpg|jpeg|png|webp|gif)/i.test(href)) return href;
-      // Zalo CDN host — usually image even without ext
-      if (href && (href.includes('zdn.vn') || href.includes('zaloapp.com') || href.includes('zalocontent.com'))) {
-        const fileExt = (typeof p.params === 'string' ? safeParse(p.params) : p.params)?.fileExt;
-        if (!fileExt || /^(jpg|jpeg|png|webp|gif)$/i.test(fileExt)) return href;
-      }
-    } catch {}
-  }
-  return null;
 }
 
 function safeParse(s: unknown): Record<string, unknown> | null {
