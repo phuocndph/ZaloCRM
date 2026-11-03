@@ -32,17 +32,17 @@
 
     <!-- Webhook section -->
     <v-card class="mb-4">
-      <v-card-title class="text-body-1">Webhook</v-card-title>
+      <v-card-title class="text-body-1">Webhook Javis</v-card-title>
       <v-card-text>
         <v-text-field
           v-model="webhookUrl"
-          label="Webhook URL"
-          placeholder="https://your-server.com/webhook"
+          label="URL nhận tin nhắn"
+          placeholder="https://javis.example.com/zcrm/webhook"
           class="mb-2"
         />
         <v-text-field
           v-model="webhookSecret"
-          label="Secret (HMAC)"
+          label="Khóa bí mật (HMAC)"
           :type="showWebhookSecret ? 'text' : 'password'"
           :append-inner-icon="showWebhookSecret ? 'mdi-eye-off' : 'mdi-eye'"
           @click:append-inner="showWebhookSecret = !showWebhookSecret"
@@ -50,8 +50,9 @@
         />
         <div class="d-flex gap-2">
           <v-btn color="primary" :loading="saving" @click="saveWebhook">Lưu</v-btn>
-          <v-btn variant="outlined" :loading="testing" @click="testWebhook">Test Webhook</v-btn>
+          <v-btn variant="outlined" :loading="testing" @click="testWebhook">Gửi tin thử</v-btn>
         </div>
+        <div class="text-caption text-medium-emphasis mt-3">Tin khách được gửi ngay sau khi lưu. Nếu Javis không trả lời, hệ thống thử lại sau 10 giây, 60 giây và 5 phút. Chữ ký: X-ZCRM-Signature.</div>
       </v-card-text>
     </v-card>
 
@@ -139,8 +140,8 @@ async function loadApiKey() {
 async function loadWebhook() {
   try {
     const res = await api.get('/settings/webhook');
-    webhookUrl.value = res.data.webhookUrl ?? '';
-    webhookSecret.value = res.data.webhookSecret ?? '';
+    webhookUrl.value = res.data.url ?? '';
+    webhookSecret.value = '';
   } catch {
     webhookUrl.value = '';
     webhookSecret.value = '';
@@ -184,8 +185,9 @@ async function saveWebhook() {
   saving.value = true;
   try {
     await api.put('/settings/webhook', {
-      webhookUrl: webhookUrl.value,
-      webhookSecret: webhookSecret.value,
+      url: webhookUrl.value,
+      mode: 'javis',
+      ...(webhookSecret.value ? { secret: webhookSecret.value } : {}),
     });
     showSnack('Đã lưu cấu hình webhook');
   } catch {
@@ -198,7 +200,7 @@ async function saveWebhook() {
 async function testWebhook() {
   testing.value = true;
   try {
-    await api.post('/settings/webhook/test');
+    await api.post('/settings/webhook/test-javis');
     showSnack('Gửi test webhook thành công');
   } catch {
     showSnack('Test webhook thất bại', 'error');

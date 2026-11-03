@@ -11,6 +11,7 @@ import { publishMessagePersisted } from '../../shared/bridge-bus.js';
 import { enqueueConversationAnalysis } from '../ai/conversation-analysis-queue.js';
 import { randomUUID } from 'node:crypto';
 import { emitWebhook } from '../api/webhook-service.js';
+import { emitJavisMessageReceived, normalizeJavisAttachments } from '../api/javis-webhook-service.js';
 import { runAutomationRules } from '../../shared/ee-registry/automation.js';
 import { automationEventBus } from '../../shared/ee-registry/event-bus.js';
 import { applyContactAggregateFromMessage, applyContactInteraction, applyFriendAggregate } from '../contacts/contact-aggregate.js';
@@ -480,6 +481,7 @@ export async function handleIncomingMessage(
       // 2026-06-03 — fix M11 writer: thêm displayName + owner.fullName để
       // set Source Badge "👤 Sale CRM · {tên} 🔄" cho tin sync từ Zalo Real.
       select: {
+        id: true,
         orgId: true,
         ownerUserId: true,
         privacyMode: true,
@@ -977,7 +979,24 @@ export async function handleIncomingMessage(
       ));
     }
 
-    // Emit webhook for message event (fire-and-forget)
+    // Javis nhận riêng tin khách ngay sau khi message đã lưu; không gửi tin nhân viên/hệ thống.
+    if (!msg.isSelf && !isFriendAcceptedNotification) {
+      void emitJavisMessageReceived(account.orgId, {
+        messageId: message.id,
+        conversationId: conversation.id,
+        zaloAccountId: account.id,
+        zaloAccountName: account.displayName ?? '',
+        threadType: msg.threadType,
+        senderType: 'contact',
+        senderId: msg.senderUid,
+        senderName: msg.senderName ?? '',
+        content: message.content ?? '',
+        attachments: normalizeJavisAttachments(msg.attachments),
+        sentAt: message.sentAt.toISOString(),
+      });
+    }
+
+    // Emit webhook cũ cho các tích hợp hiện có (giữ tương thích).
     emitWebhook(account.orgId, msg.isSelf ? 'message.sent' : 'message.received', {
       messageId: message.id,
       conversationId: conversation.id,

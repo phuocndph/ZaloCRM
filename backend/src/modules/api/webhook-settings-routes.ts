@@ -11,6 +11,7 @@ import { requireGrant } from '../rbac/rbac-middleware.js';
 import { logger } from '../../shared/utils/logger.js';
 import { emitWebhook } from './webhook-service.js';
 import crypto from 'node:crypto';
+import { emitJavisMessageReceived } from './javis-webhook-service.js';
 
 export async function webhookSettingsRoutes(app: FastifyInstance): Promise<void> {
   app.addHook('preHandler', authMiddleware);
@@ -21,8 +22,8 @@ export async function webhookSettingsRoutes(app: FastifyInstance): Promise<void>
       const { orgId } = request.user!;
 
       const [urlSetting, secretSetting] = await Promise.all([
-        prisma.appSetting.findFirst({ where: { orgId, settingKey: 'webhook_url' } }),
-        prisma.appSetting.findFirst({ where: { orgId, settingKey: 'webhook_secret' } }),
+        prisma.appSetting.findFirst({ where: { orgId, settingKey: 'javis_webhook_url' } }),
+        prisma.appSetting.findFirst({ where: { orgId, settingKey: 'javis_webhook_secret' } }),
       ]);
 
       return {
@@ -42,11 +43,11 @@ export async function webhookSettingsRoutes(app: FastifyInstance): Promise<void>
   app.put('/api/v1/settings/webhook', { preHandler: requireGrant('webhook', 'edit') }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const { orgId } = request.user!;
-      const { url, secret } = request.body as { url?: string; secret?: string };
-
+      const { url, secret, mode } = request.body as { url?: string; secret?: string; mode?: string };
+      const prefix = mode === 'javis' ? 'javis_' : '';
       await Promise.all([
-        upsertSetting(orgId, 'webhook_url', url ?? ''),
-        secret !== undefined ? upsertSetting(orgId, 'webhook_secret', secret) : Promise.resolve(),
+        upsertSetting(orgId, `${prefix}webhook_url`, url ?? ''),
+        secret !== undefined ? upsertSetting(orgId, `${prefix}webhook_secret`, secret) : Promise.resolve(),
       ]);
 
       return { success: true };
@@ -71,6 +72,25 @@ export async function webhookSettingsRoutes(app: FastifyInstance): Promise<void>
     } catch (err) {
       logger.error('[webhook-settings] Test error:', err);
       return reply.status(500).send({ error: 'Failed to send test webhook' });
+    }
+  });
+
+  // POST /api/v1/settings/webhook/test-javis — queue a safe synthetic Javis event
+  app.post('/api/v1/settings/webhook/test-javis', { preHandler: requireGrant('webhook', 'edit') }, async (request: FastifyRequest, reply: FastifyReply) => {
+    try {
+      const { orgId } = request.user!;
+      const config = await prisma.appSetting.findFirst({ where: { orgId, settingKey: 'javis_webhook_url' }, select: { valuePlain: true } });
+      if (!config?.valuePlain) return reply.status(400).send({ error: 'Chưa cấu hình URL nhận tin' });
+      const messageId = `test-${crypto.randomUUID()}`;
+      await emitJavisMessageReceived(orgId, {
+        messageId, conversationId: 'test-conversation', zaloAccountId: 'test-account', zaloAccountName: 'Tài khoản thử',
+        threadType: 'user', senderType: 'contact', senderId: 'test-sender', senderName: 'Khách thử',
+        content: 'Tin nhắn kiểm tra kết nối Javis', attachments: [], sentAt: new Date().toISOString(),
+      });
+      return { success: true, messageId, event: 'message.received' };
+    } catch (err) {
+      logger.error('[webhook-settings] Javis test error:', err);
+      return reply.status(500).send({ error: 'Không thể xếp hàng tin thử' });
     }
   });
 

@@ -482,6 +482,8 @@ async function bootstrap() {
     logger.info(`Environment: ${config.nodeEnv}`);
     startAppointmentReminder(io);
     startZaloHealthCheck();
+    const { startJavisWebhookWorker } = await import('./modules/api/javis-webhook-service.js');
+    startJavisWebhookWorker();
     startContactIntelligence();
     startLabelsBackgroundSync(60_000); // realtime-ish 2-way pull every 60s
     // E1 Quét group (🟢 Community) — BullMQ worker xử lý group-scan job.
@@ -603,6 +605,8 @@ async function bootstrap() {
         await stopFollowupWorker().catch((e) => logger.warn('[shutdown] stopFollowupWorker lỗi:', e));
         stopChatMediaMirrorWorker();
         stopChatAttachmentWorker();
+        const { stopJavisWebhookWorker } = await import('./modules/api/javis-webhook-service.js');
+        stopJavisWebhookWorker();
         stopConversationAnalysisBackfill();
         await stopConversationAnalysisWorker().catch((e) => logger.warn('[shutdown] stopConversationAnalysisWorker failed:', e));
         // Close Zalo listeners before Docker replaces the process. Credentials stay in DB.
