@@ -888,6 +888,9 @@
     <Teleport to="body">
       <div v-if="albumMenu.open" class="ctx-menu-overlay" :style="chatSession ? { zIndex: 1500 } : undefined" @click.self="albumMenu.open = false" @contextmenu.prevent="albumMenu.open = false">
         <div class="ctx-menu album-ctx" :style="{ top: albumMenu.y + 'px', left: albumMenu.x + 'px', ...(chatSession ? { zIndex: 1501 } : {}) }" @click.stop>
+          <button class="ctx-item" @click="copyAlbumImage">
+            <CopyIcon :size="18" /><span>Sao chép ảnh này</span>
+          </button>
           <button class="ctx-item" @click="forwardAlbum()">
             <span class="ctx-ic">↗️</span><span>Chuyển tiếp cả album ({{ albumMenu.item?.messages.length }} ảnh)</span>
           </button>
@@ -922,6 +925,7 @@
          KHÔNG loop (đến đầu/cuối thì disable nút). Single-ảnh: ẩn nút điều hướng. -->
     <v-dialog v-model="showImagePreview" max-width="1100" content-class="elevation-0" @keydown="onLightboxKey">
       <div class="lightbox-wrap" @click.self="showImagePreview = false">
+        <CopyImageButton :url="previewImageUrl" class="lightbox-copy" />
         <button
           v-if="lightboxList.length > 1"
           class="lightbox-nav lightbox-prev"
@@ -1165,6 +1169,7 @@ import {
   Search as SearchIcon,
   Archive as ArchiveIcon,
   BookmarkPlus as BookmarkPlusIcon,
+  Copy as CopyIcon,
 } from 'lucide-vue-next';
 
 // Reaction detail popup state — anh chốt 2026-05-22: click reaction box → popup
@@ -1199,6 +1204,8 @@ import StickerPicker from '@/components/chat/StickerPicker.vue';
 import ZaloUserInfoDialog from '@/components/chat/ZaloUserInfoDialog.vue';
 import LinkParentDialog from '@/components/chat/LinkParentDialog.vue';
 import MessageContextMenu from '@/components/chat/message-context-menu.vue';
+import CopyImageButton from '@/components/ui/CopyImageButton.vue';
+import { messageImageUrl, useImageClipboard } from '@/composables/image-clipboard';
 import TypingIndicator from '@/components/chat/typing-indicator.vue';
 import ReplyPreviewBar from '@/components/chat/reply-preview-bar.vue';
 import ForwardDialog from '@/components/chat/forward-dialog.vue';
@@ -1359,6 +1366,7 @@ const inputText = ref(props.editingMessage?.content ?? chatSession?.draft.value.
 let threadDisposed = false;
 const messagesContainer = ref<HTMLElement | null>(null);
 const previewImageUrl = ref('');
+const { copyImage } = useImageClipboard();
 const showImagePreview = computed({ get: () => !!previewImageUrl.value, set: (v) => { if (!v) { previewImageUrl.value = ''; lightboxList.value = []; lightboxIndex.value = 0; } } });
 // E07 Lightbox state — list ảnh trong album hiện tại + index ảnh đang xem.
 // Empty list = single ảnh (không show nút điều hướng).
@@ -3138,7 +3146,7 @@ function onAlbumTileContext(item: AlbumItem, m: Message, ev: MouseEvent) {
   albumMenu.value = {
     open: true,
     x: Math.min(ev.clientX, vw - 240),
-    y: Math.min(ev.clientY, vh - 220),
+    y: Math.max(12, Math.min(ev.clientY, vh - 270)),
     item, msgId: m.id,
   };
 }
@@ -3152,6 +3160,12 @@ function forwardAlbum() {
   if (!message) return;
   contextMsg.value = message;
   showForwardDialog.value = true;
+}
+
+function copyAlbumImage() {
+  const message = albumMenu.value.item?.messages.find((entry) => entry.id === albumMenu.value.msgId) ?? null;
+  void copyImage(messageImageUrl(message));
+  albumMenu.value.open = false;
 }
 
 async function saveAlbumOne() {
@@ -4469,6 +4483,9 @@ onBeforeUnmount(() => messageResizeObserver?.disconnect());
   letter-spacing: 0.2px;
 }
 /* E07 Image lightbox — anh chốt 2026-05-21: nút ‹ › + arrow keys, KHÔNG loop. */
+.lightbox-copy { position: absolute; top: 12px; right: 12px; width: 40px; height: 40px; z-index: 2; background: #fff; color: #263f4b; border: 1px solid #d5dfe4; border-radius: 6px; cursor: pointer; }
+.lightbox-copy:hover { background: #ecf4f7; }
+.lightbox-copy:focus-visible { outline: 2px solid #1786be; outline-offset: 2px; }
 .lightbox-wrap {
   position: relative;
   display: flex; align-items: center; justify-content: center;

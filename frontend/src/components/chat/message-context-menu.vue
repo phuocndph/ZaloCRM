@@ -51,6 +51,11 @@
           <span class="ctx-item__label">Sao chép</span>
         </button>
 
+        <button v-if="imageUrl" class="ctx-item" role="menuitem" @click="onCopyImage">
+          <CopyIcon class="ctx-item__icon" :size="18" />
+          <span class="ctx-item__label">Sao chép ảnh</span>
+        </button>
+
         <!-- Ghim / Bỏ ghim tin nhắn (Conversation Content Library 2026-07-11).
              Ghim mọi loại nội dung (text/ảnh/video/file/link); ẩn ở tin đã thu hồi/xóa. -->
         <button
@@ -146,6 +151,8 @@
 <script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import type { Message } from '@/composables/use-chat';
+import { Copy as CopyIcon } from 'lucide-vue-next';
+import { messageImageUrl, useImageClipboard } from '@/composables/image-clipboard';
 
 const props = defineProps<{
   message: Message | null;
@@ -176,6 +183,9 @@ const emit = defineEmits<{
 const isMediaMessage = computed(() =>
   ['image', 'video', 'file'].includes(props.message?.contentType ?? ''),
 );
+const imageUrl = computed(() => messageImageUrl(props.message));
+const { copyImage } = useImageClipboard();
+function onCopyImage() { void copyImage(imageUrl.value); close(); }
 
 // Ghim được: mọi tin còn nội dung (không thu hồi/xóa). Loại card hệ thống thuần trạng thái.
 const canPin = computed(() => {

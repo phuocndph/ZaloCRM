@@ -7,7 +7,8 @@ import WorkItemsView from './WorkItemsView.vue';
 
 const mocks = vi.hoisted(() => ({ get: vi.fn(), patch: vi.fn() }));
 vi.mock('@/api', () => ({ api: mocks }));
-vi.mock('@/api/socket', () => ({ createAppSocket: () => ({ on: vi.fn(), disconnect: vi.fn() }) }));
+// Unit tests must not connect to a locally running CRM socket server.
+vi.mock('@/api/socket', () => ({ createAppSocket: () => ({ on: vi.fn(), off: vi.fn(), disconnect: vi.fn() }) }));
 
 describe('WorkItemsView', () => {
   beforeEach(() => {

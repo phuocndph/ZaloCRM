@@ -2,7 +2,7 @@ const { app, BrowserWindow, Menu, Tray, screen, session, ipcMain, shell, dialog,
 const path = require('node:path');
 const fs = require('node:fs');
 const { pathToFileURL } = require('node:url');
-const { crmOrigin, sameOrigin, desktopRelease, compareVersions, clampBounds, adjacentBounds, shouldAutoHide, ConversationQueue, ID } = require('./policy.cjs');
+const { crmOrigin, sameOrigin, allowClipboardWrite, desktopRelease, compareVersions, clampBounds, adjacentBounds, shouldAutoHide, ConversationQueue, ID } = require('./policy.cjs');
 const { BubbleDrag } = require('./bubble-drag.cjs');
 const { downloadVerifiedInstaller, latestGithubRelease } = require('./update.cjs');
 
@@ -424,7 +424,9 @@ if (locked) {
   app.whenReady().then(() => {
     const crmSession = session.fromPartition('persist:zalocrm');
     crmSession.setPermissionCheckHandler((_contents, permission, requestingOrigin) => sameOrigin(requestingOrigin, origin) && permission === 'clipboard-sanitized-write');
-    crmSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+    crmSession.setPermissionRequestHandler((contents, permission, callback, details) => callback(
+      allowClipboardWrite(permission, details.requestingUrl, details.isMainFrame, contents?.getURL(), origin),
+    ));
     registerIpc();
     Menu.setApplicationMenu(Menu.buildFromTemplate([
       { label: 'ZaloCRM', submenu: [{ label: 'Mở ZaloCRM', click: () => showMain() }, { type: 'separator' }, { label: 'Thoát', click: () => app.quit() }] },

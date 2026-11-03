@@ -8,6 +8,7 @@
       <div class="mlb-top">
         <button class="mlb-btn" aria-label="Đóng" @click="close"><XIcon :size="24" :stroke-width="2" /></button>
         <span v-if="urls.length > 1" class="mlb-count">{{ currentIndex + 1 }} / {{ urls.length }}</span>
+        <CopyImageButton v-if="url" :url="url" class="mlb-btn" />
         <a v-if="url" class="mlb-btn" :href="url" target="_blank" rel="noopener" download aria-label="Tải ảnh"><DownloadIcon :size="22" :stroke-width="2" /></a>
       </div>
       <div
@@ -38,6 +39,7 @@
 
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue';
+import CopyImageButton from '@/components/ui/CopyImageButton.vue';
 import { X as XIcon, Download as DownloadIcon, ImageOff as ImageOffIcon, ChevronLeft as ChevronLeftIcon, ChevronRight as ChevronRightIcon } from 'lucide-vue-next';
 
 const props = withDefaults(defineProps<{ open: boolean; url: string | null; urls?: string[] }>(), { urls: () => [] });

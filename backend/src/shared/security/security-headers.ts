@@ -43,6 +43,7 @@ const CSP_DIRECTIVES = [
   // connect-src ghim đúng host Socket.IO (từ APP_URL) thay vì ws:/wss: mở toang.
   `connect-src 'self' ${wsOriginFromAppUrl()}`.trim(),
   "media-src 'self' blob: https:",
+  "frame-src 'self' blob: https://www.google.com/maps/embed",
   "object-src 'none'",
   "base-uri 'self'",
   "frame-ancestors 'none'",

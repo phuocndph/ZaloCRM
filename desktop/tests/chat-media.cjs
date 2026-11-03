@@ -20,7 +20,10 @@ async function run() {
     ...['contact_card', 'qr_code'].map((contentType, index) => ({ id: `card-${index}`, senderType: 'contact', senderName: 'An', contentType,
       sentAt: new Date().toISOString(), content: JSON.stringify({ title: 'Khách danh thiếp tên dài để kiểm tra xuống dòng', action: 'recommened.user',
         params: '1234567890123456789', href: 'https://zaloapp.com/qr/profile', thumb: index ? '' : '/files/avatar.png',
-        description: JSON.stringify({ phone: '0901234567', qrCodeUrl: '/files/avatar.png' }) }) }))];
+        description: JSON.stringify({ phone: '0901234567', qrCodeUrl: '/files/avatar.png' }) }) })),
+    { id: 'location', senderType: 'contact', senderName: 'An', contentType: 'location', sentAt: new Date().toISOString(),
+      content: JSON.stringify({ title: 'Nhà hát Thành phố Hồ Chí Minh', description: '7 Công trường Lam Sơn, phường Bến Nghé, Quận 1, Thành phố Hồ Chí Minh',
+        thumb: '/files/avatar.png', params: JSON.stringify({ latitude: 10.7769, longitude: 106.7009, isUserLocation: 1 }) }) }];
   const history = structuredClone(baseHistory);
   const writes = [], downloads = [];
   const outcomes = new Map();
@@ -104,6 +107,10 @@ async function run() {
           for (let i = 0; i < 100; i++) { page = desktop.windows().find((candidate) => candidate.url().startsWith(origin)); if (page) break; await new Promise((resolve) => setTimeout(resolve, 100)); }
         } else { browser = await chromium.launch({ channel: 'msedge', headless: true }); page = await browser.newPage({ viewport: { width: 1440, height: 900 }, acceptDownloads: true }); await page.goto(`${origin}/login`); }
         const errors = []; page.on('pageerror', (error) => errors.push(error.stack || error.message));
+        const watchMaps = (surface) => surface.on('requestfailed', (request) => {
+          if (request.isNavigationRequest() && /google\.com\/maps/.test(request.url())) console.log(`${platform}: map transport ${request.failure()?.errorText}`);
+        });
+        watchMaps(page);
         await page.evaluate(() => localStorage.setItem('token', 'synthetic-media-test'));
         await page.goto(`${origin}/desktop/chat`); await page.waitForSelector('.inbox-row');
         await page.waitForFunction(() => { const image = document.querySelector('.inbox-row .av-img'); return image && image.complete && image.naturalWidth > 0 && image.src.endsWith('/avatar.png'); });
@@ -127,7 +134,7 @@ async function run() {
           if (platform === 'windows' && surface === 'compact') {
             const bubble = desktop.windows().find((candidate) => candidate.url().endsWith('/bubble.html'));
             const opened = desktop.waitForEvent('window'); await bubble.locator('#bubble').click();
-            page = await opened; page.on('pageerror', (error) => errors.push(error.stack || error.message));
+            page = await opened; page.on('pageerror', (error) => errors.push(error.stack || error.message)); watchMaps(page);
           } else if (platform === 'windows') page = main;
           else await page.setViewportSize(surface === 'compact' ? { width: 440, height: 720 } : { width: 1440, height: 900 });
           history.splice(0, history.length, ...structuredClone(baseHistory)); outcomes.clear();
@@ -135,6 +142,7 @@ async function run() {
           await page.waitForSelector('.message-thread');
           await testContactCards(page, `${platform}/${surface}`);
           await page.screenshot({ path: path.join(resultDir, `chat-contact-cards-${platform}-${surface}.png`), animations: 'disabled' });
+          await testLocationCard(page, `${platform}/${surface}`, path.join(resultDir, `chat-location-${platform}-${surface}.png`));
           const sendFile = async (mode) => {
             sendMode = mode;
             await page.locator('.message-thread input[type="file"]:not([accept])').setInputFiles({ name: 'quote.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4\nsynthetic quote\n%%EOF') });
@@ -163,8 +171,45 @@ async function run() {
       } finally { if (desktop) await desktop.close(); if (browser) await browser.close(); }
     }
     assert.ok(!writes.some((url) => /\/messages$/.test(url)), 'No outbound customer messages');
-    console.log('Chat media passed in Windows Electron and Edge web: contact cards with name/phone/avatar/QR, phone copy, avatars, voice playback/download, multipart file upload, queued/accepted/uncertain receipts and explicit retry without reupload in full/compact chat. All sends use an isolated fixture; no customer messages sent.');
+    console.log('Chat media passed in Windows Electron and Edge web: location cards and copy/directions links, contact cards with name/phone/avatar/QR, phone copy, avatars, voice playback/download, multipart file upload, queued/accepted/uncertain receipts and explicit retry without reupload in full/compact chat. All sends use an isolated fixture; no customer messages sent.');
   } finally { await new Promise((resolve) => server.close(resolve)); }
+}
+async function testLocationCard(page, label, screenshot) {
+  const card = page.locator('.location-card');
+  await card.scrollIntoViewIfNeeded();
+  assert.equal(await card.count(), 1, `${label}: location with thumbnail remains a location card`);
+  assert.ok((await card.locator('.location-title').textContent()).includes('Nhà hát Thành phố'));
+  assert.ok((await card.locator('.location-address').textContent()).includes('7 Công trường Lam Sơn'));
+  assert.ok(!(await card.textContent()).includes('LIVE'), 'A shared snapshot is never shown as live tracking');
+  for (const [selector, parameter] of [['.location-action:not(.primary)', 'query'], ['.location-action.primary', 'destination']]) {
+    const link = card.locator(selector);
+    const url = new URL(await link.getAttribute('href'));
+    assert.equal(url.hostname, 'www.google.com');
+    assert.equal(url.searchParams.get(parameter), '10.7769,106.7009');
+    assert.equal(await link.getAttribute('target'), '_blank');
+  }
+  await page.evaluate(() => {
+    window.__copiedLocation = '';
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async (value) => { window.__copiedLocation = value; } } });
+  });
+  await card.getByRole('button', { name: 'Sao chép vị trí', exact: true }).click();
+  assert.ok((await page.evaluate(() => window.__copiedLocation)).includes('10.7769,106.7009'));
+  await card.locator('.location-copy-status').filter({ hasText: 'Đã sao chép' }).waitFor();
+  await card.locator('.location-map-state').filter({ hasText: 'Đang tải' }).waitFor({ state: 'hidden', timeout: 20000 });
+  const map = card.locator('iframe');
+  if (await map.count()) {
+    const frame = await (await map.elementHandle()).contentFrame();
+    assert.ok(frame, `${label}: actual map frame exists`);
+    assert.ok(new URL(frame.url()).searchParams.get('pb')?.includes('10.7769,106.7009'), `${label}: map query contains exact recipient coordinates`);
+    await frame.waitForFunction(() => [...document.images].some((image) => image.src.includes('/maps/vt?') && image.complete && image.naturalWidth > 0), null, { timeout: 12000 });
+    console.log(`${label}: real Google map tiles loaded at the shared coordinates`);
+  } else console.log(`${label}: map unavailable; destination links remain usable`);
+  assert.ok(await card.evaluate((element) => element.scrollWidth <= element.clientWidth + 1), `${label}: location fits its card`);
+  for (const selector of ['.location-title', '.location-address', '.location-coordinates', '.location-actions']) {
+    assert.ok(await card.locator(selector).evaluate((element) => element.scrollWidth <= element.clientWidth + 1), `${label}: ${selector} does not overflow`);
+  }
+  await card.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: screenshot, animations: 'disabled' });
 }
 async function testContactCards(page, label) {
   await page.waitForSelector('.profile-card');

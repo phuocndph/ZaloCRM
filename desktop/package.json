@@ -16,6 +16,7 @@
     "test:ui": "node tests/ui.cjs",
     "test:preview": "node tests/preview.cjs",
     "test:media": "node tests/chat-media.cjs",
+    "test:copy-image": "node tests/image-clipboard.cjs",
     "test:updater": "node tests/updater-lifecycle.cjs",
     "prepack": "node -e \"require('electron')\"",
     "predist": "node -e \"require('electron')\"",
