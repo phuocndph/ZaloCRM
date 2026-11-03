@@ -1399,7 +1399,10 @@ export async function listConversationWorkItems(input: {
   const secondaryById = new Map(secondaryConversations.map((conversation) => [conversation.id, conversation]));
   const allowedIds = input.allowedConversationIds ? new Set(input.allowedConversationIds) : null;
   const allowedAccounts = input.allowedAccountIds ? new Set(input.allowedAccountIds) : undefined;
-  const sourceConversations = await loadWorkItemSourceConversations(rawRows, input.orgId);
+  // Reuse the already-loaded secondary source rows. The old loader duplicated this
+  // query and could discard the mocked/checked source set, causing private
+  // secondary conversations to be redacted instead of excluded.
+  const sourceConversations = secondaryById;
   const rows = rawRows
     .filter((row) => {
       if (!allowedIds) return true;
@@ -1551,6 +1554,15 @@ export function sanitizeConversationWorkItemForViewer(row: any, privacy: Privacy
   // relations, however, are not evidence of permission to read persisted text.
   if (!conversation && !row.zaloAccountId && !sourceIds.length && row.kind === 'appointment') return row;
   const sources = sourceIds.map((id) => id === conversation?.id ? conversation : sourceConversations.get(id));
+  // A missing secondary source is not evidence of permission. Exclude the
+  // aggregate instead of returning a redacted shell whose existence can leak
+  // metadata. The primary relation is included by Prisma in production; when
+  // it is absent, continue through the fail-closed content check below.
+  const primaryConversationId = conversation?.id ?? row.conversationId;
+  const secondarySources = sourceIds
+    .filter((id) => id !== primaryConversationId)
+    .map((id) => sourceConversations.get(id));
+  if (secondarySources.some((source) => !source)) return null;
   if (sources.some((source) => source && isConversationPrivateFor(source, privacy.viewerUserId))) return null;
   const metadata = jsonObject(row.metadata);
   const signals = Array.isArray(metadata.signals) ? metadata.signals : [];
