@@ -147,6 +147,12 @@
           </div>
 
           <SpecialMessageRenderer
+            v-else-if="message.contentType === 'location'"
+            type="location"
+            :content="parseContent(message.content)"
+          />
+
+          <SpecialMessageRenderer
             v-else-if="contactCardType"
             :type="contactCardType"
             :content="parseContent(message.content)"
@@ -713,6 +719,7 @@ const formattedCaption = computed(() => highlightText(messageCaption.value));
 // reply / là reminder / file / special → giữ khung bình thường.
 const isBareMedia = computed(() => {
   const m = props.message;
+  if (m.contentType === 'location' && !m.isDeleted && !props.reply) return true;
   if (m.isDeleted || props.reply || formattedCaption.value) return false;
   if (isReminderMessage(m)) return false;
   const ct = m.contentType;

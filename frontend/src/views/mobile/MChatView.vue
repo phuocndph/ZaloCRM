@@ -158,7 +158,7 @@
             <ForwardIcon :size="24" :stroke-width="1.7" /><span>Chuyển tiếp</span>
           </button>
           <button v-if="actionCanCopy" class="mch-ov-act" @click="onCopy">
-            <CopyIcon :size="24" :stroke-width="1.7" /><span>Sao chép</span>
+            <CopyIcon :size="24" :stroke-width="1.7" /><span>{{ actionMsg?.contentType === 'image' ? 'Sao chép ảnh' : 'Sao chép' }}</span>
           </button>
           <button v-if="actionCanPin && !actionIsPinned" class="mch-ov-act" @click="onPin">
             <PinIcon :size="24" :stroke-width="1.7" /><span>Ghim</span>
@@ -484,6 +484,7 @@ import {
   X as XIcon, Copy as CopyIcon, Download as DownloadIcon, FileText as FileTextIcon, RotateCcw as RotateCcwIcon, Trash2 as Trash2Icon, Pin as PinIcon, PinOff as PinOffIcon, Forward as ForwardIcon, Search as SearchIcon, FolderOpen as FolderOpenIcon, Link as LinkIcon, MoreVertical as MoreVerticalIcon, Heart as HeartIcon, Smile as SmileIcon, ChevronUp as ChevronUpIcon, ChevronDown as ChevronDownIcon, User as UserIcon, UserCheck as UserCheckIcon, Tag as TagIcon,
 } from 'lucide-vue-next';
 import MessageBubble from '@/components/chat/message-bubble.vue';
+import { messageImageUrl, useImageClipboard } from '@/composables/image-clipboard';
 import ConversationInsightCard from '@/components/chat/ConversationInsightCard.vue';
 import Avatar from '@/components/ui/Avatar.vue';
 import MLightbox from '@/components/mobile/MLightbox.vue';
@@ -1037,7 +1038,9 @@ function onRowTouchEnd(m: any) {
   }
 }
 
-const actionCanCopy = computed(() => actionMsg.value?.contentType === 'text' && !!actionMsg.value?.content && !actionMsg.value?.redacted);
+const { copyImage } = useImageClipboard();
+const actionCanCopy = computed(() => !actionMsg.value?.redacted && !actionMsg.value?.isDeleted
+  && ((actionMsg.value?.contentType === 'text' && !!actionMsg.value?.content) || !!messageImageUrl(actionMsg.value)));
 const actionCanPin = computed(() => !!actionMsg.value && !actionMsg.value.isDeleted && !actionMsg.value.redacted);
 const actionIsPinned = computed(() => !!actionMsg.value && pinnedIds.value.has(actionMsg.value.id));
 const actionReactionDetails = computed(() => (actionMsg.value?.reactionDetails || []).filter((detail: any) => detail?.emoji));
@@ -1401,6 +1404,7 @@ async function jumpToReply(messageId: string) {
 
 async function onCopy() {
   showActions.value = false;
+  if (actionMsg.value?.contentType === 'image') { await copyImage(messageImageUrl(actionMsg.value)); return; }
   try { await navigator.clipboard.writeText(actionMsg.value?.content || ''); toast.push('Đã sao chép'); }
   catch { toast.push('Không sao chép được'); }
 }

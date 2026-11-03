@@ -16,6 +16,11 @@ function sameOrigin(value, origin) {
   try { const url = new URL(value); return ['https:', 'http:'].includes(url.protocol) && url.origin === origin && !url.username && !url.password; } catch { return false; }
 }
 
+function allowClipboardWrite(permission, requestingUrl, mainFrame, topUrl, origin) {
+  return permission === 'clipboard-sanitized-write' && mainFrame === true
+    && sameOrigin(requestingUrl, origin) && sameOrigin(topUrl, origin);
+}
+
 function compareVersions(left, right) {
   if (!VERSION.test(left) || !VERSION.test(right)) return 0;
   const a = left.split('-', 1)[0].split('.').map(Number);
@@ -138,4 +143,4 @@ class ConversationQueue {
   snapshot() { return { items: [...this.rows.values()].reverse(), count: [...this.unread.values()].reduce((a, b) => a + b, 0), revision: this.revision }; }
 }
 
-module.exports = { DEFAULT_ORIGIN, crmOrigin, sameOrigin, compareVersions, desktopRelease, githubRelease, identity, notification, clampBounds, adjacentBounds, shouldAutoHide, ConversationQueue, ID };
+module.exports = { DEFAULT_ORIGIN, crmOrigin, sameOrigin, allowClipboardWrite, compareVersions, desktopRelease, githubRelease, identity, notification, clampBounds, adjacentBounds, shouldAutoHide, ConversationQueue, ID };

@@ -104,6 +104,7 @@
     </div>
     <footer class="p-foot">
       <button class="btn-insert" @click="openInsert"><SendIcon :size="14" :stroke-width="2" /> Chèn vào chat</button>
+      <CopyImageButton v-if="asset.kind === 'image'" :url="wmUrl || asset.url || asset.thumbnailUrl || ''" class="btn-fav" />
       <button class="btn-fav" :class="{ on: isFav }" :title="isFav ? 'Bỏ yêu thích' : 'Thêm yêu thích'" @click="doFavorite">
         <StarIcon :size="15" :stroke-width="1.9" :fill="isFav ? 'currentColor' : 'none'" />
       </button>
@@ -133,6 +134,7 @@
 import { ref, computed, watch, onMounted } from 'vue';
 import { updateMedia, archiveMedia, watermarkMedia, removeWatermark, toggleFavorite, listMediaTags, type MediaAssetItem, type MediaFolder } from '@/api/media';
 import { useToast } from '@/composables/use-toast';
+import CopyImageButton from '@/components/ui/CopyImageButton.vue';
 import MediaSendPicker from '@/components/media/MediaSendPicker.vue';
 import ConfirmShareDialog from '@/components/media/ConfirmShareDialog.vue';
 import { Image as ImageIcon, FileText as FileIcon, Video as VideoIcon, Folder as FolderIcon, Smartphone as NickIcon, Upload as UploadIcon, Send as SendIcon, Star as StarIcon, Trash2 as Trash2Icon } from 'lucide-vue-next';

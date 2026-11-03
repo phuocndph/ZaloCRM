@@ -58,6 +58,18 @@ describe('security-headers', () => {
     await app.close();
   });
 
+  it('allows only the Maps embed path alongside local file previews', async () => {
+    config.cspMode = 'enforce';
+    const app = await buildApp();
+    const res = await app.inject({ method: 'GET', url: '/ping' });
+    const csp = res.headers['content-security-policy'] as string;
+    const frameSrc = csp.split('; ').find((directive) => directive.startsWith('frame-src'));
+    expect(frameSrc).toBe("frame-src 'self' blob: https://www.google.com/maps/embed");
+    expect(csp).toContain("frame-ancestors 'none'");
+    expect(csp).toContain("object-src 'none'");
+    await app.close();
+  });
+
   it('luôn set nosniff / frame-options / referrer-policy', async () => {
     const app = await buildApp();
     const res = await app.inject({ method: 'GET', url: '/ping' });

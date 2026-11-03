@@ -1,6 +1,17 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { crmOrigin, sameOrigin, desktopRelease, githubRelease, notification, clampBounds, adjacentBounds, shouldAutoHide, ConversationQueue } = require('../src/policy.cjs');
+const { crmOrigin, sameOrigin, allowClipboardWrite, desktopRelease, githubRelease, notification, clampBounds, adjacentBounds, shouldAutoHide, ConversationQueue } = require('../src/policy.cjs');
+test('clipboard requests allow sanitized image/text writes only from the CRM main frame', () => {
+  const origin = crmOrigin();
+  assert.equal(allowClipboardWrite('clipboard-sanitized-write', `${origin}/chat`, true, `${origin}/chat`, origin), true);
+  for (const permission of ['clipboard-read', 'deprecated-sync-clipboard-read', 'media', 'clipboard-write']) {
+    assert.equal(allowClipboardWrite(permission, `${origin}/chat`, true, origin, origin), false);
+  }
+  assert.equal(allowClipboardWrite('clipboard-sanitized-write', origin, false, origin, origin), false);
+  assert.equal(allowClipboardWrite('clipboard-sanitized-write', 'https://evil.test', true, origin, origin), false);
+  assert.equal(allowClipboardWrite('clipboard-sanitized-write', origin, true, 'https://evil.test', origin), false);
+  assert.equal(allowClipboardWrite('clipboard-sanitized-write', undefined, true, origin, origin), false);
+});
 test('defaults to Joliefam and rejects unsafe or credential-bearing origins', () => {
   assert.equal(crmOrigin(), 'https://zcrm.joliefam.vn');
   assert.equal(crmOrigin('http://127.0.0.1:3080'), 'http://127.0.0.1:3080');
