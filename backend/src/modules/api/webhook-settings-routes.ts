@@ -25,13 +25,11 @@ export async function webhookSettingsRoutes(app: FastifyInstance): Promise<void>
         prisma.appSetting.findFirst({ where: { orgId, settingKey: 'webhook_secret' } }),
       ]);
 
-      return {
-        url: urlSetting?.valuePlain ?? null,
-        // Mask secret — show only last 4 chars
-        secret: secretSetting?.valuePlain
-          ? `${'*'.repeat(Math.max(0, secretSetting.valuePlain.length - 4))}${secretSetting.valuePlain.slice(-4)}`
-          : null,
-      };
+      const url = urlSetting?.valuePlain || null;
+      const secret = secretSetting?.valuePlain ? maskSecret(secretSetting.valuePlain) : null;
+      // Both naming styles: the settings page reads webhookUrl/webhookSecret,
+      // older API clients read url/secret.
+      return { url, secret, webhookUrl: url, webhookSecret: secret };
     } catch (err) {
       logger.error('[webhook-settings] GET error:', err);
       return reply.status(500).send({ error: 'Failed to fetch webhook settings' });
@@ -42,11 +40,25 @@ export async function webhookSettingsRoutes(app: FastifyInstance): Promise<void>
   app.put('/api/v1/settings/webhook', { preHandler: requireGrant('webhook', 'edit') }, async (request: FastifyRequest, reply: FastifyReply) => {
     try {
       const { orgId } = request.user!;
-      const { url, secret } = request.body as { url?: string; secret?: string };
+      const body = (request.body ?? {}) as {
+        url?: string; secret?: string; webhookUrl?: string; webhookSecret?: string;
+      };
+      // The settings page sends webhookUrl/webhookSecret; reading only url/secret
+      // saved an empty URL on every save, so tests failed and no event was sent.
+      const url = (body.webhookUrl ?? body.url ?? '').trim();
+      const secret = body.webhookSecret ?? body.secret;
+
+      // GET returns the secret masked. When the page sends that masked value
+      // back unchanged, keep the stored secret instead of overwriting it.
+      let keepSecret = secret === undefined;
+      if (!keepSecret && secret && /^\*+.{0,4}$/.test(secret)) {
+        const current = await prisma.appSetting.findFirst({ where: { orgId, settingKey: 'webhook_secret' } });
+        keepSecret = !!current?.valuePlain && maskSecret(current.valuePlain) === secret;
+      }
 
       await Promise.all([
-        upsertSetting(orgId, 'webhook_url', url ?? ''),
-        secret !== undefined ? upsertSetting(orgId, 'webhook_secret', secret) : Promise.resolve(),
+        upsertSetting(orgId, 'webhook_url', url),
+        keepSecret ? Promise.resolve() : upsertSetting(orgId, 'webhook_secret', (secret ?? '').trim()),
       ]);
 
       return { success: true };
@@ -82,7 +94,7 @@ export async function webhookSettingsRoutes(app: FastifyInstance): Promise<void>
       const newKey = `zcrm_${crypto.randomBytes(24).toString('hex')}`;
       await upsertSetting(orgId, 'public_api_key', newKey);
 
-      return { key: newKey };
+      return { key: newKey, apiKey: newKey };
     } catch (err) {
       logger.error('[webhook-settings] Generate API key error:', err);
       return reply.status(500).send({ error: 'Failed to generate API key' });
@@ -95,12 +107,12 @@ export async function webhookSettingsRoutes(app: FastifyInstance): Promise<void>
       const { orgId } = request.user!;
 
       const setting = await prisma.appSetting.findFirst({ where: { orgId, settingKey: 'public_api_key' } });
-      if (!setting?.valuePlain) return { key: null };
+      if (!setting?.valuePlain) return { key: null, apiKey: null };
 
       const k = setting.valuePlain;
       // Show prefix + first 8 chars + mask + last 4 chars
       const masked = k.length > 12 ? `${k.slice(0, 12)}${'*'.repeat(k.length - 16)}${k.slice(-4)}` : `${k.slice(0, 4)}****`;
-      return { key: masked };
+      return { key: masked, apiKey: masked };
     } catch (err) {
       logger.error('[webhook-settings] GET API key error:', err);
       return reply.status(500).send({ error: 'Failed to fetch API key' });
@@ -109,6 +121,10 @@ export async function webhookSettingsRoutes(app: FastifyInstance): Promise<void>
 }
 
 // ── Helper ────────────────────────────────────────────────────────────────────
+
+function maskSecret(value: string): string {
+  return `${'*'.repeat(Math.max(0, value.length - 4))}${value.slice(-4)}`;
+}
 
 async function upsertSetting(orgId: string, settingKey: string, value: string): Promise<void> {
   await prisma.appSetting.upsert({
