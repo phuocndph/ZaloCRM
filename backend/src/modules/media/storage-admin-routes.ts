@@ -6,18 +6,16 @@ import { config } from '../../config/index.js';
 import { authMiddleware } from '../auth/auth-middleware.js';
 import { requireGrant } from '../rbac/rbac-middleware.js';
 import { userHasGrant } from '../rbac/permission-group-service.js';
-import { deleteObjectFrom } from '../../shared/storage/minio-client.js';
 import { reconcileChatStorage } from './storage-reconciliation.js';
+import {
+  ALL_KINDS, CleanupExecuteError, cleanupWorkers, createCleanupPreview, executeCleanupRun,
+  parseCleanupBody, resolveTargets, serializeRows, startCleanupWorker, type FileKind, type TargetType,
+} from './storage-cleanup-service.js';
+import { normalizeScheduleInput, describeSchedule } from './storage-group-cleanup-cron.js';
 
-type FileKind = 'image' | 'video' | 'file' | 'audio';
-type TargetType = 'all' | 'account' | 'group';
-type SortBy = 'bytes' | 'files' | 'name';
-const ALL_KINDS: FileKind[] = ['image', 'video', 'file', 'audio'];
-const ALL_TARGETS: TargetType[] = ['all', 'account', 'group'];
-const PREVIEW_TTL_MS = 30 * 60_000;
-const PROCESSING_LEASE_MS = 10 * 60_000;
-const CLEANUP_BATCH = 100;
-const cleanupWorkers = new Set<string>();
+export { parseCleanupBody };
+
+type SortBy = 'bytes' | 'files' | 'name' | 'oldest';
 const reconciliationWorkers = new Set<string>();
 
 const n = (value: unknown) => Number(value ?? 0);
@@ -28,12 +26,6 @@ const DEFAULT_STORAGE_POLICY = {
   retentionFileKinds: [] as string[],
 };
 
-
-function serializeRows(rows: any[]) {
-  return rows.map((row) => Object.fromEntries(Object.entries(row).map(([key, value]) =>
-    [key, typeof value === 'bigint' ? Number(value) : value],
-  )));
-}
 
 function entitySelect() {
   return Prisma.sql`
@@ -73,7 +65,7 @@ async function requireStorageAdmin(request: FastifyRequest, reply: FastifyReply)
 function parsePaging(query: any) {
   const page = Math.max(1, parseInt(String(query.page || '1'), 10) || 1);
   const pageSize = Math.min(100, Math.max(10, parseInt(String(query.pageSize || '25'), 10) || 25));
-  const sort = (['bytes', 'files', 'name'].includes(query.sort) ? query.sort : 'bytes') as SortBy;
+  const sort = (['bytes', 'files', 'name', 'oldest'].includes(query.sort) ? query.sort : 'bytes') as SortBy;
   const search = String(query.search || '').trim().slice(0, 100);
   return { page, pageSize, skip: (page - 1) * pageSize, sort, search };
 }
@@ -81,63 +73,15 @@ function parsePaging(query: any) {
 function orderSql(sort: SortBy, nameColumn: string) {
   if (sort === 'name') return Prisma.raw(`${nameColumn} ASC`);
   if (sort === 'files') return Prisma.raw(`"files" DESC, ${nameColumn} ASC`);
+  if (sort === 'oldest') return Prisma.raw(`"oldestAt" ASC NULLS LAST, ${nameColumn} ASC`);
   return Prisma.raw(`"bytes" DESC, ${nameColumn} ASC`);
-}
-
-function kindSql(kinds: FileKind[]) {
-  return Prisma.join(kinds.map((kind) => Prisma.sql`${kind}`));
-}
-
-export function parseCleanupBody(value: unknown) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Dữ liệu yêu cầu không hợp lệ.');
-  const body = value as Record<string, unknown>;
-  const targetType = body.targetType;
-  if (typeof targetType !== 'string' || !ALL_TARGETS.includes(targetType as TargetType)) {
-    throw new Error('Phạm vi dọn dữ liệu không hợp lệ.');
-  }
-  if (!Array.isArray(body.fileKinds) || body.fileKinds.length === 0 || !body.fileKinds.every((kind) => typeof kind === 'string' && ALL_KINDS.includes(kind as FileKind))) {
-    throw new Error('Chọn ít nhất một loại dữ liệu hợp lệ.');
-  }
-  if (typeof body.beforeDate !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(body.beforeDate)) {
-    throw new Error('Chọn ngày xóa hợp lệ.');
-  }
-  const before = new Date(`${body.beforeDate}T00:00:00+07:00`);
-  if (Number.isNaN(before.getTime())) throw new Error('Chọn ngày xóa hợp lệ.');
-  return {
-    targetType: targetType as TargetType,
-    targetId: typeof body.targetId === 'string' ? body.targetId : undefined,
-    before,
-    kinds: [...new Set(body.fileKinds as FileKind[])],
-  };
-}
-
-async function resolveTarget(orgId: string, targetType: TargetType, targetId?: string) {
-  if (targetType === 'all') return { id: null, name: 'Toàn bộ hệ thống' };
-  if (!targetId) throw new Error('Cần chọn nhóm hoặc tài khoản.');
-  if (targetType === 'account') {
-    const account = await prisma.zaloAccount.findFirst({ where: { id: targetId, orgId }, select: { id: true, displayName: true, zaloUid: true } });
-    if (!account) throw new Error('Tài khoản Zalo không tồn tại trong tổ chức.');
-    return { id: account.id, name: account.displayName || account.zaloUid || 'Tài khoản Zalo' };
-  }
-  const group = await prisma.conversation.findFirst({
-    where: { orgId, threadType: 'group', OR: [{ id: targetId }, { externalThreadId: targetId }] },
-    select: { id: true, externalThreadId: true, groupName: true },
-  });
-  if (!group) throw new Error('Nhóm hội thoại Zalo không tồn tại trong tổ chức.');
-  return { id: group.externalThreadId || group.id, name: group.groupName || 'Nhóm chưa có tên' };
-}
-
-async function removeExpiredPreviews(orgId: string) {
-  await prisma.storageCleanupRun.deleteMany({
-    where: { orgId, status: { in: ['previewing', 'previewed'] }, expiresAt: { lt: new Date() } },
-  });
 }
 
 function formatRun(run: any) {
   return {
     ...run,
     bytesFreed: Number(run.bytesFreed),
-    performedByName: run.performedBy?.fullName || 'Người dùng đã xóa',
+    performedByName: run.trigger === 'schedule' ? 'Lịch tự dọn' : run.performedBy?.fullName || 'Người dùng đã xóa',
     performedBy: undefined,
   };
 }
@@ -154,109 +98,6 @@ async function cleanupProgress(run: any) {
     percent: total ? Math.round(processed / total * 100) : 100,
     workerActive: cleanupWorkers.has(run.id),
   };
-}
-
-async function processCleanupBatch(runId: string, orgId: string, retryFailed = false) {
-  const run = await prisma.storageCleanupRun.findFirst({ where: { id: runId, orgId } });
-  if (!run) throw new Error('Cleanup snapshot no longer exists.');
-  const staleBefore = new Date(Date.now() - PROCESSING_LEASE_MS);
-  await prisma.storageCleanupItem.updateMany({ where: { runId, status: { in: ['processing', 'deleting'] }, updatedAt: { lt: staleBefore } }, data: { status: 'pending', error: 'Recovered after an interrupted batch.' } });
-  if (retryFailed) await prisma.storageCleanupItem.updateMany({ where: { runId, status: 'failed' }, data: { status: 'pending', error: null } });
-  await prisma.storageCleanupRun.update({ where: { id: runId }, data: { status: 'running', startedAt: run.startedAt || new Date(), completedAt: null } });
-  const items = await prisma.$queryRaw<Array<{ id: string; objectId: string; referenceIds: string[]; objectKey: string; storageDriver: string; sizeBytes: bigint }>>(Prisma.sql`
-    WITH claimed AS (
-      SELECT id FROM storage_cleanup_object_items WHERE run_id=${runId} AND status='pending'
-      ORDER BY object_id FOR UPDATE SKIP LOCKED LIMIT ${CLEANUP_BATCH}
-    )
-    UPDATE storage_cleanup_object_items i SET status='processing', attempts=i.attempts+1, updated_at=NOW()
-    FROM claimed WHERE i.id=claimed.id
-    RETURNING i.id, i.object_id AS "objectId", i.reference_ids AS "referenceIds", i.object_key AS "objectKey",
-      i.storage_driver AS "storageDriver", i.size_bytes AS "sizeBytes"`);
-  let linksRemoved = 0; let objectsDeleted = 0; let bytesFreed = 0;
-  for (const item of items) {
-    try {
-      // Commit database intent before the external side effect. A storage delete must
-      // never occur inside this transaction, otherwise a DB rollback can resurrect
-      // metadata for a file that has already been physically removed.
-      const prepared = await prisma.$transaction(async (tx) => {
-        const locked = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`SELECT id FROM storage_objects WHERE id=${item.objectId} FOR UPDATE`);
-        if (!locked.length) return { protected: false, objectMissing: true, needsPhysicalDelete: false, links: 0 };
-        // A chat media object is durable history. Even an old cleanup snapshot
-        // must not remove references for a message still visible in chat.
-        const activeMessage = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-          SELECT m.id
-          FROM storage_object_references r
-          JOIN messages m ON m.id=r.message_id
-          WHERE r.object_id=${item.objectId}
-            AND r.source='chat_message'
-            AND m.is_deleted=false
-            AND m.hidden_at IS NULL
-            AND m.content_type IN ('image','video','file','gif','voice','audio')
-          LIMIT 1`);
-        if (activeMessage.length > 0) {
-          return { protected: true, objectMissing: false, needsPhysicalDelete: false, links: 0 };
-        }
-        const removed = await tx.storageObjectReference.deleteMany({ where: { id: { in: item.referenceIds }, orgId, source: 'chat_message' } });
-        const remaining = await tx.storageObjectReference.count({ where: { objectId: item.objectId } });
-        if (remaining > 0) return { protected: false, objectMissing: false, needsPhysicalDelete: false, links: removed.count };
-        await tx.storageCleanupItem.update({ where: { id: item.id }, data: { status: 'deleting', error: null } });
-        return { protected: false, objectMissing: false, needsPhysicalDelete: true, links: removed.count };
-      }, { maxWait: 10_000, timeout: 60_000 });
-      if (prepared.protected) {
-        await prisma.storageCleanupItem.update({ where: { id: item.id }, data: { status: 'protected', error: 'Chat media is retained while its message remains active.' } });
-        continue;
-      }
-      linksRemoved += prepared.links;
-      if (!prepared.needsPhysicalDelete) {
-        await prisma.storageCleanupItem.update({ where: { id: item.id }, data: { status: 'deleted', error: null } });
-        continue;
-      }
-      const driver = item.storageDriver === 'r2' ? 'r2' : 'local';
-      if (!await deleteObjectFrom(driver, item.objectKey)) throw new Error(`Unable to delete ${driver}:${item.objectKey}`);
-      // Finalize only after external deletion. A new reference is surfaced as a
-      // retryable inconsistency instead of silently deleting live metadata.
-      const finalized = await prisma.$transaction(async (tx) => {
-        const locked = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`SELECT id FROM storage_objects WHERE id=${item.objectId} FOR UPDATE`);
-        if (!locked.length) return { deleted: false, reason: 'metadata already removed' };
-        const remaining = await tx.storageObjectReference.count({ where: { objectId: item.objectId } });
-        if (remaining > 0) return { deleted: false, reason: 'new references were created after the storage object was removed' };
-        await tx.storageObject.delete({ where: { id: item.objectId } });
-        return { deleted: true, reason: '' };
-      }, { maxWait: 10_000, timeout: 60_000 });
-      if (!finalized.deleted) throw new Error(`Storage object deleted but metadata finalization failed: ${finalized.reason}`);
-      await prisma.storageCleanupItem.update({ where: { id: item.id }, data: { status: 'deleted', error: null } });
-      objectsDeleted += 1; bytesFreed += Number(item.sizeBytes);
-    } catch (err: any) {
-      await prisma.storageCleanupItem.update({ where: { id: item.id }, data: { status: 'failed', error: String(err?.message || err).slice(0, 1000) } });
-    }
-  }
-  const grouped = await prisma.storageCleanupItem.groupBy({ by: ['status'], where: { runId }, _count: { _all: true } });
-  const counts = Object.fromEntries(grouped.map((row) => [row.status, row._count._all])) as Record<string, number>;
-  const waiting = (counts.pending || 0) + (counts.processing || 0) + (counts.deleting || 0);
-  const failed = counts.failed || 0;
-  const status = waiting ? 'running' : failed ? 'partial' : 'completed';
-  const errors = failed ? await prisma.storageCleanupItem.findMany({ where: { runId, status: 'failed' }, take: 20, select: { objectKey: true, error: true, attempts: true } }) : [];
-  const updated = await prisma.storageCleanupRun.update({ where: { id: runId }, data: {
-    status, assetsDeleted: { increment: linksRemoved }, objectsDeleted: { increment: objectsDeleted }, bytesFreed: { increment: BigInt(bytesFreed) },
-    failedCount: failed, errorSummary: errors, ...(waiting ? {} : { completedAt: new Date() }),
-  } });
-  return { run: updated, hasMore: waiting > 0 };
-}
-
-function startCleanupWorker(runId: string, orgId: string, retryFailed = false) {
-  if (cleanupWorkers.has(runId)) return;
-  cleanupWorkers.add(runId);
-  void (async () => {
-    try {
-      let result = await processCleanupBatch(runId, orgId, retryFailed);
-      while (result.hasMore) {
-        await new Promise((resolve) => setTimeout(resolve, 25));
-        result = await processCleanupBatch(runId, orgId, false);
-      }
-    } catch (err: any) {
-      await prisma.storageCleanupRun.update({ where: { id: runId }, data: { status: 'failed', completedAt: new Date(), errorSummary: { message: String(err?.message || err).slice(0, 1000) } } }).catch(() => {});
-    } finally { cleanupWorkers.delete(runId); }
-  })();
 }
 
 function startReconciliationWorker(runId: string, orgId: string) {
@@ -386,9 +227,12 @@ export async function storageAdminRoutes(app: FastifyInstance) {
         ) SELECT *, COUNT(*) OVER()::bigint AS total FROM agg ORDER BY ${orderSql(sort, 'name')} LIMIT ${pageSize} OFFSET ${skip}`);
       return { items: serializeRows(rows), total: n(rows[0]?.total), page, pageSize };
     }
+    // Every Zalo group of the org (also the ones without media), paged, with
+    // GB and the date of the oldest chat media reference (the cleanup cutoff
+    // compares reference dates), plus the nightly schedule state if any.
     const rows = await prisma.$queryRaw<any[]>(Prisma.sql`
       WITH refs AS (
-        SELECT COALESCE(c.external_thread_id,c.id) AS entity_id, r.zalo_account_id,
+        SELECT COALESCE(c.external_thread_id,c.id) AS entity_id, r.zalo_account_id, r.created_at AS ref_created_at,
                o.id AS object_id, o.size_bytes, o.file_type
         FROM storage_object_references r
         JOIN storage_objects o ON o.id=r.object_id
@@ -397,17 +241,24 @@ export async function storageAdminRoutes(app: FastifyInstance) {
       ), s AS (
         SELECT DISTINCT entity_id, object_id, size_bytes, file_type FROM refs
       ), a AS (
-        SELECT entity_id, COUNT(DISTINCT zalo_account_id)::bigint AS account_count FROM refs GROUP BY entity_id
+        SELECT entity_id, COUNT(DISTINCT zalo_account_id)::bigint AS account_count,
+               MIN(ref_created_at) AS oldest_at, MAX(ref_created_at) AS newest_at
+        FROM refs GROUP BY entity_id
       ), g AS (
         SELECT COALESCE(external_thread_id,id) AS id, COALESCE(MAX(group_name),'Nhóm chưa có tên') AS name
         FROM conversations WHERE org_id=${orgId} AND "threadType"='group' GROUP BY COALESCE(external_thread_id,id)
       ), agg AS (
-        SELECT g.id, g.name, COALESCE(a.account_count,0)::bigint AS "accountCount", ${entitySelect()}
+        SELECT g.id, g.name, COALESCE(a.account_count,0)::bigint AS "accountCount",
+               a.oldest_at AS "oldestAt", a.newest_at AS "newestAt", ${entitySelect()}
         FROM g LEFT JOIN s ON s.entity_id=g.id LEFT JOIN a ON a.entity_id=g.id
-        WHERE (${search}='' OR g.name ILIKE ${pattern})
-        GROUP BY g.id,g.name,a.account_count
-      ) SELECT *, COUNT(*) OVER()::bigint AS total FROM agg ORDER BY ${orderSql(sort, 'name')} LIMIT ${pageSize} OFFSET ${skip}`);
-    return { items: serializeRows(rows), total: n(rows[0]?.total), page, pageSize };
+        WHERE (${search}='' OR g.name ILIKE ${pattern} OR g.id ILIKE ${pattern})
+        GROUP BY g.id,g.name,a.account_count,a.oldest_at,a.newest_at
+      ) SELECT agg.*, COUNT(*) OVER()::bigint AS total,
+               sch.enabled AS "scheduleEnabled", sch.retention_days AS "scheduleRetentionDays"
+        FROM agg LEFT JOIN storage_group_cleanup_schedules sch ON sch.org_id=${orgId} AND sch.group_id=agg.id
+        ORDER BY ${orderSql(sort, 'name')} LIMIT ${pageSize} OFFSET ${skip}`);
+    const items = serializeRows(rows).map((row) => ({ ...row, gb: Math.round(Number(row.bytes || 0) / 1024 ** 3 * 100) / 100, total: undefined }));
+    return { items, total: n(rows[0]?.total), page, pageSize };
   });
 
   app.get('/api/v1/media/storage/history', { preHandler: requireGrant('media', 'view_all') }, async (request, reply) => {
@@ -442,7 +293,8 @@ export async function storageAdminRoutes(app: FastifyInstance) {
     const params = request.params as { entity: string; id: string };
     const targetType: TargetType = params.entity === 'group' ? 'group' : 'account';
     try {
-      const target = await resolveTarget(principal.orgId, targetType, params.id);
+      const resolved = await resolveTargets(principal.orgId, targetType, [params.id]);
+      const target = { id: resolved.ids[0], name: resolved.name };
       const scope = targetType === 'group'
         ? Prisma.sql`EXISTS (SELECT 1 FROM conversations c WHERE c.id=r.conversation_id AND c.org_id=${principal.orgId} AND c."threadType"='group' AND (c.external_thread_id=${target.id} OR c.id=${target.id}))`
         : Prisma.sql`r.zalo_account_id=${target.id}`;
@@ -477,70 +329,11 @@ export async function storageAdminRoutes(app: FastifyInstance) {
   });
   app.post('/api/v1/media/storage/preview-cleanup', { preHandler: requireGrant('media', 'view_all') }, async (request, reply) => {
     const principal = await requireStorageAdmin(request, reply); if (!principal) return;
-    let runId: string | null = null;
     try {
-      await removeExpiredPreviews(principal.orgId);
-      const { targetType, targetId, before, kinds } = parseCleanupBody(request.body);
-      const target = await resolveTarget(principal.orgId, targetType, targetId);
-      const run = await prisma.storageCleanupRun.create({ data: {
-        orgId: principal.orgId, performedById: principal.userId, targetType, targetId: target.id,
-        targetName: target.name, beforeDate: before, fileKinds: kinds, status: 'previewing',
-        expiresAt: new Date(Date.now() + PREVIEW_TTL_MS),
-      } });
-      runId = run.id;
-      const targetCondition = targetType === 'account'
-        ? Prisma.sql`AND r.zalo_account_id=${target.id}`
-        : targetType === 'group'
-          ? Prisma.sql`AND EXISTS (SELECT 1 FROM conversations gc WHERE gc.id=r.conversation_id AND gc.org_id=${principal.orgId} AND gc."threadType"='group' AND (gc.external_thread_id=${target.id} OR gc.id=${target.id}))`
-          : Prisma.empty;
-      await prisma.$executeRaw(Prisma.sql`
-        WITH selected AS (
-          SELECT o.id AS object_id, o.object_key, o.storage_driver, o.size_bytes, o.file_type,
-                 ARRAY_AGG(r.id ORDER BY r.id) AS reference_ids
-          FROM storage_object_references r JOIN storage_objects o ON o.id=r.object_id
-          WHERE r.org_id=${principal.orgId} AND r.source='chat_message' AND r.created_at < ${before}
-            AND NOT EXISTS (
-              SELECT 1
-              FROM storage_object_references protected_ref
-              JOIN messages protected_message ON protected_message.id=protected_ref.message_id
-              WHERE protected_ref.object_id=o.id
-                AND protected_ref.source='chat_message'
-                AND protected_message.is_deleted=false
-                AND protected_message.hidden_at IS NULL
-                AND protected_message.content_type IN ('image','video','file','gif','voice','audio')
-            )
-            AND o.file_type IN (${kindSql(kinds)}) ${targetCondition}
-          GROUP BY o.id,o.object_key,o.storage_driver,o.size_bytes,o.file_type
-        )
-        INSERT INTO storage_cleanup_object_items
-          (id,run_id,object_id,reference_ids,object_key,storage_driver,size_bytes,file_type,status,attempts,updated_at)
-        SELECT gen_random_uuid()::text, ${run.id}, object_id, reference_ids, object_key, storage_driver,
-               size_bytes, file_type, 'pending', 0, NOW()
-        FROM selected ON CONFLICT (run_id,object_id) DO NOTHING`);
-      const rows = await prisma.$queryRaw<any[]>(Prisma.sql`
-        SELECT COUNT(*)::bigint AS files,
-          COALESCE(SUM(cardinality(i.reference_ids)),0)::bigint AS "linksToRemove",
-          COUNT(*) FILTER (WHERE NOT EXISTS (
-            SELECT 1 FROM storage_object_references r WHERE r.object_id=i.object_id AND NOT (r.id=ANY(i.reference_ids))
-          ))::bigint AS "objectsToDelete",
-          COALESCE(SUM(i.size_bytes) FILTER (WHERE NOT EXISTS (
-            SELECT 1 FROM storage_object_references r WHERE r.object_id=i.object_id AND NOT (r.id=ANY(i.reference_ids))
-          )),0)::bigint AS bytes,
-          COALESCE(SUM(i.size_bytes),0)::bigint AS "selectedBytes",
-          COUNT(*) FILTER (WHERE i.file_type='image')::bigint AS image,
-          COUNT(*) FILTER (WHERE i.file_type='video')::bigint AS video,
-          COUNT(*) FILTER (WHERE i.file_type='file')::bigint AS file,
-          COUNT(*) FILTER (WHERE i.file_type='audio')::bigint AS audio,
-          COUNT(*) FILTER (WHERE EXISTS (
-            SELECT 1 FROM storage_object_references r WHERE r.object_id=i.object_id AND NOT (r.id=ANY(i.reference_ids))
-          ))::bigint AS shared,
-          COALESCE(SUM((SELECT COUNT(*) FROM storage_object_references r WHERE r.object_id=i.object_id AND NOT (r.id=ANY(i.reference_ids)))),0)::bigint AS "linksKept"
-        FROM storage_cleanup_object_items i WHERE i.run_id=${run.id}`);
-      const breakdown = serializeRows(rows)[0] || { files: 0, linksToRemove: 0, objectsToDelete: 0, bytes: 0, selectedBytes: 0, image: 0, video: 0, file: 0, audio: 0, shared: 0, linksKept: 0 };
-      await prisma.storageCleanupRun.update({ where: { id: run.id }, data: { status: 'previewed', breakdown } });
-      return { runId: run.id, expiresAt: run.expiresAt, ...breakdown };
+      // Accepts targetIds[] (several groups at once) and includeVisible.
+      const parsed = parseCleanupBody(request.body);
+      return await createCleanupPreview({ ...parsed, orgId: principal.orgId, performedById: principal.userId, trigger: 'manual' });
     } catch (err: any) {
-      if (runId) await prisma.storageCleanupRun.update({ where: { id: runId }, data: { status: 'failed', errorSummary: { message: String(err?.message || err).slice(0, 1000) }, completedAt: new Date() } }).catch(() => {});
       return reply.status(400).send({ error: err?.message || 'Không tạo được bản xem trước.' });
     }
   });
@@ -573,13 +366,45 @@ export async function storageAdminRoutes(app: FastifyInstance) {
     const principal = await requireStorageAdmin(request, reply); if (!principal) return;
     const body = request.body as { runId?: unknown; confirm?: unknown; retryFailed?: unknown } | null;
     if (!body || body.confirm !== true || typeof body.runId !== 'string' || !body.runId) return reply.status(400).send({ error: 'Missing cleanup snapshot confirmation.' });
-    const run = await prisma.storageCleanupRun.findFirst({ where: { id: body.runId, orgId: principal.orgId }, include: { performedBy: { select: { fullName: true } } } });
-    if (!run) return reply.status(404).send({ error: 'Cleanup snapshot not found.' });
-    if (run.expiresAt && run.expiresAt < new Date() && run.status === 'previewed') return reply.status(410).send({ error: 'Cleanup preview has expired. Create a new preview.' });
-    if (!['previewed', 'running', 'partial'].includes(run.status)) return reply.status(409).send({ error: run.status === 'completed' ? 'This cleanup already completed.' : 'This cleanup cannot be executed.' });
-    await prisma.storageCleanupRun.update({ where: { id: run.id }, data: { status: 'running', startedAt: run.startedAt || new Date(), completedAt: null } });
-    startCleanupWorker(run.id, principal.orgId, body.retryFailed === true);
-    const updated = await prisma.storageCleanupRun.findUniqueOrThrow({ where: { id: run.id }, include: { performedBy: { select: { fullName: true } } } });
+    // The snapshot already carries targetIds[] and includeVisible from preview;
+    // execute never widens the scope, it only runs the reviewed snapshot.
+    try {
+      await executeCleanupRun({ runId: body.runId, orgId: principal.orgId, retryFailed: body.retryFailed === true });
+    } catch (err: any) {
+      if (err instanceof CleanupExecuteError) return reply.status(err.statusCode).send({ error: err.message });
+      throw err;
+    }
+    const updated = await prisma.storageCleanupRun.findUniqueOrThrow({ where: { id: body.runId }, include: { performedBy: { select: { fullName: true } } } });
     return { accepted: true, run: await cleanupProgress(updated) };
+  });
+
+  // Per-group nightly cleanup schedules. Created disabled; the owner enables
+  // each group after reviewing a preview. The worker runs ~02:00 Asia/Ho_Chi_Minh.
+  app.get('/api/v1/media/storage/group-schedules', { preHandler: requireGrant('media', 'view_all') }, async (request, reply) => {
+    const principal = await requireStorageAdmin(request, reply); if (!principal) return;
+    const items = await prisma.storageGroupCleanupSchedule.findMany({ where: { orgId: principal.orgId }, orderBy: [{ enabled: 'desc' }, { groupName: 'asc' }] });
+    return { items: items.map(describeSchedule) };
+  });
+  app.put('/api/v1/media/storage/group-schedules/:groupId', { preHandler: requireGrant('media', 'view_all') }, async (request, reply) => {
+    const principal = await requireStorageAdmin(request, reply); if (!principal) return;
+    try {
+      const groupId = (request.params as { groupId: string }).groupId;
+      const target = await resolveTargets(principal.orgId, 'group', [groupId]);
+      const data = normalizeScheduleInput(request.body);
+      const saved = await prisma.storageGroupCleanupSchedule.upsert({
+        where: { orgId_groupId: { orgId: principal.orgId, groupId: target.ids[0] } },
+        create: { orgId: principal.orgId, groupId: target.ids[0], groupName: target.name, ...data },
+        update: { groupName: target.name, ...data },
+      });
+      return describeSchedule(saved);
+    } catch (err: any) {
+      return reply.status(400).send({ error: err?.message || 'Không lưu được lịch dọn.' });
+    }
+  });
+  app.delete('/api/v1/media/storage/group-schedules/:groupId', { preHandler: requireGrant('media', 'view_all') }, async (request, reply) => {
+    const principal = await requireStorageAdmin(request, reply); if (!principal) return;
+    const groupId = (request.params as { groupId: string }).groupId;
+    const removed = await prisma.storageGroupCleanupSchedule.deleteMany({ where: { orgId: principal.orgId, groupId } });
+    return { deleted: removed.count };
   });
 }

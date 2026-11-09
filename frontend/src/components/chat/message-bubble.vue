@@ -772,7 +772,19 @@ const deliverySyncLabel = computed<string | null>(() => {
   }
   return null;
 });
+// R2 cleanup 2026-11-09: media removed by "xoá cả tin đang hiển thị" keeps the
+// message row and sets metadata.mediaPurged, so show a placeholder, not a broken image.
+const mediaPurgedLabel = computed<string | null>(() => {
+  const purged = (props.message.metadata as { mediaPurged?: { at?: string } } | null | undefined)?.mediaPurged;
+  if (!purged) return null;
+  const type = props.message.contentType;
+  if (type === 'video') return 'Video đã được dọn';
+  if (type === 'file') return 'Tệp đã được dọn';
+  if (type === 'voice' || type === 'audio') return 'Ghi âm đã được dọn';
+  return 'Ảnh đã được dọn';
+});
 const attachmentPlaceholderLabel = computed<string | null>(() => {
+  if (mediaPurgedLabel.value) return mediaPurgedLabel.value;
   if (!['image', 'video', 'file'].includes(props.message.contentType)) return null;
   const hasMedia = props.message.contentType === 'image'
     ? !!getImageUrl(props.message)
@@ -787,7 +799,9 @@ const attachmentDisplayName = computed(() => {
   try { return String(JSON.parse(props.message.content || '{}').name || ''); }
   catch { return ''; }
 });
-const attachmentPlaceholderIcon = computed(() => props.message.contentType === 'image'
+const attachmentPlaceholderIcon = computed(() => mediaPurgedLabel.value
+  ? 'mdi-broom'
+  : props.message.contentType === 'image'
   ? 'mdi-image-outline'
   : props.message.contentType === 'video' ? 'mdi-video-outline' : 'mdi-file-document-outline');
 

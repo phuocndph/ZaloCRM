@@ -33,9 +33,10 @@
         </button>
       </nav>
 
+      <div v-if="activeRun" class="progress-box"><div><b>Job {{ statusLabel(activeRun.status) }}: {{ activeRun.percent }}%</b><small>{{ number(activeRun.processedItems) }} / {{ number(activeRun.totalItems) }} object · giải phóng {{ size(activeRun.bytesFreed) }}</small></div><div class="progress-track"><i :style="{ width: `${activeRun.percent}%` }" /></div><button v-if="activeRun.status === 'partial'" class="secondary" @click="retryFailed">Thử lại file lỗi</button></div>
       <section v-if="tab === 'overview'" class="dashboard">
         <div class="dashboard-grid">
-          <div class="panel"><h3>10 nhóm dùng nhiều nhất</h3><RankTable :rows="overview.topGroups" name-label="Nhóm hội thoại" entity="group" @open="openEntity('group', $event)" /></div>
+          <div class="panel"><div class="panel-head"><h3>10 nhóm dùng nhiều nhất</h3><button class="link-button" @click="openTab('groups')">Xem tất cả nhóm</button></div><RankTable :rows="overview.topGroups" name-label="Nhóm hội thoại" entity="group" @open="openEntity('group', $event)" /></div>
           <div class="panel"><h3>10 tài khoản dùng nhiều nhất</h3><RankTable :rows="overview.topAccounts" name-label="Tài khoản Zalo" entity="account" @open="openEntity('account', $event)" /></div>
         </div>
         <div class="dashboard-grid lower">
@@ -56,25 +57,37 @@
           <h3>{{ tab === 'groups' ? 'Danh sách nhóm hội thoại Zalo' : 'Danh sách tài khoản Zalo' }}</h3>
           <div class="filters">
             <label class="search-field"><Search :size="15" /><input v-model="entitySearch" :placeholder="tab === 'groups' ? 'Tìm tên nhóm' : 'Tìm tên hoặc UID'" @keyup.enter="searchEntities" /></label>
-            <select v-model="entitySort" @change="searchEntities"><option value="bytes">Dung lượng giảm dần</option><option value="files">Số file giảm dần</option><option value="name">Tên A-Z</option></select>
+            <select v-model="entitySort" @change="searchEntities"><option value="bytes">Dung lượng giảm dần</option><option value="files">Số file giảm dần</option><option value="oldest">File cũ nhất trước</option><option value="name">Tên A-Z</option></select>
           </div>
         </div>
-        <div class="table-scroll"><table><thead><tr><th>{{ tab === 'groups' ? 'Nhóm' : 'Tài khoản / UID' }}</th><th v-if="tab === 'groups'">Số tài khoản</th><th>Dung lượng</th><th>Số file</th><th>Ảnh</th><th>Video</th><th>File</th><th>Ghi âm</th></tr></thead><tbody><tr v-for="row in entityRows" :key="row.id" class="click-row" @click="openEntity(tab === 'groups' ? 'group' : 'account', row.id)"><td><b>{{ row.name }}</b><small v-if="'uid' in row">{{ row.uid }}</small></td><td v-if="tab === 'groups'">{{ number((row as StorageGroupRow).accountCount) }}</td><td>{{ size(row.bytes) }}</td><td>{{ number(row.files) }}</td><td>{{ number(row.image) }}</td><td>{{ number(row.video) }}</td><td>{{ number(row.file) }}</td><td>{{ number(row.audio) }}</td></tr><tr v-if="!entityRows.length"><td :colspan="tab === 'groups' ? 8 : 7" class="empty-cell">Không có dữ liệu phù hợp.</td></tr></tbody></table></div>
+        <div class="table-scroll"><table><thead><tr><th>{{ tab === 'groups' ? 'Nhóm' : 'Tài khoản / UID' }}</th><th v-if="tab === 'groups'">Số tài khoản</th><th>Dung lượng</th><th>Số file</th><th>Ảnh</th><th>Video</th><th>File</th><th>Ghi âm</th><th v-if="tab === 'groups'">File cũ nhất</th><th v-if="tab === 'groups'">Lịch tự dọn</th></tr></thead><tbody><tr v-for="row in entityRows" :key="row.id" class="click-row" @click="openEntity(tab === 'groups' ? 'group' : 'account', row.id)"><td><b>{{ row.name }}</b><small v-if="'uid' in row">{{ row.uid }}</small></td><td v-if="tab === 'groups'">{{ number((row as StorageGroupRow).accountCount) }}</td><td>{{ size(row.bytes) }}</td><td>{{ number(row.files) }}</td><td>{{ number(row.image) }}</td><td>{{ number(row.video) }}</td><td>{{ number(row.file) }}</td><td>{{ number(row.audio) }}</td><td v-if="tab === 'groups'">{{ day((row as StorageGroupRow).oldestAt) }}</td><td v-if="tab === 'groups'">{{ scheduleBadge(row as StorageGroupRow) }}</td></tr><tr v-if="!entityRows.length"><td :colspan="tab === 'groups' ? 10 : 7" class="empty-cell">Không có dữ liệu phù hợp.</td></tr></tbody></table></div>
         <Pager :page="entityPage" :pages="entityPages" :total="entityTotal" @change="changeEntityPage" />
       </section>
 
       <section v-else-if="tab === 'cleanup'" class="panel cleanup-panel">
         <div class="section-title"><h3>Dọn media tự lưu từ hội thoại</h3><ShieldCheck :size="22" /></div>
         <div class="cleanup-form">
-          <label>Phạm vi<select v-model="targetType" :disabled="executing"><option value="all">Toàn bộ hệ thống</option><option value="group">Một nhóm hội thoại</option><option value="account">Một tài khoản Zalo</option></select></label>
-          <label v-if="targetType !== 'all'">Tìm {{ targetType === 'group' ? 'nhóm' : 'tài khoản' }}<input v-model="selectorSearch" :placeholder="targetType === 'group' ? 'Tên nhóm' : 'Tên hoặc UID'" :disabled="executing" /></label>
-          <label v-if="targetType === 'group'">Nhóm<select v-model="targetId" :disabled="executing"><option value="">Chọn nhóm</option><option v-for="row in selectorGroups" :key="row.id" :value="row.id">{{ row.name }}</option></select></label>
+          <label>Phạm vi<select v-model="targetType" :disabled="executing"><option value="all">Toàn bộ hệ thống</option><option value="group">Chọn nhóm hội thoại (một hoặc nhiều)</option><option value="account">Một tài khoản Zalo</option></select></label>
+          <label v-if="targetType === 'account'">Tìm tài khoản<input v-model="selectorSearch" placeholder="Tên hoặc UID" :disabled="executing" /></label>
           <label v-if="targetType === 'account'">Tài khoản<select v-model="targetId" :disabled="executing"><option value="">Chọn tài khoản</option><option v-for="row in selectorAccounts" :key="row.id" :value="row.id">{{ row.name }} · {{ row.uid }}</option></select></label>
           <label>Xóa dữ liệu trước ngày<input v-model="beforeDate" type="date" :disabled="executing" /></label>
         </div>
+        <div v-if="targetType === 'group'" class="group-picker">
+          <div class="picker-head">
+            <label class="search-field"><Search :size="15" /><input v-model="pickerSearch" placeholder="Tìm tên nhóm hoặc mã nhóm" :disabled="executing" /></label>
+            <select v-model="pickerSort" :disabled="executing"><option value="bytes">Dung lượng giảm dần</option><option value="oldest">File cũ nhất trước</option><option value="files">Số file giảm dần</option><option value="name">Tên A-Z</option></select>
+            <span class="picker-count">Đã chọn <b>{{ number(selectedGroupIds.length) }}</b> nhóm · {{ size(selectedGroupBytes) }}</span>
+            <button v-if="selectedGroupIds.length" class="secondary" :disabled="executing" @click="clearGroupSelection">Bỏ chọn tất cả</button>
+          </div>
+          <div class="table-scroll picker-table"><table><thead><tr><th><input type="checkbox" title="Chọn cả trang" :checked="allPageSelected" :disabled="executing || !pickerRows.length" @change="togglePage" /></th><th>Nhóm</th><th>Dung lượng</th><th>Số file</th><th>File cũ nhất</th><th>Lịch tự dọn</th></tr></thead><tbody><tr v-for="row in pickerRows" :key="row.id" class="click-row" :class="{ picked: isPicked(row.id) }" @click="toggleGroup(row)"><td><input type="checkbox" :checked="isPicked(row.id)" :disabled="executing" @click.stop="toggleGroup(row)" /></td><td><b>{{ row.name }}</b></td><td>{{ gb(row.bytes) }}</td><td>{{ number(row.files) }}</td><td>{{ day(row.oldestAt) }}</td><td>{{ scheduleBadge(row) }}</td></tr><tr v-if="!pickerRows.length"><td colspan="6" class="empty-cell">Không có nhóm phù hợp.</td></tr></tbody></table></div>
+          <Pager :page="pickerPage" :pages="pickerPages" :total="pickerTotal" @change="changePickerPage" />
+        </div>
         <div class="kind-options"><label v-for="kind in kinds" :key="kind.value"><input v-model="fileKinds" type="checkbox" :value="kind.value" :disabled="executing" /><component :is="kind.icon" :size="16" />{{ kind.label }}</label></div>
+        <label v-if="targetType === 'group'" class="visible-option"><input v-model="includeVisible" type="checkbox" :disabled="executing" />Xoá cả ảnh, file của tin nhắn ĐANG HIỂN THỊ trong các nhóm đã chọn</label>
+        <div v-if="targetType === 'group' && includeVisible" class="warning"><AlertTriangle :size="16" />Tin nhắn vẫn được giữ, chỉ phần ảnh/file bị xoá vĩnh viễn và hiện dòng "Ảnh đã được dọn". Ảnh dùng chung với hội thoại ngoài các nhóm đã chọn vẫn được giữ.</div>
         <button class="primary" :disabled="!validCleanup || previewing || executing" @click="createPreview"><Search :size="16" />{{ previewing ? 'Đang lập snapshot...' : 'Thống kê trước khi xóa' }}</button>
         <div v-if="previewData" class="preview-box">
+          <p class="preview-scope"><b>{{ previewData.targetName || 'Toàn bộ hệ thống' }}</b> · {{ number(previewData.files) }} file · {{ gbNumber(previewData.gb, previewData.bytes) }} GB<span v-if="previewData.includeVisible"> · gồm {{ number(previewData.visibleMessages || 0) }} tin nhắn đang hiển thị sẽ hiện "Ảnh đã được dọn"</span></p>
           <div class="preview-summary"><div><span>Liên kết chat bị gỡ</span><b>{{ number(previewData.linksToRemove) }}</b></div><div><span>Object xóa vật lý</span><b>{{ number(previewData.objectsToDelete) }}</b></div><div><span>Dung lượng chắc chắn giải phóng</span><b>{{ size(previewData.bytes) }}</b></div><div><span>Loại dữ liệu</span><b class="breakdown">{{ previewData.image }} ảnh · {{ previewData.video }} video · {{ previewData.file }} tệp · {{ previewData.audio }} ghi âm</b></div></div>
           <p class="shared-note">{{ number(previewData.shared || 0) }} object vẫn còn liên kết ngoài phạm vi; chúng chỉ bị gỡ link chat, không xóa bytes. {{ number(previewData.linksKept) }} liên kết được giữ lại.</p>
           <div class="confirm-row"><label>Nhập <b>XOA</b> để xác nhận<input v-model="confirmText" autocomplete="off" placeholder="XOA" :disabled="executing" /></label><button class="danger" :disabled="confirmText !== 'XOA' || executing" @click="executePreview()"><Trash2 :size="16" />{{ executing ? `Đang xử lý ${number(progressDeleted)} object...` : 'Xóa vĩnh viễn' }}</button></div>
@@ -82,23 +95,37 @@
         </div>
       </section>
 
-      <div v-if="activeRun" class="progress-box"><div><b>Job {{ statusLabel(activeRun.status) }}: {{ activeRun.percent }}%</b><small>{{ number(activeRun.processedItems) }} / {{ number(activeRun.totalItems) }} object · giải phóng {{ size(activeRun.bytesFreed) }}</small></div><div class="progress-track"><i :style="{ width: `${activeRun.percent}%` }" /></div><button v-if="activeRun.status === 'partial'" class="secondary" @click="retryFailed">Thử lại file lỗi</button></div>
       <section v-else-if="tab === 'history'" class="panel history-panel">
         <div class="table-head"><h3>Lịch sử dọn dung lượng</h3><label class="search-field"><Search :size="15" /><input v-model="historySearch" placeholder="Tìm phạm vi hoặc người thực hiện" @keyup.enter="searchHistory" /></label></div>
         <div class="table-scroll"><table><thead><tr><th>Thời gian</th><th>Phạm vi</th><th>Người thực hiện</th><th>Trạng thái</th><th>Đã xử lý</th><th>Giải phóng</th><th>Lỗi</th></tr></thead><tbody><tr v-for="run in historyRows" :key="run.id" class="click-row" @click="openHistory(run.id)"><td>{{ dateTime(run.createdAt) }}</td><td>{{ run.targetName || run.targetType }}</td><td>{{ run.performedByName }}</td><td><span class="status" :class="run.status">{{ statusLabel(run.status) }}</span></td><td>{{ number(run.assetsDeleted) }}</td><td>{{ size(run.bytesFreed) }}</td><td>{{ run.failedCount }}</td></tr><tr v-if="!historyRows.length"><td colspan="7" class="empty-cell">Chưa có lần dọn nào.</td></tr></tbody></table></div>
         <Pager :page="historyPage" :pages="historyPages" :total="historyTotal" @change="changeHistoryPage" />
       </section>
-      <section v-else class="panel policy-panel"><div class="section-title"><div><h3>Cảnh báo và retention</h3><small>Retention chỉ tạo điều kiện preview; không tự động xóa dữ liệu chat.</small></div><Settings2 :size="22" /></div><div class="policy-grid"><label>Cảnh báo quota (%)<input v-model.number="policyForm.quotaAlertPercent" type="number" min="1" max="100" /></label><label>Tăng trưởng bất thường (lần)<input v-model.number="policyForm.anomalyMultiplier" type="number" min="1" max="10" step="0.1" /></label><label>Retention gợi ý (ngày, 0 = tắt)<input v-model.number="policyForm.retentionDays" type="number" min="0" max="3650" /></label></div><div class="kind-options"><label v-for="kind in kinds" :key="kind.value"><input v-model="policyForm.retentionFileKinds" type="checkbox" :value="kind.value" /><component :is="kind.icon" :size="16" />{{ kind.label }}</label></div><button class="secondary" @click="savePolicy"><Save :size="16" />Lưu ngưỡng</button><button class="primary" :disabled="!policyForm.retentionDays" @click="prepareRetention">Tạo preview theo retention</button></section>    <aside v-if="entityDetail" class="storage-drawer"><button class="icon-button close-drawer" @click="entityDetail = undefined"><X :size="16" /></button><small>{{ entityDetail.target.type === 'group' ? 'Nhóm hội thoại' : 'Tài khoản Zalo' }}</small><h3>{{ entityDetail.target.name }}</h3><div class="drawer-stats"><div><span>Dung lượng</span><b>{{ size(entityDetail.summary.bytes) }}</b></div><div><span>Object</span><b>{{ number(entityDetail.summary.files) }}</b></div></div><div class="drawer-list"><div v-for="row in entityDetail.fileTypes" :key="row.type"><span>{{ kindLabel(row.type) }}</span><b>{{ number(row.files) }} · {{ size(row.bytes) }}</b></div></div><small>Cũ nhất: {{ dateTime(entityDetail.range?.oldestAt) }} · Mới nhất: {{ dateTime(entityDetail.range?.newestAt) }}</small><button class="primary drawer-action" @click="useEntityForCleanup"><Trash2 :size="16" />Tạo preview dọn theo mục này</button></aside>
+      <section v-else class="panel policy-panel"><div class="section-title"><div><h3>Cảnh báo và retention</h3><small>Retention chỉ tạo điều kiện preview; không tự động xóa dữ liệu chat.</small></div><Settings2 :size="22" /></div><div class="policy-grid"><label>Cảnh báo quota (%)<input v-model.number="policyForm.quotaAlertPercent" type="number" min="1" max="100" /></label><label>Tăng trưởng bất thường (lần)<input v-model.number="policyForm.anomalyMultiplier" type="number" min="1" max="10" step="0.1" /></label><label>Retention gợi ý (ngày, 0 = tắt)<input v-model.number="policyForm.retentionDays" type="number" min="0" max="3650" /></label></div><div class="kind-options"><label v-for="kind in kinds" :key="kind.value"><input v-model="policyForm.retentionFileKinds" type="checkbox" :value="kind.value" /><component :is="kind.icon" :size="16" />{{ kind.label }}</label></div><button class="secondary" @click="savePolicy"><Save :size="16" />Lưu ngưỡng</button><button class="primary" :disabled="!policyForm.retentionDays" @click="prepareRetention">Tạo preview theo retention</button>
+        <div class="schedule-block">
+          <div class="section-title"><div><h3>Lịch tự dọn theo nhóm</h3><small>Chạy lúc 02:00 giờ Việt Nam. Mỗi lần chạy đi qua đúng bước thống kê rồi xoá như khi bấm tay, và ghi vào tab Lịch sử. Lịch mới luôn ở trạng thái TẮT.</small></div><CalendarClock :size="22" /></div>
+          <div class="schedule-form">
+            <label>Tìm nhóm<input v-model="scheduleSearch" placeholder="Tên nhóm" /></label>
+            <div class="schedule-picked"><span>Đã chọn <b>{{ scheduleGroupIds.length }}</b> nhóm</span><button v-if="scheduleGroupIds.length" class="link-button" @click="scheduleForm.groups = {}">Bỏ chọn</button></div>
+            <label>Giữ lại (ngày)<input v-model.number="scheduleForm.retentionDays" type="number" min="1" max="3650" /></label>
+          </div>
+          <div class="table-scroll picker-table schedule-picker"><table><thead><tr><th><input type="checkbox" title="Chọn cả trang" :checked="allSchedulePageSelected" :disabled="!scheduleOptions.length" @change="toggleSchedulePage" /></th><th>Nhóm</th><th>Dung lượng</th><th>Số file</th><th>File cũ nhất</th><th>Lịch tự dọn</th></tr></thead><tbody><tr v-for="row in scheduleOptions" :key="row.id" class="click-row" :class="{ picked: !!scheduleForm.groups[row.id] }" @click="toggleScheduleGroup(row)"><td><input type="checkbox" :checked="!!scheduleForm.groups[row.id]" @click.stop="toggleScheduleGroup(row)" /></td><td><b>{{ row.name }}</b></td><td>{{ gb(row.bytes) }}</td><td>{{ number(row.files) }}</td><td>{{ day(row.oldestAt) }}</td><td>{{ scheduleBadge(row) }}</td></tr><tr v-if="!scheduleOptions.length"><td colspan="6" class="empty-cell">Không có nhóm phù hợp.</td></tr></tbody></table></div>
+          <div v-if="scheduleGroupIds.length" class="schedule-chips"><span v-for="g in Object.values(scheduleForm.groups)" :key="g.id">{{ g.name }}<button class="link-button" @click="toggleScheduleGroup({ id: g.id, name: g.name })">x</button></span></div>
+          <div class="kind-options"><label v-for="kind in kinds" :key="kind.value"><input v-model="scheduleForm.fileKinds" type="checkbox" :value="kind.value" /><component :is="kind.icon" :size="16" />{{ kind.label }}</label></div>
+          <label class="visible-option"><input v-model="scheduleForm.includeVisible" type="checkbox" />Xoá cả ảnh, file của tin nhắn đang hiển thị trong các nhóm đã chọn</label>
+          <label class="visible-option"><input v-model="scheduleForm.enabled" type="checkbox" />Bật lịch (mỗi đêm sẽ xoá thật, không hỏi lại)</label>
+          <div class="schedule-actions"><button class="secondary" :disabled="!scheduleGroupIds.length || savingSchedule" @click="saveSchedule"><Save :size="16" />{{ savingSchedule ? 'Đang lưu...' : scheduleGroupIds.length > 1 ? `Lưu lịch cho ${scheduleGroupIds.length} nhóm` : 'Lưu lịch' }}</button><button class="secondary" :disabled="!scheduleGroupIds.length || !scheduleForm.fileKinds.length" @click="previewScheduleForm"><Search :size="16" />Xem trước theo lịch này</button></div>
+          <div class="table-scroll"><table><thead><tr><th>Nhóm</th><th>Giữ lại</th><th>Loại</th><th>Cả tin đang hiển thị</th><th>Trạng thái</th><th>Lần chạy cuối</th><th></th></tr></thead><tbody><tr v-for="row in schedules" :key="row.id"><td><b>{{ row.groupName || row.groupId }}</b><small v-if="row.lastError" class="schedule-error">{{ row.lastError }}</small></td><td>{{ row.retentionDays }} ngày</td><td>{{ row.fileKinds.map(kindLabel).join(', ') }}</td><td>{{ row.includeVisible ? 'Có' : 'Không' }}</td><td><button class="status" :class="row.enabled ? 'completed' : ''" @click="toggleSchedule(row)">{{ row.enabled ? 'Đang bật' : 'Đang tắt' }}</button></td><td>{{ dateTime(row.lastRunAt) }}</td><td class="row-actions"><button class="link-button" @click="editSchedule(row)">Sửa</button><button class="link-button" @click="previewSchedule(row)">Xem trước</button><button class="link-button danger-link" @click="removeSchedule(row)">Xoá lịch</button></td></tr><tr v-if="!schedules.length"><td colspan="7" class="empty-cell">Chưa có lịch nào.</td></tr></tbody></table></div>
+        </div></section>    <aside v-if="entityDetail" class="storage-drawer"><button class="icon-button close-drawer" @click="entityDetail = undefined"><X :size="16" /></button><small>{{ entityDetail.target.type === 'group' ? 'Nhóm hội thoại' : 'Tài khoản Zalo' }}</small><h3>{{ entityDetail.target.name }}</h3><div class="drawer-stats"><div><span>Dung lượng</span><b>{{ size(entityDetail.summary.bytes) }}</b></div><div><span>Object</span><b>{{ number(entityDetail.summary.files) }}</b></div></div><div class="drawer-list"><div v-for="row in entityDetail.fileTypes" :key="row.type"><span>{{ kindLabel(row.type) }}</span><b>{{ number(row.files) }} · {{ size(row.bytes) }}</b></div></div><small>Cũ nhất: {{ dateTime(entityDetail.range?.oldestAt) }} · Mới nhất: {{ dateTime(entityDetail.range?.newestAt) }}</small><button class="primary drawer-action" @click="useEntityForCleanup"><Trash2 :size="16" />Tạo preview dọn theo mục này</button></aside>
     <aside v-if="historyDetail" class="storage-drawer"><button class="icon-button close-drawer" @click="historyDetail = undefined"><X :size="16" /></button><small>Lần dọn {{ historyDetail.run.targetName || historyDetail.run.targetType }}</small><h3>{{ statusLabel(historyDetail.run.status) }} · {{ size(historyDetail.run.bytesFreed) }}</h3><div class="drawer-stats"><div><span>Link gỡ</span><b>{{ number(historyDetail.run.assetsDeleted) }}</b></div><div><span>Object xóa</span><b>{{ number(historyDetail.run.objectsDeleted) }}</b></div></div><div v-if="historyDetail.failedItems.length" class="drawer-list"><div v-for="item in historyDetail.failedItems" :key="item.objectKey"><b>{{ item.objectKey }}</b><small>{{ item.error || 'Không rõ lỗi' }}</small></div></div><div v-else class="empty-cell">Không có object lỗi.</div><button class="secondary drawer-action" @click="downloadHistory(historyDetail.run.id)"><Download :size="16" />Xuất CSV</button></aside>    </template>
   </section>
 </template>
 
 <script setup lang="ts">
 import { computed, defineComponent, h, onBeforeUnmount, onMounted, ref, watch, type Component, type PropType } from 'vue';
-import { AlertCircle, AlertTriangle, ArchiveRestore, BarChart3, ChevronLeft, Download, ChevronRight, Database, Files, FileText, Group, HardDrive, History, Image, Mic, RefreshCw, Save, Search, Settings2, ShieldCheck, Trash2, UserRound, Video, X } from 'lucide-vue-next';
+import { AlertCircle, AlertTriangle, ArchiveRestore, BarChart3, CalendarClock, ChevronLeft, Download, ChevronRight, Database, Files, FileText, Group, HardDrive, History, Image, Mic, RefreshCw, Save, Search, Settings2, ShieldCheck, Trash2, UserRound, Video, X } from 'lucide-vue-next';
 import {
   downloadStorageHistoryCsv, executeStorageCleanup, getStorageCleanupProgress, getStorageEntityDetail, getStorageHistoryDetail, getStorageOverview, getStoragePolicy, listStorageEntities, listStorageHistory, updateStoragePolicy,
-  previewStorageCleanup, reconcileStorageLedger, type StorageAccountRow, type StorageCleanupRun,
+  previewStorageCleanup, reconcileStorageLedger, listStorageGroupSchedules, saveStorageGroupSchedule, deleteStorageGroupSchedule, type StorageGroupSchedule, type StorageAccountRow, type StorageCleanupRun,
   type StorageEntityDetail, type StorageFileKind, type StorageGroupRow, type StorageOverview, type StoragePolicy, type StorageSort,
   type StorageCleanupPreview, type StorageTargetType,
 } from '@/api/media';
@@ -125,7 +152,39 @@ const entityTotal = ref(0);
 const entitySort = ref<StorageSort>('bytes');
 const entitySearch = ref('');
 const selectorAccounts = ref<StorageAccountRow[]>([]);
-const selectorGroups = ref<StorageGroupRow[]>([]);
+type PickedGroup = { id: string; name: string; bytes: number };
+const pickerPageSize = 50;
+const pickerRows = ref<StorageGroupRow[]>([]);
+const pickerPage = ref(1);
+const pickerTotal = ref(0);
+const pickerSort = ref<StorageSort>('bytes');
+const pickerSearch = ref('');
+const selectedGroups = ref<Record<string, PickedGroup>>({});
+const includeVisible = ref(false);
+let pendingSelection: Record<string, PickedGroup> | null = null;
+let pendingAccountId: string | null = null;
+const schedules = ref<StorageGroupSchedule[]>([]);
+const scheduleOptions = ref<StorageGroupRow[]>([]);
+const scheduleSearch = ref('');
+const savingSchedule = ref(false);
+type ScheduleGroup = { id: string; name: string };
+type ScheduleForm = { groups: Record<string, ScheduleGroup>; retentionDays: number; fileKinds: StorageFileKind[]; includeVisible: boolean; enabled: boolean };
+type ScheduleRule = { groupId: string; groupName: string | null; retentionDays: number; fileKinds: StorageFileKind[]; includeVisible: boolean; enabled: boolean };
+const emptyScheduleForm = (): ScheduleForm => ({ groups: {}, retentionDays: 90, fileKinds: ['image'], includeVisible: false, enabled: false });
+const scheduleForm = ref<ScheduleForm>(emptyScheduleForm());
+const scheduleGroupIds = computed(() => Object.keys(scheduleForm.value.groups));
+const allSchedulePageSelected = computed(() => scheduleOptions.value.length > 0 && scheduleOptions.value.every((row) => !!scheduleForm.value.groups[row.id]));
+function toggleScheduleGroup(row: { id: string; name: string }) {
+  const next = { ...scheduleForm.value.groups };
+  if (next[row.id]) delete next[row.id]; else next[row.id] = { id: row.id, name: row.name };
+  scheduleForm.value.groups = next;
+}
+function toggleSchedulePage() {
+  const next = { ...scheduleForm.value.groups };
+  if (allSchedulePageSelected.value) scheduleOptions.value.forEach((row) => { delete next[row.id]; });
+  else scheduleOptions.value.forEach((row) => { next[row.id] = { id: row.id, name: row.name }; });
+  scheduleForm.value.groups = next;
+}
 const selectorSearch = ref('');
 const targetType = ref<StorageTargetType>('all');
 const targetId = ref('');
@@ -156,12 +215,20 @@ const usagePercent = computed(() => overview.value?.capacityBytes ? Math.min(100
 const cleanupRunning = computed(() => activeRun.value?.status === 'running' || activeRun.value?.status === 'previewed');
 const entityPages = computed(() => Math.max(1, Math.ceil(entityTotal.value / pageSize)));
 const historyPages = computed(() => Math.max(1, Math.ceil(historyTotal.value / pageSize)));
-const validCleanup = computed(() => !!beforeDate.value && fileKinds.value.length > 0 && (targetType.value === 'all' || !!targetId.value));
+const selectedGroupIds = computed(() => Object.keys(selectedGroups.value));
+const selectedGroupBytes = computed(() => Object.values(selectedGroups.value).reduce((sum, row) => sum + Number(row.bytes || 0), 0));
+const pickerPages = computed(() => Math.max(1, Math.ceil(pickerTotal.value / pickerPageSize)));
+const allPageSelected = computed(() => pickerRows.value.length > 0 && pickerRows.value.every((row) => !!selectedGroups.value[row.id]));
+const validCleanup = computed(() => !!beforeDate.value && fileKinds.value.length > 0 && (targetType.value === 'all' || (targetType.value === 'group' ? selectedGroupIds.value.length > 0 : !!targetId.value)));
 const maxDaily = computed(() => Math.max(1, ...(overview.value?.daily.map((row) => row.bytes) || [1])));
 const number = (value: number) => Number(value || 0).toLocaleString('vi-VN');
 const size = (value: number) => { const bytes = Number(value || 0); if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`; if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`; if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`; return `${bytes} B`; };
 const date = (value?: string) => value ? new Intl.DateTimeFormat('vi-VN', { day: '2-digit', month: '2-digit' }).format(new Date(`${value}T00:00:00`)) : '—';
 const dateTime = (value?: string | null) => value ? new Intl.DateTimeFormat('vi-VN', { dateStyle: 'short', timeStyle: 'short' }).format(new Date(value)) : '—';
+const day = (value?: string | null) => value ? new Intl.DateTimeFormat('vi-VN', { dateStyle: 'short' }).format(new Date(value)) : '—';
+const gb = (bytes: number) => `${(Number(bytes || 0) / 1024 ** 3).toFixed(2)} GB`;
+const gbNumber = (value: number | undefined, bytes: number) => (value ?? Number(bytes || 0) / 1024 ** 3).toFixed(2);
+const scheduleBadge = (row: StorageGroupRow) => row.scheduleEnabled == null ? '—' : row.scheduleEnabled ? `Bật, giữ ${row.scheduleRetentionDays} ngày` : 'Đã tạo, đang tắt';
 const barHeight = (bytes: number) => Math.max(4, Math.round(bytes / maxDaily.value * 100));
 const kindLabel = (kind: string) => ({ image: 'Ảnh', video: 'Video', file: 'File', audio: 'Ghi âm' }[kind] || kind);
 const statusLabel = (status: string) => ({ previewing: 'Đang thống kê', previewed: 'Chờ xác nhận', running: 'Đang xóa', completed: 'Hoàn tất', partial: 'Có lỗi', failed: 'Thất bại' }[status] || status);
@@ -180,10 +247,89 @@ const Pager = defineComponent({
 async function loadOverview() { overview.value = await getStorageOverview(); policyForm.value = { ...overview.value.policy }; }
 async function loadSelectors() {
   if (targetType.value === 'all') return;
-  const entity = targetType.value === 'group' ? 'groups' : 'accounts';
-  const result = await listStorageEntities({ entity, pageSize: 20, sort: 'name', search: selectorSearch.value });
-  if (entity === 'groups') selectorGroups.value = result.items as StorageGroupRow[];
-  else selectorAccounts.value = result.items as StorageAccountRow[];
+  if (targetType.value === 'group') { await loadPicker(); return; }
+  const result = await listStorageEntities({ entity: 'accounts', pageSize: 50, sort: 'name', search: selectorSearch.value });
+  selectorAccounts.value = result.items as StorageAccountRow[];
+}
+async function loadPicker() {
+  const result = await listStorageEntities({ entity: 'groups', page: pickerPage.value, pageSize: pickerPageSize, sort: pickerSort.value, search: pickerSearch.value });
+  pickerRows.value = result.items as StorageGroupRow[]; pickerTotal.value = result.total;
+}
+async function changePickerPage(page: number) { pickerPage.value = page; await loadPicker(); }
+const isPicked = (id: string) => !!selectedGroups.value[id];
+function toggleGroup(row: StorageGroupRow) {
+  if (executing.value) return;
+  const next = { ...selectedGroups.value };
+  if (next[row.id]) delete next[row.id]; else next[row.id] = { id: row.id, name: row.name, bytes: row.bytes };
+  selectedGroups.value = next;
+}
+function togglePage() {
+  if (executing.value) return;
+  const next = { ...selectedGroups.value };
+  if (allPageSelected.value) pickerRows.value.forEach((row) => { delete next[row.id]; });
+  else pickerRows.value.forEach((row) => { next[row.id] = { id: row.id, name: row.name, bytes: row.bytes }; });
+  selectedGroups.value = next;
+}
+function clearGroupSelection() { selectedGroups.value = {}; }
+function setCleanupScope(type: StorageTargetType, groups: Record<string, PickedGroup> = {}, accountId = '') {
+  if (targetType.value === type) { selectedGroups.value = groups; targetId.value = accountId; if (type !== 'all') void loadSelectors(); }
+  else { pendingSelection = groups; pendingAccountId = accountId; targetType.value = type; }
+}
+async function loadSchedules() { schedules.value = (await listStorageGroupSchedules()).items; }
+async function loadScheduleOptions() { scheduleOptions.value = (await listStorageEntities({ entity: 'groups', pageSize: 50, sort: 'bytes', search: scheduleSearch.value })).items as StorageGroupRow[]; }
+function editSchedule(row: StorageGroupSchedule) {
+  scheduleForm.value = { groups: { [row.groupId]: { id: row.groupId, name: row.groupName || row.groupId } }, retentionDays: row.retentionDays, fileKinds: [...row.fileKinds], includeVisible: row.includeVisible, enabled: row.enabled };
+}
+async function persistSchedule(form: ScheduleRule) {
+  return saveStorageGroupSchedule(form.groupId, { retentionDays: form.retentionDays, fileKinds: form.fileKinds, includeVisible: form.includeVisible, enabled: form.enabled });
+}
+async function saveSchedule() {
+  const groups = Object.values(scheduleForm.value.groups);
+  if (!groups.length) return;
+  if (scheduleForm.value.enabled && !window.confirm(`Bật lịch cho ${groups.length} nhóm: mỗi đêm 02:00 hệ thống sẽ XOÁ VĨNH VIỄN media cũ của các nhóm này mà không hỏi lại. Tiếp tục?`)) return;
+  savingSchedule.value = true;
+  const { retentionDays, fileKinds: kindsForm, includeVisible: visible, enabled } = scheduleForm.value;
+  const failed: string[] = [];
+  const failedGroups: string[] = [];
+  try {
+    for (const g of groups) {
+      try { await persistSchedule({ groupId: g.id, groupName: g.name, retentionDays, fileKinds: kindsForm, includeVisible: visible, enabled }); }
+      catch (e: any) { failed.push(`${g.name}: ${e?.response?.data?.error || 'lỗi'}`); failedGroups.push(g.id); }
+    }
+    if (!failed.length) { toast.success(groups.length > 1 ? `Đã lưu lịch tự dọn cho ${groups.length} nhóm.` : 'Đã lưu lịch tự dọn.'); scheduleForm.value = emptyScheduleForm(); }
+    else {
+      toast.warning(`Lưu được ${groups.length - failed.length}/${groups.length} nhóm. Lỗi: ${failed.slice(0, 3).join('; ')}`);
+      const failedIds = new Set(failedGroups);
+      scheduleForm.value.groups = Object.fromEntries(groups.filter((g) => failedIds.has(g.id)).map((g) => [g.id, g]));
+    }
+    await loadSchedules(); await loadScheduleOptions();
+  } finally { savingSchedule.value = false; }
+}
+async function toggleSchedule(row: StorageGroupSchedule) {
+  const enabled = !row.enabled;
+  if (enabled && !window.confirm(`Bật lịch cho "${row.groupName || row.groupId}": mỗi đêm 02:00 sẽ XOÁ VĨNH VIỄN media cũ hơn ${row.retentionDays} ngày. Tiếp tục?`)) return;
+  try { await persistSchedule({ groupId: row.groupId, groupName: row.groupName, retentionDays: row.retentionDays, fileKinds: row.fileKinds, includeVisible: row.includeVisible, enabled }); await loadSchedules(); }
+  catch (e: any) { toast.warning(e?.response?.data?.error || 'Không đổi được trạng thái lịch.'); }
+}
+async function removeSchedule(row: StorageGroupSchedule) {
+  if (!window.confirm(`Xoá lịch tự dọn của "${row.groupName || row.groupId}"? Dữ liệu chat không bị ảnh hưởng.`)) return;
+  try { await deleteStorageGroupSchedule(row.groupId); await loadSchedules(); }
+  catch (e: any) { toast.warning(e?.response?.data?.error || 'Không xoá được lịch.'); }
+}
+function openSchedulePreview(groups: Record<string, PickedGroup>, retentionDays: number, kinds: StorageFileKind[], visible: boolean) {
+  const before = new Date(); before.setDate(before.getDate() - Number(retentionDays || 0));
+  beforeDate.value = before.toISOString().slice(0, 10); fileKinds.value = [...kinds];
+  setCleanupScope('group', groups);
+  includeVisible.value = visible; tab.value = 'cleanup'; resetPreview();
+}
+function previewSchedule(row: ScheduleRule) {
+  const name = row.groupName || scheduleOptions.value.find((option) => option.id === row.groupId)?.name || row.groupId;
+  openSchedulePreview({ [row.groupId]: { id: row.groupId, name, bytes: 0 } }, row.retentionDays, row.fileKinds, row.includeVisible);
+}
+function previewScheduleForm() {
+  const f = scheduleForm.value;
+  const groups = Object.fromEntries(Object.values(f.groups).map((g) => [g.id, { id: g.id, name: g.name, bytes: scheduleOptions.value.find((o) => o.id === g.id)?.bytes || 0 }]));
+  openSchedulePreview(groups, f.retentionDays, f.fileKinds, f.includeVisible);
 }
 async function refreshAll() {
   loading.value = true;
@@ -203,7 +349,7 @@ async function loadEntities() {
 async function searchEntities() { entityPage.value = 1; await loadEntities(); }
 async function loadHistory() { const result = await listStorageHistory({ page: historyPage.value, pageSize, search: historySearch.value }); historyRows.value = result.items; historyTotal.value = result.total; }
 async function searchHistory() { historyPage.value = 1; await loadHistory(); }
-async function openTab(next: typeof tab.value) { tab.value = next; if (next === 'groups' || next === 'accounts') { entityPage.value = 1; entitySearch.value = ''; await loadEntities(); } else if (next === 'history') { historyPage.value = 1; await loadHistory(); } else if (next === 'policy') { policyForm.value = await getStoragePolicy(); } }
+async function openTab(next: typeof tab.value) { tab.value = next; if (next === 'groups' || next === 'accounts') { entityPage.value = 1; entitySearch.value = ''; await loadEntities(); } else if (next === 'history') { historyPage.value = 1; await loadHistory(); } else if (next === 'policy') { policyForm.value = await getStoragePolicy(); await Promise.all([loadSchedules(), loadScheduleOptions()]).catch(() => toast.warning('Không tải được lịch tự dọn.')); } }
 async function changeEntityPage(page: number) { entityPage.value = page; await loadEntities(); }
 async function changeHistoryPage(page: number) { historyPage.value = page; await loadHistory(); }
 async function openEntity(type: 'group' | 'account', id: string) {
@@ -212,8 +358,10 @@ async function openEntity(type: 'group' | 'account', id: string) {
 }
 function useEntityForCleanup() {
   if (!entityDetail.value) return;
-  targetType.value = entityDetail.value.target.type; targetId.value = entityDetail.value.target.id;
-  selectorSearch.value = entityDetail.value.target.name; entityDetail.value = undefined; tab.value = 'cleanup'; resetPreview();
+  const target = entityDetail.value.target;
+  if (target.type === 'group') setCleanupScope('group', { [target.id]: { id: target.id, name: target.name, bytes: entityDetail.value.summary.bytes } });
+  else { selectorSearch.value = target.name; setCleanupScope('account', {}, target.id); }
+  entityDetail.value = undefined; tab.value = 'cleanup'; resetPreview();
 }
 async function openHistory(runId: string) {
   try { historyDetail.value = await getStorageHistoryDetail(runId); }
@@ -226,7 +374,7 @@ async function savePolicy() {
 function prepareRetention() {
   const before = new Date(); before.setDate(before.getDate() - policyForm.value.retentionDays);
   beforeDate.value = before.toISOString().slice(0, 10); fileKinds.value = policyForm.value.retentionFileKinds.length ? [...policyForm.value.retentionFileKinds] : ['image', 'video', 'file', 'audio'];
-  targetType.value = 'all'; targetId.value = ''; tab.value = 'cleanup'; resetPreview();
+  setCleanupScope('all'); tab.value = 'cleanup'; resetPreview();
 }
 async function downloadHistory(runId: string) {
   try { const blob = await downloadStorageHistoryCsv(runId); const url = URL.createObjectURL(blob); const link = document.createElement('a'); link.href = url; link.download = `storage-cleanup-${runId}.csv`; link.click(); URL.revokeObjectURL(url); }
@@ -238,7 +386,9 @@ async function createPreview() {
   window.clearInterval(progressTimer);
   activeRun.value = undefined;
   previewing.value = true; resetPreview();
-  try { previewData.value = await previewStorageCleanup({ targetType: targetType.value, targetId: targetId.value || undefined, beforeDate: beforeDate.value, fileKinds: fileKinds.value }); }
+  try { previewData.value = await previewStorageCleanup(targetType.value === 'group'
+    ? { targetType: 'group', targetIds: selectedGroupIds.value, includeVisible: includeVisible.value, beforeDate: beforeDate.value, fileKinds: fileKinds.value }
+    : { targetType: targetType.value, targetId: targetId.value || undefined, beforeDate: beforeDate.value, fileKinds: fileKinds.value }); }
   catch (e: any) { toast.warning(e?.response?.data?.error || 'Không tạo được bản xem trước'); }
   finally { previewing.value = false; }
 }
@@ -297,11 +447,22 @@ async function reconcileOldData() {
   } catch (e: any) { reconciling.value = false; toast.warning(e?.response?.data?.error || 'Đối soát dữ liệu cũ thất bại'); }
 }
 let selectorTimer: number | undefined;
-watch(targetType, async () => { targetId.value = ''; selectorSearch.value = ''; resetPreview(); await loadSelectors(); });
-watch(selectorSearch, () => { window.clearTimeout(selectorTimer); selectorTimer = window.setTimeout(() => { targetId.value = ''; void loadSelectors(); }, 300); });
-watch([targetId, beforeDate, fileKinds], resetPreview, { deep: true });
+let pickerTimer: number | undefined;
+let scheduleTimer: number | undefined;
+watch(targetType, async (type) => {
+  targetId.value = pendingAccountId ?? ''; selectedGroups.value = pendingSelection ?? {};
+  if (!pendingAccountId) selectorSearch.value = '';
+  pendingSelection = null; pendingAccountId = null;
+  if (type !== 'group') includeVisible.value = false;
+  pickerPage.value = 1; resetPreview(); await loadSelectors();
+});
+watch(selectorSearch, () => { window.clearTimeout(selectorTimer); selectorTimer = window.setTimeout(() => { if (!pendingAccountId) void loadSelectors(); }, 300); });
+watch(pickerSearch, () => { window.clearTimeout(pickerTimer); pickerTimer = window.setTimeout(() => { pickerPage.value = 1; void loadPicker(); }, 300); });
+watch(pickerSort, () => { pickerPage.value = 1; void loadPicker(); });
+watch(scheduleSearch, () => { window.clearTimeout(scheduleTimer); scheduleTimer = window.setTimeout(() => { void loadScheduleOptions(); }, 300); });
+watch([targetId, beforeDate, fileKinds, selectedGroupIds, includeVisible], resetPreview, { deep: true });
 onMounted(refreshAll);
-onBeforeUnmount(() => { window.clearInterval(progressTimer); window.clearTimeout(selectorTimer); });
+onBeforeUnmount(() => { window.clearInterval(progressTimer); window.clearTimeout(selectorTimer); window.clearTimeout(pickerTimer); window.clearTimeout(scheduleTimer); });
 </script>
 
 <style scoped>
@@ -309,7 +470,8 @@ onBeforeUnmount(() => { window.clearInterval(progressTimer); window.clearTimeout
 
 /* R2 admin tables: keep dense storage data readable inside the media page. */
 .storage-admin{width:100%;flex:1;min-height:0;box-sizing:border-box;overflow:auto}.entity-panel{width:100%;min-width:0;box-sizing:border-box;overflow:hidden}.table-head{align-items:flex-start;flex-wrap:wrap;gap:16px}.table-head h3{flex:1;min-width:240px;line-height:1.35;white-space:normal}.filters{flex:0 1 auto;flex-wrap:wrap;gap:10px}.table-head select{min-width:190px}.table-scroll{max-width:100%;overflow:auto;border:1px solid #e2e8eb;border-radius:6px;background:#fff}.entity-panel table{min-width:920px;table-layout:fixed}.entity-panel th,.entity-panel td{height:42px;padding:10px 12px}.entity-panel th:first-child,.entity-panel td:first-child{width:360px;white-space:normal}.entity-panel th:not(:first-child),.entity-panel td:not(:first-child){text-align:right;font-variant-numeric:tabular-nums}.entity-panel thead th{position:sticky;top:0;z-index:2;background:#f8fafb;border-bottom-color:#dbe4e8}.entity-panel thead th:first-child,.entity-panel tbody td:first-child{position:sticky;left:0;z-index:3;background:#fff}.entity-panel thead th:first-child{background:#f8fafb;z-index:4}.entity-panel tbody tr:hover td{background:#f7fbfc}.entity-panel tbody tr:hover td:first-child{background:#f7fbfc}.entity-panel td:first-child b{display:block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#101820}.entity-panel small{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.pager{border-top:1px solid #edf1f2;padding-top:12px}.history-panel table{min-width:860px}@media(max-width:900px){.table-head{gap:12px}.filters{width:100%}.search-field{flex:1 1 240px}.table-head select{flex:1 1 190px}.entity-panel table{min-width:820px}.entity-panel th:first-child,.entity-panel td:first-child{width:280px}}
-.scope-note{margin-top:12px;padding:9px 11px;border-left:3px solid #3b8199;background:#edf7f9;color:#39535e;font-size:12px}.health-row{display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;color:#62727b;font-size:12px}.health-row span{padding:6px 8px;border:1px solid #dce5e8;background:#fff}.driver-badge{display:inline-block;margin-left:8px;padding:3px 8px;border:1px solid #9bb8c2;border-radius:999px;background:#edf7fa;color:#17627d;font-size:11px;font-weight:700;vertical-align:middle}.driver-badge.local{border-color:#cfd8dc;background:#f2f4f5;color:#56616a}.progress-box{display:flex;align-items:center;gap:12px;margin:14px 0;padding:12px;border:1px solid #9bc7d6;background:#f2fbfd}.progress-box small{display:block;margin-top:4px;color:#58727c;font-size:12px}.progress-track{flex:1;height:8px;overflow:hidden;border-radius:999px;background:#dbecef}.progress-track i{display:block;height:100%;background:#087ea4;transition:width .25s}@media(max-width:900px){.progress-box{align-items:stretch;flex-direction:column}.health-row{display:grid;grid-template-columns:1fr}}.storage-drawer{position:fixed;z-index:20;top:0;right:0;bottom:0;width:min(390px,100vw);padding:20px;border-left:1px solid #cfdcdf;background:#fff;box-shadow:-12px 0 32px rgba(20,42,52,.16);overflow:auto}.storage-drawer h3{margin:5px 0 18px;font-size:17px}.close-drawer{float:right}.drawer-stats{display:grid;grid-template-columns:1fr 1fr;gap:8px}.drawer-stats>div{padding:10px;border:1px solid #e0e8ea;background:#f8fafb}.drawer-stats span{display:block;color:#64737d;font-size:11px}.drawer-stats b{display:block;margin-top:4px}.drawer-list{margin:16px 0;border-top:1px solid #edf1f2}.drawer-list>div{display:flex;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid #edf1f2;font-size:12px}.drawer-list small{display:block;max-width:220px;overflow:hidden;color:#8b2119;text-overflow:ellipsis;white-space:nowrap}.drawer-action{width:100%;justify-content:center;margin-top:18px}.click-row{cursor:pointer}.click-row:hover td{background:#f3fafc}.policy-grid{display:grid;grid-template-columns:repeat(3,minmax(170px,1fr));gap:10px;margin:16px 0}.policy-grid label{display:flex;flex-direction:column;gap:5px;color:#60707a;font-size:12px}.policy-grid input{height:36px;padding:0 9px;border:1px solid #c8d3d8;border-radius:4px;background:#fff}@media(max-width:900px){.policy-grid{grid-template-columns:1fr}}</style>
+.scope-note{margin-top:12px;padding:9px 11px;border-left:3px solid #3b8199;background:#edf7f9;color:#39535e;font-size:12px}.health-row{display:flex;flex-wrap:wrap;gap:10px;margin-top:8px;color:#62727b;font-size:12px}.health-row span{padding:6px 8px;border:1px solid #dce5e8;background:#fff}.driver-badge{display:inline-block;margin-left:8px;padding:3px 8px;border:1px solid #9bb8c2;border-radius:999px;background:#edf7fa;color:#17627d;font-size:11px;font-weight:700;vertical-align:middle}.driver-badge.local{border-color:#cfd8dc;background:#f2f4f5;color:#56616a}.progress-box{display:flex;align-items:center;gap:12px;margin:14px 0;padding:12px;border:1px solid #9bc7d6;background:#f2fbfd}.progress-box small{display:block;margin-top:4px;color:#58727c;font-size:12px}.progress-track{flex:1;height:8px;overflow:hidden;border-radius:999px;background:#dbecef}.progress-track i{display:block;height:100%;background:#087ea4;transition:width .25s}@media(max-width:900px){.progress-box{align-items:stretch;flex-direction:column}.health-row{display:grid;grid-template-columns:1fr}}.storage-drawer{position:fixed;z-index:20;top:0;right:0;bottom:0;width:min(390px,100vw);padding:20px;border-left:1px solid #cfdcdf;background:#fff;box-shadow:-12px 0 32px rgba(20,42,52,.16);overflow:auto}.storage-drawer h3{margin:5px 0 18px;font-size:17px}.close-drawer{float:right}.drawer-stats{display:grid;grid-template-columns:1fr 1fr;gap:8px}.drawer-stats>div{padding:10px;border:1px solid #e0e8ea;background:#f8fafb}.drawer-stats span{display:block;color:#64737d;font-size:11px}.drawer-stats b{display:block;margin-top:4px}.drawer-list{margin:16px 0;border-top:1px solid #edf1f2}.drawer-list>div{display:flex;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid #edf1f2;font-size:12px}.drawer-list small{display:block;max-width:220px;overflow:hidden;color:#8b2119;text-overflow:ellipsis;white-space:nowrap}.drawer-action{width:100%;justify-content:center;margin-top:18px}.click-row{cursor:pointer}.click-row:hover td{background:#f3fafc}.policy-grid{display:grid;grid-template-columns:repeat(3,minmax(170px,1fr));gap:10px;margin:16px 0}.policy-grid label{display:flex;flex-direction:column;gap:5px;color:#60707a;font-size:12px}.policy-grid input{height:36px;padding:0 9px;border:1px solid #c8d3d8;border-radius:4px;background:#fff}@media(max-width:900px){.policy-grid{grid-template-columns:1fr}}.panel-head{display:flex;align-items:center;justify-content:space-between;gap:10px}.panel-head h3{margin-bottom:12px}.link-button{border:0;background:transparent;color:#087ea4;cursor:pointer;padding:0 4px;font-size:12px;text-decoration:underline}.danger-link{color:#b42318}.group-picker{margin-top:14px;border:1px solid #dce4e7;border-radius:6px;padding:12px;background:#fbfdfd}.picker-head{display:flex;flex-wrap:wrap;align-items:center;gap:10px}.picker-head select{height:36px;border:1px solid #c8d3d8;border-radius:4px;background:#fff;padding:0 9px}.picker-count{margin-left:auto;font-size:13px;color:#334155}.picker-table{max-height:420px}.picker-table table{min-width:720px}.picker-table td:first-child,.picker-table th:first-child{width:34px}.picker-table tr.picked td{background:#eaf6fa}.picker-table td:not(:nth-child(2)),.picker-table th:not(:nth-child(2)){text-align:right;font-variant-numeric:tabular-nums}.picker-table td:first-child,.picker-table th:first-child{text-align:center}.visible-option{display:flex;align-items:center;gap:8px;margin:6px 0 10px;font-size:13px;font-weight:600;color:#17212b}.preview-scope{margin:0 0 12px;font-size:13px;color:#17212b}.schedule-block{margin-top:24px;padding-top:16px;border-top:1px solid #dce4e7}.schedule-block small{color:#64737d}.schedule-form{display:grid;grid-template-columns:repeat(3,minmax(170px,1fr));gap:10px;margin-top:14px}.schedule-form label{display:flex;flex-direction:column;gap:5px;color:#334155;font-size:12px;font-weight:600}.schedule-form input,.schedule-form select{height:36px;padding:0 9px;border:1px solid #c8d3d8;border-radius:4px;background:#fff;color:#17212b}.schedule-picker{max-height:320px;margin-top:10px}.schedule-picked{display:flex;align-items:center;gap:8px;align-self:end;height:36px;font-size:13px;color:#334155}.schedule-chips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0}.schedule-chips span{padding:3px 8px;border:1px solid #9bc7d6;border-radius:999px;background:#eaf6fa;font-size:12px}.schedule-actions{display:flex;gap:8px;margin:6px 0 12px}.schedule-error{display:block;max-width:260px;overflow:hidden;color:#8b2119;text-overflow:ellipsis}.row-actions{text-align:right}button.status{border:0;cursor:pointer}@media(max-width:900px){.schedule-form{grid-template-columns:1fr}.picker-count{margin-left:0}}
+</style>
 <style scoped>
 /* Keep the storage workspace readable when the application is in dark mode. */
 .storage-admin { color-scheme: light; }

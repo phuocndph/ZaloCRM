@@ -224,6 +224,7 @@ model Organization {
   mediaAssets             MediaAsset[]
   storageCleanupRuns       StorageCleanupRun[]
   storageManagementPolicy  StorageManagementPolicy?
+  storageGroupCleanupSchedules StorageGroupCleanupSchedule[]
   storageReconciliationRuns StorageReconciliationRun[]
   mediaAlbums             MediaAlbum[]
   mediaUsageEvents        MediaUsageEvent[]
@@ -5746,6 +5747,15 @@ model StorageCleanupRun {
   bytesFreed     BigInt    @default(0) @map("bytes_freed")
   failedCount    Int       @default(0) @map("failed_count")
   targetName     String?   @map("target_name")
+  // Multi-group cleanup (2026-11-09): every selected group id. targetId keeps
+  // the first one so older readers still see a single target.
+  targetIds      String[]  @default([]) @map("target_ids")
+  // When true the protected_ref guard (visible chat messages) is skipped for
+  // the selected groups only; messages stay and are marked mediaPurged.
+  includeVisible Boolean   @default(false) @map("include_visible")
+  // 'manual' (button) or 'schedule' (nightly per-group cleanup worker).
+  trigger        String    @default("manual")
+  scheduleId     String?   @map("schedule_id")
   status         String    @default("previewed")
   breakdown      Json?
   errorSummary   Json?     @map("error_summary")
@@ -5796,6 +5806,31 @@ model StorageManagementPolicy {
   org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
 
   @@map("storage_management_policies")
+}
+
+// Per-group nightly cleanup (2026-11-09). Disabled by default: an owner must
+// review and enable each group. The worker reuses preview -> execute and
+// writes a StorageCleanupRun (trigger='schedule') into the history.
+model StorageGroupCleanupSchedule {
+  id             String    @id @default(uuid())
+  orgId          String    @map("org_id")
+  groupId        String    @map("group_id")
+  groupName      String?   @map("group_name")
+  retentionDays  Int       @default(90) @map("retention_days")
+  fileKinds      String[]  @default(["image"]) @map("file_kinds")
+  includeVisible Boolean   @default(false) @map("include_visible")
+  enabled        Boolean   @default(false)
+  lastRunAt      DateTime? @map("last_run_at")
+  lastRunId      String?   @map("last_run_id")
+  lastError      String?   @map("last_error")
+  createdAt      DateTime  @default(now()) @map("created_at")
+  updatedAt      DateTime  @updatedAt @map("updated_at")
+
+  org Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, groupId])
+  @@index([enabled])
+  @@map("storage_group_cleanup_schedules")
 }
 
 // Audit history for metadata reconciliation. It never removes storage bytes.
