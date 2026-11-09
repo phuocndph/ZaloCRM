@@ -356,7 +356,7 @@ export async function createMediaFolder(
 
 export type StorageFileKind = 'image' | 'video' | 'file' | 'audio';
 export type StorageTargetType = 'all' | 'account' | 'group';
-export type StorageSort = 'bytes' | 'files' | 'name';
+export type StorageSort = 'bytes' | 'files' | 'name' | 'oldest';
 
 export interface StorageSummary {
   files: number;
@@ -374,9 +374,25 @@ export interface StorageCleanupPreview extends StorageSummary {
   linksToRemove: number;
   objectsToDelete: number;
   linksKept: number;
+  gb?: number;
+  visibleMessages?: number;
+  targetCount?: number;
+  targetIds?: string[];
+  targetName?: string | null;
+  includeVisible?: boolean;
 }
 export interface StorageAccountRow extends StorageSummary { id: string; name: string; uid: string; }
-export interface StorageGroupRow extends StorageSummary { id: string; name: string; accountCount: number; }
+export interface StorageGroupRow extends StorageSummary {
+  id: string; name: string; accountCount: number;
+  gb?: number; oldestAt?: string | null; newestAt?: string | null;
+  scheduleEnabled?: boolean | null; scheduleRetentionDays?: number | null;
+}
+export interface StorageGroupSchedule {
+  id: string; orgId: string; groupId: string; groupName: string | null;
+  retentionDays: number; fileKinds: StorageFileKind[]; includeVisible: boolean; enabled: boolean;
+  lastRunAt: string | null; lastRunId: string | null; lastError: string | null;
+  createdAt: string; updatedAt: string; runsAt?: string;
+}
 export interface StoragePolicy {
   quotaAlertPercent: number;
   anomalyMultiplier: number;
@@ -400,6 +416,9 @@ export interface StorageCleanupRun {
   targetType: StorageTargetType;
   targetId: string | null;
   targetName: string | null;
+  targetIds?: string[];
+  includeVisible?: boolean;
+  trigger?: 'manual' | 'schedule';
   beforeDate: string;
   fileKinds: StorageFileKind[];
   assetsDeleted: number;
@@ -467,7 +486,7 @@ export async function updateStoragePolicy(payload: StoragePolicy): Promise<Stora
   return data;
 }
 export async function previewStorageCleanup(payload: {
-  targetType: StorageTargetType; targetId?: string; beforeDate: string; fileKinds: StorageFileKind[];
+  targetType: StorageTargetType; targetId?: string; targetIds?: string[]; includeVisible?: boolean; beforeDate: string; fileKinds: StorageFileKind[];
 }): Promise<StorageCleanupPreview> {
   const { data } = await api.post('/media/storage/preview-cleanup', payload);
   return data;
@@ -494,5 +513,20 @@ export async function downloadStorageHistoryCsv(runId: string): Promise<Blob> {
 }
 export async function reconcileStorageLedger(): Promise<{ accepted: boolean; run: StorageReconciliationRun }> {
   const { data } = await api.post('/media/storage/reconcile', { confirm: true });
+  return data;
+}
+
+export async function listStorageGroupSchedules(): Promise<{ items: StorageGroupSchedule[] }> {
+  const { data } = await api.get('/media/storage/group-schedules');
+  return data;
+}
+export async function saveStorageGroupSchedule(groupId: string, payload: {
+  retentionDays: number; fileKinds: StorageFileKind[]; includeVisible: boolean; enabled: boolean;
+}): Promise<StorageGroupSchedule> {
+  const { data } = await api.put(`/media/storage/group-schedules/${encodeURIComponent(groupId)}`, payload);
+  return data;
+}
+export async function deleteStorageGroupSchedule(groupId: string): Promise<{ deleted: number }> {
+  const { data } = await api.delete(`/media/storage/group-schedules/${encodeURIComponent(groupId)}`);
   return data;
 }

@@ -560,6 +560,10 @@ async function bootstrap() {
     if (config.nodeEnv !== 'test') {
       const { startMediaTrashGcCron } = await import('./modules/media/media-trash-gc-cron.js');
       startMediaTrashGcCron();
+      // 2026-11-09 — dọn media chat theo nhóm mỗi đêm 02:00 VN. Chỉ chạy lịch đã bật
+      // (mặc định mọi lịch enabled=false), đi qua đúng preview -> execute như bấm tay.
+      const { startStorageGroupCleanupCron } = await import('./modules/media/storage-group-cleanup-cron.js');
+      startStorageGroupCleanupCron();
       const { startChatUploadTempGcCron } = await import('./modules/chat/chat-upload-temp-gc-cron.js');
       startChatUploadTempGcCron();
       startChatMediaMirrorWorker();
