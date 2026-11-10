@@ -1119,7 +1119,7 @@ export async function reconcileConversationWorkItems(input: {
       },
       data: { status: 'dismissed', completedAt: null, snoozedUntil: null },
     }),
-  ], { maxWait: 10_000, timeout: 60_000 });
+  ]);
   return [...candidates, ...groupCandidates];
 }
 
