@@ -77,7 +77,7 @@ export async function prepareAgentTool(actor: AgentActor, name: string, args: Re
   }
   if (name === 'list_work') await assigneeAllowed(actor, args.assigneeUserId || actor.user.id);
   if (args.conversationId) {
-    const conversation = await assertAgentConversation(actor, args.conversationId, name === 'send_message');
+    const conversation = await assertAgentConversation(actor, args.conversationId, name === 'send_message' || name === 'send_pdf');
     if (name === 'send_message' && args.replyMessageId) {
       const message = await prisma.message.findFirst({ where: { id: args.replyMessageId, conversationId: conversation.id, isDeleted: false }, select: { id: true } });
       if (!message) throw new AgentError(404, 'AGENT_REPLY_NOT_FOUND');
@@ -149,7 +149,7 @@ export async function executeAgentTool(app: FastifyInstance, actor: AgentActor, 
   }
   if (name === 'read_messages') {
     const data = await prisma.message.findMany({ where: { conversationId: args.conversationId, isDeleted: false, conversation: conversationWhere(actor, accounts) }, skip, take, orderBy: [{ sentAt: 'desc' }, { id: 'desc' }],
-      select: { id: true, senderType: true, senderName: true, content: true, contentType: true, sentAt: true, deliveryState: true } });
+      select: { id: true, senderType: true, senderName: true, content: true, contentType: true, sentAt: true, deliveryState: true, attachments: true, metadata: true } });
     return { statusCode: 200, data: { messages: data, nextOffset: data.length === take ? skip + take : null } };
   }
   if (name === 'read_customer') return { statusCode: 200, data: await prisma.contact.findFirst({ where: { orgId: actor.orgId, id: contactId! },
@@ -168,6 +168,20 @@ export async function executeAgentTool(app: FastifyInstance, actor: AgentActor, 
     case 'create_appointment': return dispatch(app, actor, 'POST', '/api/v1/appointments', { contactId, assignedUserId: actor.user.id, appointmentDate: args.appointmentDate, appointmentTime: args.appointmentTime, title: args.title, notes: args.notes, type: args.type });
     case 'update_appointment': return dispatch(app, actor, 'PUT', `/api/v1/appointments/${encodeURIComponent(args.appointmentId)}`, { status: args.status });
     case 'send_message': return dispatch(app, actor, 'POST', `/api/v1/conversations/${conv}/messages`, { content: args.content, replyMessageId: args.replyMessageId, echoId: `agent:${actor.config.id}:${args.requestId}` });
+    case 'send_pdf': {
+      const bytes = Buffer.from(args.contentBase64, 'base64');
+      if (bytes.length < 5 || bytes.length > 10 * 1024 * 1024 || bytes.subarray(0, 5).toString('ascii') !== '%PDF-') throw new AgentError(415, 'AGENT_PDF_INVALID');
+      const boundary = `agent-${actor.config.id}-${args.requestId}`;
+      const field = (fieldName: string, value: string) => Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="${fieldName}"\r\n\r\n${value}\r\n`);
+      const head = Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${args.fileName}"\r\nContent-Type: application/pdf\r\n\r\n`);
+      const body = Buffer.concat([field('caption', args.caption || ''), field('echoId', `agent:${actor.config.id}:${args.requestId}`), head, bytes, Buffer.from(`\r\n--${boundary}--\r\n`)]);
+      const url = `/api/v1/conversations/${conv}/attachments`;
+      const identity = createInternalAgentIdentity({ ...actor.user, email: actor.user.email ?? '', agentScope: { allowedAccountIds: accounts } }, 'POST', url);
+      try {
+        const result = await app.inject({ method: 'POST', url, headers: { 'x-crm-internal-agent': identity.key, 'content-type': `multipart/form-data; boundary=${boundary}`, 'x-attachment-count': '1', 'x-attachment-echo-id': `agent:${actor.config.id}:${args.requestId}` }, payload: body });
+        return { statusCode: result.statusCode, data: result.json() };
+      } finally { identity.dispose(); }
+    }
     default: throw new AgentError(404, 'AGENT_TOOL_NOT_FOUND');
   }
 }

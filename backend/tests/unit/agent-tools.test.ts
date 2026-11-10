@@ -119,6 +119,18 @@ describe('agent authorization', () => {
     expect(app.inject).toHaveBeenCalledWith(expect.objectContaining({ method: 'POST', url: '/api/v1/conversations/conv/messages', payload: { content: 'Hello', replyMessageId: undefined, echoId: 'agent:agent:request' } }));
     expect(JSON.stringify(app.inject.mock.calls)).not.toContain('https://evil');
   });
+  it('accepts only real PDF bytes and posts them to the scoped conversation attachment route', async () => {
+    const app = { inject: vi.fn().mockResolvedValue({ statusCode: 202, json: () => ({ deliveryState: 'queued' }) }) } as any;
+    const pdf = Buffer.from('%PDF-1.4\nminimal').toString('base64');
+    const result = await executeAgentTool(app, actor, 'send_pdf', { conversationId: 'conv', fileName: 'draft.pdf', contentBase64: pdf, caption: 'Draft', requestId: 'request' }, null);
+    expect(result.statusCode).toBe(202);
+    expect(app.inject).toHaveBeenCalledWith(expect.objectContaining({ method: 'POST', url: '/api/v1/conversations/conv/attachments' }));
+    const call = app.inject.mock.calls[0][0];
+    expect(call.headers['content-type']).toContain('multipart/form-data');
+    expect(call.payload.toString()).toContain('filename="draft.pdf"');
+    expect(call.payload.toString()).toContain('%PDF-1.4');
+    await expect(executeAgentTool(app, actor, 'send_pdf', { conversationId: 'conv', fileName: 'fake.pdf', contentBase64: Buffer.from('not pdf').toString('base64'), requestId: 'other' }, null)).rejects.toThrow('AGENT_PDF_INVALID');
+  });
   it('does not leak customer details through a mutation response', async () => {
     const app = { inject: vi.fn().mockResolvedValue({ statusCode: 200, json: () => ({ id: 'contact', notes: [{ body: 'hidden' }], friends: [{ zaloAccountId: 'other' }] }) }) } as any;
     const result = await executeAgentTool(app, actor, 'update_customer', { conversationId: 'conv', crmName: 'Name' }, 'contact');

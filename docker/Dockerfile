@@ -1,5 +1,7 @@
 # ── Stage 1: Build frontend ──────────────────────────────────────────────────
 FROM node:20-alpine AS frontend-builder
+# Keep the large Vue/Vuetify production build within the VPS memory budget.
+ENV NODE_OPTIONS=--max-old-space-size=4096
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci --legacy-peer-deps

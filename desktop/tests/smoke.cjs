@@ -20,6 +20,7 @@ async function run() {
     const executablePath = process.env.ZALOCRM_DESKTOP_TEST_EXE;
     desktop = await _electron.launch({ ...(executablePath ? { executablePath } : {}), args: executablePath ? [] : [path.resolve(__dirname, '..')], env: { ...process.env,
       ZALOCRM_DESKTOP_URL: origin, ZALOCRM_DESKTOP_PROFILE: profile }, timeout: 60000 });
+    // Select exact main-window origin; bubble/updater windows are not the CRM role.
     let main;
     for (let i = 0; i < 100; i++) {
       main = desktop.windows().find((page) => page.url() === `${origin}/`);
