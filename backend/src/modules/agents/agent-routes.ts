@@ -141,7 +141,7 @@ export async function agentApiRoutes(app: FastifyInstance) {
           const latest = await prepareAgentTool(current, tool.name, args);
           if (scopeFingerprint && await agentDraftScopeFingerprint(current) !== scopeFingerprint) throw new AgentError(409, 'AGENT_OPERATION_SCOPE_CHANGED');
           if (operation?.cached) {
-            const result = tool.name === 'send_message' ? await refreshAgentSendResult(current, args, operation.cached) : operation.cached;
+            const result = tool.name === 'send_message' || tool.name === 'send_pdf' ? await refreshAgentSendResult(current, args, operation.cached) : operation.cached;
             return reply.status(result.statusCode).send(result.data);
           }
           const result = await executeAgentTool(app, current, tool.name, args, latest.contactId ?? prepared.contactId);

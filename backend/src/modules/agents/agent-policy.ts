@@ -39,6 +39,7 @@ const schema = (properties: Record<string, unknown>, required: string[] = []) =>
 });
 const paging = { limit: integer(1, 100), offset: integer(0, 100000) };
 const mutation = { requestId: { type: 'string', format: 'uuid' } };
+const base64Pdf = { type: 'string', minLength: 8, maxLength: 14_000_000, pattern: '^[A-Za-z0-9+/]+={0,2}$' };
 type Tool = { name: string; description: string; permission: AgentPermission; grant: [Resource, Action]; write?: boolean; inputSchema: ReturnType<typeof schema> };
 export const AGENT_TOOLS: Tool[] = [
   { name: 'list_assignees', description: 'List CRM employees whose work this agent may view. Use their IDs with list_work.', permission: 'work_read', grant: ['conversation', 'access'], inputSchema: schema({ ...paging }) },
@@ -58,4 +59,5 @@ export const AGENT_TOOLS: Tool[] = [
   { name: 'create_appointment', description: 'Create an appointment. Existing CRM reminder rules apply.', permission: 'appointment_write', grant: ['contact', 'create'], write: true, inputSchema: schema({ conversationId: id, appointmentDate: { type: 'string', format: 'date-time' }, appointmentTime: { type: 'string', pattern: '^([01][0-9]|2[0-3]):[0-5][0-9]$' }, title: text(200), notes: text(), type: { type: 'string', enum: ['call', 'message', 'meeting', 'follow_up'] }, ...mutation }, ['conversationId', 'appointmentDate', 'requestId']) },
   { name: 'update_appointment', description: 'Update an appointment status without changing its customer or assignee.', permission: 'appointment_write', grant: ['contact', 'edit'], write: true, inputSchema: schema({ conversationId: id, appointmentId: id, status: { type: 'string', enum: ['completed', 'cancelled', 'no_show', 'scheduled'] }, ...mutation }, ['conversationId', 'appointmentId', 'status', 'requestId']) },
   { name: 'send_message', description: 'Send a text message through CRM outbox. Reuse requestId for retries. Never retry uncertain delivery with a new ID.', permission: 'message_send', grant: ['conversation', 'edit'], write: true, inputSchema: schema({ conversationId: id, content: text(10000), replyMessageId: id, ...mutation }, ['conversationId', 'content', 'requestId']) },
+  { name: 'send_pdf', description: 'Send one PDF attachment through the selected CRM conversation and its own Zalo account. Reuse requestId for status checks.', permission: 'message_send', grant: ['conversation', 'edit'], write: true, inputSchema: schema({ conversationId: id, fileName: { type: 'string', pattern: '^[A-Za-z0-9._-]{1,120}\\.pdf$' }, contentBase64: base64Pdf, caption: text(1000), ...mutation }, ['conversationId', 'fileName', 'contentBase64', 'requestId']) },
 ];

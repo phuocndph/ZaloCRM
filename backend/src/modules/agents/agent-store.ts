@@ -57,9 +57,10 @@ export async function reserveAgentOperation(actor: AgentActor, tool: string, arg
         const counterKey = `agent_quota:${config.id}:${new Date().toISOString().slice(0, 10)}`;
         const counterRow = await tx.appSetting.findUnique({ where: { orgId_settingKey: { orgId, settingKey: counterKey } } });
         const counter = JSON.parse(counterRow?.valuePlain ?? '{"writes":0,"sends":0}') as { writes: number; sends: number };
-        if (counter.writes >= config.maxWritesPerDay || (tool === 'send_message' && counter.sends >= config.maxSendsPerDay)) throw new AgentError(429, 'AGENT_DAILY_LIMIT');
+        const sends = tool === 'send_message' || tool === 'send_pdf';
+        if (counter.writes >= config.maxWritesPerDay || (sends && counter.sends >= config.maxSendsPerDay)) throw new AgentError(429, 'AGENT_DAILY_LIMIT');
         counter.writes++;
-        if (tool === 'send_message') counter.sends++;
+        if (sends) counter.sends++;
         const valuePlain = JSON.stringify(counter);
         await tx.appSetting.upsert({ where: { orgId_settingKey: { orgId, settingKey: counterKey } }, create: { orgId, settingKey: counterKey, valuePlain }, update: { valuePlain } });
         await tx.appSetting.create({ data: { orgId, settingKey: key, valuePlain: JSON.stringify({ state: 'running', fingerprint, scopeFingerprint }) } });

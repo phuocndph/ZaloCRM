@@ -28,6 +28,14 @@ describe('agent credentials and capabilities', () => {
       if (tool.write) expect(tool.inputSchema.required).toContain('requestId');
     }
   });
+  it('exposes a PDF-only scoped delivery tool without adding a broader permission', () => {
+    const tool = AGENT_TOOLS.find(row => row.name === 'send_pdf');
+    expect(tool?.permission).toBe('message_send');
+    expect(tool?.inputSchema.properties).toHaveProperty('conversationId');
+    expect(tool?.inputSchema.properties).toHaveProperty('contentBase64');
+    expect(tool?.inputSchema.properties).not.toHaveProperty('url');
+    expect(tool?.inputSchema.properties).not.toHaveProperty('path');
+  });
   it('internal identity is one-use and bound to the exact HTTP operation', () => {
     const user = { id: 'user', orgId: 'org', role: 'member', email: '' };
     const entry = createInternalAgentIdentity(user, 'POST', '/api/v1/conversations/conv/messages');
