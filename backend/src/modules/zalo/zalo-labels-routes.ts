@@ -22,6 +22,7 @@ import { logger } from '../../shared/utils/logger.js';
 import { zaloPool } from './zalo-pool.js';
 import { logActivity } from '../activity/activity-logger.js';
 import { getZaloScope, requireAccountManagement, requireAccountVisible } from './zalo-scope.js';
+import { isFriendLabelStateUnchanged } from './zalo-label-diff.js';
 
 type LabelDataFromSdk = {
   id: number | string;
@@ -393,6 +394,11 @@ export async function syncLabelsForAccount(
       const mirroredTag = `🔵 ${labelName}`;
       if (!newCrmTags.includes(mirroredTag)) newCrmTags.push(mirroredTag);
     }
+
+    // Không có gì đổi → bỏ qua UPDATE + socket emit + dual-write. Trước đây MỌI friend
+    // của nick bị ghi lại và phát 'friend:updated' ở mỗi lần sync (cron 15 phút và mỗi
+    // lần sale đổi hội thoại qua /labels/touch), dù phần lớn friend không có label nào.
+    if (isFriendLabelStateUnchanged(f.zaloLabels, newLabels, f.crmTagsPerNick, newCrmTags)) continue;
 
     await prisma.friend.update({
       where: { id: f.id },

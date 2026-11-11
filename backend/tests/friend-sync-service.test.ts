@@ -36,7 +36,7 @@ vi.mock('../src/modules/activity/activity-logger.js', () => ({
   logActivity: logActivityMock,
 }));
 
-const { syncFriendsForAccount, resetFriendReadBackoffForTests } = await import('../src/modules/zalo/friend-sync-service.js');
+const { syncFriendsForAccount, resetFriendReadBackoffForTests, isSameSignedAvatar, computeDiff } = await import('../src/modules/zalo/friend-sync-service.js');
 
 function mockIO() {
   const toMock = { emit: vi.fn() };
@@ -244,5 +244,61 @@ describe('syncFriendsForAccount — pending sent requests', () => {
         newFriendshipStatus: 'pending_sent',
       }),
     );
+  });
+});
+
+describe('signed Zalo avatar URLs', () => {
+  const NOW = Date.UTC(2026, 10, 10);
+  const DAY = 24 * 60 * 60;
+  const signed = (path: string, key: string, expiresInDays: number) =>
+    `https://s120-ava-talk.zadn.vn/${path}?key=${key}&time=${Math.floor(NOW / 1000) + expiresInDays * DAY}`;
+
+  it('treats a re-signed URL of the same image as unchanged', () => {
+    expect(isSameSignedAvatar(signed('1/abc.jpg', 'k1', 59), signed('1/abc.jpg', 'k2', 60), NOW)).toBe(true);
+    expect(computeDiff(
+      { zaloDisplayName: 'A', zaloAvatarUrl: signed('1/abc.jpg', 'k1', 59), zaloGlobalId: 'g', zaloUsername: 'u' },
+      { zaloDisplayName: 'A', zaloAvatarUrl: signed('1/abc.jpg', 'k2', 60), zaloGlobalId: 'g', zaloUsername: 'u' },
+      NOW,
+    )).toEqual({});
+  });
+
+  it('reports a change when the image path differs', () => {
+    const next = signed('1/new.jpg', 'k2', 60);
+    expect(isSameSignedAvatar(signed('1/abc.jpg', 'k1', 59), next, NOW)).toBe(false);
+    expect(computeDiff({ zaloAvatarUrl: signed('1/abc.jpg', 'k1', 59) }, { zaloAvatarUrl: next }, NOW))
+      .toEqual({ zaloAvatarUrl: next });
+  });
+
+  it('refreshes the stored signature before it expires', () => {
+    const next = signed('1/abc.jpg', 'k2', 60);
+    expect(isSameSignedAvatar(signed('1/abc.jpg', 'k1', 29), next, NOW)).toBe(false);
+    expect(isSameSignedAvatar(signed('1/abc.jpg', 'k1', -1), next, NOW)).toBe(false);
+  });
+
+  it('keeps strict comparison for unsigned or unparsable values', () => {
+    expect(isSameSignedAvatar('http://a.png', 'http://a.png', NOW)).toBe(true);
+    expect(isSameSignedAvatar('http://a.png', 'http://a.png?v=2', NOW)).toBe(false);
+    expect(isSameSignedAvatar('not a url', 'also not a url', NOW)).toBe(false);
+    expect(isSameSignedAvatar(null, signed('1/abc.jpg', 'k', 60), NOW)).toBe(false);
+    expect(isSameSignedAvatar(signed('1/abc.jpg', 'k', 60), null, NOW)).toBe(false);
+  });
+
+  it('does not write or emit when only the avatar signature rotated', async () => {
+    const future = Math.floor(Date.now() / 1000) + 59 * DAY;
+    zaloOpsMock.getAllFriends.mockResolvedValue([
+      { userId: 'uid-1', zaloName: 'Anh Tuấn', avatar: `https://s120-ava-talk.zadn.vn/1/abc.jpg?key=new&time=${future + DAY}`, globalId: 'g1', username: 'tuan' },
+    ]);
+    prismaMock.friend.findMany.mockResolvedValue([
+      {
+        id: 'f1', contactId: 'c1', zaloUidInNick: 'uid-1', zaloDisplayName: 'Anh Tuấn',
+        zaloAvatarUrl: `https://s120-ava-talk.zadn.vn/1/abc.jpg?key=old&time=${future}`,
+        zaloGlobalId: 'g1', zaloUsername: 'tuan',
+      },
+    ]);
+    const io = mockIO();
+    const r = await syncFriendsForAccount('za-signed', 'org-1', { trigger: 'cron', io });
+    expect(r.emittedCount).toBe(0);
+    expect(prismaMock.friend.update).not.toHaveBeenCalled();
+    expect(io._toMock.emit).not.toHaveBeenCalled();
   });
 });

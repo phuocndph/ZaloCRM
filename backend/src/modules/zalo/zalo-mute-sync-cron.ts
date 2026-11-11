@@ -64,36 +64,52 @@ async function syncAccount(account: { id: string; orgId: string; displayName: st
       zaloAccountId: account.id, threadType: { in: [...activeByType.keys()] },
       externalThreadId: { not: null }, deletedAt: null,
     },
-    select: { id: true, externalThreadId: true, threadType: true },
+    select: {
+      id: true, externalThreadId: true, threadType: true,
+      zaloNotificationsMuted: true, zaloMutedUntil: true,
+    },
   }));
 
   if (!conversations.length) return { groups: 0, conversations: 0, muted: 0, changed: 0 };
   let changed = 0;
   let mutedCount = 0;
-  await withTenant(account.orgId, () => prisma.$transaction(async (tx) => {
-    for (const conversation of conversations) {
-      const active = activeByType.get(conversation.threadType)!;
-      const muteUntil = active.get(conversation.externalThreadId!) ?? null;
-      const muted = active.has(conversation.externalThreadId!);
-      if (muted) mutedCount++;
-      const result = await tx.conversation.updateMany({
-        where: {
-          id: conversation.id,
-          OR: [
-            { zaloNotificationsMuted: { not: muted } },
-            { zaloMutedUntil: muteUntil ? { not: muteUntil } : { not: null } },
-            ...(muteUntil ? [{ zaloMutedUntil: null }] : []),
-          ],
-        },
-        data: {
-          zaloNotificationsMuted: muted,
-          zaloMutedUntil: muteUntil,
-          zaloMuteSyncedAt: now,
-        },
-      });
-      changed += result.count;
-    }
-  }));
+  // So sánh trong bộ nhớ trước: chạy mỗi phút, hầu hết hội thoại không đổi trạng
+  // thái. Trước đây mỗi hội thoại phát một câu UPDATE (kể cả khi không đổi) trong
+  // cùng một transaction, nick nhiều hội thoại vượt timeout 5s và không bao giờ
+  // đồng bộ được.
+  const pending: Array<{ id: string; muted: boolean; muteUntil: Date | null }> = [];
+  for (const conversation of conversations) {
+    const active = activeByType.get(conversation.threadType)!;
+    const muteUntil = active.get(conversation.externalThreadId!) ?? null;
+    const muted = active.has(conversation.externalThreadId!);
+    if (muted) mutedCount++;
+    const storedUntil = conversation.zaloMutedUntil ? new Date(conversation.zaloMutedUntil).getTime() : null;
+    const nextUntil = muteUntil ? muteUntil.getTime() : null;
+    if (conversation.zaloNotificationsMuted === muted && storedUntil === nextUntil) continue;
+    pending.push({ id: conversation.id, muted, muteUntil });
+  }
+  if (pending.length) {
+    await withTenant(account.orgId, () => prisma.$transaction(async (tx) => {
+      for (const { id, muted, muteUntil } of pending) {
+        const result = await tx.conversation.updateMany({
+          where: {
+            id,
+            OR: [
+              { zaloNotificationsMuted: { not: muted } },
+              { zaloMutedUntil: muteUntil ? { not: muteUntil } : { not: null } },
+              ...(muteUntil ? [{ zaloMutedUntil: null }] : []),
+            ],
+          },
+          data: {
+            zaloNotificationsMuted: muted,
+            zaloMutedUntil: muteUntil,
+            zaloMuteSyncedAt: now,
+          },
+        });
+        changed += result.count;
+      }
+    }, { timeout: 30_000 }));
+  }
 
   return {
     groups: conversations.filter((conversation) => conversation.threadType === 'group').length,

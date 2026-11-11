@@ -125,6 +125,48 @@ async function refreshAccountPresence(accountId: string): Promise<{ onlineCount:
 
 let cronJob: cron.ScheduledTask | null = null;
 
+// Lùi dần khi một nick gọi getFriendOnlines thất bại liên tiếp. Trước đây nick lỗi
+// (vd Zalo trả 404) vẫn bị gọi lại mỗi phút mãi mãi: 9 nick = 9 lỗi mỗi phút.
+const PRESENCE_BACKOFF_MAX_MS = 30 * 60_000;
+const presenceFailures = new Map<string, { failures: number; nextAttemptAt: number }>();
+
+/** Thời gian chờ trước lần thử kế tiếp sau `failures` lần lỗi liên tiếp. */
+export function presenceBackoffMs(failures: number): number {
+  if (failures <= 0) return 0;
+  return Math.min(PRESENCE_BACKOFF_MAX_MS, 60_000 * (2 ** Math.min(failures - 1, 10)));
+}
+
+/** Một vòng làm mới presence cho danh sách nick, có lùi dần theo từng nick. */
+export async function runPresenceRefreshCycle(
+  accountIds: string[],
+  refresh: (accountId: string) => Promise<{ onlineCount: number } | null> = refreshAccountPresence,
+  now: () => number = Date.now,
+): Promise<{ attempted: number; skipped: number; totalOnline: number }> {
+  let attempted = 0;
+  let skipped = 0;
+  let totalOnline = 0;
+  const live = new Set(accountIds);
+  for (const id of presenceFailures.keys()) if (!live.has(id)) presenceFailures.delete(id);
+  for (const accountId of accountIds) {
+    const state = presenceFailures.get(accountId);
+    if (state && state.nextAttemptAt > now()) { skipped++; continue; }
+    attempted++;
+    const result = await refresh(accountId);
+    if (result) {
+      totalOnline += result.onlineCount;
+      presenceFailures.delete(accountId);
+    } else {
+      const failures = (state?.failures ?? 0) + 1;
+      presenceFailures.set(accountId, { failures, nextAttemptAt: now() + presenceBackoffMs(failures) - 5_000 });
+    }
+  }
+  return { attempted, skipped, totalOnline };
+}
+
+export function resetPresenceBackoffForTest(): void {
+  presenceFailures.clear();
+}
+
 export function startPresenceCron(io: Server | null): void {
   ioRef = io;
 
@@ -137,14 +179,12 @@ export function startPresenceCron(io: Server | null): void {
         select: { id: true },
       }),
     );
-    let totalOnline = 0;
-    for (const acc of accounts) {
-      const result = await refreshAccountPresence(acc.id);
-      if (result) totalOnline += result.onlineCount;
-    }
+    const { attempted, skipped, totalOnline } = await runPresenceRefreshCycle(accounts.map((acc) => acc.id));
     if (accounts.length > 0) {
       logger.debug('[presence] bulk refresh done', {
         accounts: accounts.length,
+        attempted,
+        skipped,
         totalOnline,
         cacheSize: cache.size,
       });

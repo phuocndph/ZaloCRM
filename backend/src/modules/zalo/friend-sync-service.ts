@@ -104,14 +104,47 @@ const DIFFABLE_FIELDS = [
 type DiffableField = (typeof DIFFABLE_FIELDS)[number];
 type DiffSnapshot = Partial<Record<DiffableField, string | null>>;
 
-function computeDiff(existing: DiffSnapshot, incoming: DiffSnapshot): DiffSnapshot {
+// Zalo trả avatar dạng URL có chữ ký: `...jpg?key=<sig>&time=<epoch giây hết hạn>`.
+// `key`/`time` đổi ở MỖI lần gọi getAllFriends dù ảnh không đổi, nên so chuỗi thẳng
+// làm mọi friend bị coi là "đổi avatar" ở mọi chu kỳ (1 UPDATE + 1 socket emit/friend).
+// Coi là KHÔNG đổi khi cùng origin + pathname và chữ ký đang lưu còn hạn dài; khi hạn
+// còn dưới ngưỡng thì cho ghi đè để URL trong DB không bao giờ hết hạn.
+const AVATAR_SIGNATURE_REFRESH_MS = 30 * 24 * 60 * 60 * 1000;
+
+export function isSameSignedAvatar(
+  stored: string | null,
+  incoming: string | null,
+  nowMs: number = Date.now(),
+): boolean {
+  if (stored === incoming) return true;
+  if (!stored || !incoming) return false;
+  let a: URL;
+  let b: URL;
+  try {
+    a = new URL(stored);
+    b = new URL(incoming);
+  } catch {
+    return false;
+  }
+  if (a.origin !== b.origin || a.pathname !== b.pathname) return false;
+  const expiresAtSec = Number(a.searchParams.get('time'));
+  // URL đang lưu không có hạn đọc được → không chắc còn dùng được, cho ghi đè.
+  if (!Number.isFinite(expiresAtSec) || expiresAtSec <= 0) return false;
+  return expiresAtSec * 1000 - nowMs > AVATAR_SIGNATURE_REFRESH_MS;
+}
+
+export function computeDiff(
+  existing: DiffSnapshot,
+  incoming: DiffSnapshot,
+  nowMs: number = Date.now(),
+): DiffSnapshot {
   const patch: DiffSnapshot = {};
   for (const k of DIFFABLE_FIELDS) {
     const oldV = existing[k] ?? null;
     const newV = incoming[k] ?? null;
-    if (oldV !== newV) {
-      patch[k] = newV;
-    }
+    if (oldV === newV) continue;
+    if (k === 'zaloAvatarUrl' && isSameSignedAvatar(oldV, newV, nowMs)) continue;
+    patch[k] = newV;
   }
   return patch;
 }
