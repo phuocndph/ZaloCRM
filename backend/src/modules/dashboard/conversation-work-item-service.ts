@@ -742,6 +742,20 @@ export async function collectAllPages<T extends { id: string }>(
   return rows;
 }
 
+// Bỏ qua dòng không đổi: cùng fingerprint, chưa hết snooze, không phải dismissed.
+// Trước đây mọi ứng viên đều upsert mỗi 2 phút nên transaction vượt 5 giây.
+export function needsWorkItemWrite(
+  current: { fingerprint: string | null; status: string; snoozedUntil: Date | null } | undefined,
+  fingerprint: string | null,
+  now: Date,
+) {
+  if (!current) return true;
+  if (current.fingerprint !== fingerprint) return true;
+  if (current.status === 'dismissed') return true;
+  if (current.status === 'snoozed' && !!current.snoozedUntil && current.snoozedUntil <= now) return true;
+  return false;
+}
+
 export async function reconcileConversationWorkItems(input: {
   orgId: string;
   assigneeUserId: string;
@@ -1048,7 +1062,7 @@ export async function reconcileConversationWorkItems(input: {
   const existingByGroup = new Map(existingGroups.map((row) => [row.sourceId, row]));
 
   await prisma.$transaction([
-    ...candidates.map((candidate) => {
+    ...candidates.filter((candidate) => needsWorkItemWrite(existingByContact.get(candidate.contactId), candidate.fingerprint, now)).map((candidate) => {
       const current = existingByContact.get(candidate.contactId);
       const changed = current?.fingerprint !== candidate.fingerprint;
       const snoozeExpired = current?.status === 'snoozed' && !!current.snoozedUntil && current.snoozedUntil <= now;
@@ -1083,7 +1097,7 @@ export async function reconcileConversationWorkItems(input: {
       },
       data: { status: 'dismissed', completedAt: null, snoozedUntil: null },
     }),
-    ...groupCandidates.map((candidate) => {
+    ...groupCandidates.filter((candidate) => needsWorkItemWrite(existingByGroup.get(candidate.sourceId), candidate.fingerprint, now)).map((candidate) => {
       const current = existingByGroup.get(candidate.sourceId);
       const changed = current?.fingerprint !== candidate.fingerprint;
       const snoozeExpired = current?.status === 'snoozed' && !!current.snoozedUntil && current.snoozedUntil <= now;
