@@ -1255,6 +1255,15 @@ function buildChat() {
     registerPendingTags(conv.id, conv.friendship.crmTagsPerNick);
   }
 
+  let missingConvRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  function scheduleMissingConversationRefresh() {
+    if (missingConvRefreshTimer) return;
+    missingConvRefreshTimer = setTimeout(() => {
+      missingConvRefreshTimer = null;
+      void fetchConversations({ bypassCache: true });
+    }, 800);
+  }
+
   function initSocket() {
     window.addEventListener('friend-crm-tags-changed', onFriendCrmTagsChanged);
     socket = createAppSocket({
@@ -1396,6 +1405,11 @@ function buildChat() {
         } else {
           conversations.value.splice(idx, 1, conv);
         }
+      } else {
+        // 2026-11-16 — hội thoại CHƯA nằm trong danh sách đang tải (khách mới, hoặc khách cũ
+        // trôi ngoài trang đầu): trước đây bỏ qua → tin không hiện tới khi F5/đổi tab. Giờ
+        // tải lại danh sách (gộp burst trong 800ms thành 1 lượt).
+        scheduleMissingConversationRefresh();
       }
       // 2026-06-12 (anh báo: tab "Ưu tiên" có tin mới mà badge KHÔNG tăng tới khi reload).
       // Gốc: conv thuộc tab Ưu tiên KHÔNG nằm trong conversations.value (list tab hiện tại)
@@ -1701,6 +1715,7 @@ function buildChat() {
     window.removeEventListener('friend-crm-tags-changed', onFriendCrmTagsChanged);
     document.removeEventListener('visibilitychange', onVisible);
     window.removeEventListener('online', onOnline);
+    if (missingConvRefreshTimer) { clearTimeout(missingConvRefreshTimer); missingConvRefreshTimer = null; }
     socket?.disconnect();
     socket = null;
     activeMessageController?.abort();

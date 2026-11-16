@@ -80,4 +80,38 @@ describe('desktop conversation inbox', () => {
     expect(inbox.accessRevision.value).toBe(1);
     expect(inbox.rows.value).toEqual([]);
   });
+  it('puts an incoming message for a listed conversation on top immediately, without waiting for HTTP', async () => {
+    vi.useFakeTimers();
+    mocks.get.mockImplementation((path: string) => Promise.resolve({ data: path === '/zalo-accounts' ? [] : { conversations: [{ id: 'a', unreadCount: 0 }, { id: 'b', unreadCount: 0 }], hasMore: false } }));
+    const { inbox } = start(); await flushPromises();
+    const calls = mocks.get.mock.calls.length;
+    mocks.handlers.get('chat:message')!({ conversationId: 'b', accountId: 'nick', message: { id: 'm1', content: 'xin chao', senderType: 'contact', sentAt: '2026-11-16T03:00:00.000Z' } });
+    expect(inbox.rows.value.map((row) => row.id)).toEqual(['b', 'a']);
+    expect(inbox.rows.value[0].unreadCount).toBe(1);
+    expect((inbox.rows.value[0].messages as any)[0].content).toBe('xin chao');
+    expect(inbox.rows.value[0].lastMessageAt).toBe('2026-11-16T03:00:00.000Z');
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mocks.get.mock.calls.length).toBe(calls);
+    await vi.advanceTimersByTimeAsync(5000); await flushPromises();
+    expect(mocks.get.mock.calls.length).toBe(calls + 1);
+  });
+  it('refetches when the conversation is not in the list, and ignores other nicks when filtered', async () => {
+    vi.useFakeTimers();
+    const { inbox, account } = start(); await flushPromises();
+    const calls = mocks.get.mock.calls.length;
+    mocks.handlers.get('chat:message')!({ conversationId: 'new', accountId: 'nick', message: { id: 'm2', senderType: 'contact', sentAt: '2026-11-16T03:00:00.000Z' } });
+    await vi.advanceTimersByTimeAsync(510); await flushPromises();
+    expect(mocks.get.mock.calls.length).toBe(calls + 1);
+    account.value = 'nick'; await vi.advanceTimersByTimeAsync(300); await flushPromises();
+    const after = mocks.get.mock.calls.length;
+    mocks.handlers.get('chat:message')!({ conversationId: 'first', accountId: 'other', message: { id: 'm3', senderType: 'contact' } });
+    await vi.advanceTimersByTimeAsync(6000); await flushPromises();
+    expect(mocks.get.mock.calls.length).toBe(after);
+    expect(inbox.rows.value[0].unreadCount ?? 0).toBe(0);
+  });
+  it('does not count own outgoing messages as unread', async () => {
+    const { inbox } = start(); await flushPromises();
+    mocks.handlers.get('chat:message')!({ conversationId: 'first', message: { id: 'm4', senderType: 'self', sentAt: '2026-11-16T03:00:00.000Z' } });
+    expect(inbox.rows.value[0].unreadCount ?? 0).toBe(0);
+  });
 });

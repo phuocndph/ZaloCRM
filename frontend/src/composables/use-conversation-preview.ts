@@ -208,7 +208,17 @@ export function useConversationPreview(conversationId: Ref<string>, viewerId: Re
     if (customerTypingTimer) clearTimeout(customerTypingTimer);
     customerTypingTimer = setTimeout(() => { customerTyping.value = false; }, 5000);
   });
-  for (const event of ['chat:message', 'chat:deleted', 'chat:message-edited', 'chat:reactions', 'chat:group-info-updated', 'conversation:state', 'conversation:pin', 'conversation:unpin', 'zalo:message-status']) {
+  // 2026-11-16 — tin mới của hội thoại đang mở: hiện NGAY từ socket rồi mới đối soát qua HTTP.
+  // Chỉ chèn bản KHÔNG bị làm mờ (nick Thường); nick Riêng tư vẫn đọc qua HTTP như cũ.
+  socket.on('chat:message', (payload: { conversationId?: string; message?: Message; _privacyMeta?: { privacyMode?: string } }) => {
+    if (payload?.conversationId !== conversationId.value) return;
+    const message = payload.message as (Message & { redacted?: boolean }) | undefined;
+    if (message && !blocked.value && conversation.value && !message.redacted && payload._privacyMeta?.privacyMode !== 'main') {
+      messages.value = upsertMessageByIdentity(messages.value, normalizePreviewMessage(message)).sort(compareEchoMessages);
+    }
+    scheduleRefresh();
+  });
+  for (const event of ['chat:deleted', 'chat:message-edited', 'chat:reactions', 'chat:group-info-updated', 'conversation:state', 'conversation:pin', 'conversation:unpin', 'zalo:message-status']) {
     socket.on(event, (payload: { conversationId?: string }) => {
       if (payload?.conversationId === conversationId.value) scheduleRefresh();
     });
