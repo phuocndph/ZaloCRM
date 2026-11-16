@@ -228,6 +228,7 @@ function trayMenu() {
     { label: 'Khởi động cùng Windows', type: 'checkbox', checked: preferences.launchAtLogin, enabled: app.isPackaged,
       click: (item) => { preferences.launchAtLogin = item.checked; app.setLoginItemSettings({ openAtLogin: item.checked, args: ['--background'] }); savePreferences(); } },
     { label: 'Ẩn thẻ tin mới', click: hidePreview },
+    { label: 'Tải lại giao diện', click: reloadAllCrm },
     { type: 'separator' }, { label: 'Thoát', click: () => app.quit() },
   ]);
 }
@@ -308,7 +309,19 @@ async function installUpdate(event, value, trusted = false) {
     updateInProgress = false;
   }
 }
+// 2026-11-16: tải lại giao diện CRM bằng phím như trình duyệt (F5, Ctrl+R; Ctrl+F5, Ctrl+Shift+R bỏ qua bộ đệm).
+function reloadCrm(win, hard = false) {
+  if (!live(win) || !sameOrigin(win.webContents.getURL(), origin)) return;
+  if (hard) win.webContents.reloadIgnoringCache(); else win.webContents.reload();
+}
+function reloadAllCrm() { for (const win of BrowserWindow.getAllWindows()) reloadCrm(win, true); }
 function protect(win) {
+  win.webContents.on('before-input-event', (event, input) => {
+    if (input.type !== 'keyDown' || input.alt || input.meta) return;
+    const key = String(input.key || '').toLowerCase();
+    const ctrl = input.control;
+    if (key === 'f5' || (ctrl && key === 'r')) { event.preventDefault(); reloadCrm(win, (ctrl && key === 'f5') || (ctrl && input.shift)); }
+  });
   win.webContents.on('will-navigate', (event, url) => { if (!sameOrigin(url, origin)) event.preventDefault(); });
   win.webContents.on('will-redirect', (event, url) => { if (!sameOrigin(url, origin)) event.preventDefault(); });
   win.webContents.on('will-attach-webview', (event) => event.preventDefault());
@@ -431,6 +444,10 @@ if (locked) {
     Menu.setApplicationMenu(Menu.buildFromTemplate([
       { label: 'ZaloCRM', submenu: [{ label: 'Mở ZaloCRM', click: () => showMain() }, { type: 'separator' }, { label: 'Thoát', click: () => app.quit() }] },
       { role: 'editMenu', label: 'Chỉnh sửa' },
+      { label: 'Xem', submenu: [
+        { label: 'Tải lại trang', accelerator: 'CommandOrControl+R', registerAccelerator: false, click: (_item, win) => reloadCrm(win || mainWindow) },
+        { label: 'Tải lại hoàn toàn', accelerator: 'CommandOrControl+F5', registerAccelerator: false, click: (_item, win) => reloadCrm(win || mainWindow, true) },
+      ] },
       { label: 'Cập nhật', submenu: [{ label: `Phiên bản ${app.getVersion()}`, enabled: false }, { label: 'Kiểm tra bản cập nhật…', accelerator: 'CommandOrControl+Shift+U', click: openUpdater }] },
     ]));
     mainWindow = new BrowserWindow({ width: 1280, height: 820, minWidth: 840, minHeight: 540, title: 'ZaloCRM',
