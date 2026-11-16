@@ -77,16 +77,23 @@ describe('read-only conversation preview', () => {
     expect(mocks.get).toHaveBeenLastCalledWith('/conversations/first/messages', expect.objectContaining({ params: { limit: 40, cursor: 'older-cursor' } }));
   });
 
-  it('coalesces selected-chat events and never trusts their raw contents', async () => {
+  it('coalesces selected-chat events, shows the open chat message at once and ignores other chats', async () => {
     handlers['chat:message']({ conversationId: 'other', message: message('wrong') });
     await vi.advanceTimersByTimeAsync(400);
     expect(mocks.get).toHaveBeenCalledTimes(2);
-    handlers['chat:message']({ conversationId: 'first', message: message('unverified') });
-    handlers['chat:message']({ conversationId: 'first', message: message('unverified') });
-    expect(view.messages.value.map((item) => item.id)).toEqual(['first']);
+    handlers['chat:message']({ conversationId: 'first', message: message('live', 11) });
+    handlers['chat:message']({ conversationId: 'first', message: message('live', 11) });
+    expect(view.messages.value.map((item) => item.id)).toEqual(['first', 'live']);
     await vi.advanceTimersByTimeAsync(350);
     expect(mocks.get).toHaveBeenCalledTimes(4);
     expect(mocks.post).not.toHaveBeenCalled();
+  });
+
+  it('does not insert redacted or private-mode socket content, only refreshes over HTTP', async () => {
+    await vi.advanceTimersByTimeAsync(400);
+    handlers['chat:message']({ conversationId: 'first', message: { ...message('blurred', 11), redacted: true } });
+    handlers['chat:message']({ conversationId: 'first', message: message('main-nick', 11), _privacyMeta: { privacyMode: 'main' } });
+    expect(view.messages.value.map((item) => item.id)).toEqual(['first']);
   });
 
   it('clears content immediately on a permission change and blocks forbidden responses', async () => {

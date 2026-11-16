@@ -3,6 +3,14 @@ import { api } from '@/api';
 import { createAppSocket } from '@/api/socket';
 import type { Conversation } from './use-chat';
 
+type IncomingChatMessage = {
+  conversationId?: string;
+  accountId?: string;
+  systemNotification?: boolean;
+  message?: { senderType?: string; sentAt?: string; [key: string]: unknown };
+};
+const RECONCILE_DELAY_MS = 5_000;
+
 export function useDesktopConversations(search: Ref<string>, unread: Ref<boolean>, accountId: Ref<string>) {
   const rows = ref<Conversation[]>([]);
   const accounts = ref<Array<{ id: string; displayName: string | null }>>([]);
@@ -14,6 +22,7 @@ export function useDesktopConversations(search: Ref<string>, unread: Ref<boolean
   let timer: ReturnType<typeof setTimeout> | null = null;
   let debounce: ReturnType<typeof setTimeout> | null = null;
   let refreshQueued = false;
+  let reconcileTimer: ReturnType<typeof setTimeout> | null = null;
   async function refresh(append = false) {
     if (disposed || (append && (loading.value || loadingMore.value || !hasMore.value))) return;
     if (request) { if (!append) refreshQueued = true; return; }
@@ -68,6 +77,7 @@ export function useDesktopConversations(search: Ref<string>, unread: Ref<boolean
     loading.value = false; loadingMore.value = false;
     if (timer) clearTimeout(timer); timer = null;
     if (debounce) clearTimeout(debounce); debounce = null;
+    if (reconcileTimer) clearTimeout(reconcileTimer); reconcileTimer = null;
   }
   function invalidate() {
     cancelRefresh(); rows.value = []; accounts.value = []; cursor = null; page = 1; hasMore.value = false;
@@ -79,7 +89,38 @@ export function useDesktopConversations(search: Ref<string>, unread: Ref<boolean
     debounce = setTimeout(() => { debounce = null; void refresh(); }, 220);
   });
   const socket = createAppSocket({ onStatusChange: (status) => { offline.value = status !== 'connected'; }, onReconnect: () => { void loadAccounts(); schedule(); } });
-  for (const event of ['chat:message', 'chat:read', 'chat:deleted', 'chat:message-edited', 'conversation:state', 'chat:group-info-updated']) socket.on(event, schedule);
+  // 2026-11-16 — tin mới: đưa THẲNG lên đầu danh sách từ dữ liệu socket (như bản web),
+  // không chờ tải lại cả danh sách qua HTTP (mỗi trang ~190KB, nhiều trang tải lần lượt,
+  // giờ đông tin xếp hàng chờ nhau → tin hiện trễ). Chỉ tải lại khi hội thoại chưa có trong
+  // danh sách đang hiện, hoặc đang tìm kiếm; sau đó đối soát nhẹ 1 lần (debounce dài).
+  function onMessage(data: IncomingChatMessage) {
+    if (disposed) return;
+    const message = data?.message;
+    if (!data?.conversationId || !message) { schedule(); return; }
+    if (accountId.value && data.accountId && data.accountId !== accountId.value) return;
+    if (search.value.trim()) { schedule(); return; }
+    const index = rows.value.findIndex((row) => row.id === data.conversationId);
+    if (index < 0) { schedule(); return; }
+    const current = rows.value[index];
+    const inbound = message.senderType !== 'self' && data.systemNotification !== true;
+    const updated = {
+      ...current,
+      lastMessageAt: message.sentAt ?? current.lastMessageAt,
+      messages: [message] as unknown as Conversation['messages'],
+      unreadCount: inbound ? (current.unreadCount ?? 0) + 1 : current.unreadCount,
+    } as Conversation;
+    const next = rows.value.slice();
+    next.splice(index, 1);
+    next.unshift(updated);
+    rows.value = next;
+    scheduleReconcile();
+  }
+  function scheduleReconcile() {
+    if (disposed || reconcileTimer) return;
+    reconcileTimer = setTimeout(() => { reconcileTimer = null; schedule(); }, RECONCILE_DELAY_MS);
+  }
+  socket.on('chat:message', onMessage);
+  for (const event of ['chat:read', 'chat:deleted', 'chat:message-edited', 'conversation:state', 'chat:group-info-updated']) socket.on(event, schedule);
   for (const event of ['zalo:access-changed', 'privacy:mode-changed', 'conversation:privacy-changed']) socket.on(event, invalidate);
   const resume = () => { if (!document.hidden) schedule(); };
   window.addEventListener('focus', resume); window.addEventListener('online', resume);

@@ -34,6 +34,19 @@ export function getSocketAuth(socket: Socket): SocketAuthCtx | undefined {
   return socket.data?.authCtx as SocketAuthCtx | undefined;
 }
 
+/** Đặt (hoặc dời) mốc ngắt socket đúng lúc access token hết hạn. */
+function armExpiryTimer(socket: Socket, exp: number | undefined): void {
+  const prev = socket.data?.expiryTimer as NodeJS.Timeout | undefined;
+  if (prev) clearTimeout(prev);
+  socket.data.expiryTimer = undefined;
+  if (typeof exp !== 'number') return;
+  // setTimeout cap ~24 ngày (int32) — token đời ngắn nên an toàn.
+  socket.data.expiryTimer = setTimeout(() => {
+    logger.debug(`[socket-auth] token hết hạn, ngắt socket ${socket.id}`);
+    socket.disconnect(true);
+  }, Math.max(0, exp * 1000 - Date.now()));
+}
+
 /**
  * Đăng ký auth middleware + connection lifecycle cho Socket.IO.
  * PHẢI gọi TRƯỚC mọi registerXxxSocketHandlers để io.use() chạy trước.
@@ -72,17 +85,10 @@ export function registerSocketAuth(io: Server, app: FastifyInstance): void {
       } satisfies SocketAuthCtx;
 
       // T3-A: ngắt socket đúng lúc token hết hạn (access token ngắn 15' ở Phase 2).
-      if (typeof payload.exp === 'number') {
-        const msLeft = payload.exp * 1000 - Date.now();
-        if (msLeft <= 0) {
-          return next(new Error('token_expired'));
-        }
-        // setTimeout cap ~24 ngày (int32) — token đời ngắn nên an toàn.
-        socket.data.expiryTimer = setTimeout(() => {
-          logger.debug(`[socket-auth] token hết hạn, ngắt socket ${socket.id}`);
-          socket.disconnect(true);
-        }, msLeft);
+      if (typeof payload.exp === 'number' && payload.exp * 1000 <= Date.now()) {
+        return next(new Error('token_expired'));
       }
+      armExpiryTimer(socket, payload.exp);
 
       return next();
     } catch {
@@ -100,6 +106,34 @@ export function registerSocketAuth(io: Server, app: FastifyInstance): void {
       // org nhận bản đã làm mờ ở room org. userId lấy từ token (không nhận từ client).
       socket.join(`user:${ctx.userId}`);
     }
+    // 2026-11-16 — gia hạn token NGAY TRÊN kết nối đang mở. Trước đây cứ 15' server ngắt
+    // socket (token hết hạn) rồi client nối lại → tin đến trong khe đứt bị lỡ. Giờ client gửi
+    // access token mới trước khi hết hạn; server verify lại đủ như lúc handshake và chỉ dời
+    // mốc ngắt. Không gia hạn (client cũ, refresh bị thu hồi) → vẫn bị ngắt đúng hạn như cũ.
+    socket.on('auth:renew', (body: unknown, ack?: unknown) => {
+      const reply = typeof ack === 'function' ? (ack as (r: { ok: boolean; error?: string }) => void) : () => {};
+      try {
+        const token = (body as { token?: unknown } | null)?.token;
+        if (typeof token !== 'string' || !token) return reply({ ok: false, error: 'unauthorized' });
+        const payload = app.jwt.verify<{ id: string; orgId: string; role: string; exp?: number; typ?: string }>(token);
+        if (config.socketRequireAccessTyp && payload.typ !== 'access') {
+          return reply({ ok: false, error: 'legacy_token_rejected' });
+        }
+        // Token mới PHẢI cùng user + org: không cho đổi danh tính trên socket đã join room.
+        const cur = getSocketAuth(socket);
+        if (!cur || payload.id !== cur.userId || payload.orgId !== cur.orgId) {
+          return reply({ ok: false, error: 'identity_mismatch' });
+        }
+        if (typeof payload.exp === 'number' && payload.exp * 1000 <= Date.now()) {
+          return reply({ ok: false, error: 'token_expired' });
+        }
+        socket.data.authCtx = { userId: payload.id, orgId: payload.orgId, role: payload.role } satisfies SocketAuthCtx;
+        armExpiryTimer(socket, payload.exp);
+        return reply({ ok: true });
+      } catch {
+        return reply({ ok: false, error: 'unauthorized' });
+      }
+    });
     socket.on('disconnect', () => {
       const t = socket.data?.expiryTimer as NodeJS.Timeout | undefined;
       if (t) clearTimeout(t);
